@@ -2,3 +2,11 @@ name "quickbite"
 description "Bytecode VM for the D programming language"
 copyright "Copyright © 2026, atila"
 license "BSL-1.0"
+
+configuration "unittest" {
+    targetType "executable"
+    dependency "unit-threaded" version="*"
+    mainSourceFile "tests/main.d"
+    sourcePaths "source" "."
+    excludedSourceFiles "tests/ut/package.d" "tests/ut/simple.d"
+}

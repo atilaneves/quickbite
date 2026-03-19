@@ -2,9 +2,13 @@
 
 ## Objective
 
-Build an independent DUB project that compiles a controlled subset of D into a custom bytecode format, using DMD as a frontend library dependency today while insulating the rest of the codebase from DMD internals.
+Build an independent DUB project that compiles a controlled subset of D
+into a custom bytecode format, using DMD as a frontend library dependency
+today while insulating the rest of the codebase from DMD internals.
 
-The implementation must not wait for ongoing DMD decoupling work. Instead, it will define a stable project-local API and use `dmd.frontend` only inside a narrow adapter layer.
+The implementation must not wait for ongoing DMD decoupling work.
+Instead, it will define a stable project-local API and use
+`dmd.frontend` only inside a narrow adapter layer.
 
 ## Non-Goals
 
@@ -12,15 +16,19 @@ The implementation must not wait for ongoing DMD decoupling work. Instead, it wi
 - Do not depend on DMD backend code generation.
 - Do not expose `dmd.*` types outside the adapter package.
 - Do not attempt full-language coverage in the first milestones.
-- Do not assume DMD is thread-safe or supports multiple concurrent frontend sessions.
+- Do not assume DMD is thread-safe or supports multiple concurrent
+  frontend sessions.
 
 ## Constraints And Assumptions
 
-- The project is a separate DUB project, not another package inside this repository.
+- The project is a separate DUB project, not another package inside this
+  repository.
 - The DUB project depends on DMD as a library through a pinned checkout.
-- DMD is used only for lexing, parsing, import resolution, and semantic analysis.
+- DMD is used only for lexing, parsing, import resolution, and semantic
+  analysis.
 - Compilation is single-threaded inside one process for now.
-- Parallel builds, if needed later, use subprocess isolation rather than shared in-process compiler sessions.
+- Parallel builds, if needed later, use subprocess isolation rather than
+  shared in-process compiler sessions.
 
 ## Pinned Dependency Strategy
 
@@ -45,13 +53,15 @@ Recommended pinning method:
    - `README.md`
    - `docs/architecture.md`
    - CI logs or a lock file if you create one
-4. Point the DUB dependency at the local path instead of relying on the package registry.
+4. Point the DUB dependency at the local path instead of relying on the
+   package registry.
 
 Reasoning:
 
 - This is more reproducible than relying on registry metadata.
 - It keeps DMD upgrades explicit.
-- It lets the VM project patch around DMD behavior changes without blocking on upstream work.
+- It lets the VM project patch around DMD behavior changes without
+  blocking on upstream work.
 
 Example `dub.sdl` fragment:
 
@@ -62,7 +72,10 @@ targetType "library"
 dependency "dmd" path="vendor/dmd"
 ```
 
-The current DMD tree already exposes a `frontend` subpackage and example consumer code through [dub.sdl](/home/atila/coding/d/dlang/dmd/dub.sdl) and [frontend.d](/home/atila/coding/d/dlang/dmd/compiler/test/dub_package/frontend.d). The VM project should consume only that library-facing surface at first.
+The current DMD tree already exposes a `frontend` subpackage and example
+consumer code through `dlang/dmd/dub.sdl` and
+`dlang/dmd/compiler/test/dub_package/frontend.d`. The VM project should
+consume only that library-facing surface at first.
 
 ## Top-Level Architecture
 
@@ -157,7 +170,9 @@ struct CompileResult
 
     @property bool success() const
     {
-        return diagnostics.count!(d => d.severity == DiagnosticSeverity.error) == 0;
+        return diagnostics.count!(
+            d => d.severity == DiagnosticSeverity.error
+        ) == 0;
     }
 }
 
@@ -179,7 +194,8 @@ Nothing else in the project should know that DMD is being used.
 
 ### Goal
 
-Create a standalone repository that builds against a pinned local DMD checkout and proves that `dmd.frontend` can be consumed reproducibly.
+Create a standalone repository that builds against a pinned local DMD
+checkout and proves that `dmd.frontend` can be consumed reproducibly.
 
 ### Tasks
 
@@ -213,8 +229,10 @@ Create a standalone repository that builds against a pinned local DMD checkout a
 
 ### Suggested Implementation Notes
 
-- Start from the pattern in [compiler/test/dub_package/frontend.d](/home/atila/coding/d/dlang/dmd/compiler/test/dub_package/frontend.d#L8).
-- Use `initDMD`, `addImport`, `addStringImport`, `parseModule`, `fullSemantic`, and `deinitializeDMD`.
+- Start from the pattern in
+  `dlang/dmd/compiler/test/dub_package/frontend.d`.
+- Use `initDMD`, `addImport`, `addStringImport`, `parseModule`,
+  `fullSemantic`, and `deinitializeDMD`.
 - Wrap `deinitializeDMD` in a scope guard.
 - Do not keep DMD objects alive after session teardown.
 
@@ -222,13 +240,15 @@ Create a standalone repository that builds against a pinned local DMD checkout a
 
 ### Goal
 
-Establish stable internal data structures so the lowering work can proceed without leaking DMD internals.
+Establish stable internal data structures so the lowering work can
+proceed without leaking DMD internals.
 
 ### Tasks
 
 1. Define a project-local `Diagnostic` type.
 2. Define a project-local source location type.
-3. Define `IrModule`, `IrFunction`, `IrBlock`, `IrInstruction`, `IrType`, and `IrConstant`.
+3. Define `IrModule`, `IrFunction`, `IrBlock`, `IrInstruction`,
+   `IrType`, and `IrConstant`.
 4. Add text dump helpers for all IR nodes.
 5. Add invariants for IR validity.
 6. Add snapshot-style tests for IR dumps.
@@ -291,11 +311,13 @@ Centralize all DMD lifecycle and configuration logic in one place.
 - `frontend/dmd_session.d` owns all calls to `initDMD` and `deinitializeDMD`.
 - `frontend/dmd_diagnostics.d` owns all diagnostic conversion.
 - `frontend/dmd_loader.d` owns module loading and option mapping.
-- `frontend/dmd_lowering.d` is the only place allowed to inspect DMD AST/semantic nodes.
+- `frontend/dmd_lowering.d` is the only place allowed to inspect DMD
+  AST/semantic nodes.
 
 ### Acceptance Criteria
 
-- One function call from project code can compile a module to either diagnostics or IR.
+- One function call from project code can compile a module to either
+  diagnostics or IR.
 - DMD failures do not leave the process in a poisoned state for the next test.
 - No DMD symbols appear in `api/`, `ir/`, `lower/`, or `vm/`.
 
@@ -476,7 +498,8 @@ For each slice:
 
 ### Goal
 
-Remove the main operational risk of in-process DMD global state without blocking the earlier phases.
+Remove the main operational risk of in-process DMD global state without
+blocking the earlier phases.
 
 ### When To Do This
 
@@ -497,7 +520,8 @@ Do this only if one of these becomes painful:
 
 ### Acceptance Criteria
 
-- Main compiler library no longer links DMD directly when subprocess mode is enabled.
+- Main compiler library no longer links DMD directly when subprocess
+  mode is enabled.
 - The rest of the codebase is unchanged.
 
 ## Immediate File Creation Plan

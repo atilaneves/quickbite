@@ -24,11 +24,14 @@ use dmd as a library.
 
 # Plan
 
-Consult `dlang_bytecode.md` for a detailed implementation plan.
+Consult `ai/dlang_bytecode.md` for a detailed implementation plan.
+Consult `ai/ir.md` for the minimal IR implementation plan for the
+first supported slice.
 
 # Coding Guidelines
 
-Write everything in strict TDD style.
+Write everything in strict TDD style. Write a test, make sure it fails,
+write the code, make sure the tests pass again.
 
 Use the one true brace coding style, not dmd/phobos.
 
@@ -36,3 +39,26 @@ Use UFCS liberally.
 
 Use local imports where possible. For parameters and return types use
 `importer!"module"`.
+
+Do not assume the code has not been edited by someone else in the
+meanwhile.  Always re-read files that you are about to edit.
+
+# Testing
+
+Run `dub test` after every editing "session" to assess the current
+status.
+
+Never delete test code to cause the tests to pass.
+
+# Do nots
+
+Consult `ai/mistakes.md` for mistakes made by previous agents that you
+learn from so as to not do them again.
+
+# Do
+
+Consult the git history when starting a new session to understand what
+has already been done.
+
+When asked to write something to a markdown file, make it 80 columns
+wide at most.
