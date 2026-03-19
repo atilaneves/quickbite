@@ -16,6 +16,15 @@ public auto parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
+public imported!"quickbite.ir.module_".Module lowerModule(
+    imported!"dmd.dmodule".Module module_,
+)
+{
+    import quickbite.frontend.lowering;
+
+    return quickbite.frontend.lowering.lowerModule(module_);
+}
+
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;

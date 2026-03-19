@@ -1,82 +1,100 @@
 module quickbite;
 
+
+private:
+
+
 public void runTests(in string source) {
     import quickbite.frontend.compiler;
 
     auto parsed = quickbite.frontend.compiler.parseModule(source);
-    executeUnitTests(parsed.module_);
+    auto loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
+    executeUnitTests(loweredModule);
 }
 
-private:
 
-void executeUnitTests(imported!"dmd.dmodule".Module module_) {
-    foreach (member; *module_.members) {
-        if (auto unitTest = member.isUnitTestDeclaration())
-            executeStatement(unitTest.fbody);
+void executeUnitTests(imported!"quickbite.ir.module_".Module module_) {
+    foreach (test; module_.tests) {
+        executeBlock(
+            module_,
+            test.entry,
+        );
     }
 }
 
-long executeFunction(imported!"dmd.func".FuncDeclaration function_) {
-    import std.typecons: Nullable;
+long executeFunction(
+    imported!"quickbite.ir.module_".Module module_,
+    in string calleeName,
+) {
+    foreach (function_; module_.functions) {
+        if (function_.name == calleeName)
+            return executeBlock(module_, function_.entry);
+    }
 
-    const result = executeStatement(function_.fbody);
-    if (result.isNull)
-        throw new Exception("Unsupported function body.");
-
-    return result.get;
+    throw new Exception("Unsupported callee.");
 }
 
-imported!"std.typecons".Nullable!long executeStatement(
-    imported!"dmd.statement".Statement statement,
+long executeBlock(
+    imported!"quickbite.ir.module_".Module module_,
+    imported!"quickbite.ir.block".Block block,
 )
 {
-    import std.typecons: Nullable, nullable;
+    long[] temporaries;
 
-    if (auto compound = statement.isCompoundStatement()) {
-        foreach (child; *compound.statements) {
-            const result = executeStatement(child);
-            if (!result.isNull)
-                return result;
-        }
-
-        return Nullable!long.init;
+    foreach (instruction; block.instructions) {
+        executeInstruction(
+            module_,
+            instruction,
+            temporaries,
+        );
     }
 
-    if (auto expressionStatement = statement.isExpStatement()) {
-        evaluateExpression(expressionStatement.exp);
-        return Nullable!long.init;
-    }
+    if (block.terminator.kind == imported!"quickbite.ir.block".TerminatorKind.return_)
+        return temporaryValue(temporaries, block.terminator.value);
 
-    if (auto returnStatement = statement.isReturnStatement()) {
-        return nullable(evaluateExpression(returnStatement.exp));
-    }
-
-    throw new Exception("Unsupported statement.");
+    return 0;
 }
 
-long evaluateExpression(imported!"dmd.expression".Expression expression) {
-    if (auto integer = expression.isIntegerExp())
-        return integer.getInteger();
+void executeInstruction(
+    imported!"quickbite.ir.module_".Module module_,
+    imported!"quickbite.ir.instruction".Instruction instruction,
+    ref long[] temporaries,
+) {
+    import quickbite.ir.instruction: Kind;
 
-    if (auto call = expression.isCallExp()) {
-        if (call.arguments !is null && call.arguments.length != 0)
-            throw new Exception("Unsupported call.");
+    final switch (instruction.kind) {
+        case Kind.constInt:
+            temporaryValue(temporaries, instruction.destination) = instruction.value;
+            return;
 
-        if (call.f is null)
-            throw new Exception("Unsupported callee.");
+        case Kind.call:
+            temporaryValue(temporaries, instruction.destination) = executeFunction(
+                module_,
+                instruction.calleeName,
+            );
+            return;
 
-        return executeFunction(call.f);
+        case Kind.equal:
+            temporaryValue(temporaries, instruction.destination) =
+                temporaryValue(temporaries, instruction.left) ==
+                temporaryValue(temporaries, instruction.right);
+            return;
+
+        case Kind.assert_:
+            if (!temporaryValue(temporaries, instruction.condition))
+                throw new Exception("Unittest assertion failed.");
+
+            return;
     }
+}
 
-    if (auto equal = expression.isEqualExp())
-        return evaluateExpression(equal.e1) == evaluateExpression(equal.e2);
+ref long temporaryValue(ref long[] temporaries, in uint index) {
+    import std.algorithm.comparison: max;
 
-    if (auto assert_ = expression.isAssertExp()) {
-        if (!evaluateExpression(assert_.e1))
-            throw new Exception("Unittest assertion failed.");
-
-        return 0;
-    }
-
-    throw new Exception("Unsupported expression.");
+    const requiredLength = max(
+        temporaries.length,
+        index + 1,
+    );
+    temporaries.length = requiredLength;
+    return temporaries[index];
 }
