@@ -39,3 +39,9 @@
   was not strict TDD for the task at hand; I should have worked from
   the existing requested behaviour and only changed tests when the
   user explicitly wanted that.
+
+- I ignored the instruction to prefer local imports and left a block
+  of module-level imports in the implementation file, including some
+  that were unnecessary. I should have kept imports local to the
+  functions that use them and verified that each import was actually
+  needed.

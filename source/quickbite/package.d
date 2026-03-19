@@ -44,17 +44,10 @@ void runTests(string source) {
 
 private:
 
-import dmd.dmodule: Module;
-import dmd.dsymbol: Dsymbol;
-import dmd.expression: AssertExp, CallExp, EqualExp, Expression, IntegerExp;
-import dmd.func: FuncDeclaration;
-import dmd.statement: CompoundStatement, ExpStatement, ReturnStatement, Statement;
-import std.array: array, join;
-import std.algorithm.iteration: filter, map;
-import std.typecons: Nullable, nullable;
-
 string diagnosticMessage() {
     import dmd.errors: diagnostics, ErrorKind;
+    import std.algorithm.iteration: filter, map;
+    import std.array: array, join;
 
     const messages = diagnostics
         .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
@@ -67,14 +60,16 @@ string diagnosticMessage() {
     return messages.join("\n");
 }
 
-void executeUnitTests(Module module_) {
+void executeUnitTests(imported!"dmd.dmodule".Module module_) {
     foreach (member; *module_.members) {
         if (auto unitTest = member.isUnitTestDeclaration())
             executeStatement(unitTest.fbody);
     }
 }
 
-long executeFunction(FuncDeclaration function_) {
+long executeFunction(imported!"dmd.func".FuncDeclaration function_) {
+    import std.typecons: Nullable;
+
     const result = executeStatement(function_.fbody);
     if (result.isNull)
         throw new Exception("Unsupported function body.");
@@ -82,7 +77,11 @@ long executeFunction(FuncDeclaration function_) {
     return result.get;
 }
 
-Nullable!long executeStatement(Statement statement) {
+imported!"std.typecons".Nullable!long executeStatement(
+    imported!"dmd.statement".Statement statement,
+) {
+    import std.typecons: Nullable, nullable;
+
     if (auto compound = statement.isCompoundStatement()) {
         foreach (child; *compound.statements) {
             const result = executeStatement(child);
@@ -105,7 +104,7 @@ Nullable!long executeStatement(Statement statement) {
     throw new Exception("Unsupported statement.");
 }
 
-long evaluateExpression(Expression expression) {
+long evaluateExpression(imported!"dmd.expression".Expression expression) {
     if (auto integer = expression.isIntegerExp())
         return integer.getInteger();
 
