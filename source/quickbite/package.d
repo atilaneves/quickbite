@@ -14,9 +14,9 @@ public void runTests(in string source) {
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
-        executeBlock(
+        executeTest(
             module_,
-            test.entry,
+            test.instructions,
         );
     }
 }
@@ -27,19 +27,39 @@ long executeFunction(
 ) @safe pure {
     foreach (function_; module_.functions) {
         if (function_.name == calleeName)
-            return executeBlock(module_, function_.entry);
+            return executeFunctionBody(
+                module_,
+                function_.instructions,
+                function_.returnValue,
+            );
     }
 
     throw new Exception("Unsupported callee.");
 }
 
-long executeBlock(
+void executeTest(
     in imported!"quickbite.ir.module_".Module module_,
-    in imported!"quickbite.ir.block".Block block,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
 ) @safe pure {
     long[] temporaries;
 
-    foreach (instruction; block.instructions) {
+    foreach (instruction; instructions) {
+        executeInstruction(
+            module_,
+            instruction,
+            temporaries,
+        );
+    }
+}
+
+long executeFunctionBody(
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint returnValue,
+) @safe pure {
+    long[] temporaries;
+
+    foreach (instruction; instructions) {
         executeInstruction(
             module_,
             instruction,
@@ -47,10 +67,7 @@ long executeBlock(
         );
     }
 
-    if (block.terminator.kind == imported!"quickbite.ir.block".TerminatorKind.return_)
-        return temporaryValue(temporaries, block.terminator.value);
-
-    return 0;
+    return temporaryValue(temporaries, returnValue);
 }
 
 void executeInstruction(

@@ -3,7 +3,7 @@ module quickbite.ir.test;
 private:
 
 public struct Test {
-    import quickbite.ir.block: Block;
+    import quickbite.ir.instruction: Instruction;
 
-    Block entry;
+    Instruction[] instructions;
 }

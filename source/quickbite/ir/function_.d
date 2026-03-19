@@ -3,10 +3,9 @@ module quickbite.ir.function_;
 private:
 
 public struct Function {
-    import quickbite.ir.block: Block;
-    import quickbite.ir.type: Type;
+    import quickbite.ir.instruction: Instruction;
 
     string name;
-    Type returnType;
-    Block entry;
+    Instruction[] instructions;
+    uint returnValue;
 }

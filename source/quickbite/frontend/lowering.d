@@ -33,32 +33,15 @@ struct Lowerer {
         imported!"dmd.declaration".UnitTestDeclaration unitTest,
     ) {
         imported!"quickbite.ir.test".Test result;
-
-        result.entry = lowerTestBlock(unitTest.fbody);
-        return result;
-    }
-
-    imported!"quickbite.ir.block".Block lowerTestBlock(
-        imported!"dmd.statement".Statement statement,
-    ) {
-        import quickbite.ir.block: Terminator, TerminatorKind;
-
         auto builder = BodyLowerer(&this);
-        builder.lowerStatement(statement);
 
-        imported!"quickbite.ir.block".Block result;
+        builder.lowerStatement(unitTest.fbody);
         result.instructions = builder.instructions.dup;
-        result.terminator = Terminator(
-            TerminatorKind.returnVoid,
-            0,
-        );
         return result;
     }
 
     void ensureFunctionLowered(imported!"dmd.func".FuncDeclaration function_) {
-        import quickbite.ir.block: Terminator, TerminatorKind;
         import quickbite.ir.function_: Function;
-        import quickbite.ir.type: Kind, Type;
 
         const name = functionName(function_);
         if (name in loweredFunctions)
@@ -74,12 +57,8 @@ struct Lowerer {
 
         Function result;
         result.name = name;
-        result.returnType = Type(Kind.int32);
-        result.entry.instructions = builder.instructions.dup;
-        result.entry.terminator = Terminator(
-            TerminatorKind.return_,
-            builder.returnValue,
-        );
+        result.instructions = builder.instructions.dup;
+        result.returnValue = builder.returnValue;
         loweredModule.functions ~= result;
     }
 
