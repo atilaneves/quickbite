@@ -1,0 +1,4 @@
+name "quickbite"
+description "Bytecode VM for the D programming language"
+copyright "Copyright © 2026, atila"
+license "BSL-1.0"

@@ -1,0 +1,17 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/quickbite
+quickbite.so
+quickbite.dylib
+quickbite.dll
+libquickbite.a
+quickbite.a
+quickbite.lib
+quickbite-test-*
+*.exe
+*.pdb
+*.o
+*.obj
+*.lst
