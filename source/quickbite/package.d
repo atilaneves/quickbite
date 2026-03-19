@@ -12,8 +12,7 @@ public void runTests(in string source) {
     executeUnitTests(loweredModule);
 }
 
-
-void executeUnitTests(imported!"quickbite.ir.module_".Module module_) {
+void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
         executeBlock(
             module_,
@@ -23,9 +22,9 @@ void executeUnitTests(imported!"quickbite.ir.module_".Module module_) {
 }
 
 long executeFunction(
-    imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
-) {
+) @safe pure {
     foreach (function_; module_.functions) {
         if (function_.name == calleeName)
             return executeBlock(module_, function_.entry);
@@ -35,10 +34,9 @@ long executeFunction(
 }
 
 long executeBlock(
-    imported!"quickbite.ir.module_".Module module_,
-    imported!"quickbite.ir.block".Block block,
-)
-{
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.block".Block block,
+) @safe pure {
     long[] temporaries;
 
     foreach (instruction; block.instructions) {
@@ -56,10 +54,10 @@ long executeBlock(
 }
 
 void executeInstruction(
-    imported!"quickbite.ir.module_".Module module_,
-    imported!"quickbite.ir.instruction".Instruction instruction,
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
-) {
+) @safe pure {
     import quickbite.ir.instruction: Kind;
 
     final switch (instruction.kind) {
@@ -88,7 +86,7 @@ void executeInstruction(
     }
 }
 
-ref long temporaryValue(ref long[] temporaries, in uint index) {
+ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
     import std.algorithm.comparison: max;
 
     const requiredLength = max(

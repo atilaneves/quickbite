@@ -13,3 +13,8 @@
 
 - Keep touched code aligned with repo conventions, especially OTBS/OTBC
   and local imports.
+
+- When a user asks for `in` parameters and stronger attributes, do not
+  work around the resulting type mismatch by weakening the qualifier
+  requirement. Reconcile the signatures properly and add the strongest
+  valid attributes instead.

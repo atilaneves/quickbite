@@ -2,16 +2,14 @@ module quickbite.ir.instruction;
 
 private:
 
-public enum Kind
-{
+public enum Kind {
     constInt,
     call,
     equal,
     assert_,
 }
 
-public struct Instruction
-{
+public struct Instruction {
     public Kind kind;
     public uint destination;
     public int value;

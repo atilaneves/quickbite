@@ -2,14 +2,12 @@ module quickbite.ir.type;
 
 private:
 
-public enum Kind
-{
+public enum Kind {
     int32,
     bool_,
     void_,
 }
 
-public struct Type
-{
+public struct Type {
     public Kind kind;
 }

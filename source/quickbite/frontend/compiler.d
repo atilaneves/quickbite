@@ -18,8 +18,7 @@ public auto parseModule(in string source) {
 
 public imported!"quickbite.ir.module_".Module lowerModule(
     imported!"dmd.dmodule".Module module_,
-)
-{
+) {
     import quickbite.frontend.lowering;
 
     return quickbite.frontend.lowering.lowerModule(module_);
