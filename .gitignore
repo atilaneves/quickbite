@@ -15,3 +15,5 @@ quickbite-test-*
 *.o
 *.obj
 *.lst
+.#*
+\#*#
