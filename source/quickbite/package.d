@@ -52,12 +52,7 @@ import dmd.func: FuncDeclaration;
 import dmd.statement: CompoundStatement, ExpStatement, ReturnStatement, Statement;
 import std.array: array, join;
 import std.algorithm.iteration: filter, map;
-
-struct StatementResult
-{
-    bool didReturn;
-    long value;
-}
+import std.typecons: Nullable, nullable;
 
 string diagnosticMessage() {
     import dmd.errors: diagnostics, ErrorKind;
@@ -82,33 +77,30 @@ void executeUnitTests(Module module_) {
 
 long executeFunction(FuncDeclaration function_) {
     const result = executeStatement(function_.fbody);
-    if (!result.didReturn)
+    if (result.isNull)
         throw new Exception("Unsupported function body.");
 
-    return result.value;
+    return result.get;
 }
 
-StatementResult executeStatement(Statement statement) {
+Nullable!long executeStatement(Statement statement) {
     if (auto compound = statement.isCompoundStatement()) {
         foreach (child; *compound.statements) {
             const result = executeStatement(child);
-            if (result.didReturn)
+            if (!result.isNull)
                 return result;
         }
 
-        return StatementResult.init;
+        return Nullable!long.init;
     }
 
     if (auto expressionStatement = statement.isExpStatement()) {
         evaluateExpression(expressionStatement.exp);
-        return StatementResult.init;
+        return Nullable!long.init;
     }
 
     if (auto returnStatement = statement.isReturnStatement()) {
-        return StatementResult(
-            true,
-            evaluateExpression(returnStatement.exp),
-        );
+        return nullable(evaluateExpression(returnStatement.exp));
     }
 
     throw new Exception("Unsupported statement.");

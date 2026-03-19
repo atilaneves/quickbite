@@ -60,7 +60,7 @@ scope`, for instance.
 Private functions should be placed directly below where they used if
 possible.
 
-Prefer `std.conv.text` to `writefln` or `printf`.
+Prefer `std.conv.text` to `writefln` or `to!string`.
 
 # Testing
 
