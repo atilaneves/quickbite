@@ -41,7 +41,9 @@ Use local imports where possible. For parameters and return types use
 `importer!"module"`.
 
 Do not assume the code has not been edited by someone else in the
-meanwhile.  Always re-read files that you are about to edit.
+meanwhile. Always re-read files that you are about to edit.
+
+Use trailing commas.
 
 # Testing
 
