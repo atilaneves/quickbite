@@ -1,21 +1,32 @@
-import quickbite;
-import ut;
+module ut.simple;
 
+import quickbite;
+import unit_threaded;
 
 @("simple")
-unittest {
-    with(immutable Sandbox()) {
-        write(
-            "test.d",
-            q{
-                int answer() {
-                    return 42;
-                }
+unittest
+{
+    q{
+        int answer() {
+            return 42;
+        }
 
-                unittest {
-                    assert(answer == 42);
-                }
-            }
-        )
-    }
+        unittest {
+            assert(answer() == 42);
+        }
+    }.runTests();
+}
+
+@("simple fails")
+unittest
+{
+    q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer() == 43);
+        }
+    }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
 }

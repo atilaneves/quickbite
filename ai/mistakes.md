@@ -28,3 +28,8 @@
   introducing a broad unittest source path. I should have been more
   careful about how `sourcePaths "."` changes the set of compiled test
   files.
+
+- I edited D files using Phobos-style brace placement even though the
+  repository instructions explicitly require OTBC. I should have
+  matched the existing style in the touched code before sending the
+  change.
