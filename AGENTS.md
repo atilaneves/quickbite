@@ -1,0 +1,38 @@
+# Goal
+
+The goal is to write a bytecode VM for the D programming language.
+
+# High level design considerations
+
+Optimise for the latency of getting unittest results from any given
+edit. This is more important than anything else. A JIT would achieve
+better runtime performance, but the tests themselves probably run in
+milliseconds anyway so it would take longer to JIT compile the code
+than running it in the VM.
+
+I want to avoid paying the "linker tax". I don't want object files.  I
+don't want to compile the whole code. I want the compilation to be
+driven by unittest blocks and for the least amount of bytecode to be
+generated in order for the test and its dependent code (code directly
+under test and its transitive dependencies) to be able to execute.
+
+# Low level design considerations
+
+The code should be as isolated as possible from the dmd internals.  We
+want a stable interface that we can call. This interface will in turn
+use dmd as a library.
+
+# Plan
+
+Consult `dlang_bytecode.md` for a detailed implementation plan.
+
+# Coding Guidelines
+
+Write everything in strict TDD style.
+
+Use the one true brace coding style, not dmd/phobos.
+
+Use UFCS liberally.
+
+Use local imports where possible. For parameters and return types use
+`importer!"module"`.
