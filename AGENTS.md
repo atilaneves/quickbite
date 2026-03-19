@@ -30,20 +30,37 @@ first supported slice.
 
 # Coding Guidelines
 
-Write everything in strict TDD style. Write a test, make sure it fails,
-write the code, make sure the tests pass again.
+## TDD
+
+Write everything in strict TDD style. Write a test, make sure it
+fails, write the code, make sure the tests pass again. When you write
+production code to make a test pass, write the dumbest simplest thing
+that will get the job done, no matter how much repetition. Do not
+attempt to refactor the code to make it better until all tests pass.
+Ask for feedback on the code you wrote once the refactoring step is
+done.
+
+## Style
 
 Use the one true brace coding style, not dmd/phobos.
 
 Use UFCS liberally.
 
 Use local imports where possible. For parameters and return types use
-`importer!"module"`.
-
-Do not assume the code has not been edited by someone else in the
-meanwhile. Always re-read files that you are about to edit.
+`imported!"module"`.
 
 Use trailing commas.
+
+Use `private:` at the top of every module. Be explicit with `public`
+and `private` anyway.
+
+Use as many attributes as can be used: `@safe @nogc nothrow pure const
+scope`, for instance.
+
+Private functions should be placed directly below where they used if
+possible.
+
+Prefer `std.conv.text` to `writefln` or `printf`.
 
 # Testing
 
@@ -56,6 +73,13 @@ Never delete test code to cause the tests to pass.
 
 Consult `ai/mistakes.md` for mistakes made by previous agents that you
 learn from so as to not do them again.
+
+When you make a new mistake, add it to `ai/mistakes.md`. Only *new*
+mistakes, don't add the same one again.
+
+Do not assume the code has not been edited by someone else in the
+meanwhile. Always re-read files that you are about to edit.
+
 
 # Do
 
