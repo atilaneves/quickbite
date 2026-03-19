@@ -19,6 +19,11 @@ This document is intentionally narrow. It is not a general IR design
 for the whole D language. It is an implementation target for the first
 vertical slice only.
 
+For the early VM roadmap, treat this document as authoritative for the
+first end-to-end implementation. Do not add locals, branching, source
+locations, symbol tables, or broader type machinery until this slice
+parses, lowers, encodes, and executes successfully.
+
 ## Non-Goals
 
 Do not design for:
@@ -36,6 +41,20 @@ Do not design for:
 
 The point of this IR is to establish a project-owned boundary
 immediately after semantic analysis.
+
+## Compilation Scope
+
+This IR exists to support compiling one selected `unittest` plus only
+the free functions that unittest directly needs for the first slice.
+
+That means:
+
+- the compilation driver selects one `unittest`
+- the lowerer emits one `Test` for that selected body
+- only directly referenced zero-argument free functions are lowered
+- unrelated top-level declarations are ignored for this slice
+
+This is a latency optimization, not just a simplification.
 
 ## Design Constraints
 
@@ -78,6 +97,9 @@ Use a very small typed, register-like IR:
 For this first slice, there is no branching and no multiple blocks per
 body. Still use `Block` now so the shape does not need to be
 reinvented when control flow is added later.
+
+Do not add placeholder fields for future features. Add structure only
+when a supported slice requires it.
 
 ## Type Model
 
@@ -325,7 +347,8 @@ struct Module
 Requirements:
 
 - `name` may be the parsed module name or a filename-derived fallback
-- the module contains only top-level declarations needed for this slice
+- the module contains only top-level declarations needed for the
+  selected unittest slice
 - no globals, imports, aliases, enums, structs, or classes yet
 
 For the sample program:
@@ -357,6 +380,7 @@ analyzed constructs.
 
 - one or more free functions
 - one or more `unittest` blocks
+- deterministic selection of one `unittest` body for lowering
 
 ### Function Body
 
@@ -396,9 +420,13 @@ The lowering pipeline for this slice is:
 1. parse source with DMD
 2. run semantic analysis
 3. enumerate top-level declarations
-4. lower supported free functions into `Function`
-5. lower supported unittest blocks into `Test`
-6. assemble `Module`
+4. select one `unittest` deterministically
+5. lower supported free functions needed by that `unittest` into
+   `Function`
+6. lower the selected `unittest` block into `Test`
+7. assemble `Module`
+
+Do not lower every `unittest` in the module in the first slice.
 
 ## Temporary Numbering Rules
 

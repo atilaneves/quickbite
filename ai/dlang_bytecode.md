@@ -2,9 +2,14 @@
 
 ## Objective
 
-Build an independent DUB project that compiles a controlled subset of D
-into a custom bytecode format, using DMD as a frontend library dependency
-today while insulating the rest of the codebase from DMD internals.
+Build an independent DUB project that executes D `unittest` blocks via a
+custom bytecode VM, using DMD only as a frontend library dependency
+while insulating the rest of the codebase from DMD internals.
+
+The first priority is latency of the edit-to-unittest loop. The first
+vertical slice must therefore compile one selected `unittest` plus only
+the code that unittest directly or transitively depends on. Everything
+else is secondary.
 
 The implementation must not wait for ongoing DMD decoupling work.
 Instead, it will define a stable project-local API and use
@@ -16,19 +21,32 @@ Instead, it will define a stable project-local API and use
 - Do not depend on DMD backend code generation.
 - Do not expose `dmd.*` types outside the adapter package.
 - Do not attempt full-language coverage in the first milestones.
+- Do not build a general whole-module compiler before the unittest
+  execution loop exists.
 - Do not assume DMD is thread-safe or supports multiple concurrent
   frontend sessions.
 
 ## Constraints And Assumptions
 
-- The project is a separate DUB project, not another package inside this
-  repository.
+- The project is a separate DUB project, not another package inside
+  this repository.
 - The DUB project depends on DMD as a library through a pinned checkout.
 - DMD is used only for lexing, parsing, import resolution, and semantic
   analysis.
 - Compilation is single-threaded inside one process for now.
 - Parallel builds, if needed later, use subprocess isolation rather than
   shared in-process compiler sessions.
+- Early milestones optimize for reproducible tests and small compile
+  scope, not broad language coverage.
+
+## Guiding Principles
+
+- Make one selected `unittest` executable end to end as early as
+  possible.
+- Lower out of DMD immediately into project-owned data structures.
+- Keep the adapter boundary narrow and explicit.
+- Grow support in tiny semantic slices validated by execution tests.
+- Treat infrastructure work as supporting work, not the main milestone.
 
 ## Pinned Dependency Strategy
 
@@ -83,7 +101,7 @@ The core design rule is:
 
 Lower out of DMD immediately into project-owned data structures.
 
-Target package layout:
+Initial package layout:
 
 ```text
 source/dlang_bytecode/
@@ -92,31 +110,24 @@ source/dlang_bytecode/
     diagnostics.d
     options.d
     package.d
-  driver/
-    session.d
-    pipeline.d
   frontend/
     dmd_session.d
     dmd_loader.d
-    dmd_lowering.d
     dmd_diagnostics.d
+    dmd_lowering.d
     package.d
   ir/
     module.d
     function.d
-    type.d
+    test.d
+    block.d
     instruction.d
-    constant.d
-    symbol.d
+    type.d
     package.d
-  lower/
-    module_lowerer.d
-    stmt_lowerer.d
-    expr_lowerer.d
-    type_lowerer.d
   vm/
     bytecode_writer.d
     opcode.d
+    machine.d
     package.d
   support/
     scope_exit.d
@@ -124,21 +135,27 @@ source/dlang_bytecode/
     ids.d
 ```
 
+For the early milestones, `frontend/dmd_lowering.d` owns all inspection
+of DMD AST and semantic nodes. Do not introduce a second lowering layer
+that also reads `dmd.*` until the first end-to-end slice is proven.
+
 Project-owned stable boundary:
 
 - `CompilerSession`
 - `CompileOptions`
+- `CompileRequest`
 - `CompileResult`
 - `Diagnostic`
-- `IrModule`
-- `IrFunction`
-- `IrType`
-- `BytecodeModule`
+- `Module`
+- `Function`
+- `Test`
+- `BytecodeProgram`
 
 Forbidden outside `frontend/`:
 
 - `import dmd.*`
-- direct references to `Module`, `Expression`, `Statement`, `Type`, `Dsymbol`
+- direct references to `Module`, `Expression`, `Statement`, `Type`,
+  `Dsymbol`, or other DMD semantic node types
 
 ## Stable Project API
 
@@ -162,10 +179,16 @@ struct CompileInput
     string code;
 }
 
+struct CompileRequest
+{
+    CompileInput input;
+    size_t unittestIndex;
+}
+
 struct CompileResult
 {
     Diagnostic[] diagnostics;
-    IrModule ir;
+    Module ir;
     ubyte[] bytecode;
 
     @property bool success() const
@@ -178,7 +201,7 @@ struct CompileResult
 
 interface CompilerSession
 {
-    CompileResult compile(CompileInput input, CompileOptions options);
+    CompileResult compile(CompileRequest request, CompileOptions options);
 }
 ```
 
@@ -188,36 +211,51 @@ Initial concrete implementation:
 
 Nothing else in the project should know that DMD is being used.
 
+## Early Vertical Slice
+
+The first supported source slice is defined by
+`ai/ir.md`. Treat that document as authoritative for the first end-to-
+end implementation. Do not expand the IR or supported language forms
+past that document until the slice executes in the VM.
+
+The first successful demo should be:
+
+1. Parse and semantically analyze a module containing one or more
+   top-level functions and one or more `unittest` blocks.
+2. Select one `unittest` by index.
+3. Lower only the selected `unittest` and the directly called free
+   functions needed by it.
+4. Encode that slice to bytecode.
+5. Execute it in the VM.
+
 ## Phases
 
 ## Phase 0: Bootstrap The Independent Project
 
 ### Goal
 
-Create a standalone repository that builds against a pinned local DMD
-checkout and proves that `dmd.frontend` can be consumed reproducibly.
+Create the smallest standalone repository that proves `dmd.frontend`
+can be consumed reproducibly.
 
 ### Tasks
 
 1. Create a new repository for the VM project.
 2. Add `vendor/dmd` as a pinned submodule or equivalent pinned checkout.
 3. Create `dub.sdl` with a path dependency on `vendor/dmd`.
-4. Add a tiny executable target `dlang-bytecode-cli`.
-5. Add a tiny library target `dlang-bytecode`.
-6. Implement a smoke test that:
+4. Add a tiny library target `dlang-bytecode`.
+5. Implement a smoke test that:
    - creates a DMD session
    - adds import paths
    - parses an in-memory module
    - runs semantic analysis
    - reports diagnostics
-7. Add CI that builds this smoke test on one platform first.
+6. Document the pinned DMD commit.
 
 ### Deliverables
 
 - `dub.sdl`
 - `source/dlang_bytecode/api/*.d`
 - `source/dlang_bytecode/frontend/dmd_session.d`
-- `source/app.d` or `source/dlang_bytecode_cli/main.d`
 - `test/smoke/frontend_smoke.d`
 
 ### Acceptance Criteria
@@ -235,34 +273,54 @@ checkout and proves that `dmd.frontend` can be consumed reproducibly.
   `fullSemantic`, and `deinitializeDMD`.
 - Wrap `deinitializeDMD` in a scope guard.
 - Do not keep DMD objects alive after session teardown.
+- Do not add a CLI target yet unless a test proves it is needed.
 
-## Phase 1: Define Project-Owned Diagnostics, Types, And IR Shell
+## Phase 1: Discover And Select One Unittest Slice
 
 ### Goal
 
-Establish stable internal data structures so the lowering work can
-proceed without leaking DMD internals.
+Make the project unittest-driven before introducing general-purpose
+compiler surfaces.
+
+### Tasks
+
+1. Define `CompileRequest` with explicit unittest selection.
+2. Parse and semantically analyze one in-memory module.
+3. Enumerate top-level `unittest` blocks deterministically.
+4. Select one unittest by index.
+5. Add diagnostics for invalid or missing unittest selection.
+6. Add tests for:
+   - one unittest
+   - multiple unittests
+   - invalid unittest index
+
+### Acceptance Criteria
+
+- Project code can ask to compile one selected unittest.
+- Unittest selection is deterministic.
+- Failures are reported as project diagnostics.
+
+## Phase 2: Define The Minimal Project-Owned IR Shell
+
+### Goal
+
+Establish the smallest stable internal data structures needed for the
+first vertical slice.
+
+### Scope
+
+This phase is intentionally limited to the IR described in `ai/ir.md`.
+Do not add locals, branching metadata, symbol tables, source locations,
+or richer type machinery yet unless that document is updated first.
 
 ### Tasks
 
 1. Define a project-local `Diagnostic` type.
-2. Define a project-local source location type.
-3. Define `IrModule`, `IrFunction`, `IrBlock`, `IrInstruction`,
-   `IrType`, and `IrConstant`.
-4. Add text dump helpers for all IR nodes.
-5. Add invariants for IR validity.
-6. Add snapshot-style tests for IR dumps.
-
-### Minimum IR Requirements
-
-- module name
-- function symbol table
-- local variable table
-- basic blocks
-- typed instructions
-- source location on instructions when available
-- constants
-- function signature metadata
+2. Define `Module`, `Function`, `Test`, `Block`, `Instruction`, and
+   `Type` exactly as described in `ai/ir.md`.
+3. Add text dump helpers for all IR nodes.
+4. Add invariants for IR validity.
+5. Add snapshot-style tests for IR dumps.
 
 ### Deliverables
 
@@ -274,173 +332,138 @@ proceed without leaking DMD internals.
 
 - The IR package builds independently of the DMD adapter.
 - IR dumps are deterministic.
-- The IR is expressive enough for:
-  - integer arithmetic
-  - local variables
-  - branching
-  - returns
-  - direct function calls
+- The IR matches the exact source forms and examples in `ai/ir.md`.
 
-## Phase 2: Build The DMD Session Adapter
+## Phase 3: Lower The First Supported Source Slice
 
 ### Goal
 
-Centralize all DMD lifecycle and configuration logic in one place.
-
-### Tasks
-
-1. Implement `DmdCompilerSession`.
-2. Map `CompileOptions` to DMD initialization and import configuration.
-3. Implement a single public compile pipeline:
-   - initialize DMD
-   - add import paths
-   - parse module
-   - collect parse diagnostics
-   - if parse succeeded, run semantic analysis
-   - collect semantic diagnostics
-   - return either diagnostics-only or lowered IR
-4. Add translation from DMD diagnostics to project diagnostics.
-5. Add tests for:
-   - syntax errors
-   - semantic errors
-   - import path resolution
-   - custom version identifiers
-
-### Important Design Rules
-
-- `frontend/dmd_session.d` owns all calls to `initDMD` and `deinitializeDMD`.
-- `frontend/dmd_diagnostics.d` owns all diagnostic conversion.
-- `frontend/dmd_loader.d` owns module loading and option mapping.
-- `frontend/dmd_lowering.d` is the only place allowed to inspect DMD
-  AST/semantic nodes.
-
-### Acceptance Criteria
-
-- One function call from project code can compile a module to either
-  diagnostics or IR.
-- DMD failures do not leave the process in a poisoned state for the next test.
-- No DMD symbols appear in `api/`, `ir/`, `lower/`, or `vm/`.
-
-## Phase 3: Implement Lowering For A Minimal Useful D Subset
-
-### Goal
-
-Support enough D to exercise the full pipeline into custom IR and then bytecode.
+Support one end-to-end lowering slice for the narrow sample program from
+`ai/ir.md`.
 
 ### Initial Supported Subset
 
-- top-level functions
+- top-level free functions
+- `unittest` blocks
+- zero-argument direct calls
 - integer literals
-- boolean literals
-- local variable declarations
-- assignment
-- arithmetic: `+`, `-`, `*`, `/`
-- comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- `if`
-- `while`
-- block statements
-- `return`
-- direct calls to known functions
+- `==` inside `assert`
+- `return` of an integer literal
 
 ### Explicitly Unsupported In This Phase
 
-- classes
-- structs beyond trivial handling
-- exceptions
-- closures
-- delegates
-- templates other than already-instantiated forms
+- local variables
+- assignment
+- arithmetic beyond integer literals
+- branching
+- loops
+- parameters
 - arrays
-- foreach lowering
+- templates
 - CTFE-dependent execution
-- inline asm
-- `scope(exit)`
+- exceptions
+- classes, structs, delegates, and closures
 
 ### Tasks
 
-1. Write a `ModuleLowerer`.
-2. Write a `StmtLowerer`.
-3. Write an `ExprLowerer`.
-4. Write a `TypeLowerer`.
-5. Decide the exact mapping from resolved D types to `IrType`.
-6. Normalize or reject unsupported constructs early with clear diagnostics.
-7. Add fixture tests with source input and expected IR dumps.
-
-### Implementation Notes
-
-- Lower only semantically resolved nodes.
-- Prefer reading stable fields over calling many helper methods.
-- Copy needed information into project-owned structs immediately.
-- Do not store raw DMD node references in IR.
+1. Implement `frontend/dmd_lowering.d`.
+2. Lower only semantically resolved nodes.
+3. Reject unsupported shapes with clear project diagnostics.
+4. Add fixture tests with source input and expected IR dumps.
+5. Verify that only the selected unittest and its directly needed free
+   functions are lowered.
 
 ### Acceptance Criteria
 
-- A small arithmetic function compiles to IR.
-- A conditional function compiles to IR.
+- The exact sample from `ai/ir.md` compiles to IR.
 - Unsupported constructs fail with project diagnostics, not crashes.
+- Lowering does not leak `dmd.*` types outside `frontend/`.
 
-## Phase 4: Define The Bytecode Format And Encoder
+## Phase 4: Define The Minimal Bytecode Format And Encoder
 
 ### Goal
 
-Turn the IR into a bytecode representation stable enough for a first VM.
+Encode the phase-3 IR without designing for unsupported language
+features.
 
 ### Tasks
 
-1. Define opcode enumeration.
-2. Define constant pool layout.
-3. Define function table layout.
-4. Define local slot model.
-5. Define branch target encoding.
-6. Implement `bytecode_writer.d`.
-7. Add a human-readable bytecode disassembler.
-8. Add round-trip tests:
+1. Define opcode enumeration for the first slice only.
+2. Define a minimal function table and constant representation.
+3. Define how one selected unittest becomes the bytecode entrypoint.
+4. Implement `bytecode_writer.d`.
+5. Add a human-readable bytecode disassembler.
+6. Add round-trip tests:
    - IR -> bytecode -> disassembly
 
 ### Initial Opcode Set
 
-- `load_const`
-- `load_local`
-- `store_local`
-- `add_i32`
-- `sub_i32`
-- `mul_i32`
-- `div_i32`
-- `cmp_eq_i32`
-- `cmp_lt_i32`
-- `jump`
-- `jump_if_false`
+- `const_i32`
 - `call`
+- `equal_i32`
+- `assert`
 - `ret`
 
 ### Acceptance Criteria
 
-- IR lowering output can be encoded without backend-specific hacks.
+- Phase-3 IR can be encoded without placeholder opcodes for unsupported
+  features.
 - Bytecode dumps are deterministic.
-- Branch fixups are correct.
+- The selected unittest entrypoint is explicit in the encoded program.
 
-## Phase 5: Implement The VM
+## Phase 5: Implement The VM For The First Slice
 
 ### Goal
 
-Execute the generated bytecode for the supported subset.
+Execute the selected unittest bytecode for the supported subset.
 
 ### Tasks
 
-1. Implement VM value representation.
+1. Implement the VM value representation needed for `int32`, `bool`,
+   and `void`.
 2. Implement call frames.
-3. Implement local slots.
-4. Implement instruction dispatch loop.
-5. Implement an entrypoint convention.
-6. Add a minimal runtime surface for printing or returning values.
-7. Add executable tests for arithmetic, control flow, and direct calls.
+3. Implement the instruction dispatch loop.
+4. Implement assertion failure reporting.
+5. Add executable tests for the first supported source slice.
 
 ### Acceptance Criteria
 
-- Compiled bytecode for the phase-3 subset executes correctly.
-- Runtime errors surface as VM diagnostics, not undefined behavior.
+- The sample from `ai/ir.md` executes correctly.
+- Assertion failures surface as VM diagnostics, not undefined behavior.
+- The end-to-end test path is `source -> DMD semantic analysis -> IR ->
+  bytecode -> VM`.
 
-## Phase 6: Harden The Adapter Boundary
+## Phase 6: Expand Language Coverage In Tiny Slices
+
+### Goal
+
+Grow capability while keeping each addition reviewable, executable, and
+cheap to validate.
+
+### Recommended Order
+
+1. integer arithmetic in expressions
+2. local variables
+3. simple function parameters
+4. conditionals
+5. loops
+6. short-circuit boolean ops
+7. casts
+8. simple structs by value
+9. static arrays
+10. string literals
+11. basic templates through monomorphized lowering
+
+For each slice:
+
+- document supported semantics
+- add source fixtures
+- add expected IR dumps
+- add execution tests
+- add explicit unsupported diagnostics for edge cases not handled yet
+- keep compile scope centered on selected unittests
+
+## Phase 7: Harden The Adapter Boundary
 
 ### Goal
 
@@ -449,7 +472,8 @@ Prepare for DMD upgrades without widespread refactoring.
 ### Tasks
 
 1. Add contract tests around the DMD adapter.
-2. Add golden tests that compile representative source files and compare:
+2. Add golden tests that compile representative source files and
+   compare:
    - diagnostics
    - IR dump
    - bytecode dump
@@ -468,47 +492,22 @@ Prepare for DMD upgrades without widespread refactoring.
 - Upgrading DMD requires touching only `frontend/` in the normal case.
 - Regressions are caught by adapter and golden tests.
 
-## Phase 7: Expand Language Coverage In Deliberate Slices
+## Phase 8: Promote Process Isolation When Needed
 
 ### Goal
 
-Grow capability while keeping each addition reviewable and testable.
+Remove the operational risk of in-process DMD global state once it
+starts hurting the unittest loop.
 
-### Recommended Order
+### Trigger Conditions
 
-1. unary operators
-2. short-circuit boolean ops
-3. casts
-4. simple structs by value
-5. static arrays
-6. string literals
-7. function pointers
-8. basic templates through monomorphized lowering
-9. limited `foreach` after inspecting DMD’s lowered representation
-
-For each slice:
-
-- document supported semantics
-- add source fixtures
-- add expected IR dumps
-- add execution tests
-- add explicit unsupported diagnostics for edge cases not handled yet
-
-## Phase 8: Optional Process Isolation Layer
-
-### Goal
-
-Remove the main operational risk of in-process DMD global state without
-blocking the earlier phases.
-
-### When To Do This
-
-Do this only if one of these becomes painful:
+Move this work forward immediately if any of these show up:
 
 - test contamination between sessions
+- crashes inside DMD poisoning the process
 - need for parallel compilation
-- crashes inside DMD poisoning the main process
-- desire for a stable serialized interface independent of D ABI changes
+- unstable repeated test runs inside one process
+- desire for a stable serialized boundary independent of D ABI changes
 
 ### Tasks
 
@@ -516,114 +515,10 @@ Do this only if one of these becomes painful:
 2. Move DMD adapter code into that worker.
 3. Serialize project-owned diagnostics and IR over stdin/stdout.
 4. Keep the same `CompilerSession` API in the main library.
-5. Swap implementation from in-process to subprocess behind the interface.
+5. Swap implementation from in-process to subprocess behind the
+   interface.
 
 ### Acceptance Criteria
 
-- Main compiler library no longer links DMD directly when subprocess
-  mode is enabled.
-- The rest of the codebase is unchanged.
-
-## Immediate File Creation Plan
-
-Another agent can start implementation in this order:
-
-1. Create the new repository and add `vendor/dmd`.
-2. Write `dub.sdl` with:
-   - library target
-   - cli target
-   - local dependency `path="vendor/dmd"`
-3. Add:
-   - `source/dlang_bytecode/api/options.d`
-   - `source/dlang_bytecode/api/diagnostics.d`
-   - `source/dlang_bytecode/api/compiler.d`
-4. Add:
-   - `source/dlang_bytecode/frontend/dmd_session.d`
-   - `source/dlang_bytecode/frontend/dmd_diagnostics.d`
-5. Add:
-   - `test/smoke/frontend_smoke.d`
-6. Make the smoke test compile this source:
-
-```d
-int add(int a, int b)
-{
-    return a + b;
-}
-```
-
-7. Return project diagnostics only at first.
-8. After that passes, add the IR package.
-9. After the IR package exists, implement minimal lowering for:
-   - integer literals
-   - local variables
-   - binary arithmetic
-   - return
-
-## Test Matrix
-
-Minimum tests required before moving between phases:
-
-- parse success
-- parse syntax failure
-- semantic failure
-- import path success
-- version identifier success
-- deterministic IR dump
-- deterministic bytecode dump
-- VM execution of arithmetic
-- VM execution of branch
-- unsupported feature diagnostic
-
-## Operational Rules For Implementers
-
-- Every new public type must be project-owned.
-- Every new `dmd.*` import must live under `source/dlang_bytecode/frontend/`.
-- Do not store DMD node references in long-lived structs.
-- Do not try to support concurrency inside the DMD adapter.
-- Reject unsupported language constructs explicitly and early.
-- Add a test for every newly supported construct before moving on.
-- Pin DMD upgrades to separate commits from VM feature work.
-
-## Risks And Mitigations
-
-### Risk: DMD API churn
-
-Mitigation:
-
-- pin the vendored commit
-- isolate all DMD imports
-- add adapter contract tests
-
-### Risk: Hidden dependence on global compiler state
-
-Mitigation:
-
-- enforce one session at a time
-- teardown after each compile in tests
-- optionally move to subprocess mode later
-
-### Risk: Lowering depends on unstable AST helper behavior
-
-Mitigation:
-
-- lower only from semantically resolved nodes
-- read fields conservatively
-- copy required facts into project-owned IR immediately
-
-### Risk: Scope creep from full-language ambitions
-
-Mitigation:
-
-- define supported subset per phase
-- reject everything else with explicit diagnostics
-
-## Definition Of Success
-
-The plan succeeds when:
-
-1. The VM project builds as an independent DUB project.
-2. It depends on a pinned local DMD checkout as a library.
-3. The project exposes a stable local API that does not leak DMD internals.
-4. A small D subset can be compiled into project-owned IR and bytecode.
-5. The bytecode executes on a project-owned VM.
-6. Future DMD upgrades are isolated to the adapter layer.
+- The main process survives frontend crashes.
+- Repeated unittest execution remains deterministic across sessions.
