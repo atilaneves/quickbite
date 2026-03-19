@@ -66,6 +66,8 @@ Make parameters `in` if possible.
 
 Prefer `const` to `auto` when declaring variables.
 
+Do not use `synchronized`.
+
 # Testing
 
 Run `dub test` after every editing "session" to assess the current

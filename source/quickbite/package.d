@@ -1,48 +1,84 @@
 module quickbite;
 
-import core.sync.mutex: Mutex;
+private:
 
-__gshared Mutex dmdMutex;
+__gshared Compiler compiler;
 
 shared static this() {
-    dmdMutex = new Mutex;
+    compiler = new Compiler;
 }
 
-void runTests(string source) {
-    import dmd.errors: diagnostics;
-    import dmd.frontend: addImport, deinitializeDMD, findImportPaths,
-        fullSemantic, initDMD, parseModule;
-    import dmd.globals: global;
-    import std.algorithm.iteration: each;
-    import std.string: replace;
-    import std.uuid: randomUUID;
+shared static ~this() {
+    compiler.shutdown();
+}
 
-    dmdMutex.lock();
-    scope(exit) dmdMutex.unlock();
-
-    initDMD();
-    scope(exit) deinitializeDMD();
-    findImportPaths.each!addImport;
-
-    global.params.useUnitTests = true;
-    global.errors = 0;
-    global.warnings = 0;
-    diagnostics.length = 0;
-
-    const fileName = "snippet_" ~ randomUUID().toString.replace("-", "") ~ ".d";
-
-    auto parsed = parseModule(fileName, source);
-    if (parsed.diagnostics.hasErrors())
-        throw new Exception(diagnosticMessage());
-
-    parsed.module_.fullSemantic();
-    if (global.errors != 0)
-        throw new Exception(diagnosticMessage());
-
+public void runTests(in string source) {
+    auto parsed = compiler.parseModule(source);
     executeUnitTests(parsed.module_);
 }
 
-private:
+final class Compiler {
+    private bool initialized;
+    private imported!"core.sync.mutex".Mutex mutex;
+
+    private this() {
+        import dmd.errors: diagnostics;
+        import dmd.frontend: addImport, findImportPaths, initDMD;
+        import dmd.globals: global;
+        import std.algorithm.iteration: each;
+        import core.sync.mutex: Mutex;
+
+        mutex = new Mutex;
+        initDMD();
+        findImportPaths.each!addImport;
+
+        global.params.useUnitTests = true;
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+        initialized = true;
+    }
+
+    void shutdown() {
+        import dmd.frontend: deinitializeDMD;
+
+        mutex.lock();
+        scope(exit) mutex.unlock();
+
+        if (!initialized)
+            return;
+
+        deinitializeDMD();
+        initialized = false;
+    }
+
+    auto parseModule(in string source) {
+        import dmd.errors: diagnostics;
+        import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
+        import dmd.globals: global;
+        import std.string: replace;
+        import std.uuid: randomUUID;
+
+        mutex.lock();
+        scope(exit) mutex.unlock();
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const fileName = "snippet_" ~ randomUUID().toString.replace("-", "") ~ ".d";
+
+        auto parsed = dmdParseModule(fileName, source);
+        if (parsed.diagnostics.hasErrors())
+            throw new Exception(diagnosticMessage());
+
+        parsed.module_.fullSemantic();
+        if (global.errors != 0)
+            throw new Exception(diagnosticMessage());
+
+        return parsed;
+    }
+}
 
 string diagnosticMessage() {
     import dmd.errors: diagnostics, ErrorKind;
