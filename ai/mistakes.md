@@ -18,3 +18,7 @@
   work around the resulting type mismatch by weakening the qualifier
   requirement. Reconcile the signatures properly and add the strongest
   valid attributes instead.
+
+- Do not introduce module-level imports in this repository when a local
+  import inside the relevant function or type block would do. Do not
+  use `imported!"..."` outside parameter and return types.

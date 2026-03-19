@@ -10,11 +10,11 @@ public enum Kind {
 }
 
 public struct Instruction {
-    public Kind kind;
-    public uint destination;
-    public int value;
-    public string calleeName;
-    public uint left;
-    public uint right;
-    public uint condition;
+    Kind kind;
+    uint destination;
+    int value;
+    string calleeName;
+    uint left;
+    uint right;
+    uint condition;
 }

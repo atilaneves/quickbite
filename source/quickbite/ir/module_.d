@@ -3,6 +3,9 @@ module quickbite.ir.module_;
 private:
 
 public struct Module {
-    public imported!"quickbite.ir.function_".Function[] functions;
-    public imported!"quickbite.ir.test".Test[] tests;
+    import quickbite.ir.function_: Function;
+    import quickbite.ir.test: Test;
+
+    Function[] functions;
+    Test[] tests;
 }

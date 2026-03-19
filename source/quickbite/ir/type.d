@@ -9,5 +9,5 @@ public enum Kind {
 }
 
 public struct Type {
-    public Kind kind;
+    Kind kind;
 }

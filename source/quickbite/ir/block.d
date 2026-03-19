@@ -8,11 +8,13 @@ public enum TerminatorKind {
 }
 
 public struct Terminator {
-    public TerminatorKind kind;
-    public uint value;
+    TerminatorKind kind;
+    uint value;
 }
 
 public struct Block {
-    public imported!"quickbite.ir.instruction".Instruction[] instructions;
-    public Terminator terminator;
+    import quickbite.ir.instruction: Instruction;
+
+    Instruction[] instructions;
+    Terminator terminator;
 }
