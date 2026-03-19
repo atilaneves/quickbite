@@ -5,10 +5,12 @@ license "BSL-1.0"
 
 configuration "unittest" {
     targetType "executable"
+    targetName "ut"
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
     includePaths "tests"
 
+    dependency "dmd:frontend" version="~>2.111.0-rc.1"
     dependency "unit-threaded" version="*"
 }

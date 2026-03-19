@@ -1,6 +1,7 @@
 {
 	"fileVersion": 1,
 	"versions": {
+		"dmd": "2.111.0",
 		"unit-threaded": "2.2.3"
 	}
 }

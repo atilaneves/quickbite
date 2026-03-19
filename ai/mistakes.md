@@ -33,3 +33,9 @@
   repository instructions explicitly require OTBC. I should have
   matched the existing style in the touched code before sending the
   change.
+
+- I added a new test the user did not ask for, and I did it to steer
+  the implementation instead of following the requested scope. That
+  was not strict TDD for the task at hand; I should have worked from
+  the existing requested behaviour and only changed tests when the
+  user explicitly wanted that.

@@ -3,9 +3,8 @@ module ut.simple;
 import quickbite;
 import unit_threaded;
 
-@("simple")
-unittest
-{
+@("simple.ok")
+unittest {
     q{
         int answer() {
             return 42;
@@ -17,9 +16,8 @@ unittest
     }.runTests();
 }
 
-@("simple fails")
-unittest
-{
+@("simple.oops")
+unittest {
     q{
         int answer() {
             return 42;
