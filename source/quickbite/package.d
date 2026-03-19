@@ -14,12 +14,12 @@ void runTests(string source) {
         fullSemantic, initDMD, parseModule;
     import dmd.globals: global;
     import std.algorithm.iteration: each;
-    import std.conv: to;
+    import std.string: replace;
+    import std.uuid: randomUUID;
 
     dmdMutex.lock();
     scope(exit) dmdMutex.unlock();
 
-    static size_t snippetCounter;
     initDMD();
     scope(exit) deinitializeDMD();
     findImportPaths.each!addImport;
@@ -29,8 +29,7 @@ void runTests(string source) {
     global.warnings = 0;
     diagnostics.length = 0;
 
-    ++snippetCounter;
-    const fileName = "snippet" ~ snippetCounter.to!string ~ ".d";
+    const fileName = "snippet_" ~ randomUUID().toString.replace("-", "") ~ ".d";
 
     auto parsed = parseModule(fileName, source);
     if (parsed.diagnostics.hasErrors())
