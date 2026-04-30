@@ -3,6 +3,7 @@ module quickbite.frontend.compiler;
 private:
 
 __gshared Compiler compiler;
+private shared uint _moduleCounter;
 
 shared static this() {
     compiler = new Compiler;
@@ -60,11 +61,11 @@ final class Compiler {
     }
 
     auto parseModule(in string source) {
+        import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
         import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
         import dmd.globals: global;
-        import std.string: replace;
-        import std.uuid: randomUUID;
+        import std.conv: text;
 
         mutex.lock();
         scope(exit) mutex.unlock();
@@ -73,7 +74,11 @@ final class Compiler {
         global.warnings = 0;
         diagnostics.length = 0;
 
-        const fileName = "snippet_" ~ randomUUID().toString.replace("-", "") ~ ".d";
+        const fileName = text(
+            "snippet_",
+            atomicFetchAdd(_moduleCounter, 1u),
+            ".d",
+        );
 
         auto parsed = dmdParseModule(fileName, source);
         if (parsed.diagnostics.hasErrors())

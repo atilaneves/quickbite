@@ -7,8 +7,10 @@ private:
 public void runTests(in string source) {
     import quickbite.frontend.compiler;
 
+    // Keep `parsed` mutable: lowerModule consumes DMD's mutable
+    // Module type.
     auto parsed = quickbite.frontend.compiler.parseModule(source);
-    auto loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
+    const loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
     executeUnitTests(loweredModule);
 }
 
@@ -17,6 +19,7 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
         executeTest(
             module_,
             test.instructions,
+            test.numTemporaries,
         );
     }
 }
@@ -31,6 +34,7 @@ long executeFunction(
                 module_,
                 function_.instructions,
                 function_.returnValue,
+                function_.numTemporaries,
             );
     }
 
@@ -40,8 +44,9 @@ long executeFunction(
 void executeTest(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint numTemporaries,
 ) @safe pure {
-    long[] temporaries;
+    long[] temporaries = new long[](numTemporaries);
 
     foreach (instruction; instructions) {
         executeInstruction(
@@ -56,8 +61,9 @@ long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint returnValue,
+    in uint numTemporaries,
 ) @safe pure {
-    long[] temporaries;
+    long[] temporaries = new long[](numTemporaries);
 
     foreach (instruction; instructions) {
         executeInstruction(
@@ -75,41 +81,34 @@ void executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
-    import quickbite.ir.instruction: Kind;
+    import quickbite.ir.instruction: Assert_, Call, ConstInt, Equal;
+    import std.sumtype: match;
 
-    final switch (instruction.kind) {
-        case Kind.constInt:
-            temporaryValue(temporaries, instruction.destination) = instruction.value;
-            return;
-
-        case Kind.call:
-            temporaryValue(temporaries, instruction.destination) = executeFunction(
-                module_,
-                instruction.calleeName,
-            );
-            return;
-
-        case Kind.equal:
+    instruction.match!(
+        (ConstInt instruction) {
+            temporaryValue(temporaries, instruction.destination) =
+                instruction.value;
+        },
+        (Call instruction) {
+            temporaryValue(temporaries, instruction.destination) =
+                executeFunction(
+                    module_,
+                    instruction.calleeName,
+                );
+        },
+        (Equal instruction) {
             temporaryValue(temporaries, instruction.destination) =
                 temporaryValue(temporaries, instruction.left) ==
                 temporaryValue(temporaries, instruction.right);
-            return;
-
-        case Kind.assert_:
+        },
+        (Assert_ instruction) {
             if (!temporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
-
-            return;
-    }
+        },
+    );
 }
 
 ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
-    import std.algorithm.comparison: max;
-
-    const requiredLength = max(
-        temporaries.length,
-        index + 1,
-    );
-    temporaries.length = requiredLength;
+    assert(index < temporaries.length, "IR: temporary index out of range");
     return temporaries[index];
 }

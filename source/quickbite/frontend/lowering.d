@@ -29,17 +29,20 @@ struct Lowerer {
         return loweredModule;
     }
 
+    // DMD AST query helpers used below are not const-qualified.
     imported!"quickbite.ir.test".Test lowerTest(
         imported!"dmd.declaration".UnitTestDeclaration unitTest,
     ) {
         imported!"quickbite.ir.test".Test result;
-        auto builder = BodyLowerer(&this);
+        BodyLowerer builder;
 
-        builder.lowerStatement(unitTest.fbody);
+        builder.lowerStatement(unitTest.fbody, this);
         result.instructions = builder.instructions.dup;
+        result.numTemporaries = builder.nextTemporary;
         return result;
     }
 
+    // DMD FuncDeclaration methods used for lowering are not const-qualified.
     void ensureFunctionLowered(imported!"dmd.func".FuncDeclaration function_) {
         import quickbite.ir.function_: Function;
 
@@ -49,8 +52,8 @@ struct Lowerer {
 
         loweredFunctions[name] = true;
 
-        auto builder = BodyLowerer(&this);
-        builder.lowerStatement(function_.fbody);
+        BodyLowerer builder;
+        builder.lowerStatement(function_.fbody, this);
 
         if (!builder.hasReturn)
             throw new Exception("Unsupported function body.");
@@ -59,29 +62,30 @@ struct Lowerer {
         result.name = name;
         result.instructions = builder.instructions.dup;
         result.returnValue = builder.returnValue;
+        result.numTemporaries = builder.nextTemporary;
         loweredModule.functions ~= result;
     }
 
+    // DMD Identifier.toString is not const-callable through FuncDeclaration.
     string functionName(imported!"dmd.func".FuncDeclaration function_) {
         return function_.ident.toString().idup;
     }
 }
 
 struct BodyLowerer {
-    private Lowerer* lowerer;
     private uint nextTemporary;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool hasReturn;
     public uint returnValue;
 
-    this(Lowerer* lowerer_) {
-        lowerer = lowerer_;
-    }
-
-    void lowerStatement(imported!"dmd.statement".Statement statement) {
+    // DMD Statement downcast helpers are not const-qualified.
+    void lowerStatement(
+        imported!"dmd.statement".Statement statement,
+        ref Lowerer lowerer,
+    ) {
         if (auto compound = statement.isCompoundStatement()) {
             foreach (child; *compound.statements) {
-                lowerStatement(child);
+                lowerStatement(child, lowerer);
                 if (hasReturn)
                     return;
             }
@@ -90,12 +94,12 @@ struct BodyLowerer {
         }
 
         if (auto expressionStatement = statement.isExpStatement()) {
-            lowerExpression(expressionStatement.exp);
+            lowerExpression(expressionStatement.exp, lowerer);
             return;
         }
 
         if (auto returnStatement = statement.isReturnStatement()) {
-            returnValue = lowerExpression(returnStatement.exp);
+            returnValue = lowerExpression(returnStatement.exp, lowerer);
             hasReturn = true;
             return;
         }
@@ -103,17 +107,19 @@ struct BodyLowerer {
         throw new Exception("Unsupported statement.");
     }
 
-    uint lowerExpression(imported!"dmd.expression".Expression expression) {
-        import quickbite.ir.instruction: Instruction, Kind;
+    // DMD Expression downcast/accessor helpers are not const-qualified.
+    uint lowerExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) {
+        import quickbite.ir.instruction: Assert_, Call, ConstInt, Equal, Instruction;
 
         if (auto integer = expression.isIntegerExp()) {
             const destination = allocateTemporary();
-
-            Instruction instruction;
-            instruction.kind = Kind.constInt;
-            instruction.destination = destination;
-            instruction.value = cast(int) integer.getInteger();
-            instructions ~= instruction;
+            instructions ~= Instruction(ConstInt(
+                destination,
+                cast(int) integer.getInteger(),
+            ));
             return destination;
         }
 
@@ -127,36 +133,28 @@ struct BodyLowerer {
             lowerer.ensureFunctionLowered(call.f);
 
             const destination = allocateTemporary();
-
-            Instruction instruction;
-            instruction.kind = Kind.call;
-            instruction.destination = destination;
-            instruction.calleeName = lowerer.functionName(call.f);
-            instructions ~= instruction;
+            instructions ~= Instruction(Call(
+                destination,
+                lowerer.functionName(call.f),
+            ));
             return destination;
         }
 
         if (auto equal = expression.isEqualExp()) {
-            const left = lowerExpression(equal.e1);
-            const right = lowerExpression(equal.e2);
+            const left = lowerExpression(equal.e1, lowerer);
+            const right = lowerExpression(equal.e2, lowerer);
             const destination = allocateTemporary();
-
-            Instruction instruction;
-            instruction.kind = Kind.equal;
-            instruction.destination = destination;
-            instruction.left = left;
-            instruction.right = right;
-            instructions ~= instruction;
+            instructions ~= Instruction(Equal(
+                destination,
+                left,
+                right,
+            ));
             return destination;
         }
 
         if (auto assert_ = expression.isAssertExp()) {
-            const condition = lowerExpression(assert_.e1);
-
-            Instruction instruction;
-            instruction.kind = Kind.assert_;
-            instruction.condition = condition;
-            instructions ~= instruction;
+            const condition = lowerExpression(assert_.e1, lowerer);
+            instructions ~= Instruction(Assert_(condition));
             return condition;
         }
 

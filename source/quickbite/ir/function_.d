@@ -8,4 +8,6 @@ public struct Function {
     string name;
     Instruction[] instructions;
     uint returnValue;
+    // Lets the VM allocate all temporary registers before execution.
+    uint numTemporaries;
 }

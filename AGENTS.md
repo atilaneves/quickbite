@@ -80,20 +80,24 @@ Never delete test code to cause the tests to pass.
 
 # Do nots
 
-Consult `ai/mistakes.md` for mistakes made by previous agents that you
-learn from so as to not do them again.
-
-When you make a new mistake, add it to `ai/mistakes.md`. Only *new*
+* When you make a new mistake, add it to `ai/mistakes.md`. Only *new*
 mistakes, don't add the same one again.
 
-Do not assume the code has not been edited by someone else in the
+* Do not assume the code has not been edited by someone else in the
 meanwhile. Always re-read files that you are about to edit.
+
+* Do not use classes because they are reference types. Only use
+  classes if the goal is OOP. Classes with no base classes/interfaces,
+  or no children, or no virtual member functions are structs.
 
 
 # Do
 
-Consult the git history when starting a new session to understand what
-has already been done.
+* Consult `ai/mistakes.md` for mistakes made by previous agents that
+you learn from so as to not do them again.
 
-When asked to write something to a markdown file, make it 80 columns
+* Consult the git history when starting a new session to understand
+what has already been done.
+
+* When asked to write something to a markdown file, make it 80 columns
 wide at most.

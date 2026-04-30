@@ -2,19 +2,31 @@ module quickbite.ir.instruction;
 
 private:
 
-public enum Kind {
-    constInt,
-    call,
-    equal,
-    assert_,
-}
+import std.sumtype: SumType;
 
-public struct Instruction {
-    Kind kind;
+public struct ConstInt {
     uint destination;
     int value;
+}
+
+public struct Call {
+    uint destination;
     string calleeName;
+}
+
+public struct Equal {
+    uint destination;
     uint left;
     uint right;
+}
+
+public struct Assert_ {
     uint condition;
 }
+
+public alias Instruction = SumType!(
+    ConstInt,
+    Call,
+    Equal,
+    Assert_,
+);
