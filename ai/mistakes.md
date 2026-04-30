@@ -26,3 +26,7 @@
 - AGENTS.md asks for both `private:` at the top of each module and
   explicit `public` and `private` annotations anyway. Do not treat
   inherited module-private visibility as explicit enough.
+
+- DMD AST formatting helpers such as `Expression.toChars()` are not
+  `@safe`; wrap them in a small `@trusted` helper before calling them
+  from `@safe` lowering code.

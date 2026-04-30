@@ -20,12 +20,12 @@ unittest {
 unittest {
     q{
         int answer() {
-            int value = 42;
+            int value;
             return value;
         }
 
         unittest {
-            assert(answer() == 42);
+            assert(answer() == 0);
         }
     }.runTests().shouldThrowWithMessage("Unsupported expression: declaration");
 }
@@ -42,7 +42,7 @@ unittest {
         unittest {
             assert(answer() == 0);
         }
-    }.runTests().shouldThrowWithMessage("Unsupported expression: variable");
+    }.runTests().shouldThrowWithMessage("Unsupported expression: value");
 }
 
 @("negative.unsupportedAssert")

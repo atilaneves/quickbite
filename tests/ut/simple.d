@@ -18,6 +18,34 @@ unittest {
     }.runTests();
 }
 
+@("simple.localIntReturn")
+unittest {
+    q{
+        int answer() {
+            int value = 42;
+            return value;
+        }
+
+        unittest {
+            assert(answer() == 42);
+        }
+    }.runTests();
+}
+
+@("simple.localIntReturnOops")
+unittest {
+    q{
+        int answer() {
+            int value = 42;
+            return value;
+        }
+
+        unittest {
+            assert(answer() == 43);
+        }
+    }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.oops")
 unittest {
     q{

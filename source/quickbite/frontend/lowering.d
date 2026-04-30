@@ -79,7 +79,10 @@ private ref auto moduleMembers(imported!"dmd.dmodule".Module module_) @trusted {
 }
 
 struct BodyLowerer {
+    import dmd.declaration: VarDeclaration;
+
     private uint nextTemporary;
+    private uint[VarDeclaration] localTemporaries;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool hasReturn;
     public uint returnValue;
@@ -166,9 +169,49 @@ struct BodyLowerer {
             return condition;
         }
 
+        if (auto declaration = expression.isDeclarationExp())
+            return lowerDeclaration(declaration, lowerer);
+
+        if (auto variable = expression.isVarExp()) {
+            if (auto var = variable.var.isVarDeclaration()) {
+                if (auto temporary = var in localTemporaries)
+                    return *temporary;
+            }
+
+            import std.conv: text;
+
+            throw new Exception(text("Unsupported expression: ", expressionChars(expression)));
+        }
+
         import std.conv: text;
 
         throw new Exception(text("Unsupported expression: ", expression.op));
+    }
+
+    uint lowerDeclaration(
+        imported!"dmd.expression".DeclarationExp declaration,
+        ref Lowerer lowerer,
+    ) @safe {
+        import std.conv: text;
+
+        auto variable = declaration.declaration.isVarDeclaration();
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", declaration.op));
+
+        if (variable._init is null)
+            throw new Exception(text("Unsupported expression: ", declaration.op));
+
+        auto initializer = variable._init.isExpInitializer();
+        if (initializer is null)
+            throw new Exception(text("Unsupported expression: ", declaration.op));
+
+        auto construct = initializer.exp.isConstructExp();
+        if (construct is null)
+            throw new Exception(text("Unsupported expression: ", declaration.op));
+
+        const value = lowerExpression(construct.e2, lowerer);
+        localTemporaries[variable] = value;
+        return value;
     }
 
     uint allocateTemporary() @safe pure nothrow @nogc {
@@ -180,6 +223,14 @@ struct BodyLowerer {
 
 private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted {
     return integer.getInteger();
+}
+
+private string expressionChars(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    import std.string: fromStringz;
+
+    return fromStringz(expression.toChars()).idup;
 }
 
 private ref auto compoundStatements(
