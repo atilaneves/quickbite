@@ -24,11 +24,16 @@ use dmd as a library.
 
 # Plan
 
-Consult `ai/dlang_bytecode.md` for a detailed implementation plan.
-Consult `ai/ir.md` for the minimal IR implementation plan for the
-first supported slice.
+Consult `ai/plans` for implementation plans.
 
 # Coding Guidelines
+
+## Git worktrees
+
+If asked to use a worktree named, e.g. "foo", then create a git
+worktree with that name using a directory with the same name at the
+root of the git repo.  In the example, the directory would be `./foo`
+at root.
 
 ## TDD
 
