@@ -22,3 +22,7 @@
 - Do not introduce module-level imports in this repository when a local
   import inside the relevant function or type block would do. Do not
   use `imported!"..."` outside parameter and return types.
+
+- AGENTS.md asks for both `private:` at the top of each module and
+  explicit `public` and `private` annotations anyway. Do not treat
+  inherited module-private visibility as explicit enough.

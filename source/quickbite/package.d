@@ -46,21 +46,22 @@ void executeTest(
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
 ) @safe pure {
-    long[] temporaries = new long[](numTemporaries);
-
-    foreach (instruction; instructions) {
-        executeInstruction(
-            module_,
-            instruction,
-            temporaries,
-        );
-    }
+    executeInstructions(module_, instructions, numTemporaries);
 }
 
 long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint returnValue,
+    in uint numTemporaries,
+) @safe pure {
+    auto temporaries = executeInstructions(module_, instructions, numTemporaries);
+    return temporaryValue(temporaries, returnValue);
+}
+
+private long[] executeInstructions(
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
 ) @safe pure {
     long[] temporaries = new long[](numTemporaries);
@@ -73,7 +74,7 @@ long executeFunctionBody(
         );
     }
 
-    return temporaryValue(temporaries, returnValue);
+    return temporaries;
 }
 
 void executeInstruction(

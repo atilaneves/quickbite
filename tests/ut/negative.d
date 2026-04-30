@@ -27,7 +27,7 @@ unittest {
         unittest {
             assert(answer() == 42);
         }
-    }.runTests().shouldThrowWithMessage("Unsupported expression.");
+    }.runTests().shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
 @("negative.nonLiteralReturn")
@@ -42,7 +42,7 @@ unittest {
         unittest {
             assert(answer() == 0);
         }
-    }.runTests().shouldThrowWithMessage("Unsupported expression.");
+    }.runTests().shouldThrowWithMessage("Unsupported expression: variable");
 }
 
 @("negative.unsupportedAssert")
@@ -52,7 +52,7 @@ unittest {
             int value;
             assert(value);
         }
-    }.runTests().shouldThrowWithMessage("Unsupported expression.");
+    }.runTests().shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
 @("negative.callWithArgs")

@@ -42,10 +42,10 @@ done.
 
 ## Style
 
-Use the one true brace coding style, not dmd/phobos. However, sometimes
-with a lot of attributes and characters on one line that can get unwieldy.
-Use judgement to place opening braces for *functions* on their own line.
-Look at the rest of the code for guidance.
+Use the one true brace coding style, not dmd/phobos. However,
+sometimes with a lot of attributes and characters on one line that can
+get unwieldy. Use judgement to place opening braces for *functions*
+on their own line. Look at the rest of the code for guidance.
 
 Use UFCS liberally.
 
