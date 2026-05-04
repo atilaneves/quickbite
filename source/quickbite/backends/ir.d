@@ -1,11 +1,9 @@
 module quickbite.backends.ir;
 
+private:
 
-import quickbite.executor;
-
-
-final class IrExecutor : Executor {
-    void runTests(in string source) {
+public final class IrExecutor : imported!"quickbite.executor".Executor {
+    public override void runTests(in string source) {
         import quickbite.frontend.compiler;
 
         // Keep `parsed` mutable: lowerModule consumes DMD's mutable
@@ -16,9 +14,7 @@ final class IrExecutor : Executor {
     }
 }
 
-private:
-
-void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
+private void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
         executeTest(
             module_,
@@ -28,7 +24,7 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
     }
 }
 
-long executeFunction(
+private long executeFunction(
     in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
 ) @safe pure {
@@ -45,7 +41,7 @@ long executeFunction(
     throw new Exception("Unsupported callee.");
 }
 
-void executeTest(
+private void executeTest(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
@@ -53,7 +49,7 @@ void executeTest(
     executeInstructions(module_, instructions, numTemporaries);
 }
 
-long executeFunctionBody(
+private long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint returnValue,
@@ -63,7 +59,7 @@ long executeFunctionBody(
     return temporaryValue(temporaries, returnValue);
 }
 
-long[] executeInstructions(
+private long[] executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
@@ -81,7 +77,7 @@ long[] executeInstructions(
     return temporaries;
 }
 
-void executeInstruction(
+private void executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
@@ -113,7 +109,7 @@ void executeInstruction(
     );
 }
 
-ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
+private ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
     assert(index < temporaries.length, "IR: temporary index out of range");
     return temporaries[index];
 }

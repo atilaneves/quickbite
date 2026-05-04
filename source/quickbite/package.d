@@ -1,5 +1,7 @@
 module quickbite;
 
+private:
+
 public enum ExecutorBackend {
     ir,
     treeWalking,

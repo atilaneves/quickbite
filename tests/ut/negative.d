@@ -1,9 +1,7 @@
 module ut.negative;
 
-
 import quickbite;
 import unit_threaded;
-
 
 @("negative.voidFunction")
 unittest {
@@ -11,7 +9,7 @@ unittest {
         void foo() {}
 
         unittest {
-            foo();
+            foo;
         }
     }.runTests().shouldThrowWithMessage("Unsupported function body.");
 }
@@ -25,7 +23,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 0);
+            assert(answer == 0);
         }
     }.runTests().shouldThrowWithMessage("Unsupported expression: declaration");
 }
@@ -40,7 +38,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 0);
+            assert(answer == 0);
         }
     }.runTests().shouldThrowWithMessage("Unsupported expression: value");
 }

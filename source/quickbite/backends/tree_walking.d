@@ -6,6 +6,11 @@ private:
 // that stores a Value is @system by transitivity.
 alias Value = imported!"std.sumtype".SumType!(long, long[]);
 
+private struct FunctionResult {
+    private bool hasValue;
+    private Value value;
+}
+
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler;
@@ -20,15 +25,15 @@ private void walkModule(imported!"dmd.dmodule".Module module_) {
     if (module_.members is null)
         return;
 
-    Walker walker;
+    Interpreter interpreter;
     foreach (member; moduleMembers(module_)) {
         if (auto unitTest = member.isUnitTestDeclaration)
-            walker.runTest(unitTest);
+            interpreter.runTest(unitTest);
     }
 }
 
-private struct Walker {
-    private Value executeFunction(
+private struct Interpreter {
+    private FunctionResult executeFunction(
         imported!"dmd.func".FuncDeclaration func,
         Value[] args = [],
     ) {
@@ -37,9 +42,13 @@ private struct Walker {
         BodyWalker w;
         w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
-        if (!w.hasReturn && !isVoidReturn(func))
+
+        const returnsVoid = isVoidReturn(func);
+        if (!w.hasReturn && !returnsVoid)
             throw new Exception("Unsupported function body.");
-        return w.returnValue;
+        if (returnsVoid)
+            return FunctionResult(false, Value(0L));
+        return FunctionResult(true, w.returnValue);
     }
 
     private bool isVoidReturn(
@@ -65,6 +74,8 @@ private struct BodyWalker {
     // DMD's `is*` helpers return concrete AST subclasses. Keep `auto` for
     // those downcasts so the walker stays close to the frontend API.
     private Value[VarDeclaration] locals;
+    // Struct fields are scalar-only for now; array fields need struct storage
+    // to move from `long` to `Value`.
     private long[VarDeclaration][VarDeclaration] structFields;
     private bool hasReturn;
     private Value returnValue;
@@ -87,20 +98,20 @@ private struct BodyWalker {
 
     private void runStatement(
         imported!"dmd.statement".Statement statement,
-        ref Walker walker,
+        ref Interpreter interpreter,
     ) {
         // DMD lowers the currently supported `foreach (x; array)` cases to
         // this for-statement shape before the tree-walker sees them.
         if (auto scope_ = statement.isScopeStatement) {
             if (scope_.statement !is null)
-                runStatement(scope_.statement, walker);
+                runStatement(scope_.statement, interpreter);
             return;
         }
 
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
-                    runStatement(child, walker);
+                    runStatement(child, interpreter);
                     if (hasReturn)
                         return;
                 }
@@ -110,7 +121,7 @@ private struct BodyWalker {
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
-                    runStatement(child, walker);
+                    runStatement(child, interpreter);
                     if (hasReturn)
                         return;
                 }
@@ -118,35 +129,35 @@ private struct BodyWalker {
         }
 
         if (auto expr = statement.isExpStatement) {
-            runExpression(expr.exp, walker);
+            runExpression(expr.exp, interpreter, true);
             return;
         }
 
         if (auto for_ = statement.isForStatement) {
             if (for_._init !is null)
-                runStatement(for_._init, walker);
-            while (for_.condition is null || runExpression(for_.condition, walker).asLong) {
-                runStatement(for_._body, walker);
+                runStatement(for_._init, interpreter);
+            while (for_.condition is null || runExpression(for_.condition, interpreter).asLong) {
+                runStatement(for_._body, interpreter);
                 if (hasReturn)
                     return;
                 if (for_.increment !is null)
-                    runExpression(for_.increment, walker);
+                    runExpression(for_.increment, interpreter);
             }
             return;
         }
 
         if (auto if_ = statement.isIfStatement) {
-            const cond = runExpression(if_.condition, walker).asLong;
+            const cond = runExpression(if_.condition, interpreter).asLong;
             if (cond)
-                runStatement(if_.ifbody, walker);
+                runStatement(if_.ifbody, interpreter);
             else if (if_.elsebody !is null)
-                runStatement(if_.elsebody, walker);
+                runStatement(if_.elsebody, interpreter);
             return;
         }
 
         if (auto ret = statement.isReturnStatement) {
             if (ret.exp !is null)
-                returnValue = runExpression(ret.exp, walker);
+                returnValue = runExpression(ret.exp, interpreter);
             hasReturn = true;
             return;
         }
@@ -157,7 +168,8 @@ private struct BodyWalker {
 
     private Value runExpression(
         imported!"dmd.expression".Expression expression,
-        ref Walker walker,
+        ref Interpreter interpreter,
+        in bool resultIgnored = false,
     ) {
         import std.conv: text;
 
@@ -171,20 +183,20 @@ private struct BodyWalker {
             return Value(integerValue(integer));
 
         if (auto call = expression.isCallExp)
-            return runCallExpression(call, walker);
+            return runCallExpression(call, interpreter, resultIgnored);
 
         if (auto equal = expression.isEqualExp)
-            return runEqualExpression(equal, walker);
+            return runEqualExpression(equal, interpreter);
 
         if (auto assert_ = expression.isAssertExp) {
-            const cond = runExpression(assert_.e1, walker).asLong;
+            const cond = runExpression(assert_.e1, interpreter).asLong;
             if (!cond)
                 throw new Exception("Unittest assertion failed.");
             return Value(cond);
         }
 
         if (auto decl = expression.isDeclarationExp)
-            return runDeclarationExpression(decl, walker);
+            return runDeclarationExpression(decl, interpreter);
 
         if (auto dotVar = expression.isDotVarExp) {
             if (auto ownerVar = dotVar.e1.isVarExp)
@@ -196,16 +208,17 @@ private struct BodyWalker {
         }
 
         if (isComparisonExpression(expression))
-            return runComparisonExpression(expression, walker);
+            return runComparisonExpression(expression, interpreter);
 
         if (auto assign = expression.isAssignExp)
-            return runAssignExpression(assign, walker);
+            return runAssignExpression(assign, interpreter);
 
         if (auto addAssign = expression.isAddAssignExp) {
             if (auto var = addAssign.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals) {
-                        const newVal = locals[varDecl].asLong + runExpression(addAssign.e2, walker).asLong;
+                        const newVal = locals[varDecl].asLong +
+                            runExpression(addAssign.e2, interpreter).asLong;
                         locals[varDecl] = Value(newVal);
                         return Value(newVal);
                     }
@@ -213,30 +226,39 @@ private struct BodyWalker {
         }
 
         if (auto add = expression.isAddExp)
-            return Value(runExpression(add.e1, walker).asLong + runExpression(add.e2, walker).asLong);
+            return Value(
+                runExpression(add.e1, interpreter).asLong +
+                runExpression(add.e2, interpreter).asLong,
+            );
 
         if (auto subtract = expression.isMinExp)
-            return Value(runExpression(subtract.e1, walker).asLong - runExpression(subtract.e2, walker).asLong);
+            return Value(
+                runExpression(subtract.e1, interpreter).asLong -
+                runExpression(subtract.e2, interpreter).asLong,
+            );
 
         if (auto multiply = expression.isMulExp)
-            return Value(runExpression(multiply.e1, walker).asLong * runExpression(multiply.e2, walker).asLong);
+            return Value(
+                runExpression(multiply.e1, interpreter).asLong *
+                runExpression(multiply.e2, interpreter).asLong,
+            );
 
         if (auto divide = expression.isDivExp) {
-            const right = runExpression(divide.e2, walker).asLong;
+            const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
                 throw new Exception("Division by zero.");
-            return Value(runExpression(divide.e1, walker).asLong / right);
+            return Value(runExpression(divide.e1, interpreter).asLong / right);
         }
 
         if (auto modulo = expression.isModExp) {
-            const right = runExpression(modulo.e2, walker).asLong;
+            const right = runExpression(modulo.e2, interpreter).asLong;
             if (right == 0)
                 throw new Exception("Division by zero.");
-            return Value(runExpression(modulo.e1, walker).asLong % right);
+            return Value(runExpression(modulo.e1, interpreter).asLong % right);
         }
 
         if (auto cast_ = expression.isCastExp)
-            return coerceValueToType(runExpression(cast_.e1, walker), cast_.to);
+            return coerceValueToType(runExpression(cast_.e1, interpreter), cast_.to);
 
         if (auto slice = expression.isSliceExp) {
             if (slice.lwr is null && slice.upr is null)
@@ -251,7 +273,7 @@ private struct BodyWalker {
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals) {
-                        const i = runExpression(index.e2, walker).asLong;
+                        const i = runExpression(index.e2, interpreter).asLong;
                         return Value(locals[varDecl].asArray[cast(size_t) i]);
                     }
             unsupported;
@@ -277,9 +299,11 @@ private struct BodyWalker {
 
     private Value runCallExpression(
         imported!"dmd.expression".CallExp call,
-        ref Walker walker,
+        ref Interpreter interpreter,
+        in bool resultIgnored,
     ) {
         import std.conv: text;
+        import dmd.id: Id;
 
         if (call.f is null) {
             string argStr;
@@ -294,18 +318,14 @@ private struct BodyWalker {
             ));
         }
 
-        {
-            import dmd.id: Id;
-
-            if (call.f.ident == Id.__equals) {
-                Value[] eqArgs;
-                if (call.arguments !is null)
-                    foreach (arg; callArguments(call))
-                        eqArgs ~= runExpression(arg, walker);
-                if (eqArgs.length != 2)
-                    throw new Exception("Unsupported expression: call");
-                return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
-            }
+        if (call.f.ident == Id.__equals) {
+            Value[] eqArgs;
+            if (call.arguments !is null)
+                foreach (arg; callArguments(call))
+                    eqArgs ~= runExpression(arg, interpreter);
+            if (eqArgs.length != 2)
+                throw new Exception("Unsupported expression: call");
+            return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
         }
 
         if (call.f.fbody is null)
@@ -314,18 +334,25 @@ private struct BodyWalker {
         Value[] args;
         if (call.arguments !is null)
             foreach (arg; callArguments(call))
-                args ~= runExpression(arg, walker);
-        return walker.executeFunction(call.f, args);
+                args ~= runExpression(arg, interpreter);
+
+        const result = interpreter.executeFunction(call.f, args);
+        if (!result.hasValue) {
+            if (resultIgnored)
+                return Value(0L);
+            throw new Exception("Void function result used as value.");
+        }
+        return result.value;
     }
 
     private Value runEqualExpression(
         imported!"dmd.expression".EqualExp equal,
-        ref Walker walker,
+        ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
 
-        const left  = runExpression(equal.e1, walker);
-        const right = runExpression(equal.e2, walker);
+        const left  = runExpression(equal.e1, interpreter);
+        const right = runExpression(equal.e2, interpreter);
         if (equal.op == EXP.notEqual)
             return Value(left != right ? 1L : 0L);
         return Value(left == right ? 1L : 0L);
@@ -333,7 +360,7 @@ private struct BodyWalker {
 
     private Value runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp decl,
-        ref Walker walker,
+        ref Interpreter interpreter,
     ) {
         import std.conv: text;
 
@@ -356,7 +383,7 @@ private struct BodyWalker {
         }
 
         if (variable.type !is null && variable.type.isTypeDArray !is null)
-            return initializeArrayVariable(variable, walker, unsupportedMessage);
+            return initializeArrayVariable(variable, interpreter, unsupportedMessage);
 
         if (variable._init is null)
             unsupportedDecl;
@@ -367,7 +394,7 @@ private struct BodyWalker {
         if (construct is null)
             unsupportedDecl;
         Value value = coerceValueToType(
-            runExpression(construct.e2, walker),
+            runExpression(construct.e2, interpreter),
             variable.type,
         );
         locals[variable] = value;
@@ -376,7 +403,7 @@ private struct BodyWalker {
 
     private Value initializeArrayVariable(
         VarDeclaration variable,
-        ref Walker walker,
+        ref Interpreter interpreter,
         in string unsupportedMessage,
     ) {
         if (variable._init is null) {
@@ -394,7 +421,7 @@ private struct BodyWalker {
                 if (literal.elements !is null)
                     foreach (elem; arrayLiteralElements(literal))
                         elements ~= coerceIntegerToType(
-                            runExpression(elem, walker).asLong,
+                            runExpression(elem, interpreter).asLong,
                             arrayElementType(variable.type),
                         );
                 locals[variable] = Value(elements);
@@ -402,14 +429,14 @@ private struct BodyWalker {
             }
 
             locals[variable] = coerceValueToType(
-                runExpression(construct.e2, walker),
+                runExpression(construct.e2, interpreter),
                 variable.type,
             );
             return Value(0L);
         }
 
         locals[variable] = coerceValueToType(
-            runExpression(initializer.exp, walker),
+            runExpression(initializer.exp, interpreter),
             variable.type,
         );
         return Value(0L);
@@ -429,13 +456,13 @@ private struct BodyWalker {
 
     private Value runComparisonExpression(
         imported!"dmd.expression".Expression expression,
-        ref Walker walker,
+        ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
 
         auto cmp = expression.isBinExp;
-        const left = runExpression(cmp.e1, walker).asLong;
-        const right = runExpression(cmp.e2, walker).asLong;
+        const left = runExpression(cmp.e1, interpreter).asLong;
+        const right = runExpression(cmp.e2, interpreter).asLong;
 
         if (expression.op == EXP.lessThan)
             return Value(left < right ? 1L : 0L);
@@ -448,9 +475,9 @@ private struct BodyWalker {
 
     private Value runAssignExpression(
         imported!"dmd.expression".AssignExp assign,
-        ref Walker walker,
+        ref Interpreter interpreter,
     ) {
-        const value = runExpression(assign.e2, walker);
+        const value = runExpression(assign.e2, interpreter);
 
         if (auto var = assign.e1.isVarExp)
             if (auto varDecl = var.var.isVarDeclaration)
@@ -473,7 +500,7 @@ private struct BodyWalker {
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals) {
-                        const i = runExpression(index.e2, walker).asLong;
+                        const i = runExpression(index.e2, interpreter).asLong;
                         locals[varDecl].asArray[cast(size_t) i] =
                             coerceIntegerToType(
                                 value.asLong,
@@ -487,7 +514,7 @@ private struct BodyWalker {
     }
 }
 
-private long asLong(Value value) {
+private long asLong(Value value) @safe pure {
     import std.sumtype: match;
     return value.match!(
         (long l) => l,
@@ -498,7 +525,7 @@ private long asLong(Value value) {
     );
 }
 
-private long[] asArray(Value value) {
+private long[] asArray(Value value) @safe pure {
     import std.sumtype: match;
     return value.match!(
         (long[] a) => a,
@@ -512,7 +539,7 @@ private long[] asArray(Value value) {
 private Value coerceValueToType(
     Value value,
     imported!"dmd.mtype".Type type,
-) {
+) @safe {
     import std.sumtype: match;
 
     if (type is null)
@@ -567,13 +594,13 @@ private imported!"dmd.mtype".Type arrayElementType(
 
 private ref auto moduleMembers(
     imported!"dmd.dmodule".Module module_,
-) @trusted {
+) @trusted pure {
     return *module_.members;
 }
 
 private ref auto compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
-) @trusted {
+) @trusted pure {
     return *compound.statements;
 }
 
@@ -592,18 +619,18 @@ private string expressionChars(
 
 private ref auto callArguments(
     imported!"dmd.expression".CallExp call,
-) @trusted {
+) @trusted pure {
     return *call.arguments;
 }
 
 private ref auto functionParameters(
     imported!"dmd.func".FuncDeclaration func,
-) @trusted {
+) @trusted pure {
     return *func.parameters;
 }
 
 private ref auto arrayLiteralElements(
     imported!"dmd.expression".ArrayLiteralExp literal,
-) @trusted {
+) @trusted pure {
     return *literal.elements;
 }

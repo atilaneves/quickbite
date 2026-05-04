@@ -1,9 +1,7 @@
 module ut.simple;
 
-
 import quickbite;
 import unit_threaded;
-
 
 @("simple.ok")
 unittest {
@@ -13,7 +11,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 42);
+            assert(answer == 42);
         }
     }.runTests();
 }
@@ -27,7 +25,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 42);
+            assert(answer == 42);
         }
     }.runTests();
 }
@@ -41,7 +39,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 43);
+            assert(answer == 43);
         }
     }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
 }
@@ -54,7 +52,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 43);
+            assert(answer == 43);
         }
     }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
 }

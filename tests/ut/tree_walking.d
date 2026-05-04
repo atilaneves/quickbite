@@ -1,10 +1,8 @@
 module ut.tree_walking;
 
-
 import quickbite: ExecutorBackend, runTests;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
-
 
 @("treeWalking.ok")
 unittest {
@@ -406,7 +404,7 @@ unittest {
     }).shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("treeWalking.lessThanEqual")
+@("treeWalking.lessThanFailsAtBoundary")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
         int five() { return 5; }
@@ -439,7 +437,7 @@ unittest {
     }).shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("treeWalking.greaterThanEqual")
+@("treeWalking.greaterThanFailsAtBoundary")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
         int five() { return 5; }

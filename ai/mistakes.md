@@ -38,3 +38,6 @@
 - When testing tree-walker runtime semantics, avoid fixtures that DMD can
   constant-fold before the walker sees them. Use runtime locals when the
   test is meant to prove interpreter behavior.
+
+- Stop before changing tests and ask for feedback, even for test-name or
+  fixture-style cleanup. Do not apply the test diff first and ask after.
