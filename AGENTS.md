@@ -45,6 +45,9 @@ attempt to refactor the code to make it better until all tests pass.
 Ask for feedback on the code you wrote once the refactoring step is
 done.
 
+Always ask for feedback when adding/modifying tests. That means
+stopping to confirm that I approve of the tests.
+
 ## Style
 
 Use the one true brace coding style, not dmd/phobos. However,
