@@ -126,7 +126,8 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-            Divide, Instruction, LessThan, Modulo, Multiply, Subtract;
+            Divide, Instruction, LessOrEqual, LessThan, Modulo, Multiply,
+            Subtract;
 
         if (auto integer = expression.isIntegerExp()) {
             const destination = allocateTemporary();
@@ -170,6 +171,9 @@ struct BodyLowerer {
 
         if (expression.op == EXP.lessThan)
             return lowerBinaryExpression!LessThan(castCmpExpression(expression), lowerer);
+
+        if (expression.op == EXP.lessOrEqual)
+            return lowerBinaryExpression!LessOrEqual(castCmpExpression(expression), lowerer);
 
         if (auto add = expression.isAddExp)
             return lowerBinaryExpression!Add(add, lowerer);

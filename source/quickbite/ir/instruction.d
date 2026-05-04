@@ -58,6 +58,12 @@ public struct LessThan {
     uint right;
 }
 
+public struct LessOrEqual {
+    uint destination;
+    uint left;
+    uint right;
+}
+
 public struct Assert_ {
     uint condition;
 }
@@ -72,5 +78,6 @@ public alias Instruction = SumType!(
     Call,
     Equal,
     LessThan,
+    LessOrEqual,
     Assert_,
 );

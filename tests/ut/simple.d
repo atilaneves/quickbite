@@ -141,6 +141,32 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+@("simple.intLessOrEqual")
+unittest {
+    q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer <= 42);
+        }
+    }.runTests;
+}
+
+@("simple.intLessOrEqualOops")
+unittest {
+    q{
+        int answer() {
+            return 43;
+        }
+
+        unittest {
+            assert(answer <= 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.functionParameterOops")
 unittest {
     q{
