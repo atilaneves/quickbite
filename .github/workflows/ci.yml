@@ -11,8 +11,7 @@ jobs:
           - windows-2022
           - macos-14
         dc:
-          - dmd-2.111.0
-          - ldc-1.41.0
+          - dmd-2.112.0
 
     runs-on: ${{ matrix.os }}
     steps:
