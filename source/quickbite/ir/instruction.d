@@ -24,6 +24,13 @@ public struct Subtract {
     uint right;
 }
 
+public struct Multiply {
+    // Value-producing IR instructions write to an explicit temporary.
+    uint destination;
+    uint left;
+    uint right;
+}
+
 public struct Call {
     // Value-producing IR instructions write to an explicit temporary.
     uint destination;
@@ -45,6 +52,7 @@ public alias Instruction = SumType!(
     ConstInt,
     Add,
     Subtract,
+    Multiply,
     Call,
     Equal,
     Assert_,
