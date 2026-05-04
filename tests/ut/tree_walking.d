@@ -91,7 +91,18 @@ unittest {
         unittest {
             externalFunc;
         }
-    }).shouldThrowWithMessage("Unsupported function body.");
+    }).shouldThrowWithMessage("No function body to execute.");
+}
+
+@("treeWalking.externalCalleeWithArg")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        extern int externalFunc(int value);
+
+        unittest {
+            externalFunc(42);
+        }
+    }).shouldThrowWithMessage("No function body to execute.");
 }
 
 @("treeWalking.uninitializedDecl")
@@ -133,5 +144,266 @@ unittest {
         unittest {
             assert(answer(42) == 42);
         }
-    }).shouldThrowWithMessage("Unsupported call.");
+    });
+}
+
+@("treeWalking.if_")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int one() { return 1; }
+
+        int answer() {
+            if (one == 1)
+                return 42;
+            return 0;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.ifElse")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int one() { return 1; }
+
+        int answer() {
+            if (one == 2)
+                return 0;
+            else
+                return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.ifFalseNoElse")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int one() { return 1; }
+
+        int answer() {
+            if (one == 2)
+                return 0;
+            return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.notEqual")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three != 5);
+        }
+    });
+}
+
+@("treeWalking.notEqualFails")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three != 3);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.lessThan")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three < 5);
+        }
+    });
+}
+
+@("treeWalking.lessThanFails")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five < 3);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.lessThanEqual")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five < 5);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.greaterThan")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five > 3);
+        }
+    });
+}
+
+@("treeWalking.greaterThanFails")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three > 5);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.greaterThanEqual")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five > 5);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.lessOrEqual")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three <= 5);
+            assert(three <= 3);
+        }
+    });
+}
+
+@("treeWalking.lessOrEqualFails")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five <= 3);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.greaterOrEqual")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int five() { return 5; }
+
+        unittest {
+            assert(five >= 3);
+            assert(five >= 5);
+        }
+    });
+}
+
+@("treeWalking.greaterOrEqualFails")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int three() { return 3; }
+
+        unittest {
+            assert(three >= 5);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.addition")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int forty() { return 40; }
+
+        int answer() {
+            return forty + 2;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.subtraction")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int fifty() { return 50; }
+
+        int answer() {
+            return fifty - 8;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.multiplication")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int six() { return 6; }
+
+        int answer() {
+            return six * 7;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.division")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int eightyfour() { return 84; }
+
+        int answer() {
+            return eightyfour / 2;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.modulo")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int fortyfive() { return 45; }
+
+        int answer() {
+            return fortyfive % 3;
+        }
+
+        unittest {
+            assert(answer == 0);
+        }
+    });
 }

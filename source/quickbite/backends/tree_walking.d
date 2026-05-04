@@ -24,10 +24,14 @@ void walkModule(imported!"dmd.dmodule".Module module_) @safe {
 }
 
 struct Walker {
-    long executeFunction(imported!"dmd.func".FuncDeclaration func) @safe {
+    long executeFunction(
+        imported!"dmd.func".FuncDeclaration func,
+        in long[] args = [],
+    ) @safe {
         if (func.fbody is null)
-            throw new Exception("Unsupported function body.");
+            throw new Exception("No function body to execute.");
         BodyWalker w;
+        w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
         if (!w.hasReturn)
             throw new Exception("Unsupported function body.");
@@ -49,6 +53,18 @@ struct BodyWalker {
     public bool hasReturn;
     public long returnValue;
 
+    void bindParameters(
+        imported!"dmd.func".FuncDeclaration func,
+        in long[] args,
+    ) @safe {
+        if (func.parameters is null && args.length == 0)
+            return;
+        if (func.parameters is null || args.length != func.parameters.length)
+            throw new Exception("Unsupported call.");
+        foreach (i, param; functionParameters(func))
+            locals[param] = args[i];
+    }
+
     void runStatement(
         imported!"dmd.statement".Statement statement,
         ref Walker walker,
@@ -65,6 +81,15 @@ struct BodyWalker {
 
         if (auto expr = statement.isExpStatement) {
             runExpression(expr.exp, walker);
+            return;
+        }
+
+        if (auto if_ = statement.isIfStatement) {
+            const cond = runExpression(if_.condition, walker);
+            if (cond)
+                runStatement(if_.ifbody, walker);
+            else if (if_.elsebody !is null)
+                runStatement(if_.elsebody, walker);
             return;
         }
 
@@ -96,16 +121,21 @@ struct BodyWalker {
             return integerValue(integer);
 
         if (auto call = expression.isCallExp) {
-            if (call.arguments !is null && call.arguments.length != 0)
-                throw new Exception("Unsupported call.");
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
-            return walker.executeFunction(call.f);
+            long[] args;
+            if (call.arguments !is null)
+                foreach (arg; callArguments(call))
+                    args ~= runExpression(arg, walker);
+            return walker.executeFunction(call.f, args);
         }
 
         if (auto equal = expression.isEqualExp) {
+            import dmd.tokens: EXP;
             const left = runExpression(equal.e1, walker);
             const right = runExpression(equal.e2, walker);
+            if (equal.op == EXP.notEqual)
+                return left != right ? 1 : 0;
             return left == right ? 1 : 0;
         }
 
@@ -132,6 +162,49 @@ struct BodyWalker {
             const value = runExpression(construct.e2, walker);
             locals[variable] = value;
             return value;
+        }
+
+        {
+            import dmd.tokens: EXP;
+            if (expression.op == EXP.lessThan) {
+                auto cmp = expression.isBinExp;
+                return runExpression(cmp.e1, walker) < runExpression(cmp.e2, walker) ? 1 : 0;
+            }
+            if (expression.op == EXP.greaterThan) {
+                auto cmp = expression.isBinExp;
+                return runExpression(cmp.e1, walker) > runExpression(cmp.e2, walker) ? 1 : 0;
+            }
+            if (expression.op == EXP.lessOrEqual) {
+                auto cmp = expression.isBinExp;
+                return runExpression(cmp.e1, walker) <= runExpression(cmp.e2, walker) ? 1 : 0;
+            }
+            if (expression.op == EXP.greaterOrEqual) {
+                auto cmp = expression.isBinExp;
+                return runExpression(cmp.e1, walker) >= runExpression(cmp.e2, walker) ? 1 : 0;
+            }
+        }
+
+        if (auto add = expression.isAddExp)
+            return runExpression(add.e1, walker) + runExpression(add.e2, walker);
+
+        if (auto subtract = expression.isMinExp)
+            return runExpression(subtract.e1, walker) - runExpression(subtract.e2, walker);
+
+        if (auto multiply = expression.isMulExp)
+            return runExpression(multiply.e1, walker) * runExpression(multiply.e2, walker);
+
+        if (auto divide = expression.isDivExp) {
+            const right = runExpression(divide.e2, walker);
+            if (right == 0)
+                throw new Exception("Division by zero.");
+            return runExpression(divide.e1, walker) / right;
+        }
+
+        if (auto modulo = expression.isModExp) {
+            const right = runExpression(modulo.e2, walker);
+            if (right == 0)
+                throw new Exception("Division by zero.");
+            return runExpression(modulo.e1, walker) % right;
         }
 
         if (auto var = expression.isVarExp) {
@@ -168,4 +241,16 @@ private string expressionChars(
 ) @trusted {
     import std.string: fromStringz;
     return fromStringz(expression.toChars).idup;
+}
+
+private ref auto callArguments(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    return *call.arguments;
+}
+
+private ref auto functionParameters(
+    imported!"dmd.func".FuncDeclaration func,
+) @trusted {
+    return *func.parameters;
 }
