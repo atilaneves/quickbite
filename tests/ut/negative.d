@@ -57,30 +57,30 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
-@("negative.refParameter")
+@("negative.outParameter")
 unittest {
     q{
-        void addOne(ref int value) {
-            value = value + 1;
+        void setAnswer(out int value) {
+            value = 42;
         }
 
         unittest {
-            int value = 41;
-            addOne(value);
+            int value = 0;
+            setAnswer(value);
             assert(value == 42);
         }
     }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
 }
 
-@("negative.multipleRefParameters")
+@("negative.multipleOutParameters")
 unittest {
     q{
-        void add(int left, ref int right) {
-            right = left + right;
+        void add(int left, out int right) {
+            right = left + 2;
         }
 
         unittest {
-            int value = 2;
+            int value = 0;
             add(40, value);
             assert(value == 42);
         }

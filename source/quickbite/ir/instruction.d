@@ -44,6 +44,11 @@ public struct Select {
     uint ifFalse;
 }
 
+public struct Copy {
+    uint destination;
+    uint source;
+}
+
 public struct Assert_ {
     uint condition;
 }
@@ -53,5 +58,6 @@ public alias Instruction = SumType!(
     Call,
     BinaryOp,
     Select,
+    Copy,
     Assert_,
 );

@@ -66,6 +66,7 @@ struct Lowerer {
         result.hasReturnValue = hasReturnValue;
         result.returnValue = builder.returnValue;
         result.numParameters = numParameters;
+        result.refParameters = builder.refParameters.dup;
         result.numTemporaries = builder.nextTemporary;
         loweredModule.functions ~= result;
     }
@@ -99,6 +100,7 @@ struct BodyLowerer {
     private uint pendingEarlyReturnCondition;
     private uint pendingEarlyReturnValue;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
+    public bool[] refParameters;
     public bool hasReturn;
     public uint returnValue;
 
@@ -237,6 +239,9 @@ struct BodyLowerer {
         if (auto declaration = expression.isDeclarationExp)
             return lowerDeclaration(declaration, lowerer);
 
+        if (auto assignment = expression.isAssignExp)
+            return lowerAssignment(assignment, lowerer);
+
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
@@ -296,6 +301,33 @@ struct BodyLowerer {
         const value = lowerExpression(construct.e2, lowerer);
         localTemporaries[variable] = value;
         return value;
+    }
+
+    uint lowerAssignment(
+        imported!"dmd.expression".AssignExp assignment,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Copy, Instruction;
+        import std.conv: text;
+
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+
+        const source = lowerExpression(assignment.e2, lowerer);
+        instructions ~= Instruction(Copy(
+            *destination,
+            source,
+        ));
+        return *destination;
     }
 
     void lowerIfStatement(
@@ -369,6 +401,7 @@ struct BodyLowerer {
                 throw new Exception("Unsupported function parameters.");
 
             localTemporaries[parameter] = allocateTemporary;
+            refParameters ~= parameterIsRef(parameter);
             ++numParameters;
         }
 
@@ -381,13 +414,18 @@ struct BodyLowerer {
         import dmd.astenums: STC;
 
         enum unsupported =
-            STC.ref_ |
             STC.out_ |
             STC.lazy_ |
             STC.variadic |
             STC.alias_ |
             STC.auto_;
         return (parameter.storage_class & unsupported) != STC.none;
+    }
+
+    bool parameterIsRef(imported!"dmd.declaration".VarDeclaration parameter) @safe {
+        import dmd.astenums: STC;
+
+        return (parameter.storage_class & STC.ref_) != STC.none;
     }
 
     uint[] lowerCallArguments(

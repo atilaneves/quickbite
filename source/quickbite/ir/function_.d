@@ -10,6 +10,7 @@ public struct Function {
     bool hasReturnValue;
     uint returnValue;
     uint numParameters;
+    bool[] refParameters;
     // Lets the VM allocate all temporary registers before execution.
     uint numTemporaries;
 }

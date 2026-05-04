@@ -191,6 +191,51 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+@("simple.refParameter")
+unittest {
+    q{
+        void addOne(ref int value) {
+            value = value + 1;
+        }
+
+        unittest {
+            int value = 41;
+            addOne(value);
+            assert(value == 42);
+        }
+    }.runTests;
+}
+
+@("simple.refParameterOops")
+unittest {
+    q{
+        void addOne(ref int value) {
+            value = value + 1;
+        }
+
+        unittest {
+            int value = 41;
+            addOne(value);
+            assert(value == 43);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("simple.multipleRefParameters")
+unittest {
+    q{
+        void add(int left, ref int right) {
+            right = left + right;
+        }
+
+        unittest {
+            int value = 2;
+            add(40, value);
+            assert(value == 42);
+        }
+    }.runTests;
+}
+
 @("simple.intLessThan")
 unittest {
     q{

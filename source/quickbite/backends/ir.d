@@ -42,8 +42,10 @@ long executeFunction(
                 function_.hasReturnValue,
                 function_.returnValue,
                 function_.numParameters,
+                function_.refParameters,
                 function_.numTemporaries,
-                argumentValues(callerTemporaries, argumentIndices),
+                callerTemporaries,
+                argumentIndices,
             );
     }
 
@@ -56,15 +58,24 @@ long executeFunctionBody(
     in bool hasReturnValue,
     in uint returnValue,
     in uint numParameters,
+    in bool[] refParameters,
     in uint numTemporaries,
-    in long[] arguments,
+    ref long[] callerTemporaries,
+    in uint[] argumentIndices,
 ) @safe pure {
+    const arguments = argumentValues(callerTemporaries, argumentIndices);
     const temporaries = executeInstructions(
         module_,
         instructions,
         numTemporaries,
         numParameters,
         arguments,
+    );
+    writeRefArguments(
+        temporaries,
+        refParameters,
+        callerTemporaries,
+        argumentIndices,
     );
     if (!hasReturnValue)
         return 0;
@@ -98,7 +109,8 @@ void executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
-    import quickbite.ir.instruction: Assert_, BinaryOp, Call, ConstInt, Select;
+    import quickbite.ir.instruction: Assert_, BinaryOp, Call, ConstInt, Copy,
+        Select;
     import std.sumtype: match;
 
     instruction.match!(
@@ -133,6 +145,10 @@ void executeInstruction(
                     ? readTemporaryValue(temporaries, instruction.ifTrue)
                     : readTemporaryValue(temporaries, instruction.ifFalse);
         },
+        (Copy instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                readTemporaryValue(temporaries, instruction.source);
+        },
         (Assert_ instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
@@ -150,6 +166,21 @@ void writeArguments(
 
     foreach (index, argument; arguments)
         writeTemporaryValue(temporaries, cast(uint) index) = argument;
+}
+
+void writeRefArguments(
+    in long[] calleeTemporaries,
+    in bool[] refParameters,
+    ref long[] callerTemporaries,
+    in uint[] argumentIndices,
+) @safe pure {
+    foreach (index, isRef; refParameters) {
+        if (!isRef)
+            continue;
+
+        writeTemporaryValue(callerTemporaries, argumentIndices[index]) =
+            readTemporaryValue(calleeTemporaries, cast(uint) index);
+    }
 }
 
 long[] argumentValues(ref long[] temporaries, in uint[] arguments) @safe pure {
