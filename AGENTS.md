@@ -75,10 +75,11 @@ Prefer `std.conv.text` to `writefln` or `to!string`.
 
 Make parameters `in` if possible.
 
-Prefer `const` to `auto` when declaring variables. If you have to use
-`auto`, add a comment explaining why. Do not use explicit types on the
-lhs unless necessary, and if so, explain why in a comment. If you're
-declaring a variable without an initialiser, an explicit type is ok.
+Prfer to use `const` instead of `auto` or explicit types when
+declaring variables. If you can't use `const`, use `auto`, but add a
+comment explaining why. If you have to use an explicit type, document
+why. If you're declaring a variable without an initialiser, an
+explicit type is ok.
 
 Do not use `synchronized`.
 
