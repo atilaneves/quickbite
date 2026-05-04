@@ -110,7 +110,7 @@ void executeInstruction(
     ref long[] temporaries,
 ) @safe pure {
     import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
-        Copy, Select;
+        Copy, Select, UnaryOp;
     import std.sumtype: match;
 
     instruction.match!(
@@ -133,6 +133,14 @@ void executeInstruction(
                 instruction.destination,
                 instruction.left,
                 instruction.right,
+                instruction.operation,
+            );
+        },
+        (UnaryOp instruction) {
+            executeUnaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.source,
                 instruction.operation,
             );
         },
@@ -273,6 +281,21 @@ void executeBinaryInstruction(
     }
 
     writeTemporaryValue(temporaries, destination) = result;
+}
+
+void executeUnaryInstruction(
+    ref long[] temporaries,
+    in uint destination,
+    in uint source,
+    in imported!"quickbite.ir.instruction".UnaryOperation operation,
+) @safe pure {
+    const sourceValue = readTemporaryValue(temporaries, source);
+
+    final switch (operation) {
+        case imported!"quickbite.ir.instruction".UnaryOperation.negate:
+            writeTemporaryValue(temporaries, destination) = -sourceValue;
+            break;
+    }
 }
 
 void enforceNonZeroDivisor(in long value, in string message) @safe pure {

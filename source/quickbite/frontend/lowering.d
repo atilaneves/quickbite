@@ -145,8 +145,8 @@ struct BodyLowerer {
         imported!"dmd.expression".Expression expression,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Assert_, BinaryOp, Call, ConstInt,
-            Instruction, Operation;
+        import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
+            Operation, UnaryOp, UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
             const destination = allocateTemporary();
@@ -231,16 +231,12 @@ struct BodyLowerer {
             return lowerBinaryExpression(modulo, Operation.modulo, lowerer);
 
         if (auto negate = expression.isNegExp) {
-            const zero = allocateTemporary;
-            instructions ~= Instruction(ConstInt(zero, 0));
-
             const value = lowerExpression(negate.e1, lowerer);
             const destination = allocateTemporary;
-            instructions ~= Instruction(BinaryOp(
+            instructions ~= Instruction(UnaryOp(
                 destination,
-                zero,
                 value,
-                Operation.subtract,
+                UnaryOperation.negate,
             ));
             return destination;
         }

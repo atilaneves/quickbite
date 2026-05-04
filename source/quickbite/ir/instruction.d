@@ -37,6 +37,16 @@ public enum Operation {
     greaterOrEqual,
 }
 
+public struct UnaryOp {
+    uint destination;
+    uint source;
+    UnaryOperation operation;
+}
+
+public enum UnaryOperation {
+    negate,
+}
+
 public struct Select {
     uint destination;
     uint condition;
@@ -74,6 +84,7 @@ public alias Instruction = SumType!(
     ConstInt,
     Call,
     BinaryOp,
+    UnaryOp,
     Select,
     Copy,
     CastInt,
