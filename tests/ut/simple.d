@@ -266,7 +266,13 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-static foreach (T; imported!"std.meta".AliasSeq!(byte, ubyte, short, ushort)) {
+static foreach (T; imported!"std.meta".AliasSeq!(
+    byte,
+    ubyte,
+    short,
+    ushort,
+    uint,
+)) {
     @("simple.integralType." ~ T.stringof)
     unittest {
         import std.conv: text;

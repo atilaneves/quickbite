@@ -12,7 +12,7 @@ public void runIrTests(in string source) {
     import quickbite.frontend.compiler: ParsedModule, lowerModule, parseModule;
 
     // Keep `parsed` mutable: lowerModule consumes DMD's mutable Module type.
-    ParsedModule parsed = parseModule(source);
+    auto parsed = parseModule(source);
     const loweredModule = lowerModule(parsed.module_);
     executeUnitTests(loweredModule);
 }
@@ -178,6 +178,8 @@ long castInteger(
             return cast(ushort) value;
         case imported!"quickbite.ir.instruction".IntegerType.i32:
             return cast(int) value;
+        case imported!"quickbite.ir.instruction".IntegerType.u32:
+            return cast(uint) value;
     }
 }
 
