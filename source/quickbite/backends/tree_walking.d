@@ -102,6 +102,16 @@ struct BodyWalker {
             return;
         }
 
+        if (auto compound = statement.isCompoundDeclarationStatement) {
+            if (compound.statements !is null)
+                foreach (child; compoundStatements(compound)) {
+                    runStatement(child, walker);
+                    if (hasReturn)
+                        return;
+                }
+            return;
+        }
+
         if (auto expr = statement.isExpStatement) {
             runExpression(expr.exp, walker);
             return;
@@ -156,8 +166,25 @@ struct BodyWalker {
             return Value(integerValue(integer));
 
         if (auto call = expression.isCallExp) {
-            if (call.f is null)
-                throw new Exception("Unsupported callee.");
+            if (call.f is null) {
+                string argStr;
+                if (call.arguments !is null)
+                    foreach (arg; callArguments(call))
+                        argStr ~= " " ~ expressionChars(arg);
+                throw new Exception(text("Unsupported callee: ", expressionChars(call.e1), " args:", argStr));
+            }
+            {
+                import dmd.id: Id;
+                if (call.f.ident == Id.__equals) {
+                    Value[] eqArgs;
+                    if (call.arguments !is null)
+                        foreach (arg; callArguments(call))
+                            eqArgs ~= runExpression(arg, walker);
+                    if (eqArgs.length != 2)
+                        unsupported;
+                    return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
+                }
+            }
             if (call.f.fbody is null)
                 throw new Exception("No function body to execute.");
             Value[] args;
@@ -187,6 +214,8 @@ struct BodyWalker {
             void unsupportedDecl() {
                 throw new Exception(text("Unsupported expression: ", decl.op));
             }
+            if (decl.declaration.isAliasDeclaration !is null)
+                return Value(0L);
             auto variable = decl.declaration.isVarDeclaration;
             if (variable is null)
                 unsupportedDecl;
@@ -195,19 +224,25 @@ struct BodyWalker {
                 return Value(0L);
             }
             if (variable.type !is null && variable.type.isTypeDArray !is null) {
-                long[] elements;
-                if (variable._init !is null) {
-                    auto initializer = variable._init.isExpInitializer;
-                    if (initializer is null) unsupportedDecl;
-                    auto construct = initializer.exp.isConstructExp;
-                    if (construct is null) unsupportedDecl;
-                    auto literal = construct.e2.isArrayLiteralExp;
-                    if (literal is null) unsupportedDecl;
-                    if (literal.elements !is null)
-                        foreach (elem; arrayLiteralElements(literal))
-                            elements ~= runExpression(elem, walker).asLong;
+                if (variable._init is null) {
+                    locals[variable] = Value((long[]).init);
+                    return Value(0L);
                 }
-                locals[variable] = Value(elements);
+                auto initializer = variable._init.isExpInitializer;
+                if (initializer is null) unsupportedDecl;
+                if (auto construct = initializer.exp.isConstructExp) {
+                    if (auto literal = construct.e2.isArrayLiteralExp) {
+                        long[] elements;
+                        if (literal.elements !is null)
+                            foreach (elem; arrayLiteralElements(literal))
+                                elements ~= runExpression(elem, walker).asLong;
+                        locals[variable] = Value(elements);
+                        return Value(0L);
+                    }
+                    locals[variable] = runExpression(construct.e2, walker);
+                    return Value(0L);
+                }
+                locals[variable] = runExpression(initializer.exp, walker);
                 return Value(0L);
             }
             if (variable._init is null)
@@ -268,6 +303,25 @@ struct BodyWalker {
                                 structFields[ownerDecl][fieldDecl] = value.asLong;
                                 return value;
                             }
+            if (auto index = assign.e1.isIndexExp)
+                if (auto var = index.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals) {
+                            const i = runExpression(index.e2, walker).asLong;
+                            locals[varDecl].asArray[cast(size_t) i] = value.asLong;
+                            return value;
+                        }
+            unsupported;
+        }
+
+        if (auto addAssign = expression.isAddAssignExp) {
+            if (auto var = addAssign.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const newVal = locals[varDecl].asLong + runExpression(addAssign.e2, walker).asLong;
+                        locals[varDecl] = Value(newVal);
+                        return Value(newVal);
+                    }
             unsupported;
         }
 
@@ -292,6 +346,28 @@ struct BodyWalker {
             if (right == 0)
                 throw new Exception("Division by zero.");
             return Value(runExpression(modulo.e1, walker).asLong % right);
+        }
+
+        if (auto cast_ = expression.isCastExp)
+            return runExpression(cast_.e1, walker);
+
+        if (auto slice = expression.isSliceExp) {
+            if (slice.lwr is null && slice.upr is null)
+                if (auto var = slice.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals)
+                            return locals[varDecl];
+            unsupported;
+        }
+
+        if (auto index = expression.isIndexExp) {
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const i = runExpression(index.e2, walker).asLong;
+                        return Value(locals[varDecl].asArray[cast(size_t) i]);
+                    }
+            unsupported;
         }
 
         if (auto len = expression.isArrayLengthExp) {

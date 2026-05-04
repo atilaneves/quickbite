@@ -576,3 +576,72 @@ unittest {
         }
     });
 }
+
+@("treeWalking.arrayIndexRead")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [10, 20, 30];
+            assert(arr[1] == 20);
+        }
+    });
+}
+
+@("treeWalking.arrayIndexWrite")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [10, 20, 30];
+            arr[1] = 42;
+            assert(arr[1] == 42);
+        }
+    });
+}
+
+@("treeWalking.arrayEqualTrue")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] a = [1, 2, 3];
+            ubyte[] b = [1, 2, 3];
+            assert(a[] == b[]);
+        }
+    });
+}
+
+@("treeWalking.arrayEqualFalse")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] a = [1, 2, 3];
+            ubyte[] b = [1, 2, 4];
+            assert(a[] == b[]);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("treeWalking.foreachArray")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [1, 2, 3];
+            int sum = 0;
+            foreach (x; arr)
+                sum = sum + x;
+            assert(sum == 6);
+        }
+    });
+}
+
+@("treeWalking.foreachEmptyArray")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [];
+            int count = 0;
+            foreach (x; arr)
+                count = count + 1;
+            assert(count == 0);
+        }
+    });
+}
