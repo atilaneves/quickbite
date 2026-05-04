@@ -60,3 +60,19 @@
 - Do not use variadic D functions as simple call-argument fixtures. They
   introduce DMD/runtime varargs constructs and can fail for unrelated
   reasons before the VM reaches the intended behavior.
+
+- When working in a named git worktree, remember that `apply_patch` uses
+  the session cwd. Prefix patched paths with the worktree directory when
+  the session cwd is the parent checkout.
+
+- Do not run multiple `dub test` commands in parallel in the same
+  checkout. Dub may race on shared package build artifacts and fail for
+  reasons unrelated to the code.
+
+- In strict TDD, do not implement the full obvious behavior when the
+  current red test only forces a fake. Make the smallest green step,
+  then ask for feedback on the next test that exposes the fake.
+
+- Do not reinterpret the `const`/`auto`/explicit-type guideline. Prefer
+  `const`; if `const` cannot work, use `auto` with a reason. Use an
+  explicit LHS type only when `auto` cannot work, and explain why.

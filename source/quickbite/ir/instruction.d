@@ -7,7 +7,7 @@ import std.sumtype: SumType;
 // Value-producing IR instructions write to an explicit temporary.
 public struct ConstInt {
     uint destination;
-    int value;
+    long value;
 }
 
 public struct Call {
@@ -60,6 +60,11 @@ public struct JumpIfFalse {
     uint offset;
 }
 
+public struct JumpIfTrue {
+    uint condition;
+    uint offset;
+}
+
 public struct Copy {
     uint destination;
     uint source;
@@ -86,6 +91,10 @@ public struct Assert_ {
     uint condition;
 }
 
+public struct ReturnValue {
+    uint value;
+}
+
 public alias Instruction = SumType!(
     ConstInt,
     Call,
@@ -93,7 +102,9 @@ public alias Instruction = SumType!(
     UnaryOp,
     Select,
     JumpIfFalse,
+    JumpIfTrue,
     Copy,
     CastInt,
     Assert_,
+    ReturnValue,
 );

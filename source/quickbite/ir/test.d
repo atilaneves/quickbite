@@ -6,6 +6,6 @@ public struct Test {
     import quickbite.ir.instruction: Instruction;
 
     Instruction[] instructions;
-    // Lets the VM allocate all temporary registers before execution.
+    // Unittest bodies use the same temporary register allocation as functions.
     uint numTemporaries;
 }

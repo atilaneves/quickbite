@@ -106,6 +106,20 @@ unittest {
 @("negative.divisionByZero")
 unittest {
     q{
+        int answer() {
+            int zero = 0;
+            return 42 / zero;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Integer division by zero.");
+}
+
+@("negative.divisionByZeroCall")
+unittest {
+    q{
         int zero() {
             return 0;
         }
@@ -121,6 +135,20 @@ unittest {
 }
 
 @("negative.moduloByZero")
+unittest {
+    q{
+        int answer() {
+            int zero = 0;
+            return 42 % zero;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Integer modulo by zero.");
+}
+
+@("negative.moduloByZeroCall")
 unittest {
     q{
         int zero() {

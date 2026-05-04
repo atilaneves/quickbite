@@ -20,7 +20,7 @@ shared static this() {
 }
 
 shared static ~this() {
-    compiler.shutdown();
+    compiler.shutdown;
 }
 
 public ParsedModule parseModule(in string source) {
@@ -47,7 +47,7 @@ final class Compiler {
         import std.algorithm.iteration: each;
 
         mutex = new Mutex;
-        initDMD();
+        initDMD;
         findImportPaths.each!addImport;
 
         global.params.useUnitTests = true;
@@ -60,13 +60,13 @@ final class Compiler {
     void shutdown() {
         import dmd.frontend: deinitializeDMD;
 
-        mutex.lock();
-        scope(exit) mutex.unlock();
+        mutex.lock;
+        scope(exit) mutex.unlock;
 
         if (!initialized)
             return;
 
-        deinitializeDMD();
+        deinitializeDMD;
         initialized = false;
     }
 
@@ -77,8 +77,8 @@ final class Compiler {
         import dmd.globals: global;
         import std.conv: text;
 
-        mutex.lock();
-        scope(exit) mutex.unlock();
+        mutex.lock;
+        scope(exit) mutex.unlock;
 
         global.errors = 0;
         global.warnings = 0;
@@ -90,13 +90,13 @@ final class Compiler {
             ".d",
         );
 
-        auto parsed = dmdParseModule(fileName, source);
-        if (parsed.diagnostics.hasErrors())
-            throw new Exception(diagnosticMessage());
+        ParsedModule parsed = dmdParseModule(fileName, source);
+        if (parsed.diagnostics.hasErrors)
+            throw new Exception(diagnosticMessage);
 
-        parsed.module_.fullSemantic();
+        parsed.module_.fullSemantic;
         if (global.errors != 0)
-            throw new Exception(diagnosticMessage());
+            throw new Exception(diagnosticMessage);
 
         return parsed;
     }

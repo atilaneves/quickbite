@@ -11,8 +11,7 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
 public void runIrTests(in string source) {
     import quickbite.frontend.compiler: ParsedModule, lowerModule, parseModule;
 
-    // Keep `parsed` mutable: lowerModule consumes DMD's mutable Module type.
-    auto parsed = parseModule(source);
+    ParsedModule parsed = parseModule(source);
     const loweredModule = lowerModule(parsed.module_);
     executeUnitTests(loweredModule);
 }
@@ -40,7 +39,6 @@ long executeFunction(
                 module_,
                 function_.instructions,
                 function_.hasReturnValue,
-                function_.returnValue,
                 function_.numParameters,
                 function_.refParameters,
                 function_.numTemporaries,
@@ -56,7 +54,6 @@ long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in bool hasReturnValue,
-    in uint returnValue,
     in uint numParameters,
     in bool[] refParameters,
     in uint numTemporaries,
@@ -64,7 +61,7 @@ long executeFunctionBody(
     in uint[] argumentIndices,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
-    const temporaries = executeInstructions(
+    ExecutionResult result = executeInstructions(
         module_,
         instructions,
         numTemporaries,
@@ -72,7 +69,7 @@ long executeFunctionBody(
         arguments,
     );
     writeRefArguments(
-        temporaries,
+        result.temporaries,
         refParameters,
         callerTemporaries,
         argumentIndices,
@@ -80,45 +77,70 @@ long executeFunctionBody(
     if (!hasReturnValue)
         return 0;
 
-    return readTemporaryValue(temporaries, returnValue);
+    if (!result.hasReturn)
+        throw new Exception("IR: missing return");
+
+    return readTemporaryValue(result.temporaries, result.returnValue);
 }
 
-long[] executeInstructions(
+struct ExecutionResult {
+    long[] temporaries;
+    bool hasReturn;
+    uint returnValue;
+}
+
+ExecutionResult executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
     in uint numParameters = 0,
     in long[] arguments = [],
 ) @safe pure {
-    auto temporaries = new long[numTemporaries];
+    long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
+
+    ExecutionResult result;
+    result.temporaries = temporaries;
 
     uint instructionPointer;
     while (instructionPointer < instructions.length) {
-        instructionPointer += executeInstruction(
+        const effect = executeInstruction(
             module_,
             instructions[instructionPointer],
             temporaries,
         );
+        if (effect.hasReturn) {
+            result.hasReturn = true;
+            result.returnValue = effect.returnValue;
+            return result;
+        }
+
+        instructionPointer += effect.offset;
     }
 
-    return temporaries;
+    return result;
 }
 
-uint executeInstruction(
+struct InstructionEffect {
+    uint offset;
+    bool hasReturn;
+    uint returnValue;
+}
+
+InstructionEffect executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
     import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
-        Copy, JumpIfFalse, Select, UnaryOp;
+        Copy, JumpIfFalse, JumpIfTrue, ReturnValue, Select, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
         (ConstInt instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 instruction.value;
-            return 1;
+            return nextInstruction;
         },
         (const Call instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -128,7 +150,7 @@ uint executeInstruction(
                     temporaries,
                     instruction.arguments,
                 );
-            return 1;
+            return nextInstruction;
         },
         (BinaryOp instruction) {
             executeBinaryInstruction(
@@ -138,7 +160,7 @@ uint executeInstruction(
                 instruction.right,
                 instruction.operation,
             );
-            return 1;
+            return nextInstruction;
         },
         (UnaryOp instruction) {
             executeUnaryInstruction(
@@ -147,7 +169,7 @@ uint executeInstruction(
                 instruction.source,
                 instruction.operation,
             );
-            return 1;
+            return nextInstruction;
         },
         (Select instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -157,18 +179,24 @@ uint executeInstruction(
                 )
                     ? readTemporaryValue(temporaries, instruction.ifTrue)
                     : readTemporaryValue(temporaries, instruction.ifFalse);
-            return 1;
+            return nextInstruction;
         },
         (JumpIfFalse instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
-                return instruction.offset + 1;
+                return jump(instruction.offset + 1);
 
-            return 1;
+            return nextInstruction;
+        },
+        (JumpIfTrue instruction) {
+            if (readTemporaryValue(temporaries, instruction.condition))
+                return jump(instruction.offset + 1);
+
+            return nextInstruction;
         },
         (Copy instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 readTemporaryValue(temporaries, instruction.source);
-            return 1;
+            return nextInstruction;
         },
         (CastInt instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -176,15 +204,30 @@ uint executeInstruction(
                     readTemporaryValue(temporaries, instruction.source),
                     instruction.target,
                 );
-            return 1;
+            return nextInstruction;
         },
         (Assert_ instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
 
-            return 1;
+            return nextInstruction;
+        },
+        (ReturnValue instruction) {
+            return returnFromFunction(instruction.value);
         },
     );
+}
+
+InstructionEffect nextInstruction() @safe pure nothrow @nogc {
+    return InstructionEffect(1);
+}
+
+InstructionEffect jump(in uint offset) @safe pure nothrow @nogc {
+    return InstructionEffect(offset);
+}
+
+InstructionEffect returnFromFunction(in uint value) @safe pure nothrow @nogc {
+    return InstructionEffect(0, true, value);
 }
 
 long castInteger(
@@ -238,7 +281,7 @@ void writeRefArguments(
     }
 }
 
-long[] argumentValues(ref long[] temporaries, in uint[] arguments) @safe pure {
+long[] argumentValues(in long[] temporaries, in uint[] arguments) @safe pure {
     long[] result;
 
     foreach (argument; arguments)

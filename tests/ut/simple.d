@@ -324,6 +324,19 @@ static foreach (T; imported!"std.meta".AliasSeq!(
     }
 }
 
+@("simple.longLiteral")
+unittest {
+    q{
+        long answer() {
+            return 2_147_483_648L;
+        }
+
+        unittest {
+            assert(answer > 0L);
+        }
+    }.runTests;
+}
+
 @("simple.intLessThan")
 unittest {
     q{
@@ -457,6 +470,16 @@ unittest {
 @("simple.logicalNot")
 unittest {
     q{
+        unittest {
+            bool isReady = false;
+            assert(!isReady);
+        }
+    }.runTests;
+}
+
+@("simple.logicalNotCall")
+unittest {
+    q{
         bool isReady() {
             return false;
         }
@@ -468,6 +491,17 @@ unittest {
 }
 
 @("simple.logicalAnd")
+unittest {
+    q{
+        unittest {
+            bool left = true;
+            bool right = true;
+            assert(left && right);
+        }
+    }.runTests;
+}
+
+@("simple.logicalAndCall")
 unittest {
     q{
         bool left() {
@@ -487,6 +521,17 @@ unittest {
 @("simple.logicalAndShortCircuit")
 unittest {
     q{
+        unittest {
+            bool left = false;
+            int zero = 0;
+            assert(!(left && 42 / zero == 0));
+        }
+    }.runTests;
+}
+
+@("simple.logicalAndCallShortCircuit")
+unittest {
+    q{
         bool isReady() {
             return false;
         }
@@ -500,6 +545,48 @@ unittest {
             assert(!(isReady && failIfCalled));
         }
     }.runTests;
+}
+
+@("simple.logicalOrShortCircuit")
+unittest {
+    q{
+        unittest {
+            bool left = true;
+            int zero = 0;
+            assert(left || 42 / zero == 0);
+        }
+    }.runTests;
+}
+
+@("simple.logicalOrBoolResult")
+unittest {
+    q{
+        unittest {
+            assert((2 || false) == true);
+        }
+    }.runTests;
+}
+
+@("simple.logicalOr")
+unittest {
+    q{
+        unittest {
+            bool left = false;
+            bool right = true;
+            assert(left || right);
+        }
+    }.runTests;
+}
+
+@("simple.logicalOrOops")
+unittest {
+    q{
+        unittest {
+            bool left = false;
+            bool right = false;
+            assert(left || right);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
 @("simple.ifElse")
@@ -535,6 +622,26 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+@("simple.ifElseUntakenBranch")
+unittest {
+    q{
+        int zero() {
+            return 0;
+        }
+
+        int answer(bool left) {
+            if (left)
+                return 42;
+            else
+                return 42 / zero;
+        }
+
+        unittest {
+            assert(answer(true) == 42);
+        }
+    }.runTests;
+}
+
 @("simple.earlyReturn")
 unittest {
     q{
@@ -548,6 +655,27 @@ unittest {
         unittest {
             assert(answer(1) == 42);
             assert(answer(2) == 43);
+        }
+    }.runTests;
+}
+
+@("simple.multipleEarlyReturns")
+unittest {
+    q{
+        int answer(int value) {
+            if (value == 1)
+                return 41;
+
+            if (value == 2)
+                return 42;
+
+            return 43;
+        }
+
+        unittest {
+            assert(answer(1) == 41);
+            assert(answer(2) == 42);
+            assert(answer(3) == 43);
         }
     }.runTests;
 }

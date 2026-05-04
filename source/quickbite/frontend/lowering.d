@@ -64,7 +64,6 @@ struct Lowerer {
         result.name = name;
         result.instructions = builder.instructions.dup;
         result.hasReturnValue = hasReturnValue;
-        result.returnValue = builder.returnValue;
         result.numParameters = numParameters;
         result.refParameters = builder.refParameters.dup;
         result.numTemporaries = builder.nextTemporary;
@@ -96,13 +95,9 @@ struct BodyLowerer {
 
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
-    private bool hasPendingEarlyReturn;
-    private uint pendingEarlyReturnCondition;
-    private uint pendingEarlyReturnValue;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
-    public uint returnValue;
 
     // DMD Statement downcast helpers are not const-qualified.
     void lowerStatement(
@@ -125,7 +120,7 @@ struct BodyLowerer {
         }
 
         if (auto returnStatement = statement.isReturnStatement) {
-            returnValue = lowerReturnValue(returnStatement.exp, lowerer);
+            lowerReturnStatement(returnStatement, lowerer);
             hasReturn = true;
             return;
         }
@@ -149,10 +144,10 @@ struct BodyLowerer {
             Operation, UnaryOp, UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
-            const destination = allocateTemporary();
+            const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(
                 destination,
-                cast(int) integerValue(integer),
+                integerValue(integer),
             ));
             return destination;
         }
@@ -162,9 +157,10 @@ struct BodyLowerer {
                 throw new Exception("Unsupported callee.");
 
             lowerer.ensureFunctionLowered(call.f);
+            // `const` would make the array incompatible with Call.arguments.
             auto arguments = lowerCallArguments(call, lowerer);
 
-            const destination = allocateTemporary();
+            const destination = allocateTemporary;
             instructions ~= Instruction(Call(
                 destination,
                 lowerer.functionName(call.f),
@@ -218,6 +214,9 @@ struct BodyLowerer {
         if (auto logical = expression.isLogicalExp) {
             if (logical.op == EXP.andAnd)
                 return lowerLogicalAnd(logical, lowerer);
+
+            if (logical.op == EXP.orOr)
+                return lowerLogicalOr(logical, lowerer);
         }
 
         if (auto add = expression.isAddExp)
@@ -311,9 +310,22 @@ struct BodyLowerer {
         imported!"dmd.expression".LogicalExp expression,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Copy, Instruction, JumpIfFalse;
+        const left = lowerTruthValue(lowerExpression(expression.e1, lowerer));
+        return lowerShortCircuit(
+            expression,
+            left,
+            left,
+            lowerer,
+        );
+    }
 
-        const left = lowerExpression(expression.e1, lowerer);
+    uint lowerLogicalOr(
+        imported!"dmd.expression".LogicalExp expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Copy, Instruction, JumpIfTrue;
+
+        const left = lowerTruthValue(lowerExpression(expression.e1, lowerer));
         const destination = allocateTemporary;
         instructions ~= Instruction(Copy(
             destination,
@@ -321,21 +333,67 @@ struct BodyLowerer {
         ));
 
         const jumpIndex = instructions.length;
-        instructions ~= Instruction(JumpIfFalse(left, 0));
+        instructions ~= Instruction(JumpIfTrue(left, 0));
 
-        const right = lowerExpression(expression.e2, lowerer);
+        const right = lowerTruthValue(lowerExpression(expression.e2, lowerer));
         instructions ~= Instruction(Copy(
             destination,
             right,
         ));
-        replaceInstruction(
+        replaceJumpOffset(
             instructions,
             cast(uint) jumpIndex,
-            Instruction(JumpIfFalse(
-                left,
-                cast(uint) (instructions.length - jumpIndex - 1),
-            )),
+            cast(uint) (instructions.length - jumpIndex - 1),
         );
+        return destination;
+    }
+
+    uint lowerShortCircuit(
+        imported!"dmd.expression".LogicalExp expression,
+        in uint left,
+        in uint jumpCondition,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Copy, Instruction, JumpIfFalse;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(Copy(
+            destination,
+            left,
+        ));
+
+        const jumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(jumpCondition, 0));
+
+        const right = lowerTruthValue(lowerExpression(expression.e2, lowerer));
+        instructions ~= Instruction(Copy(
+            destination,
+            right,
+        ));
+        replaceJumpOffset(
+            instructions,
+            cast(uint) jumpIndex,
+            cast(uint) (instructions.length - jumpIndex - 1),
+        );
+        return destination;
+    }
+
+    uint lowerTruthValue(in uint source) @safe {
+        import quickbite.ir.instruction: Instruction, UnaryOp, UnaryOperation;
+
+        const inverted = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(
+            inverted,
+            source,
+            UnaryOperation.not,
+        ));
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(
+            destination,
+            inverted,
+            UnaryOperation.not,
+        ));
         return destination;
     }
 
@@ -412,61 +470,55 @@ struct BodyLowerer {
         imported!"dmd.statement".IfStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, Select;
+        import quickbite.ir.instruction: Instruction, JumpIfFalse;
 
-        const condition = lowerExpression(statement.condition, lowerer);
-        const ifTrue = lowerReturnExpression(statement.ifbody, lowerer);
+        const condition = lowerTruthValue(lowerExpression(statement.condition, lowerer));
+        const ifFalseJumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(condition, 0));
+        const ifTrueReturns = lowerReturnBranch(statement.ifbody, lowerer);
 
         if (statement.elsebody is null) {
-            hasPendingEarlyReturn = true;
-            pendingEarlyReturnCondition = condition;
-            pendingEarlyReturnValue = ifTrue;
+            replaceJumpOffset(
+                instructions,
+                cast(uint) ifFalseJumpIndex,
+                cast(uint) (instructions.length - ifFalseJumpIndex - 1),
+            );
+            hasReturn = false;
             return;
         }
 
-        const ifFalse = lowerReturnExpression(statement.elsebody, lowerer);
-        const destination = lowerSelect(condition, ifTrue, ifFalse);
-        returnValue = destination;
-        hasReturn = true;
+        replaceJumpOffset(
+            instructions,
+            cast(uint) ifFalseJumpIndex,
+            cast(uint) (instructions.length - ifFalseJumpIndex - 1),
+        );
+        const ifFalseReturns = lowerReturnBranch(statement.elsebody, lowerer);
+        hasReturn = ifTrueReturns && ifFalseReturns;
     }
 
-    uint lowerReturnExpression(
+    bool lowerReturnBranch(
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
-        if (auto returnStatement = statement.isReturnStatement)
-            return lowerExpression(returnStatement.exp, lowerer);
+        const previousHasReturn = hasReturn;
+        hasReturn = false;
+        lowerStatement(statement, lowerer);
+        const branchHasReturn = hasReturn;
+        hasReturn = previousHasReturn;
 
-        throw new Exception("Unsupported if-branch: expected return");
+        if (!branchHasReturn)
+            throw new Exception("Unsupported if-branch: expected return");
+
+        return branchHasReturn;
     }
 
-    uint lowerReturnValue(
-        imported!"dmd.expression".Expression expression,
+    void lowerReturnStatement(
+        imported!"dmd.statement".ReturnStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        const value = lowerExpression(expression, lowerer);
-        if (!hasPendingEarlyReturn)
-            return value;
+        import quickbite.ir.instruction: Instruction, ReturnValue;
 
-        hasPendingEarlyReturn = false;
-        return lowerSelect(
-            pendingEarlyReturnCondition,
-            pendingEarlyReturnValue,
-            value,
-        );
-    }
-
-    uint lowerSelect(in uint condition, in uint ifTrue, in uint ifFalse) @safe {
-        import quickbite.ir.instruction: Instruction, Select;
-
-        const destination = allocateTemporary;
-        instructions ~= Instruction(Select(
-            destination,
-            condition,
-            ifTrue,
-            ifFalse,
-        ));
-        return destination;
+        instructions ~= Instruction(ReturnValue(lowerExpression(statement.exp, lowerer)));
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
@@ -531,12 +583,25 @@ private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted
     return integer.getInteger();
 }
 
-private void replaceInstruction(
+private void replaceJumpOffset(
     ref imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint index,
-    imported!"quickbite.ir.instruction".Instruction instruction,
-) @trusted {
-    instructions[index] = instruction;
+    in uint offset,
+) @safe {
+    import quickbite.ir.instruction: JumpIfFalse, JumpIfTrue;
+    import std.sumtype: match;
+
+    instructions[index].match!(
+        (ref JumpIfFalse instruction) {
+            instruction.offset = offset;
+        },
+        (ref JumpIfTrue instruction) {
+            instruction.offset = offset;
+        },
+        (_) {
+            assert(0, "Expected jump instruction");
+        },
+    );
 }
 
 private string expressionChars(
