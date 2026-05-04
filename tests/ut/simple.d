@@ -84,6 +84,23 @@ unittest {
     }.runTests;
 }
 
+@("simple.intUnaryMinus")
+unittest {
+    q{
+        int input() {
+            return 42;
+        }
+
+        int answer() {
+            return -input;
+        }
+
+        unittest {
+            assert(answer == -42);
+        }
+    }.runTests;
+}
+
 @("simple.intMultiplication")
 unittest {
     q{
