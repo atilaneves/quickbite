@@ -85,6 +85,10 @@ Do not use `synchronized`.
 Don't use empty parens for function calls, omit them instead, e.g.
 `doStuff;` instead of `doStuff();`.
 
+Functions should be below their first usage, not above.
+
+Variable declarations should be as close to usage as possible.
+
 # Testing
 
 Run `dub test` after every editing "session" to assess the current
