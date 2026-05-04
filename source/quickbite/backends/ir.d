@@ -88,7 +88,7 @@ void executeInstruction(
 ) @safe pure {
     import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
         Divide, GreaterOrEqual, GreaterThan, LessOrEqual, LessThan, Modulo,
-        Multiply, Subtract;
+        Multiply, NotEqual, Subtract;
     import std.sumtype: match;
 
     instruction.match!(
@@ -156,6 +156,15 @@ void executeInstruction(
                 instruction.left,
                 instruction.right,
                 BinaryOperation.equal,
+            );
+        },
+        (NotEqual instruction) {
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.notEqual,
             );
         },
         (LessThan instruction) {
@@ -229,6 +238,7 @@ enum BinaryOperation {
     divide,
     modulo,
     equal,
+    notEqual,
     lessThan,
     lessOrEqual,
     greaterThan,
@@ -266,6 +276,9 @@ void executeBinaryInstruction(
             break;
         case BinaryOperation.equal:
             result = leftValue == rightValue;
+            break;
+        case BinaryOperation.notEqual:
+            result = leftValue != rightValue;
             break;
         case BinaryOperation.lessThan:
             result = leftValue < rightValue;

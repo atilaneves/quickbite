@@ -127,7 +127,7 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
             Divide, GreaterOrEqual, GreaterThan, Instruction, LessOrEqual,
-            LessThan, Modulo, Multiply, Subtract;
+            LessThan, Modulo, Multiply, NotEqual, Subtract;
 
         if (auto integer = expression.isIntegerExp()) {
             const destination = allocateTemporary();
@@ -158,11 +158,8 @@ struct BodyLowerer {
         if (auto equal = expression.isEqualExp) {
             import dmd.tokens: EXP;
 
-            if (equal.op != EXP.equal) {
-                import std.conv: text;
-
-                throw new Exception(text("Unsupported expression: ", equal.op));
-            }
+            if (equal.op == EXP.notEqual)
+                return lowerBinaryExpression!NotEqual(equal, lowerer);
 
             return lowerBinaryExpression!Equal(equal, lowerer);
         }

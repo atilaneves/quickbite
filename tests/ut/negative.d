@@ -68,19 +68,6 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported call.");
 }
 
-@("negative.notEqual")
-unittest {
-    q{
-        int answer() {
-            return 1;
-        }
-
-        unittest {
-            assert(answer != 2);
-        }
-    }.runTests.shouldThrowWithMessage("Unsupported expression: notEqual");
-}
-
 @("negative.divisionByZero")
 unittest {
     q{

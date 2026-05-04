@@ -52,6 +52,12 @@ public struct Equal {
     uint right;
 }
 
+public struct NotEqual {
+    uint destination;
+    uint left;
+    uint right;
+}
+
 public struct LessThan {
     uint destination;
     uint left;
@@ -89,6 +95,7 @@ public alias Instruction = SumType!(
     Modulo,
     Call,
     Equal,
+    NotEqual,
     LessThan,
     LessOrEqual,
     GreaterThan,
