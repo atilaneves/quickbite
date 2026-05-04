@@ -88,6 +88,20 @@ unittest {
     }.runTests;
 }
 
+@("simple.intModulo")
+unittest {
+    q{
+        int answer() {
+            int value = 86;
+            return value % 44;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests;
+}
+
 @("simple.localIntReturnOops")
 unittest {
     q{
