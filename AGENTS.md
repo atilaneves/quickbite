@@ -76,6 +76,8 @@ Prefer `const` to `auto` when declaring variables.
 
 Do not use `synchronized`.
 
+Don't use empty parens for function calls, omit them instead.
+
 # Testing
 
 Run `dub test` after every editing "session" to assess the current

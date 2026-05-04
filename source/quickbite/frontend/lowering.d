@@ -5,7 +5,7 @@ private:
 public imported!"quickbite.ir.module_".Module lowerModule(
     imported!"dmd.dmodule".Module module_,
 ) @safe {
-    return Lowerer(module_).lower();
+    return Lowerer(module_).lower;
 }
 
 struct Lowerer {

@@ -3,6 +3,7 @@ module quickbite.frontend.compiler;
 private:
 
 __gshared Compiler compiler;
+// DMD registers modules by filename, so each parse call needs a unique name.
 private shared uint _moduleCounter;
 
 shared static this() {
