@@ -96,29 +96,49 @@ void executeInstruction(
                 instruction.value;
         },
         (Add instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) +
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.add,
+            );
         },
         (Subtract instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) -
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.subtract,
+            );
         },
         (Multiply instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) *
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.multiply,
+            );
         },
         (Divide instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) /
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.divide,
+            );
         },
         (Modulo instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) %
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.modulo,
+            );
         },
         (Call instruction) {
             temporaryValue(temporaries, instruction.destination) =
@@ -128,15 +148,63 @@ void executeInstruction(
                 );
         },
         (Equal instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(temporaries, instruction.left) ==
-                temporaryValue(temporaries, instruction.right);
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.equal,
+            );
         },
         (Assert_ instruction) {
             if (!temporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
         },
     );
+}
+
+enum BinaryOperation {
+    add,
+    subtract,
+    multiply,
+    divide,
+    modulo,
+    equal,
+}
+
+void executeBinaryInstruction(
+    ref long[] temporaries,
+    in uint destination,
+    in uint left,
+    in uint right,
+    in BinaryOperation operation,
+) @safe pure {
+    const leftValue = temporaryValue(temporaries, left);
+    const rightValue = temporaryValue(temporaries, right);
+    long result;
+
+    final switch (operation) {
+        case BinaryOperation.add:
+            result = leftValue + rightValue;
+            break;
+        case BinaryOperation.subtract:
+            result = leftValue - rightValue;
+            break;
+        case BinaryOperation.multiply:
+            result = leftValue * rightValue;
+            break;
+        case BinaryOperation.divide:
+            result = leftValue / rightValue;
+            break;
+        case BinaryOperation.modulo:
+            result = leftValue % rightValue;
+            break;
+        case BinaryOperation.equal:
+            result = leftValue == rightValue;
+            break;
+    }
+
+    temporaryValue(temporaries, destination) = result;
 }
 
 ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {

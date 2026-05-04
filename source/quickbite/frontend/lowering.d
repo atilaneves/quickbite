@@ -152,77 +152,23 @@ struct BodyLowerer {
             return destination;
         }
 
-        if (auto equal = expression.isEqualExp()) {
-            const left = lowerExpression(equal.e1, lowerer);
-            const right = lowerExpression(equal.e2, lowerer);
-            const destination = allocateTemporary();
-            instructions ~= Instruction(Equal(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto equal = expression.isEqualExp)
+            return lowerBinaryExpression!Equal(equal, lowerer);
 
-        if (auto add = expression.isAddExp) {
-            const left = lowerExpression(add.e1, lowerer);
-            const right = lowerExpression(add.e2, lowerer);
-            const destination = allocateTemporary;
-            instructions ~= Instruction(Add(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto add = expression.isAddExp)
+            return lowerBinaryExpression!Add(add, lowerer);
 
-        if (auto subtract = expression.isMinExp) {
-            const left = lowerExpression(subtract.e1, lowerer);
-            const right = lowerExpression(subtract.e2, lowerer);
-            const destination = allocateTemporary;
-            instructions ~= Instruction(Subtract(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto subtract = expression.isMinExp)
+            return lowerBinaryExpression!Subtract(subtract, lowerer);
 
-        if (auto multiply = expression.isMulExp) {
-            const left = lowerExpression(multiply.e1, lowerer);
-            const right = lowerExpression(multiply.e2, lowerer);
-            const destination = allocateTemporary;
-            instructions ~= Instruction(Multiply(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto multiply = expression.isMulExp)
+            return lowerBinaryExpression!Multiply(multiply, lowerer);
 
-        if (auto divide = expression.isDivExp) {
-            const left = lowerExpression(divide.e1, lowerer);
-            const right = lowerExpression(divide.e2, lowerer);
-            const destination = allocateTemporary;
-            instructions ~= Instruction(Divide(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto divide = expression.isDivExp)
+            return lowerBinaryExpression!Divide(divide, lowerer);
 
-        if (auto modulo = expression.isModExp) {
-            const left = lowerExpression(modulo.e1, lowerer);
-            const right = lowerExpression(modulo.e2, lowerer);
-            const destination = allocateTemporary;
-            instructions ~= Instruction(Modulo(
-                destination,
-                left,
-                right,
-            ));
-            return destination;
-        }
+        if (auto modulo = expression.isModExp)
+            return lowerBinaryExpression!Modulo(modulo, lowerer);
 
         if (auto assert_ = expression.isAssertExp()) {
             const condition = lowerExpression(assert_.e1, lowerer);
@@ -247,6 +193,23 @@ struct BodyLowerer {
         import std.conv: text;
 
         throw new Exception(text("Unsupported expression: ", expression.op));
+    }
+
+    uint lowerBinaryExpression(InstructionType, Expression)(
+        Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction;
+
+        const left = lowerExpression(expression.e1, lowerer);
+        const right = lowerExpression(expression.e2, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(InstructionType(
+            destination,
+            left,
+            right,
+        ));
+        return destination;
     }
 
     uint lowerDeclaration(
