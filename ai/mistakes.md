@@ -40,3 +40,6 @@
 - When testing lowering for a specific operator, do not use all-literal
   expressions unless constant folding is the behavior under test. Use a
   value that survives DMD semantic analysis, such as a function call.
+
+- Do not contort initializers to avoid explicit local array types. Prefer
+  `uint[] values;` over noisy forms like `auto values = cast(uint[]) [];`.

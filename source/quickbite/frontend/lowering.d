@@ -53,6 +53,7 @@ struct Lowerer {
         loweredFunctions[name] = true;
 
         BodyLowerer builder;
+        const numParameters = builder.lowerParameters(function_);
         builder.lowerStatement(function_.fbody, this);
 
         if (!builder.hasReturn)
@@ -62,6 +63,7 @@ struct Lowerer {
         result.name = name;
         result.instructions = builder.instructions.dup;
         result.returnValue = builder.returnValue;
+        result.numParameters = numParameters;
         result.numTemporaries = builder.nextTemporary;
         loweredModule.functions ~= result;
     }
@@ -136,8 +138,7 @@ struct BodyLowerer {
         }
 
         if (auto call = expression.isCallExp()) {
-            if (call.arguments !is null && call.arguments.length != 0)
-                throw new Exception("Unsupported call.");
+            auto arguments = lowerCallArguments(call, lowerer);
 
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
@@ -148,6 +149,7 @@ struct BodyLowerer {
             instructions ~= Instruction(Call(
                 destination,
                 lowerer.functionName(call.f),
+                arguments,
             ));
             return destination;
         }
@@ -247,6 +249,36 @@ struct BodyLowerer {
         return value;
     }
 
+    uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
+        if (function_.parameters is null)
+            return 0;
+
+        if (function_.parameters.length > 1)
+            throw new Exception("Unsupported function parameters.");
+
+        foreach (parameter; functionParameters(function_))
+            localTemporaries[parameter] = allocateTemporary;
+
+        return nextTemporary;
+    }
+
+    uint[] lowerCallArguments(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (call.arguments is null)
+            return [];
+
+        if (call.arguments.length > 1)
+            throw new Exception("Unsupported call.");
+
+        uint[] arguments;
+        foreach (argument; callArguments(call))
+            arguments ~= lowerExpression(argument, lowerer);
+
+        return arguments;
+    }
+
     uint allocateTemporary() @safe pure nothrow @nogc {
         const result = nextTemporary;
         ++nextTemporary;
@@ -272,4 +304,16 @@ private ref auto compoundStatements(
     // `isCompoundStatement` returning this node guarantees `statements` is a
     // valid DMD-owned pointer.
     return *compound.statements;
+}
+
+private ref auto functionParameters(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    // Caller checked `parameters` for null; DMD owns the array.
+    return *function_.parameters;
+}
+
+private ref auto callArguments(imported!"dmd.expression".CallExp call) @trusted {
+    // Caller checked `arguments` for null; DMD owns the array.
+    return *call.arguments;
 }

@@ -24,6 +24,7 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
 long executeFunction(
     in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
+    in long[] arguments,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -32,7 +33,9 @@ long executeFunction(
                 module_,
                 function_.instructions,
                 function_.returnValue,
+                function_.numParameters,
                 function_.numTemporaries,
+                arguments,
             );
     }
 
@@ -43,9 +46,17 @@ long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint returnValue,
+    in uint numParameters,
     in uint numTemporaries,
+    in long[] arguments,
 ) @safe pure {
-    const temporaries = executeInstructions(module_, instructions, numTemporaries);
+    const temporaries = executeInstructions(
+        module_,
+        instructions,
+        numTemporaries,
+        numParameters,
+        arguments,
+    );
     return readTemporaryValue(temporaries, returnValue);
 }
 
@@ -53,8 +64,11 @@ long[] executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
+    in uint numParameters = 0,
+    in long[] arguments = [],
 ) @safe pure {
-    long[] temporaries = new long[numTemporaries];
+    auto temporaries = new long[numTemporaries];
+    writeArguments(temporaries, numParameters, arguments);
 
     foreach (instruction; instructions) {
         executeInstruction(
@@ -126,11 +140,12 @@ void executeInstruction(
                 BinaryOperation.modulo,
             );
         },
-        (Call instruction) {
+        (const Call instruction) {
             temporaryValue(temporaries, instruction.destination) =
                 executeFunction(
                     module_,
                     instruction.calleeName,
+                    argumentValues(temporaries, instruction.arguments),
                 );
         },
         (Equal instruction) {
@@ -147,6 +162,27 @@ void executeInstruction(
                 throw new Exception("Unittest assertion failed.");
         },
     );
+}
+
+void writeArguments(
+    ref long[] temporaries,
+    in uint numParameters,
+    in long[] arguments,
+) @safe pure {
+    if (arguments.length != numParameters)
+        throw new Exception("Unsupported call.");
+
+    foreach (index, argument; arguments)
+        temporaryValue(temporaries, cast(uint) index) = argument;
+}
+
+long[] argumentValues(ref long[] temporaries, in uint[] arguments) @safe pure {
+    long[] result;
+
+    foreach (argument; arguments)
+        result ~= temporaryValue(temporaries, argument);
+
+    return result;
 }
 
 enum BinaryOperation {

@@ -90,7 +90,7 @@ final class Compiler {
             ".d",
         );
 
-        ParsedModule parsed = dmdParseModule(fileName, source);
+        auto parsed = dmdParseModule(fileName, source);
         if (parsed.diagnostics.hasErrors())
             throw new Exception(diagnosticMessage());
 

@@ -55,15 +55,15 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
-@("negative.callWithArgs")
+@("negative.multipleCallArgs")
 unittest {
     q{
-        int answer(int value) {
-            return value;
+        int answer(int left, int right) {
+            return left + right;
         }
 
         unittest {
-            assert(answer(42) == 42);
+            assert(answer(40, 2) == 42);
         }
     }.runTests.shouldThrowWithMessage("Unsupported call.");
 }

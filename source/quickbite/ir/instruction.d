@@ -43,6 +43,7 @@ public struct Modulo {
 public struct Call {
     uint destination;
     string calleeName;
+    uint[] arguments;
 }
 
 public struct Equal {

@@ -102,6 +102,32 @@ unittest {
     }.runTests;
 }
 
+@("simple.functionParameter")
+unittest {
+    q{
+        int answer(int value) {
+            return value + 1;
+        }
+
+        unittest {
+            assert(answer(41) == 42);
+        }
+    }.runTests;
+}
+
+@("simple.functionParameterOops")
+unittest {
+    q{
+        int answer(int value) {
+            return value + 1;
+        }
+
+        unittest {
+            assert(answer(41) == 43);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.localIntReturnOops")
 unittest {
     q{
