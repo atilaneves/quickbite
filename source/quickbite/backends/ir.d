@@ -93,10 +93,11 @@ long[] executeInstructions(
     auto temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
 
-    foreach (instruction; instructions) {
-        executeInstruction(
+    uint instructionPointer;
+    while (instructionPointer < instructions.length) {
+        instructionPointer += executeInstruction(
             module_,
-            instruction,
+            instructions[instructionPointer],
             temporaries,
         );
     }
@@ -104,19 +105,20 @@ long[] executeInstructions(
     return temporaries;
 }
 
-void executeInstruction(
+uint executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
     import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
-        Copy, Select, UnaryOp;
+        Copy, JumpIfFalse, Select, UnaryOp;
     import std.sumtype: match;
 
-    instruction.match!(
+    return instruction.match!(
         (ConstInt instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 instruction.value;
+            return 1;
         },
         (const Call instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -126,6 +128,7 @@ void executeInstruction(
                     temporaries,
                     instruction.arguments,
                 );
+            return 1;
         },
         (BinaryOp instruction) {
             executeBinaryInstruction(
@@ -135,6 +138,7 @@ void executeInstruction(
                 instruction.right,
                 instruction.operation,
             );
+            return 1;
         },
         (UnaryOp instruction) {
             executeUnaryInstruction(
@@ -143,6 +147,7 @@ void executeInstruction(
                 instruction.source,
                 instruction.operation,
             );
+            return 1;
         },
         (Select instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -152,10 +157,18 @@ void executeInstruction(
                 )
                     ? readTemporaryValue(temporaries, instruction.ifTrue)
                     : readTemporaryValue(temporaries, instruction.ifFalse);
+            return 1;
+        },
+        (JumpIfFalse instruction) {
+            if (!readTemporaryValue(temporaries, instruction.condition))
+                return instruction.offset + 1;
+
+            return 1;
         },
         (Copy instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 readTemporaryValue(temporaries, instruction.source);
+            return 1;
         },
         (CastInt instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -163,10 +176,13 @@ void executeInstruction(
                     readTemporaryValue(temporaries, instruction.source),
                     instruction.target,
                 );
+            return 1;
         },
         (Assert_ instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
+
+            return 1;
         },
     );
 }
@@ -277,9 +293,6 @@ void executeBinaryInstruction(
             break;
         case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
             result = leftValue >= rightValue;
-            break;
-        case imported!"quickbite.ir.instruction".Operation.andAnd:
-            result = leftValue && rightValue;
             break;
     }
 

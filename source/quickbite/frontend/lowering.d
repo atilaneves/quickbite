@@ -217,7 +217,7 @@ struct BodyLowerer {
 
         if (auto logical = expression.isLogicalExp) {
             if (logical.op == EXP.andAnd)
-                return lowerBinaryExpression(logical, Operation.andAnd, lowerer);
+                return lowerLogicalAnd(logical, lowerer);
         }
 
         if (auto add = expression.isAddExp)
@@ -304,6 +304,38 @@ struct BodyLowerer {
             right,
             operation,
         ));
+        return destination;
+    }
+
+    uint lowerLogicalAnd(
+        imported!"dmd.expression".LogicalExp expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Copy, Instruction, JumpIfFalse;
+
+        const left = lowerExpression(expression.e1, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(Copy(
+            destination,
+            left,
+        ));
+
+        const jumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(left, 0));
+
+        const right = lowerExpression(expression.e2, lowerer);
+        instructions ~= Instruction(Copy(
+            destination,
+            right,
+        ));
+        replaceInstruction(
+            instructions,
+            cast(uint) jumpIndex,
+            Instruction(JumpIfFalse(
+                left,
+                cast(uint) (instructions.length - jumpIndex - 1),
+            )),
+        );
         return destination;
     }
 
@@ -497,6 +529,14 @@ struct BodyLowerer {
 
 private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted {
     return integer.getInteger();
+}
+
+private void replaceInstruction(
+    ref imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint index,
+    imported!"quickbite.ir.instruction".Instruction instruction,
+) @trusted {
+    instructions[index] = instruction;
 }
 
 private string expressionChars(

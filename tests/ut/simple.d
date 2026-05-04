@@ -484,6 +484,24 @@ unittest {
     }.runTests;
 }
 
+@("simple.logicalAndShortCircuit")
+unittest {
+    q{
+        bool isReady() {
+            return false;
+        }
+
+        bool failIfCalled() {
+            assert(0);
+            return true;
+        }
+
+        unittest {
+            assert(!(isReady && failIfCalled));
+        }
+    }.runTests;
+}
+
 @("simple.ifElse")
 unittest {
     q{

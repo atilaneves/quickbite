@@ -35,7 +35,6 @@ public enum Operation {
     lessOrEqual,
     greaterThan,
     greaterOrEqual,
-    andAnd,
 }
 
 public struct UnaryOp {
@@ -54,6 +53,11 @@ public struct Select {
     uint condition;
     uint ifTrue;
     uint ifFalse;
+}
+
+public struct JumpIfFalse {
+    uint condition;
+    uint offset;
 }
 
 public struct Copy {
@@ -88,6 +92,7 @@ public alias Instruction = SumType!(
     BinaryOp,
     UnaryOp,
     Select,
+    JumpIfFalse,
     Copy,
     CastInt,
     Assert_,
