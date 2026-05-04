@@ -236,6 +236,36 @@ unittest {
     }.runTests;
 }
 
+@("simple.refSizeTParameter")
+unittest {
+    q{
+        void advance(ref size_t pos) {
+            pos = pos + 1;
+        }
+
+        unittest {
+            size_t pos = 41;
+            advance(pos);
+            assert(pos == 42);
+        }
+    }.runTests;
+}
+
+@("simple.refSizeTParameterOops")
+unittest {
+    q{
+        void advance(ref size_t pos) {
+            pos = pos + 1;
+        }
+
+        unittest {
+            size_t pos = 41;
+            advance(pos);
+            assert(pos == 43);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.intLessThan")
 unittest {
     q{
