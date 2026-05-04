@@ -34,3 +34,7 @@
 - Do not use empty parentheses for function calls. Omit them: `doStuff;`
   not `doStuff();`. This applies to call sites everywhere, including
   inside `q{...}` test fixtures.
+
+- When testing tree-walker runtime semantics, avoid fixtures that DMD can
+  constant-fold before the walker sees them. Use runtime locals when the
+  test is meant to prove interpreter behavior.

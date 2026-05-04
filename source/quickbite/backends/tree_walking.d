@@ -7,15 +7,16 @@ private:
 alias Value = imported!"std.sumtype".SumType!(long, long[]);
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
-    void runTests(in string source) {
+    public override void runTests(in string source) {
         import quickbite.frontend.compiler;
 
+        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
         auto parsed = quickbite.frontend.compiler.parseModule(source);
         walkModule(parsed.module_);
     }
 }
 
-void walkModule(imported!"dmd.dmodule".Module module_) {
+private void walkModule(imported!"dmd.dmodule".Module module_) {
     if (module_.members is null)
         return;
 
@@ -26,8 +27,8 @@ void walkModule(imported!"dmd.dmodule".Module module_) {
     }
 }
 
-struct Walker {
-    Value executeFunction(
+private struct Walker {
+    private Value executeFunction(
         imported!"dmd.func".FuncDeclaration func,
         Value[] args = [],
     ) {
@@ -50,7 +51,7 @@ struct Walker {
         return returnType !is null && returnType.ty == TY.Tvoid;
     }
 
-    void runTest(
+    private void runTest(
         imported!"dmd.declaration".UnitTestDeclaration unitTest,
     ) {
         BodyWalker w;
@@ -58,15 +59,17 @@ struct Walker {
     }
 }
 
-struct BodyWalker {
+private struct BodyWalker {
     import dmd.declaration: VarDeclaration;
 
+    // DMD's `is*` helpers return concrete AST subclasses. Keep `auto` for
+    // those downcasts so the walker stays close to the frontend API.
     private Value[VarDeclaration] locals;
     private long[VarDeclaration][VarDeclaration] structFields;
-    public bool hasReturn;
-    public Value returnValue;
+    private bool hasReturn;
+    private Value returnValue;
 
-    void bindParameters(
+    private void bindParameters(
         imported!"dmd.func".FuncDeclaration func,
         Value[] args,
     ) {
@@ -82,10 +85,12 @@ struct BodyWalker {
         }
     }
 
-    void runStatement(
+    private void runStatement(
         imported!"dmd.statement".Statement statement,
         ref Walker walker,
     ) {
+        // DMD lowers the currently supported `foreach (x; array)` cases to
+        // this for-statement shape before the tree-walker sees them.
         if (auto scope_ = statement.isScopeStatement) {
             if (scope_.statement !is null)
                 runStatement(scope_.statement, walker);
@@ -150,7 +155,7 @@ struct BodyWalker {
         throw new Exception(text("Unsupported statement: ", statement.stmt));
     }
 
-    Value runExpression(
+    private Value runExpression(
         imported!"dmd.expression".Expression expression,
         ref Walker walker,
     ) {
@@ -165,43 +170,11 @@ struct BodyWalker {
         if (auto integer = expression.isIntegerExp)
             return Value(integerValue(integer));
 
-        if (auto call = expression.isCallExp) {
-            if (call.f is null) {
-                string argStr;
-                if (call.arguments !is null)
-                    foreach (arg; callArguments(call))
-                        argStr ~= " " ~ expressionChars(arg);
-                throw new Exception(text("Unsupported callee: ", expressionChars(call.e1), " args:", argStr));
-            }
-            {
-                import dmd.id: Id;
-                if (call.f.ident == Id.__equals) {
-                    Value[] eqArgs;
-                    if (call.arguments !is null)
-                        foreach (arg; callArguments(call))
-                            eqArgs ~= runExpression(arg, walker);
-                    if (eqArgs.length != 2)
-                        unsupported;
-                    return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
-                }
-            }
-            if (call.f.fbody is null)
-                throw new Exception("No function body to execute.");
-            Value[] args;
-            if (call.arguments !is null)
-                foreach (arg; callArguments(call))
-                    args ~= runExpression(arg, walker);
-            return walker.executeFunction(call.f, args);
-        }
+        if (auto call = expression.isCallExp)
+            return runCallExpression(call, walker);
 
-        if (auto equal = expression.isEqualExp) {
-            import dmd.tokens: EXP;
-            auto left  = runExpression(equal.e1, walker);
-            auto right = runExpression(equal.e2, walker);
-            if (equal.op == EXP.notEqual)
-                return Value(left != right ? 1L : 0L);
-            return Value(left == right ? 1L : 0L);
-        }
+        if (auto equal = expression.isEqualExp)
+            return runEqualExpression(equal, walker);
 
         if (auto assert_ = expression.isAssertExp) {
             const cond = runExpression(assert_.e1, walker).asLong;
@@ -210,53 +183,8 @@ struct BodyWalker {
             return Value(cond);
         }
 
-        if (auto decl = expression.isDeclarationExp) {
-            void unsupportedDecl() {
-                throw new Exception(text("Unsupported expression: ", decl.op));
-            }
-            if (decl.declaration.isAliasDeclaration !is null)
-                return Value(0L);
-            auto variable = decl.declaration.isVarDeclaration;
-            if (variable is null)
-                unsupportedDecl;
-            if (variable.type !is null && variable.type.isTypeStruct !is null) {
-                structFields[variable] = (long[VarDeclaration]).init;
-                return Value(0L);
-            }
-            if (variable.type !is null && variable.type.isTypeDArray !is null) {
-                if (variable._init is null) {
-                    locals[variable] = Value((long[]).init);
-                    return Value(0L);
-                }
-                auto initializer = variable._init.isExpInitializer;
-                if (initializer is null) unsupportedDecl;
-                if (auto construct = initializer.exp.isConstructExp) {
-                    if (auto literal = construct.e2.isArrayLiteralExp) {
-                        long[] elements;
-                        if (literal.elements !is null)
-                            foreach (elem; arrayLiteralElements(literal))
-                                elements ~= runExpression(elem, walker).asLong;
-                        locals[variable] = Value(elements);
-                        return Value(0L);
-                    }
-                    locals[variable] = runExpression(construct.e2, walker);
-                    return Value(0L);
-                }
-                locals[variable] = runExpression(initializer.exp, walker);
-                return Value(0L);
-            }
-            if (variable._init is null)
-                unsupportedDecl;
-            auto initializer = variable._init.isExpInitializer;
-            if (initializer is null)
-                unsupportedDecl;
-            auto construct = initializer.exp.isConstructExp;
-            if (construct is null)
-                unsupportedDecl;
-            auto value = runExpression(construct.e2, walker);
-            locals[variable] = value;
-            return value;
-        }
+        if (auto decl = expression.isDeclarationExp)
+            return runDeclarationExpression(decl, walker);
 
         if (auto dotVar = expression.isDotVarExp) {
             if (auto ownerVar = dotVar.e1.isVarExp)
@@ -267,52 +195,11 @@ struct BodyWalker {
             unsupported;
         }
 
-        {
-            import dmd.tokens: EXP;
-            if (expression.op == EXP.lessThan) {
-                auto cmp = expression.isBinExp;
-                return Value(runExpression(cmp.e1, walker).asLong < runExpression(cmp.e2, walker).asLong ? 1L : 0L);
-            }
-            if (expression.op == EXP.greaterThan) {
-                auto cmp = expression.isBinExp;
-                return Value(runExpression(cmp.e1, walker).asLong > runExpression(cmp.e2, walker).asLong ? 1L : 0L);
-            }
-            if (expression.op == EXP.lessOrEqual) {
-                auto cmp = expression.isBinExp;
-                return Value(runExpression(cmp.e1, walker).asLong <= runExpression(cmp.e2, walker).asLong ? 1L : 0L);
-            }
-            if (expression.op == EXP.greaterOrEqual) {
-                auto cmp = expression.isBinExp;
-                return Value(runExpression(cmp.e1, walker).asLong >= runExpression(cmp.e2, walker).asLong ? 1L : 0L);
-            }
-        }
+        if (isComparisonExpression(expression))
+            return runComparisonExpression(expression, walker);
 
-        if (auto assign = expression.isAssignExp) {
-            auto value = runExpression(assign.e2, walker);
-            if (auto var = assign.e1.isVarExp)
-                if (auto varDecl = var.var.isVarDeclaration)
-                    if (varDecl in locals) {
-                        locals[varDecl] = value;
-                        return value;
-                    }
-            if (auto dotVar = assign.e1.isDotVarExp)
-                if (auto ownerVar = dotVar.e1.isVarExp)
-                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                        if (ownerDecl in structFields)
-                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                                structFields[ownerDecl][fieldDecl] = value.asLong;
-                                return value;
-                            }
-            if (auto index = assign.e1.isIndexExp)
-                if (auto var = index.e1.isVarExp)
-                    if (auto varDecl = var.var.isVarDeclaration)
-                        if (varDecl in locals) {
-                            const i = runExpression(index.e2, walker).asLong;
-                            locals[varDecl].asArray[cast(size_t) i] = value.asLong;
-                            return value;
-                        }
-            unsupported;
-        }
+        if (auto assign = expression.isAssignExp)
+            return runAssignExpression(assign, walker);
 
         if (auto addAssign = expression.isAddAssignExp) {
             if (auto var = addAssign.e1.isVarExp)
@@ -349,7 +236,7 @@ struct BodyWalker {
         }
 
         if (auto cast_ = expression.isCastExp)
-            return runExpression(cast_.e1, walker);
+            return coerceValueToType(runExpression(cast_.e1, walker), cast_.to);
 
         if (auto slice = expression.isSliceExp) {
             if (slice.lwr is null && slice.upr is null)
@@ -387,6 +274,217 @@ struct BodyWalker {
         unsupported;
         assert(false);
     }
+
+    private Value runCallExpression(
+        imported!"dmd.expression".CallExp call,
+        ref Walker walker,
+    ) {
+        import std.conv: text;
+
+        if (call.f is null) {
+            string argStr;
+            if (call.arguments !is null)
+                foreach (arg; callArguments(call))
+                    argStr ~= " " ~ expressionChars(arg);
+            throw new Exception(text(
+                "Unsupported callee: ",
+                expressionChars(call.e1),
+                " args:",
+                argStr,
+            ));
+        }
+
+        {
+            import dmd.id: Id;
+
+            if (call.f.ident == Id.__equals) {
+                Value[] eqArgs;
+                if (call.arguments !is null)
+                    foreach (arg; callArguments(call))
+                        eqArgs ~= runExpression(arg, walker);
+                if (eqArgs.length != 2)
+                    throw new Exception("Unsupported expression: call");
+                return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
+            }
+        }
+
+        if (call.f.fbody is null)
+            throw new Exception("No function body to execute.");
+
+        Value[] args;
+        if (call.arguments !is null)
+            foreach (arg; callArguments(call))
+                args ~= runExpression(arg, walker);
+        return walker.executeFunction(call.f, args);
+    }
+
+    private Value runEqualExpression(
+        imported!"dmd.expression".EqualExp equal,
+        ref Walker walker,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left  = runExpression(equal.e1, walker);
+        const right = runExpression(equal.e2, walker);
+        if (equal.op == EXP.notEqual)
+            return Value(left != right ? 1L : 0L);
+        return Value(left == right ? 1L : 0L);
+    }
+
+    private Value runDeclarationExpression(
+        imported!"dmd.expression".DeclarationExp decl,
+        ref Walker walker,
+    ) {
+        import std.conv: text;
+
+        const unsupportedMessage = text("Unsupported expression: ", decl.op);
+
+        void unsupportedDecl() {
+            throw new Exception(unsupportedMessage);
+        }
+
+        if (decl.declaration.isAliasDeclaration !is null)
+            return Value(0L);
+
+        auto variable = decl.declaration.isVarDeclaration;
+        if (variable is null)
+            unsupportedDecl;
+
+        if (variable.type !is null && variable.type.isTypeStruct !is null) {
+            structFields[variable] = (long[VarDeclaration]).init;
+            return Value(0L);
+        }
+
+        if (variable.type !is null && variable.type.isTypeDArray !is null)
+            return initializeArrayVariable(variable, walker, unsupportedMessage);
+
+        if (variable._init is null)
+            unsupportedDecl;
+        auto initializer = variable._init.isExpInitializer;
+        if (initializer is null)
+            unsupportedDecl;
+        auto construct = initializer.exp.isConstructExp;
+        if (construct is null)
+            unsupportedDecl;
+        Value value = coerceValueToType(
+            runExpression(construct.e2, walker),
+            variable.type,
+        );
+        locals[variable] = value;
+        return value;
+    }
+
+    private Value initializeArrayVariable(
+        VarDeclaration variable,
+        ref Walker walker,
+        in string unsupportedMessage,
+    ) {
+        if (variable._init is null) {
+            locals[variable] = Value((long[]).init);
+            return Value(0L);
+        }
+
+        auto initializer = variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(unsupportedMessage);
+
+        if (auto construct = initializer.exp.isConstructExp) {
+            if (auto literal = construct.e2.isArrayLiteralExp) {
+                long[] elements;
+                if (literal.elements !is null)
+                    foreach (elem; arrayLiteralElements(literal))
+                        elements ~= coerceIntegerToType(
+                            runExpression(elem, walker).asLong,
+                            arrayElementType(variable.type),
+                        );
+                locals[variable] = Value(elements);
+                return Value(0L);
+            }
+
+            locals[variable] = coerceValueToType(
+                runExpression(construct.e2, walker),
+                variable.type,
+            );
+            return Value(0L);
+        }
+
+        locals[variable] = coerceValueToType(
+            runExpression(initializer.exp, walker),
+            variable.type,
+        );
+        return Value(0L);
+    }
+
+    private bool isComparisonExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterOrEqual;
+    }
+
+    private Value runComparisonExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Walker walker,
+    ) {
+        import dmd.tokens: EXP;
+
+        auto cmp = expression.isBinExp;
+        const left = runExpression(cmp.e1, walker).asLong;
+        const right = runExpression(cmp.e2, walker).asLong;
+
+        if (expression.op == EXP.lessThan)
+            return Value(left < right ? 1L : 0L);
+        if (expression.op == EXP.greaterThan)
+            return Value(left > right ? 1L : 0L);
+        if (expression.op == EXP.lessOrEqual)
+            return Value(left <= right ? 1L : 0L);
+        return Value(left >= right ? 1L : 0L);
+    }
+
+    private Value runAssignExpression(
+        imported!"dmd.expression".AssignExp assign,
+        ref Walker walker,
+    ) {
+        const value = runExpression(assign.e2, walker);
+
+        if (auto var = assign.e1.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (varDecl in locals) {
+                    locals[varDecl] = coerceValueToType(value, varDecl.type);
+                    return value;
+                }
+
+        if (auto dotVar = assign.e1.isDotVarExp)
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (ownerDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            structFields[ownerDecl][fieldDecl] =
+                                coerceIntegerToType(value.asLong, fieldDecl.type);
+                            return value;
+                        }
+
+        if (auto index = assign.e1.isIndexExp)
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const i = runExpression(index.e2, walker).asLong;
+                        locals[varDecl].asArray[cast(size_t) i] =
+                            coerceIntegerToType(
+                                value.asLong,
+                                arrayElementType(varDecl.type),
+                            );
+                        return value;
+                    }
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
 }
 
 private long asLong(Value value) {
@@ -409,6 +507,62 @@ private long[] asArray(Value value) {
             return (long[]).init;
         },
     );
+}
+
+private Value coerceValueToType(
+    Value value,
+    imported!"dmd.mtype".Type type,
+) {
+    import std.sumtype: match;
+
+    if (type is null)
+        return value;
+
+    return value.match!(
+        (long l) => Value(coerceIntegerToType(l, type)),
+        (long[] a) => Value(a),
+    );
+}
+
+private long coerceIntegerToType(
+    in long value,
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return value;
+
+    const basetype = type.toBasetype;
+    switch (basetype.ty) {
+        case TY.Tint8:
+            return cast(long) cast(byte) value;
+        case TY.Tuns8:
+            return cast(long) cast(ubyte) value;
+        case TY.Tint16:
+            return cast(long) cast(short) value;
+        case TY.Tuns16:
+            return cast(long) cast(ushort) value;
+        case TY.Tint32:
+            return cast(long) cast(int) value;
+        case TY.Tuns32:
+            return cast(long) cast(uint) value;
+        case TY.Tint64:
+            return cast(long) value;
+        case TY.Tuns64:
+            return cast(long) cast(ulong) value;
+        default:
+            return value;
+    }
+}
+
+private imported!"dmd.mtype".Type arrayElementType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    return type.toBasetype.nextOf;
 }
 
 private ref auto moduleMembers(

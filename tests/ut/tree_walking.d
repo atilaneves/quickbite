@@ -1,6 +1,7 @@
 module ut.tree_walking;
 
 
+import quickbite: ExecutorBackend, runTests;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
 
@@ -16,6 +17,19 @@ unittest {
             assert(answer == 42);
         }
     });
+}
+
+@("treeWalking.publicApi")
+unittest {
+    q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests(ExecutorBackend.treeWalking);
 }
 
 @("treeWalking.localIntReturn")
@@ -594,6 +608,38 @@ unittest {
             ubyte[] arr = [10, 20, 30];
             arr[1] = 42;
             assert(arr[1] == 42);
+        }
+    });
+}
+
+@("treeWalking.castUbyteTruncates")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            int value = 258;
+            assert(cast(ubyte) value == 2);
+        }
+    });
+}
+
+@("treeWalking.ubyteLocalTruncatesOnStore")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            int source = 258;
+            ubyte value = cast(ubyte) source;
+            assert(value == 2);
+        }
+    });
+}
+
+@("treeWalking.ubyteArrayLiteralTruncatesElements")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            int value = 258;
+            ubyte[] arr = [cast(ubyte) value];
+            assert(arr[0] == 2);
         }
     });
 }
