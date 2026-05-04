@@ -180,6 +180,8 @@ long castInteger(
             return cast(int) value;
         case imported!"quickbite.ir.instruction".IntegerType.u32:
             return cast(uint) value;
+        case imported!"quickbite.ir.instruction".IntegerType.i64:
+            return cast(long) value;
     }
 }
 

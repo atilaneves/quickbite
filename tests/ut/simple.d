@@ -272,6 +272,7 @@ static foreach (T; imported!"std.meta".AliasSeq!(
     short,
     ushort,
     uint,
+    long,
 )) {
     @("simple.integralType." ~ T.stringof)
     unittest {

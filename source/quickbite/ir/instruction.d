@@ -62,6 +62,7 @@ public enum IntegerType {
     u16,
     i32,
     u32,
+    i64,
 }
 
 public struct Assert_ {
