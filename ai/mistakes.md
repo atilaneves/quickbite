@@ -33,3 +33,6 @@
 
 - No-empty-parens style applies inside `q{}` fixture source strings too;
   check no-argument calls there before asking for test feedback.
+
+- When asking for feedback on tests, stop and wait for the user to
+  respond before continuing the TDD loop or committing the test.
