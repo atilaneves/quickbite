@@ -88,7 +88,7 @@ void executeInstruction(
 ) @safe pure {
     import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
         Divide, GreaterOrEqual, GreaterThan, LessOrEqual, LessThan, Modulo,
-        Multiply, NotEqual, Subtract;
+        Multiply, NotEqual, Select, Subtract;
     import std.sumtype: match;
 
     instruction.match!(
@@ -202,6 +202,15 @@ void executeInstruction(
                 instruction.right,
                 BinaryOperation.greaterOrEqual,
             );
+        },
+        (Select instruction) {
+            temporaryValue(temporaries, instruction.destination) =
+                temporaryValue(
+                    temporaries,
+                    instruction.condition,
+                )
+                    ? temporaryValue(temporaries, instruction.ifTrue)
+                    : temporaryValue(temporaries, instruction.ifFalse);
         },
         (Assert_ instruction) {
             if (!temporaryValue(temporaries, instruction.condition))

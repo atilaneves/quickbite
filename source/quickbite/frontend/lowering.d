@@ -115,6 +115,11 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto ifStatement = statement.isIfStatement()) {
+            lowerIfStatement(ifStatement, lowerer);
+            return;
+        }
+
         import std.conv: text;
 
         throw new Exception(text("Unsupported statement: ", statement.stmt));
@@ -259,6 +264,39 @@ struct BodyLowerer {
         const value = lowerExpression(construct.e2, lowerer);
         localTemporaries[variable] = value;
         return value;
+    }
+
+    void lowerIfStatement(
+        imported!"dmd.statement".IfStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, Select;
+
+        if (statement.elsebody is null)
+            throw new Exception("Unsupported statement: If");
+
+        const condition = lowerExpression(statement.condition, lowerer);
+        const ifTrue = lowerReturnExpression(statement.ifbody, lowerer);
+        const ifFalse = lowerReturnExpression(statement.elsebody, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(Select(
+            destination,
+            condition,
+            ifTrue,
+            ifFalse,
+        ));
+        returnValue = destination;
+        hasReturn = true;
+    }
+
+    uint lowerReturnExpression(
+        imported!"dmd.statement".Statement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (auto returnStatement = statement.isReturnStatement())
+            return lowerExpression(returnStatement.exp, lowerer);
+
+        throw new Exception("Unsupported statement: If");
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
