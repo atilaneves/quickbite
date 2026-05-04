@@ -68,6 +68,22 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported call.");
 }
 
+@("negative.ifWithoutElse")
+unittest {
+    q{
+        int answer(int value) {
+            if (value == 1)
+                return 42;
+
+            return 43;
+        }
+
+        unittest {
+            assert(answer(1) == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unsupported statement: If");
+}
+
 @("negative.divisionByZero")
 unittest {
     q{
