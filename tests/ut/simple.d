@@ -262,6 +262,22 @@ unittest {
     }.runTests;
 }
 
+@("simple.ifElseOops")
+unittest {
+    q{
+        int answer(int value) {
+            if (value == 1)
+                return 42;
+            else
+                return 43;
+        }
+
+        unittest {
+            assert(answer(2) == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.functionParameterOops")
 unittest {
     q{
