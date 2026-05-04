@@ -30,3 +30,7 @@
 - DMD AST formatting helpers such as `Expression.toChars()` are not
   `@safe`; wrap them in a small `@trusted` helper before calling them
   from `@safe` lowering code.
+
+- Do not use empty parentheses for function calls. Omit them: `doStuff;`
+  not `doStuff();`. This applies to call sites everywhere, including
+  inside `q{...}` test fixtures.

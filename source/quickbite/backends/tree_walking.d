@@ -33,9 +33,18 @@ struct Walker {
         BodyWalker w;
         w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
-        if (!w.hasReturn)
+        if (!w.hasReturn && !isVoidReturn(func))
             throw new Exception("Unsupported function body.");
         return w.returnValue;
+    }
+
+    private bool isVoidReturn(
+        imported!"dmd.func".FuncDeclaration func,
+    ) @trusted {
+        import dmd.astenums: TY;
+        if (func.type is null) return false;
+        const returnType = func.type.nextOf;
+        return returnType !is null && returnType.ty == TY.Tvoid;
     }
 
     void runTest(
@@ -62,8 +71,12 @@ struct BodyWalker {
             return;
         if (func.parameters is null || args.length != func.parameters.length)
             throw new Exception("Unsupported call.");
-        foreach (i, param; functionParameters(func))
+        foreach (i, param; functionParameters(func)) {
+            import dmd.astenums: STC;
+            if (param.storage_class & (STC.ref_ | STC.out_ | STC.lazy_))
+                throw new Exception("Unsupported parameter storage class.");
             locals[param] = args[i];
+        }
     }
 
     void runStatement(
@@ -114,9 +127,8 @@ struct BodyWalker {
         }
 
         if (auto ret = statement.isReturnStatement) {
-            if (ret.exp is null)
-                throw new Exception("Unsupported function body.");
-            returnValue = runExpression(ret.exp, walker);
+            if (ret.exp !is null)
+                returnValue = runExpression(ret.exp, walker);
             hasReturn = true;
             return;
         }
@@ -143,6 +155,8 @@ struct BodyWalker {
         if (auto call = expression.isCallExp) {
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
+            if (call.f.fbody is null)
+                throw new Exception("No function body to execute.");
             long[] args;
             if (call.arguments !is null)
                 foreach (arg; callArguments(call))

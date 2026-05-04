@@ -67,7 +67,7 @@ unittest {
         unittest {
             foo;
         }
-    }).shouldThrowWithMessage("Unsupported function body.");
+    });
 }
 
 @("treeWalking.voidFunctionExplicitReturn")
@@ -80,7 +80,23 @@ unittest {
         unittest {
             foo;
         }
-    }).shouldThrowWithMessage("Unsupported function body.");
+    });
+}
+
+@("treeWalking.refParameter")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int setTo43(ref int value) {
+            value = 43;
+            return 0;
+        }
+
+        unittest {
+            int value = 42;
+            setTo43(value);
+            assert(value == 43);
+        }
+    }).shouldThrowWithMessage("Unsupported parameter storage class.");
 }
 
 @("treeWalking.externalCallee")
@@ -101,6 +117,22 @@ unittest {
 
         unittest {
             externalFunc(42);
+        }
+    }).shouldThrowWithMessage("No function body to execute.");
+}
+
+@("treeWalking.externalCalleeArgNotEvaluated")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        extern int externalFunc(int value);
+
+        int boom() {
+            assert(false);
+            return 0;
+        }
+
+        unittest {
+            externalFunc(boom);
         }
     }).shouldThrowWithMessage("No function body to execute.");
 }

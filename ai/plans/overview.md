@@ -101,21 +101,124 @@ MIR is the leading candidate for its low startup overhead and suitability
 for language-runtime use. Only pursue if the interpreter benchmarks leave
 meaningful headroom.
 
+## Toy Serialization Library
+
+`tests/minicereal.d` is a minimal integer serializer whose unittest
+blocks serve as the concrete language-coverage target. It is D source
+but is NOT a dub test target — quickbite compiles and executes it.
+
+The library encodes and decodes all eight integral types little-endian.
+`static foreach` and `T.sizeof` are resolved by DMD before the lowerer
+sees the AST, so the lowerer handles only flat, concrete statements —
+no template machinery is needed in quickbite.
+
+### Free-function interface
+
+    void encode(T)(T val, ref ubyte[] output) {
+        static foreach(i; 0 .. T.sizeof)
+            output ~= cast(ubyte)(val >> (i * 8));
+    }
+
+    T decode(T)(in ubyte[] input, ref size_t pos) {
+        T result = 0;
+        static foreach(i; 0 .. T.sizeof)
+            result |= cast(T)(input[pos++]) << (i * 8);
+        return result;
+    }
+
+### Required unittests
+
+Each integral type must have at minimum:
+
+- an encode test: fixed value → expected byte sequence
+- a decode test: known byte sequence → expected value
+- a round-trip test: encode then decode yields the original value
+
+Example for `int`:
+
+    unittest {
+        ubyte[] buf;
+        encode(0x01020304, buf);
+        assert(buf.length == 4);
+        assert(buf[0] == 0x04);  // little-endian
+        assert(buf[1] == 0x03);
+        assert(buf[2] == 0x02);
+        assert(buf[3] == 0x01);
+    }
+
+    unittest {
+        ubyte[] buf;
+        int x = 0x01020304;
+        encode(x, buf);
+        size_t pos = 0;
+        assert(decode!int(buf, pos) == x);
+    }
+
+Cover at minimum: ubyte (1 byte), ushort (2 bytes), uint (4 bytes),
+ulong (8 bytes), and their signed counterparts. Include at least one
+negative signed value to verify sign-bit handling.
+
+### Struct-based wrapper (added once structs are supported)
+
+    struct Minicereal {
+        ubyte[] bytes;
+
+        void put(T)(T val) { encode(val, bytes); }
+        T get(T)(ref size_t pos) { return decode!T(bytes, pos); }
+    }
+
+    unittest {
+        Minicereal c;
+        c.put(42);
+        size_t pos = 0;
+        assert(c.get!int(pos) == 42);
+    }
+
+## Language Coverage Required
+
+Features the lowerer must gain, in dependency order. Each builds on
+the previous; add three test fixtures per feature (pass / assert-fail /
+unsupported diagnostic) and keep `dub test` green after each sub-slice.
+
+1. Void functions — currently rejected; needed for encode.
+2. Function parameters — `in T val`, `ref ubyte[]`, `ref size_t`.
+3. All 8 integral types — byte/ubyte/short/ushort/int/uint/long/ulong.
+   The runtime already uses `long[]`; the lowerer needs type-correct
+   truncation on store.
+4. Arithmetic — +, -, *, /, unary −.
+5. Additional comparisons — !=, <, >, <=, >=.
+6. Boolean operators — &&, ||, !.
+7. if / else — conditional execution and early returns.
+8. Bit operations — >>, <<, |, &, ^, ~.
+9. Cast — `cast(ubyte)`, `cast(T)` between integer types.
+10. Compound assignment — `|=`, `+=`, `-=`, `~=` as statements.
+11. Dynamic arrays — `ubyte[]` type; `~=` append; `[i]` index;
+    `.length` property; post-increment on `size_t` index.
+12. Structs — definitions, field access and assignment; required for
+    the Minicereal wrapper and as the first step toward cerealed.
+
 ## Implementation Phases
 
 1. Add Executor interface; wrap current code as IrInterpreterExecutor.
-2. Expand pure-value language coverage before adding comparison backends,
-   in this order: locals and variable reads; integer arithmetic; simple
-   function parameters; boolean comparisons beyond ==; if/else and early
-   returns; loops; simple structs by value. Keep dub test green after
-   each slice.
-3. Implement TreeWalkingExecutor.
-4. Build benchmarking harness; run tree-walker vs IR interpreter.
-5. Extend IR with explicit Return (see ai/plans/ir.md); implement BytecodeExecutor.
-6. Three-way benchmark.
-7. Spike native call bridging (libffi vs JIT stubs) when the first test
-   that calls a dependency needs to run.
-8. Decide on JitExecutor based on benchmark results.
+   (Done.)
+2. Expand IrInterpreterExecutor through the language coverage list
+   above, one sub-slice at a time. Keep `dub test` green after each.
+3. Write `tests/minicereal.d` once the language coverage list is
+   complete. Its unittest blocks must all pass on IrInterpreterExecutor
+   before proceeding.
+4. Implement TreeWalkingExecutor, brought to full parity with phase 2.
+   Backend-parity tests verify identical pass/fail results. Minicereal
+   tests must pass on both backends.
+5. Build benchmarking harness; run tree-walker vs IR interpreter on
+   the full minicereal test suite.
+6. Extend IR with explicit Return (see ai/plans/ir.md); implement
+   BytecodeExecutor; three-way benchmark.
+7. Graduate to real cerealed: identify gaps between minicereal and
+   cerealed's test suite; fill them incrementally (each gap is its
+   own sub-phase: ranges, UDAs, classes, exceptions, …).
+8. Spike native call bridging (libffi vs JIT stubs) when the first
+   test that calls a dependency needs to run.
+9. Decide on JitExecutor based on benchmark results.
 
 ## Test Plan
 
