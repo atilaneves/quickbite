@@ -124,7 +124,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-            Instruction, Multiply, Subtract;
+            Divide, Instruction, Multiply, Subtract;
 
         if (auto integer = expression.isIntegerExp()) {
             const destination = allocateTemporary();
@@ -193,6 +193,18 @@ struct BodyLowerer {
             const right = lowerExpression(multiply.e2, lowerer);
             const destination = allocateTemporary;
             instructions ~= Instruction(Multiply(
+                destination,
+                left,
+                right,
+            ));
+            return destination;
+        }
+
+        if (auto divide = expression.isDivExp) {
+            const left = lowerExpression(divide.e1, lowerer);
+            const right = lowerExpression(divide.e2, lowerer);
+            const destination = allocateTemporary;
+            instructions ~= Instruction(Divide(
                 destination,
                 left,
                 right,

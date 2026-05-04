@@ -74,6 +74,20 @@ unittest {
     }.runTests;
 }
 
+@("simple.intDivision")
+unittest {
+    q{
+        int answer() {
+            int value = 84;
+            return value / 2;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests;
+}
+
 @("simple.localIntReturnOops")
 unittest {
     q{

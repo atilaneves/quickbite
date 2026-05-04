@@ -87,7 +87,7 @@ void executeInstruction(
     ref long[] temporaries,
 ) @safe pure {
     import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-        Multiply, Subtract;
+        Divide, Multiply, Subtract;
     import std.sumtype: match;
 
     instruction.match!(
@@ -108,6 +108,11 @@ void executeInstruction(
         (Multiply instruction) {
             temporaryValue(temporaries, instruction.destination) =
                 temporaryValue(temporaries, instruction.left) *
+                temporaryValue(temporaries, instruction.right);
+        },
+        (Divide instruction) {
+            temporaryValue(temporaries, instruction.destination) =
+                temporaryValue(temporaries, instruction.left) /
                 temporaryValue(temporaries, instruction.right);
         },
         (Call instruction) {
