@@ -172,6 +172,8 @@ long castInteger(
             return cast(byte) value;
         case imported!"quickbite.ir.instruction".IntegerType.u8:
             return cast(ubyte) value;
+        case imported!"quickbite.ir.instruction".IntegerType.i16:
+            return cast(short) value;
         case imported!"quickbite.ir.instruction".IntegerType.i32:
             return cast(int) value;
     }

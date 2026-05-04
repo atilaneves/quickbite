@@ -500,6 +500,9 @@ private imported!"quickbite.ir.instruction".IntegerType castTarget(
     if (cast_.to.toBasetype().ty == TY.Tuns8)
         return IntegerType.u8;
 
+    if (cast_.to.toBasetype().ty == TY.Tint16)
+        return IntegerType.i16;
+
     if (cast_.to.toBasetype().ty == TY.Tint32)
         return IntegerType.i32;
 

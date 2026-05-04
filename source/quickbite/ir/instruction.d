@@ -58,6 +58,7 @@ public struct CastInt {
 public enum IntegerType {
     i8,
     u8,
+    i16,
     i32,
 }
 
