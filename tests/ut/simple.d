@@ -46,6 +46,20 @@ unittest {
     }.runTests;
 }
 
+@("simple.intSubtraction")
+unittest {
+    q{
+        int answer() {
+            int value = 44;
+            return value - 2;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests;
+}
+
 @("simple.localIntReturnOops")
 unittest {
     q{

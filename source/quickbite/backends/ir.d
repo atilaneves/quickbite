@@ -86,7 +86,8 @@ void executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
-    import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal;
+    import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
+        Subtract;
     import std.sumtype: match;
 
     instruction.match!(
@@ -97,6 +98,11 @@ void executeInstruction(
         (Add instruction) {
             temporaryValue(temporaries, instruction.destination) =
                 temporaryValue(temporaries, instruction.left) +
+                temporaryValue(temporaries, instruction.right);
+        },
+        (Subtract instruction) {
+            temporaryValue(temporaries, instruction.destination) =
+                temporaryValue(temporaries, instruction.left) -
                 temporaryValue(temporaries, instruction.right);
         },
         (Call instruction) {
