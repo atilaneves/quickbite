@@ -68,18 +68,18 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported call.");
 }
 
-@("negative.ifWithoutElse")
+@("negative.ifBodyAssignment")
 unittest {
     q{
         int answer(int value) {
             if (value == 1)
-                return 42;
+                value = 2;
 
-            return 43;
+            return value;
         }
 
         unittest {
-            assert(answer(1) == 42);
+            assert(answer(1) == 2);
         }
     }.runTests.shouldThrowWithMessage("Unsupported statement: If");
 }

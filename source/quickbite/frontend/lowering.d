@@ -85,6 +85,9 @@ struct BodyLowerer {
 
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
+    private bool hasPendingEarlyReturn;
+    private uint pendingEarlyReturnCondition;
+    private uint pendingEarlyReturnValue;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool hasReturn;
     public uint returnValue;
@@ -110,7 +113,7 @@ struct BodyLowerer {
         }
 
         if (auto returnStatement = statement.isReturnStatement()) {
-            returnValue = lowerExpression(returnStatement.exp, lowerer);
+            returnValue = lowerReturnValue(returnStatement.exp, lowerer);
             hasReturn = true;
             return;
         }
@@ -272,19 +275,18 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: Instruction, Select;
 
-        if (statement.elsebody is null)
-            throw new Exception("Unsupported statement: If");
-
         const condition = lowerExpression(statement.condition, lowerer);
         const ifTrue = lowerReturnExpression(statement.ifbody, lowerer);
+
+        if (statement.elsebody is null) {
+            hasPendingEarlyReturn = true;
+            pendingEarlyReturnCondition = condition;
+            pendingEarlyReturnValue = ifTrue;
+            return;
+        }
+
         const ifFalse = lowerReturnExpression(statement.elsebody, lowerer);
-        const destination = allocateTemporary;
-        instructions ~= Instruction(Select(
-            destination,
-            condition,
-            ifTrue,
-            ifFalse,
-        ));
+        const destination = lowerSelect(condition, ifTrue, ifFalse);
         returnValue = destination;
         hasReturn = true;
     }
@@ -297,6 +299,35 @@ struct BodyLowerer {
             return lowerExpression(returnStatement.exp, lowerer);
 
         throw new Exception("Unsupported statement: If");
+    }
+
+    uint lowerReturnValue(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        const value = lowerExpression(expression, lowerer);
+        if (!hasPendingEarlyReturn)
+            return value;
+
+        hasPendingEarlyReturn = false;
+        return lowerSelect(
+            pendingEarlyReturnCondition,
+            pendingEarlyReturnValue,
+            value,
+        );
+    }
+
+    uint lowerSelect(in uint condition, in uint ifTrue, in uint ifFalse) @safe {
+        import quickbite.ir.instruction: Instruction, Select;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(Select(
+            destination,
+            condition,
+            ifTrue,
+            ifFalse,
+        ));
+        return destination;
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
