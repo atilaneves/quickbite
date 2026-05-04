@@ -87,8 +87,8 @@ void executeInstruction(
     ref long[] temporaries,
 ) @safe pure {
     import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-        Divide, GreaterThan, LessOrEqual, LessThan, Modulo, Multiply,
-        Subtract;
+        Divide, GreaterOrEqual, GreaterThan, LessOrEqual, LessThan, Modulo,
+        Multiply, Subtract;
     import std.sumtype: match;
 
     instruction.match!(
@@ -185,6 +185,15 @@ void executeInstruction(
                 BinaryOperation.greaterThan,
             );
         },
+        (GreaterOrEqual instruction) {
+            executeBinaryInstruction(
+                temporaries,
+                instruction.destination,
+                instruction.left,
+                instruction.right,
+                BinaryOperation.greaterOrEqual,
+            );
+        },
         (Assert_ instruction) {
             if (!temporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
@@ -223,6 +232,7 @@ enum BinaryOperation {
     lessThan,
     lessOrEqual,
     greaterThan,
+    greaterOrEqual,
 }
 
 void executeBinaryInstruction(
@@ -265,6 +275,9 @@ void executeBinaryInstruction(
             break;
         case BinaryOperation.greaterThan:
             result = leftValue > rightValue;
+            break;
+        case BinaryOperation.greaterOrEqual:
+            result = leftValue >= rightValue;
             break;
     }
 
