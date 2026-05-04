@@ -36,3 +36,7 @@
 
 - When asking for feedback on tests, stop and wait for the user to
   respond before continuing the TDD loop or committing the test.
+
+- When testing lowering for a specific operator, do not use all-literal
+  expressions unless constant folding is the behavior under test. Use a
+  value that survives DMD semantic analysis, such as a function call.

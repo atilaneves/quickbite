@@ -113,7 +113,7 @@ unittest {
         unittest {
             assert(answer == 43);
         }
-    }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
 @("simple.oops")
@@ -126,5 +126,5 @@ unittest {
         unittest {
             assert(answer == 43);
         }
-    }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }

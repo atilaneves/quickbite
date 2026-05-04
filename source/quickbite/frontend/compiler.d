@@ -2,6 +2,15 @@ module quickbite.frontend.compiler;
 
 private:
 
+private alias ParsedModule = imported!"std.typecons".Tuple!(
+    imported!"dmd.dmodule".Module,
+    "module_",
+    imported!"dmd.frontend".Diagnostics,
+    "diagnostics",
+);
+
+// DMD owns process-global compiler state; `Compiler` serializes access with a
+// mutex and is initialized once for this process.
 __gshared Compiler compiler;
 // DMD registers modules by filename, so each parse call needs a unique name.
 private shared uint _moduleCounter;
@@ -14,7 +23,7 @@ shared static ~this() {
     compiler.shutdown();
 }
 
-public auto parseModule(in string source) {
+public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
@@ -61,7 +70,7 @@ final class Compiler {
         initialized = false;
     }
 
-    auto parseModule(in string source) {
+    ParsedModule parseModule(in string source) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
         import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
@@ -81,7 +90,7 @@ final class Compiler {
             ".d",
         );
 
-        auto parsed = dmdParseModule(fileName, source);
+        ParsedModule parsed = dmdParseModule(fileName, source);
         if (parsed.diagnostics.hasErrors())
             throw new Exception(diagnosticMessage());
 

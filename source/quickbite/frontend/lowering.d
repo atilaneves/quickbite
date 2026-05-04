@@ -152,8 +152,17 @@ struct BodyLowerer {
             return destination;
         }
 
-        if (auto equal = expression.isEqualExp)
+        if (auto equal = expression.isEqualExp) {
+            import dmd.tokens: EXP;
+
+            if (equal.op != EXP.equal) {
+                import std.conv: text;
+
+                throw new Exception(text("Unsupported expression: ", equal.op));
+            }
+
             return lowerBinaryExpression!Equal(equal, lowerer);
+        }
 
         if (auto add = expression.isAddExp)
             return lowerBinaryExpression!Add(add, lowerer);

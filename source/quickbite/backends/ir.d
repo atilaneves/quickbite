@@ -1,26 +1,19 @@
 module quickbite.backends.ir;
 
-
-import quickbite.executor;
-
-
-final class IrExecutor : Executor {
-    void runTests(in string source) {
-        import quickbite.frontend.compiler;
-
-        // Keep `parsed` mutable: lowerModule consumes DMD's mutable
-        // Module type.
-        auto parsed = quickbite.frontend.compiler.parseModule(source);
-        const loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
-        executeUnitTests(loweredModule);
-    }
-}
-
 private:
+
+public void runIrTests(in string source) {
+    import quickbite.frontend.compiler;
+
+    // Keep `parsed` mutable: lowerModule consumes DMD's mutable Module type.
+    auto parsed = quickbite.frontend.compiler.parseModule(source);
+    const loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
+    executeUnitTests(loweredModule);
+}
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
-        executeTest(
+        executeInstructions(
             module_,
             test.instructions,
             test.numTemporaries,
@@ -32,6 +25,7 @@ long executeFunction(
     in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
 ) @safe pure {
+    // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
         if (function_.name == calleeName)
             return executeFunctionBody(
@@ -45,22 +39,14 @@ long executeFunction(
     throw new Exception("Unsupported callee.");
 }
 
-void executeTest(
-    in imported!"quickbite.ir.module_".Module module_,
-    in imported!"quickbite.ir.instruction".Instruction[] instructions,
-    in uint numTemporaries,
-) @safe pure {
-    executeInstructions(module_, instructions, numTemporaries);
-}
-
 long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint returnValue,
     in uint numTemporaries,
 ) @safe pure {
-    auto temporaries = executeInstructions(module_, instructions, numTemporaries);
-    return temporaryValue(temporaries, returnValue);
+    const temporaries = executeInstructions(module_, instructions, numTemporaries);
+    return readTemporaryValue(temporaries, returnValue);
 }
 
 long[] executeInstructions(
@@ -68,7 +54,7 @@ long[] executeInstructions(
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
 ) @safe pure {
-    long[] temporaries = new long[](numTemporaries);
+    long[] temporaries = new long[numTemporaries];
 
     foreach (instruction; instructions) {
         executeInstruction(
@@ -194,9 +180,11 @@ void executeBinaryInstruction(
             result = leftValue * rightValue;
             break;
         case BinaryOperation.divide:
+            enforceNonZeroDivisor(rightValue, "Integer division by zero.");
             result = leftValue / rightValue;
             break;
         case BinaryOperation.modulo:
+            enforceNonZeroDivisor(rightValue, "Integer modulo by zero.");
             result = leftValue % rightValue;
             break;
         case BinaryOperation.equal:
@@ -207,7 +195,22 @@ void executeBinaryInstruction(
     temporaryValue(temporaries, destination) = result;
 }
 
-ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
-    assert(index < temporaries.length, "IR: temporary index out of range");
+void enforceNonZeroDivisor(in long value, in string message) @safe pure {
+    if (value == 0)
+        throw new Exception(message);
+}
+
+long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
+    enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
+}
+
+ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
+    enforceTemporaryIndex(temporaries.length, index);
+    return temporaries[index];
+}
+
+void enforceTemporaryIndex(in ulong length, in uint index) @safe pure {
+    if (index >= length)
+        throw new Exception("IR: temporary index out of range");
 }
