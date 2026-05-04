@@ -10,76 +10,31 @@ public struct ConstInt {
     int value;
 }
 
-public struct Add {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct Subtract {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct Multiply {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct Divide {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct Modulo {
-    uint destination;
-    uint left;
-    uint right;
-}
-
 public struct Call {
     uint destination;
     string calleeName;
     uint[] arguments;
 }
 
-public struct Equal {
+public struct BinaryOp {
     uint destination;
     uint left;
     uint right;
+    Operation operation;
 }
 
-public struct NotEqual {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct LessThan {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct LessOrEqual {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct GreaterThan {
-    uint destination;
-    uint left;
-    uint right;
-}
-
-public struct GreaterOrEqual {
-    uint destination;
-    uint left;
-    uint right;
+public enum Operation {
+    add,
+    subtract,
+    multiply,
+    divide,
+    modulo,
+    equal,
+    notEqual,
+    lessThan,
+    lessOrEqual,
+    greaterThan,
+    greaterOrEqual,
 }
 
 public struct Select {
@@ -95,18 +50,8 @@ public struct Assert_ {
 
 public alias Instruction = SumType!(
     ConstInt,
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Modulo,
     Call,
-    Equal,
-    NotEqual,
-    LessThan,
-    LessOrEqual,
-    GreaterThan,
-    GreaterOrEqual,
+    BinaryOp,
     Select,
     Assert_,
 );

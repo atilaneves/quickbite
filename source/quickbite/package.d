@@ -3,7 +3,7 @@ module quickbite;
 private:
 
 public void runTests(in string source) {
-    import quickbite.backends.ir: runIrTests;
+    import quickbite.backends.ir: IrExecutor;
 
-    source.runIrTests;
+    (new IrExecutor).runTests(source);
 }

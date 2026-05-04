@@ -22,7 +22,7 @@ struct Lowerer {
             return loweredModule;
 
         foreach (member; moduleMembers(sourceModule)) {
-            if (auto unitTest = member.isUnitTestDeclaration())
+            if (auto unitTest = member.isUnitTestDeclaration)
                 loweredModule.tests ~= lowerTest(unitTest);
         }
 
@@ -97,7 +97,7 @@ struct BodyLowerer {
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
-        if (auto compound = statement.isCompoundStatement()) {
+        if (auto compound = statement.isCompoundStatement) {
             foreach (child; compoundStatements(compound)) {
                 lowerStatement(child, lowerer);
                 if (hasReturn)
@@ -107,18 +107,18 @@ struct BodyLowerer {
             return;
         }
 
-        if (auto expressionStatement = statement.isExpStatement()) {
+        if (auto expressionStatement = statement.isExpStatement) {
             lowerExpression(expressionStatement.exp, lowerer);
             return;
         }
 
-        if (auto returnStatement = statement.isReturnStatement()) {
+        if (auto returnStatement = statement.isReturnStatement) {
             returnValue = lowerReturnValue(returnStatement.exp, lowerer);
             hasReturn = true;
             return;
         }
 
-        if (auto ifStatement = statement.isIfStatement()) {
+        if (auto ifStatement = statement.isIfStatement) {
             lowerIfStatement(ifStatement, lowerer);
             return;
         }
@@ -133,11 +133,10 @@ struct BodyLowerer {
         imported!"dmd.expression".Expression expression,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-            Divide, GreaterOrEqual, GreaterThan, Instruction, LessOrEqual,
-            LessThan, Modulo, Multiply, NotEqual, Subtract;
+        import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
+            Operation;
 
-        if (auto integer = expression.isIntegerExp()) {
+        if (auto integer = expression.isIntegerExp) {
             const destination = allocateTemporary();
             instructions ~= Instruction(ConstInt(
                 destination,
@@ -146,13 +145,12 @@ struct BodyLowerer {
             return destination;
         }
 
-        if (auto call = expression.isCallExp()) {
-            auto arguments = lowerCallArguments(call, lowerer);
-
+        if (auto call = expression.isCallExp) {
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
 
             lowerer.ensureFunctionLowered(call.f);
+            auto arguments = lowerCallArguments(call, lowerer);
 
             const destination = allocateTemporary();
             instructions ~= Instruction(Call(
@@ -167,51 +165,70 @@ struct BodyLowerer {
             import dmd.tokens: EXP;
 
             if (equal.op == EXP.notEqual)
-                return lowerBinaryExpression!NotEqual(equal, lowerer);
+                return lowerBinaryExpression(equal, Operation.notEqual, lowerer);
 
-            return lowerBinaryExpression!Equal(equal, lowerer);
+            return lowerBinaryExpression(equal, Operation.equal, lowerer);
         }
 
+        // DMD has typed accessors for arithmetic expressions but not CmpExp,
+        // so comparisons dispatch by operator and then narrow through a
+        // checked @trusted cast.
         import dmd.tokens: EXP;
 
         if (expression.op == EXP.lessThan)
-            return lowerBinaryExpression!LessThan(castCmpExpression(expression), lowerer);
+            return lowerBinaryExpression(
+                castCmpExpression(expression),
+                Operation.lessThan,
+                lowerer,
+            );
 
         if (expression.op == EXP.lessOrEqual)
-            return lowerBinaryExpression!LessOrEqual(castCmpExpression(expression), lowerer);
+            return lowerBinaryExpression(
+                castCmpExpression(expression),
+                Operation.lessOrEqual,
+                lowerer,
+            );
 
         if (expression.op == EXP.greaterThan)
-            return lowerBinaryExpression!GreaterThan(castCmpExpression(expression), lowerer);
+            return lowerBinaryExpression(
+                castCmpExpression(expression),
+                Operation.greaterThan,
+                lowerer,
+            );
 
         if (expression.op == EXP.greaterOrEqual)
-            return lowerBinaryExpression!GreaterOrEqual(castCmpExpression(expression), lowerer);
+            return lowerBinaryExpression(
+                castCmpExpression(expression),
+                Operation.greaterOrEqual,
+                lowerer,
+            );
 
         if (auto add = expression.isAddExp)
-            return lowerBinaryExpression!Add(add, lowerer);
+            return lowerBinaryExpression(add, Operation.add, lowerer);
 
         if (auto subtract = expression.isMinExp)
-            return lowerBinaryExpression!Subtract(subtract, lowerer);
+            return lowerBinaryExpression(subtract, Operation.subtract, lowerer);
 
         if (auto multiply = expression.isMulExp)
-            return lowerBinaryExpression!Multiply(multiply, lowerer);
+            return lowerBinaryExpression(multiply, Operation.multiply, lowerer);
 
         if (auto divide = expression.isDivExp)
-            return lowerBinaryExpression!Divide(divide, lowerer);
+            return lowerBinaryExpression(divide, Operation.divide, lowerer);
 
         if (auto modulo = expression.isModExp)
-            return lowerBinaryExpression!Modulo(modulo, lowerer);
+            return lowerBinaryExpression(modulo, Operation.modulo, lowerer);
 
-        if (auto assert_ = expression.isAssertExp()) {
+        if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
             return condition;
         }
 
-        if (auto declaration = expression.isDeclarationExp())
+        if (auto declaration = expression.isDeclarationExp)
             return lowerDeclaration(declaration, lowerer);
 
-        if (auto variable = expression.isVarExp()) {
-            if (auto var = variable.var.isVarDeclaration()) {
+        if (auto variable = expression.isVarExp) {
+            if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
                     return *temporary;
             }
@@ -226,19 +243,21 @@ struct BodyLowerer {
         throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
-    uint lowerBinaryExpression(InstructionType, Expression)(
+    uint lowerBinaryExpression(Expression)(
         Expression expression,
+        in imported!"quickbite.ir.instruction".Operation operation,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction;
+        import quickbite.ir.instruction: BinaryOp, Instruction;
 
         const left = lowerExpression(expression.e1, lowerer);
         const right = lowerExpression(expression.e2, lowerer);
         const destination = allocateTemporary;
-        instructions ~= Instruction(InstructionType(
+        instructions ~= Instruction(BinaryOp(
             destination,
             left,
             right,
+            operation,
         ));
         return destination;
     }
@@ -249,18 +268,18 @@ struct BodyLowerer {
     ) @safe {
         import std.conv: text;
 
-        auto variable = declaration.declaration.isVarDeclaration();
+        auto variable = declaration.declaration.isVarDeclaration;
         if (variable is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
         if (variable._init is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
-        auto initializer = variable._init.isExpInitializer();
+        auto initializer = variable._init.isExpInitializer;
         if (initializer is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
-        auto construct = initializer.exp.isConstructExp();
+        auto construct = initializer.exp.isConstructExp;
         if (construct is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -295,10 +314,10 @@ struct BodyLowerer {
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
-        if (auto returnStatement = statement.isReturnStatement())
+        if (auto returnStatement = statement.isReturnStatement)
             return lowerExpression(returnStatement.exp, lowerer);
 
-        throw new Exception("Unsupported statement: If");
+        throw new Exception("Unsupported if-branch: expected return");
     }
 
     uint lowerReturnValue(
@@ -337,10 +356,13 @@ struct BodyLowerer {
         if (function_.parameters.length > 1)
             throw new Exception("Unsupported function parameters.");
 
-        foreach (parameter; functionParameters(function_))
+        uint numParameters;
+        foreach (parameter; functionParameters(function_)) {
             localTemporaries[parameter] = allocateTemporary;
+            ++numParameters;
+        }
 
-        return nextTemporary;
+        return numParameters;
     }
 
     uint[] lowerCallArguments(
@@ -382,7 +404,9 @@ private string expressionChars(
 private imported!"dmd.expression".CmpExp castCmpExpression(
     imported!"dmd.expression".Expression expression,
 ) @trusted {
-    return cast(imported!"dmd.expression".CmpExp) expression;
+    auto result = cast(imported!"dmd.expression".CmpExp) expression;
+    assert(result !is null, "Expected DMD CmpExp for comparison operator");
+    return result;
 }
 
 private ref auto compoundStatements(

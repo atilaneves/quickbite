@@ -2,7 +2,7 @@ module quickbite.frontend.compiler;
 
 private:
 
-private alias ParsedModule = imported!"std.typecons".Tuple!(
+public alias ParsedModule = imported!"std.typecons".Tuple!(
     imported!"dmd.dmodule".Module,
     "module_",
     imported!"dmd.frontend".Diagnostics,

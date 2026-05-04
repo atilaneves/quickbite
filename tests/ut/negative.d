@@ -65,7 +65,20 @@ unittest {
         unittest {
             assert(answer(40, 2) == 42);
         }
-    }.runTests.shouldThrowWithMessage("Unsupported call.");
+    }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
+}
+
+@("negative.multipleParameters")
+unittest {
+    q{
+        int answer(int left, int right) {
+            return left;
+        }
+
+        unittest {
+            assert(answer(42, 43) == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
 }
 
 @("negative.ifBodyAssignment")
@@ -81,7 +94,7 @@ unittest {
         unittest {
             assert(answer(1) == 2);
         }
-    }.runTests.shouldThrowWithMessage("Unsupported statement: If");
+    }.runTests.shouldThrowWithMessage("Unsupported if-branch: expected return");
 }
 
 @("negative.divisionByZero")

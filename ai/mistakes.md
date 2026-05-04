@@ -43,3 +43,7 @@
 
 - Do not contort initializers to avoid explicit local array types. Prefer
   `uint[] values;` over noisy forms like `auto values = cast(uint[]) [];`.
+
+- Do not use variadic D functions as simple call-argument fixtures. They
+  introduce DMD/runtime varargs constructs and can fail for unrelated
+  reasons before the VM reaches the intended behavior.

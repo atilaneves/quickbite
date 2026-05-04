@@ -2,12 +2,18 @@ module quickbite.backends.ir;
 
 private:
 
+public final class IrExecutor : imported!"quickbite.executor".Executor {
+    public void runTests(in string source) {
+        source.runIrTests;
+    }
+}
+
 public void runIrTests(in string source) {
-    import quickbite.frontend.compiler;
+    import quickbite.frontend.compiler: ParsedModule, lowerModule, parseModule;
 
     // Keep `parsed` mutable: lowerModule consumes DMD's mutable Module type.
-    auto parsed = quickbite.frontend.compiler.parseModule(source);
-    const loweredModule = quickbite.frontend.compiler.lowerModule(parsed.module_);
+    ParsedModule parsed = parseModule(source);
+    const loweredModule = lowerModule(parsed.module_);
     executeUnitTests(loweredModule);
 }
 
@@ -24,7 +30,8 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
 long executeFunction(
     in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
-    in long[] arguments,
+    ref long[] callerTemporaries,
+    in uint[] argumentIndices,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -35,7 +42,7 @@ long executeFunction(
                 function_.returnValue,
                 function_.numParameters,
                 function_.numTemporaries,
-                arguments,
+                argumentValues(callerTemporaries, argumentIndices),
             );
     }
 
@@ -86,134 +93,43 @@ void executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
-    import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-        Divide, GreaterOrEqual, GreaterThan, LessOrEqual, LessThan, Modulo,
-        Multiply, NotEqual, Select, Subtract;
+    import quickbite.ir.instruction: Assert_, BinaryOp, Call, ConstInt, Select;
     import std.sumtype: match;
 
     instruction.match!(
         (ConstInt instruction) {
-            temporaryValue(temporaries, instruction.destination) =
+            writeTemporaryValue(temporaries, instruction.destination) =
                 instruction.value;
         },
-        (Add instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.add,
-            );
-        },
-        (Subtract instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.subtract,
-            );
-        },
-        (Multiply instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.multiply,
-            );
-        },
-        (Divide instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.divide,
-            );
-        },
-        (Modulo instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.modulo,
-            );
-        },
         (const Call instruction) {
-            temporaryValue(temporaries, instruction.destination) =
+            writeTemporaryValue(temporaries, instruction.destination) =
                 executeFunction(
                     module_,
                     instruction.calleeName,
-                    argumentValues(temporaries, instruction.arguments),
+                    temporaries,
+                    instruction.arguments,
                 );
         },
-        (Equal instruction) {
+        (BinaryOp instruction) {
             executeBinaryInstruction(
                 temporaries,
                 instruction.destination,
                 instruction.left,
                 instruction.right,
-                BinaryOperation.equal,
-            );
-        },
-        (NotEqual instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.notEqual,
-            );
-        },
-        (LessThan instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.lessThan,
-            );
-        },
-        (LessOrEqual instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.lessOrEqual,
-            );
-        },
-        (GreaterThan instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.greaterThan,
-            );
-        },
-        (GreaterOrEqual instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                BinaryOperation.greaterOrEqual,
+                instruction.operation,
             );
         },
         (Select instruction) {
-            temporaryValue(temporaries, instruction.destination) =
-                temporaryValue(
+            writeTemporaryValue(temporaries, instruction.destination) =
+                readTemporaryValue(
                     temporaries,
                     instruction.condition,
                 )
-                    ? temporaryValue(temporaries, instruction.ifTrue)
-                    : temporaryValue(temporaries, instruction.ifFalse);
+                    ? readTemporaryValue(temporaries, instruction.ifTrue)
+                    : readTemporaryValue(temporaries, instruction.ifFalse);
         },
         (Assert_ instruction) {
-            if (!temporaryValue(temporaries, instruction.condition))
+            if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
         },
     );
@@ -228,30 +144,16 @@ void writeArguments(
         throw new Exception("Unsupported call.");
 
     foreach (index, argument; arguments)
-        temporaryValue(temporaries, cast(uint) index) = argument;
+        writeTemporaryValue(temporaries, cast(uint) index) = argument;
 }
 
 long[] argumentValues(ref long[] temporaries, in uint[] arguments) @safe pure {
     long[] result;
 
     foreach (argument; arguments)
-        result ~= temporaryValue(temporaries, argument);
+        result ~= readTemporaryValue(temporaries, argument);
 
     return result;
-}
-
-enum BinaryOperation {
-    add,
-    subtract,
-    multiply,
-    divide,
-    modulo,
-    equal,
-    notEqual,
-    lessThan,
-    lessOrEqual,
-    greaterThan,
-    greaterOrEqual,
 }
 
 void executeBinaryInstruction(
@@ -259,51 +161,51 @@ void executeBinaryInstruction(
     in uint destination,
     in uint left,
     in uint right,
-    in BinaryOperation operation,
+    in imported!"quickbite.ir.instruction".Operation operation,
 ) @safe pure {
-    const leftValue = temporaryValue(temporaries, left);
-    const rightValue = temporaryValue(temporaries, right);
+    const leftValue = readTemporaryValue(temporaries, left);
+    const rightValue = readTemporaryValue(temporaries, right);
     long result;
 
     final switch (operation) {
-        case BinaryOperation.add:
+        case imported!"quickbite.ir.instruction".Operation.add:
             result = leftValue + rightValue;
             break;
-        case BinaryOperation.subtract:
+        case imported!"quickbite.ir.instruction".Operation.subtract:
             result = leftValue - rightValue;
             break;
-        case BinaryOperation.multiply:
+        case imported!"quickbite.ir.instruction".Operation.multiply:
             result = leftValue * rightValue;
             break;
-        case BinaryOperation.divide:
+        case imported!"quickbite.ir.instruction".Operation.divide:
             enforceNonZeroDivisor(rightValue, "Integer division by zero.");
             result = leftValue / rightValue;
             break;
-        case BinaryOperation.modulo:
+        case imported!"quickbite.ir.instruction".Operation.modulo:
             enforceNonZeroDivisor(rightValue, "Integer modulo by zero.");
             result = leftValue % rightValue;
             break;
-        case BinaryOperation.equal:
+        case imported!"quickbite.ir.instruction".Operation.equal:
             result = leftValue == rightValue;
             break;
-        case BinaryOperation.notEqual:
+        case imported!"quickbite.ir.instruction".Operation.notEqual:
             result = leftValue != rightValue;
             break;
-        case BinaryOperation.lessThan:
+        case imported!"quickbite.ir.instruction".Operation.lessThan:
             result = leftValue < rightValue;
             break;
-        case BinaryOperation.lessOrEqual:
+        case imported!"quickbite.ir.instruction".Operation.lessOrEqual:
             result = leftValue <= rightValue;
             break;
-        case BinaryOperation.greaterThan:
+        case imported!"quickbite.ir.instruction".Operation.greaterThan:
             result = leftValue > rightValue;
             break;
-        case BinaryOperation.greaterOrEqual:
+        case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
             result = leftValue >= rightValue;
             break;
     }
 
-    temporaryValue(temporaries, destination) = result;
+    writeTemporaryValue(temporaries, destination) = result;
 }
 
 void enforceNonZeroDivisor(in long value, in string message) @safe pure {
@@ -316,7 +218,7 @@ long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
     return temporaries[index];
 }
 
-ref long temporaryValue(ref long[] temporaries, in uint index) @safe pure {
+ref long writeTemporaryValue(ref long[] temporaries, in uint index) @safe pure {
     enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
 }
