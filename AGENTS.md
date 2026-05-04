@@ -76,7 +76,8 @@ Prefer `const` to `auto` when declaring variables.
 
 Do not use `synchronized`.
 
-Don't use empty parens for function calls, omit them instead.
+Don't use empty parens for function calls, omit them instead, e.g.
+`doStuff;` instead of `doStuff();`.
 
 # Testing
 
