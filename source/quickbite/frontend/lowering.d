@@ -215,6 +215,11 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto logical = expression.isLogicalExp) {
+            if (logical.op == EXP.andAnd)
+                return lowerBinaryExpression(logical, Operation.andAnd, lowerer);
+        }
+
         if (auto add = expression.isAddExp)
             return lowerBinaryExpression(add, Operation.add, lowerer);
 

@@ -35,6 +35,7 @@ public enum Operation {
     lessOrEqual,
     greaterThan,
     greaterOrEqual,
+    andAnd,
 }
 
 public struct UnaryOp {

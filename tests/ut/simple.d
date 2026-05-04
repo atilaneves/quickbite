@@ -467,6 +467,23 @@ unittest {
     }.runTests;
 }
 
+@("simple.logicalAnd")
+unittest {
+    q{
+        bool left() {
+            return true;
+        }
+
+        bool right() {
+            return true;
+        }
+
+        unittest {
+            assert(left && right);
+        }
+    }.runTests;
+}
+
 @("simple.ifElse")
 unittest {
     q{

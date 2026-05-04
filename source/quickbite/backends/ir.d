@@ -278,6 +278,9 @@ void executeBinaryInstruction(
         case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
             result = leftValue >= rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.andAnd:
+            result = leftValue && rightValue;
+            break;
     }
 
     writeTemporaryValue(temporaries, destination) = result;
