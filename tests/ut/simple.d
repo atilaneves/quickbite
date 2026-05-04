@@ -454,6 +454,19 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+@("simple.logicalNot")
+unittest {
+    q{
+        bool isReady() {
+            return false;
+        }
+
+        unittest {
+            assert(!isReady);
+        }
+    }.runTests;
+}
+
 @("simple.ifElse")
 unittest {
     q{

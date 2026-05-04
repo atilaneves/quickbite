@@ -45,6 +45,7 @@ public struct UnaryOp {
 
 public enum UnaryOperation {
     negate,
+    not,
 }
 
 public struct Select {

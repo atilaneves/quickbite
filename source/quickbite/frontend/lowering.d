@@ -241,6 +241,17 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto not = expression.isNotExp) {
+            const value = lowerExpression(not.e1, lowerer);
+            const destination = allocateTemporary;
+            instructions ~= Instruction(UnaryOp(
+                destination,
+                value,
+                UnaryOperation.not,
+            ));
+            return destination;
+        }
+
         if (auto cast_ = expression.isCastExp)
             return lowerCast(cast_, lowerer);
 
