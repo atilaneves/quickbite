@@ -32,6 +32,20 @@ unittest {
     }.runTests;
 }
 
+@("simple.intAddition")
+unittest {
+    q{
+        int answer() {
+            int value = 40;
+            return value + 2;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }.runTests;
+}
+
 @("simple.localIntReturnOops")
 unittest {
     q{
