@@ -1,9 +1,7 @@
 module ut.simple;
 
-
 import quickbite;
 import unit_threaded;
-
 
 @("simple.ok")
 unittest {

@@ -80,3 +80,10 @@
 - Do not reinterpret the `const`/`auto`/explicit-type guideline. Prefer
   `const`; if `const` cannot work, use `auto` with a reason. Use an
   explicit LHS type only when `auto` cannot work, and explain why.
+
+- When testing tree-walker runtime semantics, avoid fixtures that DMD can
+  constant-fold before the walker sees them. Use runtime locals when the
+  test is meant to prove interpreter behavior.
+
+- Stop before changing tests and ask for feedback, even for test-name or
+  fixture-style cleanup. Do not apply the test diff first and ask after.
