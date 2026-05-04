@@ -89,6 +89,8 @@ Functions should be below their first usage, not above.
 
 Variable declarations should be as close to usage as possible.
 
+Use `text` instead of `.to!string`.
+
 # Testing
 
 Run `dub test` after every editing "session" to assess the current
