@@ -49,6 +49,18 @@ public struct Copy {
     uint source;
 }
 
+public struct CastInt {
+    uint destination;
+    uint source;
+    IntegerType target;
+}
+
+public enum IntegerType {
+    i8,
+    u8,
+    i32,
+}
+
 public struct Assert_ {
     uint condition;
 }
@@ -59,5 +71,6 @@ public alias Instruction = SumType!(
     BinaryOp,
     Select,
     Copy,
+    CastInt,
     Assert_,
 );

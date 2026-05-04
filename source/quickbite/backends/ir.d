@@ -109,8 +109,8 @@ void executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
 ) @safe pure {
-    import quickbite.ir.instruction: Assert_, BinaryOp, Call, ConstInt, Copy,
-        Select;
+    import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
+        Copy, Select;
     import std.sumtype: match;
 
     instruction.match!(
@@ -149,11 +149,32 @@ void executeInstruction(
             writeTemporaryValue(temporaries, instruction.destination) =
                 readTemporaryValue(temporaries, instruction.source);
         },
+        (CastInt instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                castInteger(
+                    readTemporaryValue(temporaries, instruction.source),
+                    instruction.target,
+                );
+        },
         (Assert_ instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
         },
     );
+}
+
+long castInteger(
+    in long value,
+    in imported!"quickbite.ir.instruction".IntegerType target,
+) @safe pure nothrow @nogc {
+    final switch (target) {
+        case imported!"quickbite.ir.instruction".IntegerType.i8:
+            return cast(byte) value;
+        case imported!"quickbite.ir.instruction".IntegerType.u8:
+            return cast(ubyte) value;
+        case imported!"quickbite.ir.instruction".IntegerType.i32:
+            return cast(int) value;
+    }
 }
 
 void writeArguments(

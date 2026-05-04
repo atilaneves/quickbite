@@ -266,6 +266,38 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+static foreach (T; imported!"std.meta".AliasSeq!(byte, ubyte)) {
+    @("simple.integralType." ~ T.stringof)
+    unittest {
+        import std.conv: text;
+
+        text(
+            "alias T = ",
+            T.stringof,
+            ";",
+            q{
+            static if (is(T == byte))
+                enum expected = -126;
+            else
+                enum expected = 130;
+
+            T identity(T value) {
+                return value;
+            }
+
+            int input() {
+                return 130;
+            }
+
+            unittest {
+                T value = cast(T) input;
+                assert(identity(value) == value);
+                assert(value == expected);
+            }
+        }).runTests;
+    }
+}
+
 @("simple.intLessThan")
 unittest {
     q{

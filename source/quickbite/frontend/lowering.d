@@ -230,6 +230,9 @@ struct BodyLowerer {
         if (auto modulo = expression.isModExp)
             return lowerBinaryExpression(modulo, Operation.modulo, lowerer);
 
+        if (auto cast_ = expression.isCastExp)
+            return lowerCast(cast_, lowerer);
+
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
@@ -328,6 +331,22 @@ struct BodyLowerer {
             source,
         ));
         return *destination;
+    }
+
+    uint lowerCast(
+        imported!"dmd.expression".CastExp cast_,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: CastInt, Instruction;
+
+        const source = lowerExpression(cast_.e1, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            destination,
+            source,
+            castTarget(cast_),
+        ));
+        return destination;
     }
 
     void lowerIfStatement(
@@ -467,6 +486,24 @@ private imported!"dmd.expression".CmpExp castCmpExpression(
     auto result = cast(imported!"dmd.expression".CmpExp) expression;
     assert(result !is null, "Expected DMD CmpExp for comparison operator");
     return result;
+}
+
+private imported!"quickbite.ir.instruction".IntegerType castTarget(
+    imported!"dmd.expression".CastExp cast_,
+) @trusted {
+    import dmd.astenums: TY;
+    import quickbite.ir.instruction: IntegerType;
+
+    if (cast_.to.toBasetype().ty == TY.Tint8)
+        return IntegerType.i8;
+
+    if (cast_.to.toBasetype().ty == TY.Tuns8)
+        return IntegerType.u8;
+
+    if (cast_.to.toBasetype().ty == TY.Tint32)
+        return IntegerType.i32;
+
+    throw new Exception("Unsupported cast.");
 }
 
 private ref auto compoundStatements(
