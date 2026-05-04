@@ -556,3 +556,23 @@ unittest {
         }
     });
 }
+
+@("treeWalking.arrayLength")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [1, 2, 3];
+            assert(arr.length == 3);
+        }
+    });
+}
+
+@("treeWalking.emptyArrayLength")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr = [];
+            assert(arr.length == 0);
+        }
+    });
+}
