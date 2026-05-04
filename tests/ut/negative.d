@@ -8,12 +8,14 @@ import unit_threaded;
 @("negative.voidFunction")
 unittest {
     q{
-        void foo() {}
+        void foo() {
+            int value;
+        }
 
         unittest {
-            foo();
+            foo;
         }
-    }.runTests.shouldThrowWithMessage("Unsupported function body.");
+    }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
 @("negative.multiStatementBody")
@@ -55,28 +57,32 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
 }
 
-@("negative.multipleCallArgs")
+@("negative.refParameter")
 unittest {
     q{
-        int answer(int left, int right) {
-            return left + right;
+        void addOne(ref int value) {
+            value = value + 1;
         }
 
         unittest {
-            assert(answer(40, 2) == 42);
+            int value = 41;
+            addOne(value);
+            assert(value == 42);
         }
     }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
 }
 
-@("negative.multipleParameters")
+@("negative.multipleRefParameters")
 unittest {
     q{
-        int answer(int left, int right) {
-            return left;
+        void add(int left, ref int right) {
+            right = left + right;
         }
 
         unittest {
-            assert(answer(42, 43) == 42);
+            int value = 2;
+            add(40, value);
+            assert(value == 42);
         }
     }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
 }

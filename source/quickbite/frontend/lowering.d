@@ -55,13 +55,15 @@ struct Lowerer {
         BodyLowerer builder;
         const numParameters = builder.lowerParameters(function_);
         builder.lowerStatement(function_.fbody, this);
+        const hasReturnValue = !functionReturnsVoid(function_);
 
-        if (!builder.hasReturn)
+        if (hasReturnValue && !builder.hasReturn)
             throw new Exception("Unsupported function body.");
 
         Function result;
         result.name = name;
         result.instructions = builder.instructions.dup;
+        result.hasReturnValue = hasReturnValue;
         result.returnValue = builder.returnValue;
         result.numParameters = numParameters;
         result.numTemporaries = builder.nextTemporary;
@@ -78,6 +80,14 @@ struct Lowerer {
 // unchecked DMD pointer dereference.
 private ref auto moduleMembers(imported!"dmd.dmodule".Module module_) @trusted {
     return *module_.members;
+}
+
+private bool functionReturnsVoid(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    import dmd.astenums: TY;
+
+    return function_.type.nextOf().ty == TY.Tvoid;
 }
 
 struct BodyLowerer {
@@ -353,16 +363,31 @@ struct BodyLowerer {
         if (function_.parameters is null)
             return 0;
 
-        if (function_.parameters.length > 1)
-            throw new Exception("Unsupported function parameters.");
-
         uint numParameters;
         foreach (parameter; functionParameters(function_)) {
+            if (parameterHasUnsupportedStorage(parameter))
+                throw new Exception("Unsupported function parameters.");
+
             localTemporaries[parameter] = allocateTemporary;
             ++numParameters;
         }
 
         return numParameters;
+    }
+
+    bool parameterHasUnsupportedStorage(
+        imported!"dmd.declaration".VarDeclaration parameter,
+    ) @safe {
+        import dmd.astenums: STC;
+
+        enum unsupported =
+            STC.ref_ |
+            STC.out_ |
+            STC.lazy_ |
+            STC.variadic |
+            STC.alias_ |
+            STC.auto_;
+        return (parameter.storage_class & unsupported) != STC.none;
     }
 
     uint[] lowerCallArguments(
@@ -371,9 +396,6 @@ struct BodyLowerer {
     ) @safe {
         if (call.arguments is null)
             return [];
-
-        if (call.arguments.length > 1)
-            throw new Exception("Unsupported call.");
 
         uint[] arguments;
         foreach (argument; callArguments(call))

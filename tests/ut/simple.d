@@ -32,6 +32,30 @@ unittest {
     }.runTests;
 }
 
+@("simple.voidFunction")
+unittest {
+    q{
+        void foo() {}
+
+        unittest {
+            foo;
+        }
+    }.runTests;
+}
+
+@("simple.voidFunctionOops")
+unittest {
+    q{
+        void foo() {
+            assert(0);
+        }
+
+        unittest {
+            foo;
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.intAddition")
 unittest {
     q{
@@ -113,6 +137,58 @@ unittest {
             assert(answer(41) == 42);
         }
     }.runTests;
+}
+
+@("simple.functionParameters")
+unittest {
+    q{
+        int answer(int left, int right) {
+            return left + right;
+        }
+
+        unittest {
+            assert(answer(40, 2) == 42);
+        }
+    }.runTests;
+}
+
+@("simple.functionParametersOops")
+unittest {
+    q{
+        int answer(int left, int right) {
+            return left + right;
+        }
+
+        unittest {
+            assert(answer(40, 3) == 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("simple.inFunctionParameters")
+unittest {
+    q{
+        void check(in int left, in int right) {
+            assert(left + right == 42);
+        }
+
+        unittest {
+            check(40, 2);
+        }
+    }.runTests;
+}
+
+@("simple.inFunctionParametersOops")
+unittest {
+    q{
+        void check(in int left, in int right) {
+            assert(left + right == 42);
+        }
+
+        unittest {
+            check(40, 3);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
 @("simple.intLessThan")

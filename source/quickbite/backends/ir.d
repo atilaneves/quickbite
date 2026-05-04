@@ -39,6 +39,7 @@ long executeFunction(
             return executeFunctionBody(
                 module_,
                 function_.instructions,
+                function_.hasReturnValue,
                 function_.returnValue,
                 function_.numParameters,
                 function_.numTemporaries,
@@ -52,6 +53,7 @@ long executeFunction(
 long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in bool hasReturnValue,
     in uint returnValue,
     in uint numParameters,
     in uint numTemporaries,
@@ -64,6 +66,9 @@ long executeFunctionBody(
         numParameters,
         arguments,
     );
+    if (!hasReturnValue)
+        return 0;
+
     return readTemporaryValue(temporaries, returnValue);
 }
 

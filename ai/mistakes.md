@@ -31,11 +31,24 @@
   `@safe`; wrap them in a small `@trusted` helper before calling them
   from `@safe` lowering code.
 
+- DMD type helpers such as `Type.nextOf()` are not `@safe`; wrap them
+  in a small `@trusted` helper before calling them from `@safe` lowering
+  code.
+
 - No-empty-parens style applies inside `q{}` fixture source strings too;
   check no-argument calls there before asking for test feedback.
 
 - When asking for feedback on tests, stop and wait for the user to
   respond before continuing the TDD loop or committing the test.
+
+- Always ask for feedback after adding or modifying tests. Stop and wait
+  before changing production code.
+
+- When converting a fixture into an unsupported-diagnostic test, keep the
+  inner assertion that describes the intended supported behavior.
+
+- Do not use `cast(bool)` for D storage-class bitmask checks. Compare
+  the masked enum value against `STC.none`.
 
 - When testing lowering for a specific operator, do not use all-literal
   expressions unless constant folding is the behavior under test. Use a
