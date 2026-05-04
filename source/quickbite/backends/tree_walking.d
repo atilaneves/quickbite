@@ -18,7 +18,7 @@ void walkModule(imported!"dmd.dmodule".Module module_) @safe {
 
     Walker walker;
     foreach (member; moduleMembers(module_)) {
-        if (auto unitTest = member.isUnitTestDeclaration())
+        if (auto unitTest = member.isUnitTestDeclaration)
             walker.runTest(unitTest);
     }
 }
@@ -51,7 +51,7 @@ struct BodyWalker {
         imported!"dmd.statement".Statement statement,
         ref Walker walker,
     ) @safe {
-        if (auto compound = statement.isCompoundStatement()) {
+        if (auto compound = statement.isCompoundStatement) {
             foreach (child; compoundStatements(compound)) {
                 runStatement(child, walker);
                 if (hasReturn)
@@ -60,12 +60,12 @@ struct BodyWalker {
             return;
         }
 
-        if (auto expr = statement.isExpStatement()) {
+        if (auto expr = statement.isExpStatement) {
             runExpression(expr.exp, walker);
             return;
         }
 
-        if (auto ret = statement.isReturnStatement()) {
+        if (auto ret = statement.isReturnStatement) {
             returnValue = runExpression(ret.exp, walker);
             hasReturn = true;
             return;
@@ -87,10 +87,10 @@ struct BodyWalker {
             );
         }
 
-        if (auto integer = expression.isIntegerExp())
+        if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
 
-        if (auto call = expression.isCallExp()) {
+        if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported call.");
             if (call.f is null)
@@ -98,27 +98,27 @@ struct BodyWalker {
             return walker.executeFunction(call.f);
         }
 
-        if (auto equal = expression.isEqualExp()) {
+        if (auto equal = expression.isEqualExp) {
             const left = runExpression(equal.e1, walker);
             const right = runExpression(equal.e2, walker);
             return left == right ? 1 : 0;
         }
 
-        if (auto assert_ = expression.isAssertExp()) {
+        if (auto assert_ = expression.isAssertExp) {
             const cond = runExpression(assert_.e1, walker);
             if (!cond)
                 throw new Exception("Unittest assertion failed.");
             return cond;
         }
 
-        if (auto decl = expression.isDeclarationExp()) {
-            auto variable = decl.declaration.isVarDeclaration();
+        if (auto decl = expression.isDeclarationExp) {
+            auto variable = decl.declaration.isVarDeclaration;
             if (variable is null || variable._init is null)
                 unsupported;
-            auto initializer = variable._init.isExpInitializer();
+            auto initializer = variable._init.isExpInitializer;
             if (initializer is null)
                 unsupported;
-            auto construct = initializer.exp.isConstructExp();
+            auto construct = initializer.exp.isConstructExp;
             if (construct is null)
                 unsupported;
             const value = runExpression(construct.e2, walker);
@@ -126,8 +126,8 @@ struct BodyWalker {
             return value;
         }
 
-        if (auto var = expression.isVarExp()) {
-            if (auto varDecl = var.var.isVarDeclaration())
+        if (auto var = expression.isVarExp) {
+            if (auto varDecl = var.var.isVarDeclaration)
                 if (auto val = varDecl in locals)
                     return *val;
         }
@@ -152,12 +152,12 @@ private ref auto compoundStatements(
 private long integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) @trusted {
-    return integer.getInteger();
+    return integer.getInteger;
 }
 
 private string expressionChars(
     imported!"dmd.expression".Expression expression,
 ) @trusted {
     import std.string: fromStringz;
-    return fromStringz(expression.toChars()).idup;
+    return fromStringz(expression.toChars).idup;
 }
