@@ -41,6 +41,9 @@ struct Walker {
 }
 
 struct BodyWalker {
+    import dmd.declaration: VarDeclaration;
+
+    private long[VarDeclaration] locals;
     public bool hasReturn;
     public long returnValue;
 
@@ -76,6 +79,14 @@ struct BodyWalker {
         imported!"dmd.expression".Expression expression,
         ref Walker walker,
     ) @safe {
+        import std.conv: text;
+
+        void unsupported() {
+            throw new Exception(
+                text("Unsupported expression: ", expressionChars(expression)),
+            );
+        }
+
         if (auto integer = expression.isIntegerExp())
             return integerValue(integer);
 
@@ -100,10 +111,29 @@ struct BodyWalker {
             return cond;
         }
 
-        import std.conv: text;
-        throw new Exception(
-            text("Unsupported expression: ", expressionChars(expression)),
-        );
+        if (auto decl = expression.isDeclarationExp()) {
+            auto variable = decl.declaration.isVarDeclaration();
+            if (variable is null || variable._init is null)
+                unsupported;
+            auto initializer = variable._init.isExpInitializer();
+            if (initializer is null)
+                unsupported;
+            auto construct = initializer.exp.isConstructExp();
+            if (construct is null)
+                unsupported;
+            const value = runExpression(construct.e2, walker);
+            locals[variable] = value;
+            return value;
+        }
+
+        if (auto var = expression.isVarExp()) {
+            if (auto varDecl = var.var.isVarDeclaration())
+                if (auto val = varDecl in locals)
+                    return *val;
+        }
+
+        unsupported;
+        assert(false);
     }
 }
 
