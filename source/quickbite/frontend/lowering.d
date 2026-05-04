@@ -515,6 +515,9 @@ private imported!"quickbite.ir.instruction".IntegerType castTarget(
     if (cast_.to.toBasetype().ty == TY.Tint64)
         return IntegerType.i64;
 
+    if (cast_.to.toBasetype().ty == TY.Tuns64)
+        return IntegerType.u64;
+
     throw new Exception("Unsupported cast.");
 }
 
