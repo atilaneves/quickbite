@@ -199,6 +199,123 @@ unittest {
     });
 }
 
+@("treeWalking.while_")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int answer() {
+            int i = 0;
+            int result = 0;
+            while (i < 6) {
+                result = result + 7;
+                i = i + 1;
+            }
+            return result;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.whileNeverRuns")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int answer() {
+            int i = 0;
+            while (i > 0) {
+                i = i + 1;
+            }
+            return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.whileRunsOnce")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int answer() {
+            int i = 0;
+            int result = 0;
+            while (i < 1) {
+                result = 42;
+                i = i + 1;
+            }
+            return result;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.struct_")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Point {
+            int x;
+            int y;
+        }
+
+        int answer() {
+            Point p;
+            p.x = 21;
+            p.y = 21;
+            return p.x + p.y;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.structFieldDefaultsToZero")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Point {
+            int x;
+            int y;
+        }
+
+        int answer() {
+            Point p;
+            p.x = 42;
+            return p.x + p.y;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.structPassedToFunction")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Point {
+            int x;
+            int y;
+        }
+
+        int sum(Point p) {
+            return p.x + p.y;
+        }
+
+        unittest {
+            Point p;
+            p.x = 21;
+            p.y = 21;
+            assert(sum(p) == 42);
+        }
+    }).shouldThrowWithMessage("Unsupported expression: p");
+}
+
 @("treeWalking.notEqual")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

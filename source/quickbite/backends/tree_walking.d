@@ -50,6 +50,7 @@ struct BodyWalker {
     import dmd.declaration: VarDeclaration;
 
     private long[VarDeclaration] locals;
+    private long[VarDeclaration][VarDeclaration] structFields;
     public bool hasReturn;
     public long returnValue;
 
@@ -69,6 +70,12 @@ struct BodyWalker {
         imported!"dmd.statement".Statement statement,
         ref Walker walker,
     ) @safe {
+        if (auto scope_ = statement.isScopeStatement) {
+            if (scope_.statement !is null)
+                runStatement(scope_.statement, walker);
+            return;
+        }
+
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
@@ -81,6 +88,19 @@ struct BodyWalker {
 
         if (auto expr = statement.isExpStatement) {
             runExpression(expr.exp, walker);
+            return;
+        }
+
+        if (auto for_ = statement.isForStatement) {
+            if (for_._init !is null)
+                runStatement(for_._init, walker);
+            while (for_.condition is null || runExpression(for_.condition, walker)) {
+                runStatement(for_._body, walker);
+                if (hasReturn)
+                    return;
+                if (for_.increment !is null)
+                    runExpression(for_.increment, walker);
+            }
             return;
         }
 
@@ -151,7 +171,13 @@ struct BodyWalker {
                 throw new Exception(text("Unsupported expression: ", decl.op));
             }
             auto variable = decl.declaration.isVarDeclaration;
-            if (variable is null || variable._init is null)
+            if (variable is null)
+                unsupportedDecl;
+            if (variable.type !is null && variable.type.isTypeStruct !is null) {
+                structFields[variable] = (long[VarDeclaration]).init;
+                return 0;
+            }
+            if (variable._init is null)
                 unsupportedDecl;
             auto initializer = variable._init.isExpInitializer;
             if (initializer is null)
@@ -162,6 +188,15 @@ struct BodyWalker {
             const value = runExpression(construct.e2, walker);
             locals[variable] = value;
             return value;
+        }
+
+        if (auto dotVar = expression.isDotVarExp) {
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (auto fields = ownerDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                            return (*fields).get(fieldDecl, 0);
+            unsupported;
         }
 
         {
@@ -182,6 +217,25 @@ struct BodyWalker {
                 auto cmp = expression.isBinExp;
                 return runExpression(cmp.e1, walker) >= runExpression(cmp.e2, walker) ? 1 : 0;
             }
+        }
+
+        if (auto assign = expression.isAssignExp) {
+            const value = runExpression(assign.e2, walker);
+            if (auto var = assign.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        locals[varDecl] = value;
+                        return value;
+                    }
+            if (auto dotVar = assign.e1.isDotVarExp)
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                structFields[ownerDecl][fieldDecl] = value;
+                                return value;
+                            }
+            unsupported;
         }
 
         if (auto add = expression.isAddExp)
