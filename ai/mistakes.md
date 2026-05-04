@@ -30,3 +30,6 @@
 - DMD AST formatting helpers such as `Expression.toChars()` are not
   `@safe`; wrap them in a small `@trusted` helper before calling them
   from `@safe` lowering code.
+
+- No-empty-parens style applies inside `q{}` fixture source strings too;
+  check no-argument calls there before asking for test feedback.

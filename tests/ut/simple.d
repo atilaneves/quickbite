@@ -13,9 +13,9 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 42);
+            assert(answer == 42);
         }
-    }.runTests();
+    }.runTests;
 }
 
 @("simple.localIntReturn")
@@ -27,9 +27,9 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 42);
+            assert(answer == 42);
         }
-    }.runTests();
+    }.runTests;
 }
 
 @("simple.localIntReturnOops")
@@ -41,7 +41,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 43);
+            assert(answer == 43);
         }
     }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
 }
@@ -54,7 +54,7 @@ unittest {
         }
 
         unittest {
-            assert(answer() == 43);
+            assert(answer == 43);
         }
     }.runTests().shouldThrowWithMessage("Unittest assertion failed.");
 }
