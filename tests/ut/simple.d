@@ -271,6 +271,7 @@ static foreach (T; imported!"std.meta".AliasSeq!(
     ubyte,
     short,
     ushort,
+    int,
     uint,
     long,
     ulong,
