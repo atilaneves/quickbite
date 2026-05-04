@@ -18,6 +18,34 @@ unittest {
     });
 }
 
+@("treeWalking.localIntReturn")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int answer() {
+            int value = 42;
+            return value;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    });
+}
+
+@("treeWalking.localIntReturnOops")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        int answer() {
+            int value = 42;
+            return value;
+        }
+
+        unittest {
+            assert(answer == 43);
+        }
+    }).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("treeWalking.oops")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
