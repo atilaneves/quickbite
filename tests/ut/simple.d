@@ -167,6 +167,19 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
+@("simple.intGreaterThan")
+unittest {
+    q{
+        int answer() {
+            return 43;
+        }
+
+        unittest {
+            assert(answer > 42);
+        }
+    }.runTests;
+}
+
 @("simple.functionParameterOops")
 unittest {
     q{
