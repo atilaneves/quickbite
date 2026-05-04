@@ -126,7 +126,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Add, Assert_, Call, ConstInt, Equal,
-            Divide, Instruction, Modulo, Multiply, Subtract;
+            Divide, Instruction, LessThan, Modulo, Multiply, Subtract;
 
         if (auto integer = expression.isIntegerExp()) {
             const destination = allocateTemporary();
@@ -165,6 +165,11 @@ struct BodyLowerer {
 
             return lowerBinaryExpression!Equal(equal, lowerer);
         }
+
+        import dmd.tokens: EXP;
+
+        if (expression.op == EXP.lessThan)
+            return lowerBinaryExpression!LessThan(castCmpExpression(expression), lowerer);
 
         if (auto add = expression.isAddExp)
             return lowerBinaryExpression!Add(add, lowerer);
@@ -296,6 +301,12 @@ private string expressionChars(
     import std.string: fromStringz;
 
     return fromStringz(expression.toChars()).idup;
+}
+
+private imported!"dmd.expression".CmpExp castCmpExpression(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    return cast(imported!"dmd.expression".CmpExp) expression;
 }
 
 private ref auto compoundStatements(

@@ -52,6 +52,12 @@ public struct Equal {
     uint right;
 }
 
+public struct LessThan {
+    uint destination;
+    uint left;
+    uint right;
+}
+
 public struct Assert_ {
     uint condition;
 }
@@ -65,5 +71,6 @@ public alias Instruction = SumType!(
     Modulo,
     Call,
     Equal,
+    LessThan,
     Assert_,
 );

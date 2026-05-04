@@ -115,6 +115,19 @@ unittest {
     }.runTests;
 }
 
+@("simple.intLessThan")
+unittest {
+    q{
+        int answer() {
+            return 41;
+        }
+
+        unittest {
+            assert(answer < 42);
+        }
+    }.runTests;
+}
+
 @("simple.functionParameterOops")
 unittest {
     q{
