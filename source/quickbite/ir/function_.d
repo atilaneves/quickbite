@@ -7,7 +7,9 @@ public struct Function {
 
     string name;
     Instruction[] instructions;
-    uint returnValue;
+    bool hasReturnValue;
+    uint numParameters;
+    bool[] refParameters;
     // Lets the VM allocate all temporary registers before execution.
     uint numTemporaries;
 }

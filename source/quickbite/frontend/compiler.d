@@ -2,6 +2,15 @@ module quickbite.frontend.compiler;
 
 private:
 
+public alias ParsedModule = imported!"std.typecons".Tuple!(
+    imported!"dmd.dmodule".Module,
+    "module_",
+    imported!"dmd.frontend".Diagnostics,
+    "diagnostics",
+);
+
+// DMD owns process-global compiler state; `Compiler` serializes access with a
+// mutex and is initialized once for this process.
 __gshared Compiler compiler;
 // DMD registers modules by filename, so each parse call needs a unique name.
 private shared uint _moduleCounter;
@@ -11,10 +20,10 @@ shared static this() {
 }
 
 shared static ~this() {
-    compiler.shutdown();
+    compiler.shutdown;
 }
 
-public auto parseModule(in string source) {
+public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
@@ -38,7 +47,7 @@ final class Compiler {
         import std.algorithm.iteration: each;
 
         mutex = new Mutex;
-        initDMD();
+        initDMD;
         findImportPaths.each!addImport;
 
         global.params.useUnitTests = true;
@@ -51,25 +60,25 @@ final class Compiler {
     void shutdown() {
         import dmd.frontend: deinitializeDMD;
 
-        mutex.lock();
-        scope(exit) mutex.unlock();
+        mutex.lock;
+        scope(exit) mutex.unlock;
 
         if (!initialized)
             return;
 
-        deinitializeDMD();
+        deinitializeDMD;
         initialized = false;
     }
 
-    auto parseModule(in string source) {
+    ParsedModule parseModule(in string source) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
         import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
 
-        mutex.lock();
-        scope(exit) mutex.unlock();
+        mutex.lock;
+        scope(exit) mutex.unlock;
 
         global.errors = 0;
         global.warnings = 0;
@@ -81,13 +90,13 @@ final class Compiler {
             ".d",
         );
 
-        auto parsed = dmdParseModule(fileName, source);
-        if (parsed.diagnostics.hasErrors())
-            throw new Exception(diagnosticMessage());
+        ParsedModule parsed = dmdParseModule(fileName, source);
+        if (parsed.diagnostics.hasErrors)
+            throw new Exception(diagnosticMessage);
 
-        parsed.module_.fullSemantic();
+        parsed.module_.fullSemantic;
         if (global.errors != 0)
-            throw new Exception(diagnosticMessage());
+            throw new Exception(diagnosticMessage);
 
         return parsed;
     }

@@ -1,5 +1,7 @@
 module quickbite.executor;
 
-interface Executor {
-    void runTests(in string source);
+private:
+
+public interface Executor {
+    public void runTests(in string source);
 }
