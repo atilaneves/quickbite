@@ -25,6 +25,8 @@ void walkModule(imported!"dmd.dmodule".Module module_) @safe {
 
 struct Walker {
     long executeFunction(imported!"dmd.func".FuncDeclaration func) @safe {
+        if (func.fbody is null)
+            throw new Exception("Unsupported function body.");
         BodyWalker w;
         w.runStatement(func.fbody, this);
         if (!w.hasReturn)
@@ -52,11 +54,12 @@ struct BodyWalker {
         ref Walker walker,
     ) @safe {
         if (auto compound = statement.isCompoundStatement) {
-            foreach (child; compoundStatements(compound)) {
-                runStatement(child, walker);
-                if (hasReturn)
-                    return;
-            }
+            if (compound.statements !is null)
+                foreach (child; compoundStatements(compound)) {
+                    runStatement(child, walker);
+                    if (hasReturn)
+                        return;
+                }
             return;
         }
 
@@ -66,6 +69,8 @@ struct BodyWalker {
         }
 
         if (auto ret = statement.isReturnStatement) {
+            if (ret.exp is null)
+                throw new Exception("Unsupported function body.");
             returnValue = runExpression(ret.exp, walker);
             hasReturn = true;
             return;
@@ -112,15 +117,18 @@ struct BodyWalker {
         }
 
         if (auto decl = expression.isDeclarationExp) {
+            void unsupportedDecl() {
+                throw new Exception(text("Unsupported expression: ", decl.op));
+            }
             auto variable = decl.declaration.isVarDeclaration;
             if (variable is null || variable._init is null)
-                unsupported;
+                unsupportedDecl;
             auto initializer = variable._init.isExpInitializer;
             if (initializer is null)
-                unsupported;
+                unsupportedDecl;
             auto construct = initializer.exp.isConstructExp;
             if (construct is null)
-                unsupported;
+                unsupportedDecl;
             const value = runExpression(construct.e2, walker);
             locals[variable] = value;
             return value;
