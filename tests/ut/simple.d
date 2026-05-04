@@ -180,6 +180,19 @@ unittest {
     }.runTests;
 }
 
+@("simple.intGreaterThanOops")
+unittest {
+    q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer > 42);
+        }
+    }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 @("simple.functionParameterOops")
 unittest {
     q{
