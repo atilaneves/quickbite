@@ -10,6 +10,7 @@ private struct FunctionResult {
     private bool hasValue;
     private Value value;
     private Value[] refValues;
+    private Value[imported!"dmd.declaration".VarDeclaration] thisFields;
 }
 
 private struct CallArgument {
@@ -58,8 +59,27 @@ private struct Interpreter {
         if (!w.hasReturn && !returnsVoid)
             throw new Exception("Unsupported function body.");
         if (returnsVoid)
-            return FunctionResult(false, Value(0L), collectRefValues(func, w));
-        return FunctionResult(true, w.returnValue, collectRefValues(func, w));
+            return FunctionResult(
+                false,
+                Value(0L),
+                collectRefValues(func, w),
+                collectThisFields(func, w),
+            );
+        return FunctionResult(
+            true,
+            w.returnValue,
+            collectRefValues(func, w),
+            collectThisFields(func, w),
+        );
+    }
+
+    private Value[imported!"dmd.declaration".VarDeclaration] collectThisFields(
+        imported!"dmd.func".FuncDeclaration func,
+        ref BodyWalker walker,
+    ) {
+        if (func.vthis is null)
+            return null;
+        return walker.structFields[func.vthis];
     }
 
     private Value[] collectRefValues(
@@ -486,6 +506,20 @@ private struct BodyWalker {
                                         );
                                         continue;
                                     }
+                    if (auto dotVar = arg.isDotVarExp)
+                        if (auto thisExp = dotVar.e1.isThisExp)
+                            if (auto thisDecl = thisExp.var.isVarDeclaration)
+                                if (auto fields = thisDecl in structFields)
+                                    if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                        args ~= CallArgument(
+                                            (*fields)
+                                                .get(fieldDecl, Value((long[]).init)),
+                                            null,
+                                            thisDecl,
+                                            fieldDecl,
+                                        );
+                                        continue;
+                                    }
                     throw new Exception("Unsupported ref argument.");
                 }
 
@@ -498,15 +532,20 @@ private struct BodyWalker {
             }
 
         Value[VarDeclaration] thisFields;
+        VarDeclaration thisOwner;
         if (auto dotVar = call.e1.isDotVarExp)
             if (auto ownerVar = dotVar.e1.isVarExp)
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                    if (auto fields = ownerDecl in structFields)
+                    if (auto fields = ownerDecl in structFields) {
                         thisFields = *fields;
+                        thisOwner = ownerDecl;
+                    }
 
         // `auto` is intentional: `const` would block ref propagation.
         auto result = interpreter.executeFunction(call.f, args, thisFields);
         propagateRefArguments(call, args, result.refValues);
+        if (thisOwner !is null)
+            structFields[thisOwner] = result.thisFields;
         if (!result.hasValue) {
             if (resultIgnored)
                 return Value(0L);
