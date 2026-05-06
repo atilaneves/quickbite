@@ -176,49 +176,47 @@ negative signed value to verify sign-bit handling.
 
 ## Language Coverage Required
 
-Features the lowerer must gain, in dependency order. Each builds on
-the previous; add three test fixtures per feature (pass / assert-fail /
-unsupported diagnostic) and keep `dub test` green after each sub-slice.
+The IR interpreter already covers the first scalar slices: void
+functions, value/ref/in parameters, all eight integral types, arithmetic,
+integer casts, comparisons, boolean operators, if/else, and early
+returns.
 
-1. Void functions — currently rejected; needed for encode.
-2. Function parameters — `in T val`, `ref ubyte[]`, `ref size_t`.
-3. All 8 integral types — byte/ubyte/short/ushort/int/uint/long/ulong.
-   The runtime already uses `long[]`; the lowerer needs type-correct
-   truncation on store.
-4. Arithmetic — +, -, *, /, unary −.
-5. Additional comparisons — !=, <, >, <=, >=.
-6. Boolean operators — &&, ||, !.
-7. if / else — conditional execution and early returns.
-8. Bit operations — >>, <<, |, &, ^, ~.
-9. Cast — `cast(ubyte)`, `cast(T)` between integer types.
-10. Compound assignment — `|=`, `+=`, `-=`, `~=` as statements.
-11. Dynamic arrays — `ubyte[]` type; `~=` append; `[i]` index;
-    `.length` property; post-increment on `size_t` index.
-12. Structs — definitions, field access and assignment; required for
-    the Minicereal wrapper and as the first step toward cerealed.
+Remaining IR lowerer work for `tests/minicereal.d`, in dependency order:
+
+1. Bit operations — `>>`, `<<`, `|`, `&`, `^`, `~`.
+2. Compound assignment — `|=`, `+=`, `-=`, `~=` as statements.
+3. Dynamic arrays — `ubyte[]` type; `~=` append; `[i]` index;
+   `.length` property; post-increment on `size_t` index.
+4. Structs — definitions, field access and assignment; required for the
+   `Minicereal` wrapper and as the first step toward cerealed.
+
+For every new language feature, add focused test fixtures and keep
+`dub test` green after each sub-slice.
 
 ## Implementation Phases
 
 1. Add Executor interface; wrap current code as IrInterpreterExecutor.
    (Done.)
-2. Expand IrInterpreterExecutor through the language coverage list
-   above, one sub-slice at a time. Keep `dub test` green after each.
-3. Write `tests/minicereal.d` once the language coverage list is
-   complete. Its unittest blocks must all pass on IrInterpreterExecutor
-   before proceeding.
-4. Implement TreeWalkingExecutor, brought to full parity with phase 2.
-   Backend-parity tests verify identical pass/fail results. Minicereal
-   tests must pass on both backends.
-5. Build benchmarking harness; run tree-walker vs IR interpreter on
-   the full minicereal test suite.
-6. Extend IR with explicit Return (see ai/plans/ir.md); implement
-   BytecodeExecutor; three-way benchmark.
-7. Graduate to real cerealed: identify gaps between minicereal and
+2. Implement TreeWalkingExecutor. (Done; it is ahead of IR for arrays,
+   foreach, while, and scalar structs.)
+3. Finish the remaining IR language coverage above, one sub-slice at a
+   time. Keep `dub test` green after each.
+4. Add `tests/minicereal.d` unittest blocks. They must pass on
+   IrInterpreterExecutor, then on TreeWalkingExecutor.
+5. Add backend-parity tests for shared supported behavior. The same
+   source should produce the same pass/fail result and user-facing
+   diagnostic category across backends.
+6. Build benchmarking harness; run tree-walker vs IR interpreter on the
+   full minicereal test suite.
+7. Add explicit IR test-body termination (`ReturnVoid`; see
+   ai/plans/ir.md), implement BytecodeExecutor, and run the three-way
+   benchmark.
+8. Graduate to real cerealed: identify gaps between minicereal and
    cerealed's test suite; fill them incrementally (each gap is its
    own sub-phase: ranges, UDAs, classes, exceptions, …).
-8. Spike native call bridging (libffi vs JIT stubs) when the first
+9. Spike native call bridging (libffi vs JIT stubs) when the first
    test that calls a dependency needs to run.
-9. Decide on JitExecutor based on benchmark results.
+10. Decide on JitExecutor based on benchmark results.
 
 ## Test Plan
 

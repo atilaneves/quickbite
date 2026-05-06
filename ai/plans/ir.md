@@ -11,48 +11,51 @@ and writes IR nodes.
 
 ## Current State
 
-The following already exist and are not changed by this spec:
+The following IR modules exist:
 
-    quickbite.ir.instruction  — ConstInt, Call, Equal, Assert_  (SumType)
-    quickbite.ir.function_    — Function { name, instructions[], returnValue, numTemporaries }
+    quickbite.ir.instruction  — Instruction SumType and instruction structs
+    quickbite.ir.function_    — Function metadata and instruction stream
     quickbite.ir.test         — Test { instructions[], numTemporaries }
     quickbite.ir.module_      — Module { functions[], tests[] }
 
-## Required Addition: Explicit Return
+Function returns are already explicit: `ReturnValue` is an instruction
+in the function body. `Function` no longer has a separate `returnValue`
+field.
 
-Function encodes its return value as a uint field rather than an
-instruction. That works for the IR interpreter but makes bytecode
-encoding awkward: the encoder must special-case return instead of
-iterating a uniform instruction stream.
+Unittest bodies currently terminate by reaching the end of their
+instruction stream. Before bytecode encoding, add an explicit void
+terminator so tests and functions both have uniform terminators:
 
-Add to the instruction SumType:
+    struct ReturnVoid {}
 
-    struct ReturnValue { uint value; }   // function returning int
-    struct ReturnVoid  {}                // unittest body
+    alias Instruction = SumType!(
+        ConstInt, Call, BinaryOp, UnaryOp, Select, JumpIfFalse,
+        JumpIfTrue, Copy, CastInt, Assert_, ReturnValue, ReturnVoid,
+    );
 
-    alias Instruction = SumType!(ConstInt, Call, Equal, Assert_, ReturnValue, ReturnVoid);
-
-Update Function: remove returnValue field; emit ReturnValue as the last
-instruction of the body. Update Test: emit ReturnVoid as the last
-instruction. Update lowering and both executors to match.
-
-This change is required before implementing BytecodeExecutor but not
-before TreeWalkingExecutor.
+Emit `ReturnVoid` as the last instruction of each lowered test body.
+Update IrExecutor to treat it as successful test termination.
 
 ## No Blocks Yet
 
-Basic blocks with branch terminators are not needed until we add control
-flow. The existing flat instruction list per Function/Test is sufficient.
-Do not add blocks until a supported language slice requires branching.
+Basic blocks are still not needed. Control flow is represented by a flat
+instruction list plus relative jumps. Do not add blocks until a supported
+language slice makes the flat representation materially harder to encode
+or execute.
 
 ## Supported Instructions
 
     ConstInt    — %dst = const_int <value>       produces int32 temporary
-    Call        — %dst = call <name>             produces callee-return-type temporary
-    Equal       — %dst = equal %left, %right     produces bool temporary (int32 == int32 only)
+    Call        — %dst = call <name>             produces callee return value
+    BinaryOp    — %dst = binary %left, %right    arithmetic/comparison
+    UnaryOp     — %dst = unary %source           integer/bool unary ops
+    Select      — %dst = select %cond, %a, %b    conditional value
+    JumpIfFalse — jump unless %condition
+    JumpIfTrue  — jump if %condition
+    Copy        — %dst = copy %source
+    CastInt     — %dst = cast_int %source        integer truncation/sign
     Assert_     — assert %cond                   consumes bool, no result
     ReturnValue — return %value                  terminates function body
-    ReturnVoid  — return                         terminates test body
 
 ## Temporary Numbering
 
@@ -60,9 +63,10 @@ Sequential per body starting at 0. Already implemented.
 
 ## Types
 
-No explicit type nodes yet. DMD has already resolved types; instruction
-choice encodes semantics implicitly. Add a Type node when implicit
-encoding becomes ambiguous (e.g. float equality, pointer comparisons).
+There is no general Type node. DMD has already resolved types; most
+instruction choices encode semantics implicitly. Integer casts carry an
+`IntegerType` target. Add broader type nodes only when implicit encoding
+becomes ambiguous, such as float equality or pointer comparisons.
 
 ## Lowering Contract
 
