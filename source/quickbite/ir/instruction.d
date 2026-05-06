@@ -112,6 +112,12 @@ public struct ArrayLength {
     uint array;
 }
 
+public struct ArrayIndex {
+    uint destination;
+    uint array;
+    uint index;
+}
+
 public struct ReturnValue {
     uint value;
 }
@@ -130,5 +136,6 @@ public alias Instruction = SumType!(
     ArrayLiteral,
     ArrayAppend,
     ArrayLength,
+    ArrayIndex,
     ReturnValue,
 );

@@ -291,6 +291,9 @@ struct BodyLowerer {
         if (auto length = expression.isArrayLengthExp)
             return lowerArrayLength(length, lowerer);
 
+        if (auto index = expression.isIndexExp)
+            return lowerArrayIndex(index, lowerer);
+
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
@@ -598,6 +601,23 @@ struct BodyLowerer {
         instructions ~= Instruction(ArrayLength(
             destination,
             array,
+        ));
+        return destination;
+    }
+
+    uint lowerArrayIndex(
+        imported!"dmd.expression".IndexExp index,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayIndex, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        const indexValue = lowerExpression(index.e2, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(
+            destination,
+            array,
+            indexValue,
         ));
         return destination;
     }

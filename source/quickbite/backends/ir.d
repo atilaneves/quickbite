@@ -135,8 +135,8 @@ InstructionEffect executeInstruction(
     ref long[] temporaries,
     ref long[][] arrays,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayLength, ArrayLiteral,
-        Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
+    import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength,
+        ArrayLiteral, Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
         JumpIfTrue, ReturnValue, Select, UnaryOp;
     import std.sumtype: match;
 
@@ -234,6 +234,13 @@ InstructionEffect executeInstruction(
         (ArrayLength instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) arrays[arrayIndex(temporaries, instruction.array)].length;
+            return nextInstruction;
+        },
+        (ArrayIndex instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                arrays[arrayIndex(temporaries, instruction.array)][
+                    arrayIndex(temporaries, instruction.index)
+                ];
             return nextInstruction;
         },
         (ReturnValue instruction) {
