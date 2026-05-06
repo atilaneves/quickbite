@@ -330,6 +330,13 @@ struct BodyLowerer {
         if (auto append = expression.isCatElemAssignExp)
             return lowerArrayAppendAssignment(append, lowerer);
 
+        if (auto post = expression.isPostExp) {
+            import dmd.tokens: EXP;
+
+            if (post.op == EXP.plusPlus)
+                return lowerPostIncrement(post, lowerer);
+        }
+
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
@@ -529,6 +536,47 @@ struct BodyLowerer {
             source,
         ));
         return *destination;
+    }
+
+    uint lowerPostIncrement(
+        imported!"dmd.expression".PostExp post,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, ConstInt, Copy, Instruction;
+        import std.conv: text;
+
+        auto variable = post.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", post.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", post.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(post.e1)));
+
+        const result = allocateTemporary;
+        instructions ~= Instruction(Copy(
+            result,
+            *destination,
+        ));
+
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+        const incremented = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            incremented,
+            *destination,
+            one,
+            imported!"quickbite.ir.instruction".Operation.add,
+        ));
+        instructions ~= Instruction(Copy(
+            *destination,
+            incremented,
+        ));
+        return result;
     }
 
     uint lowerArrayIndexAssignment(

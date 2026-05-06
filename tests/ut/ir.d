@@ -299,6 +299,18 @@ unittest {
     }.runTests;
 }
 
+@("ir.postIncrementSizeTIndex")
+unittest {
+    q{
+        unittest {
+            ubyte[] values = [0x29u, 0x2au];
+            size_t index = 0;
+            assert(values[index++] == 0x29u);
+            assert(index == 1);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
