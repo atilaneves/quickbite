@@ -108,7 +108,7 @@ unittest {
             setTo43(value);
             assert(value == 43);
         }
-    }).shouldThrowWithMessage("Unsupported parameter storage class.");
+    });
 }
 
 @("treeWalking.externalCallee")

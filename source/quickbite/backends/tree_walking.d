@@ -9,6 +9,12 @@ alias Value = imported!"std.sumtype".SumType!(long, long[]);
 private struct FunctionResult {
     private bool hasValue;
     private Value value;
+    private Value[] refValues;
+}
+
+private struct CallArgument {
+    private Value value;
+    private imported!"dmd.declaration".VarDeclaration refSource;
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -35,7 +41,7 @@ private void walkModule(imported!"dmd.dmodule".Module module_) {
 private struct Interpreter {
     private FunctionResult executeFunction(
         imported!"dmd.func".FuncDeclaration func,
-        Value[] args = [],
+        CallArgument[] args = [],
     ) {
         if (func.fbody is null)
             throw new Exception("No function body to execute.");
@@ -47,8 +53,25 @@ private struct Interpreter {
         if (!w.hasReturn && !returnsVoid)
             throw new Exception("Unsupported function body.");
         if (returnsVoid)
-            return FunctionResult(false, Value(0L));
-        return FunctionResult(true, w.returnValue);
+            return FunctionResult(false, Value(0L), collectRefValues(func, w));
+        return FunctionResult(true, w.returnValue, collectRefValues(func, w));
+    }
+
+    private Value[] collectRefValues(
+        imported!"dmd.func".FuncDeclaration func,
+        ref BodyWalker walker,
+    ) {
+        Value[] refValues;
+        if (func.parameters is null)
+            return refValues;
+
+        foreach (param; functionParameters(func)) {
+            import dmd.astenums: STC;
+
+            if ((param.storage_class & STC.ref_) != STC.none)
+                refValues ~= walker.locals[param];
+        }
+        return refValues;
     }
 
     private bool isVoidReturn(
@@ -82,7 +105,7 @@ private struct BodyWalker {
 
     private void bindParameters(
         imported!"dmd.func".FuncDeclaration func,
-        Value[] args,
+        CallArgument[] args,
     ) {
         if (func.parameters is null && args.length == 0)
             return;
@@ -90,9 +113,12 @@ private struct BodyWalker {
             throw new Exception("Unsupported call.");
         foreach (i, param; functionParameters(func)) {
             import dmd.astenums: STC;
-            if (param.storage_class & (STC.ref_ | STC.out_ | STC.lazy_))
+            if ((param.storage_class & (STC.out_ | STC.lazy_)) != STC.none)
                 throw new Exception("Unsupported parameter storage class.");
-            locals[param] = args[i];
+            if ((param.storage_class & STC.ref_) != STC.none &&
+                args[i].refSource is null)
+                throw new Exception("Unsupported ref argument.");
+            locals[param] = args[i].value;
         }
     }
 
@@ -398,18 +424,53 @@ private struct BodyWalker {
         if (call.f.fbody is null)
             throw new Exception("No function body to execute.");
 
-        Value[] args;
+        CallArgument[] args;
         if (call.arguments !is null)
-            foreach (arg; callArguments(call))
-                args ~= runExpression(arg, interpreter);
+            foreach (i, arg; callArguments(call)) {
+                const param = functionParameters(call.f)[i];
+                import dmd.astenums: STC;
 
-        const result = interpreter.executeFunction(call.f, args);
+                if ((param.storage_class & STC.ref_) != STC.none) {
+                    if (auto var = arg.isVarExp)
+                        if (auto varDecl = var.var.isVarDeclaration)
+                            if (varDecl in locals) {
+                                args ~= CallArgument(locals[varDecl], varDecl);
+                                continue;
+                            }
+                    throw new Exception("Unsupported ref argument.");
+                }
+
+                args ~= CallArgument(runExpression(arg, interpreter), null);
+            }
+
+        // `auto` is intentional: `const` would block ref propagation.
+        auto result = interpreter.executeFunction(call.f, args);
+        propagateRefArguments(call, args, result.refValues);
         if (!result.hasValue) {
             if (resultIgnored)
                 return Value(0L);
             throw new Exception("Void function result used as value.");
         }
         return result.value;
+    }
+
+    private void propagateRefArguments(
+        imported!"dmd.expression".CallExp call,
+        CallArgument[] args,
+        Value[] refValues,
+    ) {
+        if (call.f.parameters is null)
+            return;
+
+        size_t refIndex;
+        foreach (i, param; functionParameters(call.f)) {
+            import dmd.astenums: STC;
+
+            if ((param.storage_class & STC.ref_) == STC.none)
+                continue;
+            locals[args[i].refSource] = refValues[refIndex];
+            refIndex = refIndex + 1;
+        }
     }
 
     private Value runEqualExpression(
