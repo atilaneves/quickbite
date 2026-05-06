@@ -97,9 +97,7 @@ private struct BodyWalker {
     // DMD's `is*` helpers return concrete AST subclasses. Keep `auto` for
     // those downcasts so the walker stays close to the frontend API.
     private Value[VarDeclaration] locals;
-    // Struct fields are scalar-only for now; array fields need struct storage
-    // to move from `long` to `Value`.
-    private long[VarDeclaration][VarDeclaration] structFields;
+    private Value[VarDeclaration][VarDeclaration] structFields;
     private bool hasReturn;
     private Value returnValue;
 
@@ -229,7 +227,7 @@ private struct BodyWalker {
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                     if (auto fields = ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                            return Value((*fields).get(fieldDecl, 0));
+                            return (*fields).get(fieldDecl, Value(0L));
             unsupported;
         }
 
@@ -356,6 +354,17 @@ private struct BodyWalker {
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
                         return Value(cast(long) locals[varDecl].asArray.length);
+            if (auto dotVar = len.e1.isDotVarExp)
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto fields = ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                                return Value(
+                                    cast(long) (*fields)
+                                        .get(fieldDecl, Value((long[]).init))
+                                        .asArray
+                                        .length,
+                                );
             unsupported;
         }
 
@@ -506,7 +515,7 @@ private struct BodyWalker {
             unsupportedDecl;
 
         if (variable.type !is null && variable.type.isTypeStruct !is null) {
-            structFields[variable] = (long[VarDeclaration]).init;
+            structFields[variable] = (Value[VarDeclaration]).init;
             return Value(0L);
         }
 
@@ -637,7 +646,7 @@ private struct BodyWalker {
                     if (ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                             structFields[ownerDecl][fieldDecl] =
-                                coerceIntegerToType(value.asLong, fieldDecl.type);
+                                coerceValueToType(value, fieldDecl.type);
                             return value;
                         }
 

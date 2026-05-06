@@ -355,6 +355,20 @@ unittest {
     });
 }
 
+@("treeWalking.structArrayFieldDefaultsToEmpty")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Buffer {
+            ubyte[] bytes;
+        }
+
+        unittest {
+            Buffer buffer;
+            assert(buffer.bytes.length == 0);
+        }
+    });
+}
+
 @("treeWalking.structPassedToFunction")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
