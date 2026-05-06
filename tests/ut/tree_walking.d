@@ -569,6 +569,17 @@ unittest {
     });
 }
 
+@("treeWalking.rightShift")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        uint input() { return 0b10101000; }
+
+        unittest {
+            assert((input >> 2) == 0b00101010);
+        }
+    });
+}
+
 @("treeWalking.arrayLength")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
