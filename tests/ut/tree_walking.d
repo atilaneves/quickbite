@@ -111,6 +111,22 @@ unittest {
     });
 }
 
+@("treeWalking.refArrayParameter")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        void append42(ref ubyte[] output) {
+            output ~= cast(ubyte) 42;
+        }
+
+        unittest {
+            ubyte[] output;
+            append42(output);
+            assert(output.length == 1);
+            assert(output[0] == 42);
+        }
+    });
+}
+
 @("treeWalking.externalCallee")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
