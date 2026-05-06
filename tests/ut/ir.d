@@ -363,6 +363,22 @@ unittest {
     }.runTests;
 }
 
+@("ir.minicerealEncodeUbyte")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] output;
+                encode!ubyte(0x2au, output);
+                assert(output.length == 1);
+                assert(output[0] == 0x2au);
+            }
+        }
+    ).runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{

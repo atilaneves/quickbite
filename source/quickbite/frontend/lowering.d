@@ -504,6 +504,15 @@ struct BodyLowerer {
             return value;
         }
 
+        if (typeIsDynamicArray(variable.type) && variable._init is null) {
+            import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(value, []));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         if (variable._init is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -511,7 +520,25 @@ struct BodyLowerer {
         if (initializer is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
+        if (auto blit = initializer.exp.isBlitExp) {
+            if (!typeIsDynamicArray(variable.type) || blit.e2.isNullExp is null)
+                throw new Exception(text("Unsupported expression: ", declaration.op));
+
+            import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(value, []));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         auto construct = initializer.exp.isConstructExp;
+        if (construct is null && initializer.exp.isIntegerExp !is null) {
+            const value = lowerExpression(initializer.exp, lowerer);
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         if (construct is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -976,6 +1003,10 @@ private imported!"quickbite.ir.instruction".IntegerType castTarget(
 
 private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.isTypeStruct !is null;
+}
+
+private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && type.isTypeDArray !is null;
 }
 
 private string declarationName(
