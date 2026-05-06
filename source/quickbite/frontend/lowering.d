@@ -294,6 +294,9 @@ struct BodyLowerer {
         if (auto index = expression.isIndexExp)
             return lowerArrayIndex(index, lowerer);
 
+        if (auto dot = expression.isDotVarExp)
+            return lowerStructFieldRead(dot, lowerer);
+
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
@@ -492,6 +495,15 @@ struct BodyLowerer {
         if (variable is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
+        if (typeIsStruct(variable.type)) {
+            import quickbite.ir.instruction: Instruction, StructNew;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(StructNew(value));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         if (variable._init is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -517,6 +529,9 @@ struct BodyLowerer {
 
         if (auto index = assignment.e1.isIndexExp)
             return lowerArrayIndexAssignment(index, assignment.e2, lowerer);
+
+        if (auto dot = assignment.e1.isDotVarExp)
+            return lowerStructFieldAssignment(dot, assignment.e2, lowerer);
 
         auto variable = assignment.e1.isVarExp;
         if (variable is null)
@@ -595,6 +610,71 @@ struct BodyLowerer {
             source,
         ));
         return source;
+    }
+
+    uint lowerStructFieldAssignment(
+        imported!"dmd.expression".DotVarExp dot,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructSet;
+        import std.conv: text;
+
+        auto owner = dot.e1.isVarExp;
+        if (owner is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto declaration = owner.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto struct_ = declaration in localTemporaries;
+        if (struct_ is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(dot.e1)));
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const source = lowerExpression(sourceExpression, lowerer);
+        instructions ~= Instruction(StructSet(
+            *struct_,
+            declarationName(field),
+            source,
+        ));
+        return source;
+    }
+
+    uint lowerStructFieldRead(
+        imported!"dmd.expression".DotVarExp dot,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+        import std.conv: text;
+
+        auto owner = dot.e1.isVarExp;
+        if (owner is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto declaration = owner.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto struct_ = declaration in localTemporaries;
+        if (struct_ is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(dot.e1)));
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            destination,
+            *struct_,
+            declarationName(field),
+        ));
+        return destination;
     }
 
     uint lowerCompoundAssignment(
@@ -892,6 +972,16 @@ private imported!"quickbite.ir.instruction".IntegerType castTarget(
         return IntegerType.u64;
 
     throw new Exception("Unsupported cast.");
+}
+
+private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && type.isTypeStruct !is null;
+}
+
+private string declarationName(
+    imported!"dmd.declaration".VarDeclaration declaration,
+) @trusted {
+    return declaration.ident.toString.idup;
 }
 
 private ref auto compoundStatements(

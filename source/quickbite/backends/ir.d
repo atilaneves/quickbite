@@ -98,6 +98,7 @@ ExecutionResult executeInstructions(
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     long[][] arrays;
+    long[string][] structs;
     writeArguments(temporaries, numParameters, arguments);
 
     ExecutionResult result;
@@ -110,6 +111,7 @@ ExecutionResult executeInstructions(
             instructions[instructionPointer],
             temporaries,
             arrays,
+            structs,
         );
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -134,10 +136,11 @@ InstructionEffect executeInstruction(
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
     ref long[][] arrays,
+    ref long[string][] structs,
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength, ArraySet,
         ArrayLiteral, Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
-        JumpIfTrue, ReturnValue, Select, UnaryOp;
+        JumpIfTrue, ReturnValue, Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -246,6 +249,27 @@ InstructionEffect executeInstruction(
         (ArraySet instruction) {
             arrays[arrayIndex(temporaries, instruction.array)][
                 arrayIndex(temporaries, instruction.index)
+            ] = readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (StructNew instruction) {
+            structs ~= (long[string]).init;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (structs.length - 1);
+            return nextInstruction;
+        },
+        (const StructGet instruction) {
+            const index = structIndex(temporaries, instruction.struct_);
+            long value;
+            if (auto stored = instruction.fieldName in structs[index])
+                value = *stored;
+
+            writeTemporaryValue(temporaries, instruction.destination) = value;
+            return nextInstruction;
+        },
+        (const StructSet instruction) {
+            structs[structIndex(temporaries, instruction.struct_)][
+                instruction.fieldName
             ] = readTemporaryValue(temporaries, instruction.value);
             return nextInstruction;
         },
@@ -434,6 +458,14 @@ size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     const value = readTemporaryValue(temporaries, temporary);
     if (value < 0)
         throw new Exception("IR: array index out of range");
+
+    return cast(size_t) value;
+}
+
+size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
+    const value = readTemporaryValue(temporaries, temporary);
+    if (value < 0)
+        throw new Exception("IR: struct index out of range");
 
     return cast(size_t) value;
 }

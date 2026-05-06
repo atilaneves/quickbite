@@ -124,6 +124,22 @@ public struct ArraySet {
     uint value;
 }
 
+public struct StructNew {
+    uint destination;
+}
+
+public struct StructGet {
+    uint destination;
+    uint struct_;
+    string fieldName;
+}
+
+public struct StructSet {
+    uint struct_;
+    string fieldName;
+    uint value;
+}
+
 public struct ReturnValue {
     uint value;
 }
@@ -144,5 +160,8 @@ public alias Instruction = SumType!(
     ArrayLength,
     ArrayIndex,
     ArraySet,
+    StructNew,
+    StructGet,
+    StructSet,
     ReturnValue,
 );

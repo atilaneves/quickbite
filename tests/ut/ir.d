@@ -311,6 +311,21 @@ unittest {
     }.runTests;
 }
 
+@("ir.scalarStructField")
+unittest {
+    q{
+        struct Value {
+            int value;
+        }
+
+        unittest {
+            Value wrapper;
+            wrapper.value = 42;
+            assert(wrapper.value == 42);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
