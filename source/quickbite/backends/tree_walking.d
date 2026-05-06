@@ -295,6 +295,17 @@ private struct BodyWalker {
                         locals[varDecl] = Value(newVal);
                         return Value(newVal);
                     }
+            if (auto cast_ = orAssign.e1.isCastExp)
+                if (auto var = cast_.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals) {
+                            const newVal = locals[varDecl].asLong |
+                                runExpression(orAssign.e2, interpreter).asLong;
+                            locals[varDecl] = Value(
+                                coerceIntegerToType(newVal, varDecl.type),
+                            );
+                            return Value(newVal);
+                        }
             unsupported;
         }
 

@@ -20,6 +20,22 @@ unittest {
     );
 }
 
+@("treeWalking.minicerealDecodeUbyte")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] buf = [42];
+                size_t pos = 0;
+                assert(decode!ubyte(buf, pos) == 42);
+                assert(pos == 1);
+            }
+        },
+    );
+}
+
 @("treeWalking.ok")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
