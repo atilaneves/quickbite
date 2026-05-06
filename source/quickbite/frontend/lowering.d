@@ -152,6 +152,9 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto literal = expression.isArrayLiteralExp)
+            return lowerArrayLiteral(literal, lowerer);
+
         if (auto call = expression.isCallExp) {
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
@@ -285,6 +288,9 @@ struct BodyLowerer {
         if (auto cast_ = expression.isCastExp)
             return lowerCast(cast_, lowerer);
 
+        if (auto length = expression.isArrayLengthExp)
+            return lowerArrayLength(length, lowerer);
+
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
@@ -318,6 +324,9 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto append = expression.isCatElemAssignExp)
+            return lowerArrayAppendAssignment(append, lowerer);
+
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
@@ -349,6 +358,25 @@ struct BodyLowerer {
             left,
             right,
             operation,
+        ));
+        return destination;
+    }
+
+    uint lowerArrayLiteral(
+        imported!"dmd.expression".ArrayLiteralExp literal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+        uint[] elements;
+        if (literal.elements !is null)
+            foreach (element; arrayLiteralElements(literal))
+                elements ~= lowerExpression(element, lowerer);
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLiteral(
+            destination,
+            elements,
         ));
         return destination;
     }
@@ -530,6 +558,48 @@ struct BodyLowerer {
             result,
         ));
         return *destination;
+    }
+
+    uint lowerArrayAppendAssignment(
+        imported!"dmd.expression".BinAssignExp assignment,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayAppend, Instruction;
+        import std.conv: text;
+
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+
+        const value = lowerExpression(assignment.e2, lowerer);
+        instructions ~= Instruction(ArrayAppend(
+            *destination,
+            value,
+        ));
+        return *destination;
+    }
+
+    uint lowerArrayLength(
+        imported!"dmd.expression".ArrayLengthExp length,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLength, Instruction;
+
+        const array = lowerExpression(length.e1, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(
+            destination,
+            array,
+        ));
+        return destination;
     }
 
     uint lowerCast(
@@ -753,4 +823,11 @@ private ref auto functionParameters(
 private ref auto callArguments(imported!"dmd.expression".CallExp call) @trusted {
     // Caller checked `arguments` for null; DMD owns the array.
     return *call.arguments;
+}
+
+private ref auto arrayLiteralElements(
+    imported!"dmd.expression".ArrayLiteralExp literal,
+) @trusted {
+    // Caller checked `elements` for null; DMD owns the array.
+    return *literal.elements;
 }

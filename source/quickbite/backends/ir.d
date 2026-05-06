@@ -97,6 +97,7 @@ ExecutionResult executeInstructions(
     in long[] arguments = [],
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
+    long[][] arrays;
     writeArguments(temporaries, numParameters, arguments);
 
     ExecutionResult result;
@@ -108,6 +109,7 @@ ExecutionResult executeInstructions(
             module_,
             instructions[instructionPointer],
             temporaries,
+            arrays,
         );
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -131,9 +133,11 @@ InstructionEffect executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
+    ref long[][] arrays,
 ) @safe pure {
-    import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
-        Copy, JumpIfFalse, JumpIfTrue, ReturnValue, Select, UnaryOp;
+    import quickbite.ir.instruction: ArrayAppend, ArrayLength, ArrayLiteral,
+        Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
+        JumpIfTrue, ReturnValue, Select, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -210,6 +214,26 @@ InstructionEffect executeInstruction(
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
 
+            return nextInstruction;
+        },
+        (const ArrayLiteral instruction) {
+            long[] values;
+            foreach (element; instruction.elements)
+                values ~= readTemporaryValue(temporaries, element);
+
+            arrays ~= values;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (ArrayAppend instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)] ~=
+                readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (ArrayLength instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) arrays[arrayIndex(temporaries, instruction.array)].length;
             return nextInstruction;
         },
         (ReturnValue instruction) {
@@ -391,6 +415,14 @@ long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
 ref long writeTemporaryValue(ref long[] temporaries, in uint index) @safe pure {
     enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
+}
+
+size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
+    const value = readTemporaryValue(temporaries, temporary);
+    if (value < 0)
+        throw new Exception("IR: array index out of range");
+
+    return cast(size_t) value;
 }
 
 void enforceTemporaryIndex(in ulong length, in uint index) @safe pure {

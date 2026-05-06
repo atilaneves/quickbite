@@ -97,6 +97,21 @@ public struct Assert_ {
     uint condition;
 }
 
+public struct ArrayLiteral {
+    uint destination;
+    uint[] elements;
+}
+
+public struct ArrayAppend {
+    uint array;
+    uint value;
+}
+
+public struct ArrayLength {
+    uint destination;
+    uint array;
+}
+
 public struct ReturnValue {
     uint value;
 }
@@ -112,5 +127,8 @@ public alias Instruction = SumType!(
     Copy,
     CastInt,
     Assert_,
+    ArrayLiteral,
+    ArrayAppend,
+    ArrayLength,
     ReturnValue,
 );

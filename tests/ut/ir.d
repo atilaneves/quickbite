@@ -261,6 +261,19 @@ unittest {
     }.runTests;
 }
 
+@("ir.ubyteArrayAppendAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto values = [0x2au];
+            values ~= 0x2bu;
+            assert(values.length == 2);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
