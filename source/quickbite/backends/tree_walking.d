@@ -292,7 +292,9 @@ private struct BodyWalker {
                     if (varDecl in locals) {
                         const newVal = locals[varDecl].asLong |
                             runExpression(orAssign.e2, interpreter).asLong;
-                        locals[varDecl] = Value(newVal);
+                        locals[varDecl] = Value(
+                            coerceIntegerToType(newVal, varDecl.type),
+                        );
                         return Value(newVal);
                     }
             if (auto cast_ = orAssign.e1.isCastExp)

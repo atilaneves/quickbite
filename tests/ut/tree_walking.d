@@ -36,6 +36,23 @@ unittest {
     );
 }
 
+@("treeWalking.minicerealRoundTripNegativeInt")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                const value = -42;
+                ubyte[] buf;
+                encode(value, buf);
+                size_t pos = 0;
+                assert(decode!int(buf, pos) == value);
+            }
+        },
+    );
+}
+
 @("treeWalking.ok")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
