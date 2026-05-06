@@ -1,9 +1,9 @@
-module ut.simple;
+module ut.ir;
 
 import quickbite;
 import unit_threaded;
 
-@("simple.ok")
+@("ir.ok")
 unittest {
     q{
         int answer() {
@@ -16,7 +16,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.localIntReturn")
+@("ir.localIntReturn")
 unittest {
     q{
         int answer() {
@@ -30,7 +30,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.voidFunction")
+@("ir.voidFunction")
 unittest {
     q{
         void foo() {}
@@ -41,7 +41,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.voidFunctionOops")
+@("ir.voidFunctionOops")
 unittest {
     q{
         void foo() {
@@ -54,7 +54,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.intAddition")
+@("ir.intAddition")
 unittest {
     q{
         int answer() {
@@ -68,7 +68,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intSubtraction")
+@("ir.intSubtraction")
 unittest {
     q{
         int answer() {
@@ -82,7 +82,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intUnaryMinus")
+@("ir.intUnaryMinus")
 unittest {
     q{
         int input() {
@@ -99,7 +99,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intMultiplication")
+@("ir.intMultiplication")
 unittest {
     q{
         int answer() {
@@ -113,7 +113,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intDivision")
+@("ir.intDivision")
 unittest {
     q{
         int answer() {
@@ -127,7 +127,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intModulo")
+@("ir.intModulo")
 unittest {
     q{
         int answer() {
@@ -141,7 +141,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.functionParameter")
+@("ir.functionParameter")
 unittest {
     q{
         int answer(int value) {
@@ -154,7 +154,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.functionParameters")
+@("ir.functionParameters")
 unittest {
     q{
         int answer(int left, int right) {
@@ -167,7 +167,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.functionParametersOops")
+@("ir.functionParametersOops")
 unittest {
     q{
         int answer(int left, int right) {
@@ -180,7 +180,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.inFunctionParameters")
+@("ir.inFunctionParameters")
 unittest {
     q{
         void check(in int left, in int right) {
@@ -193,7 +193,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.inFunctionParametersOops")
+@("ir.inFunctionParametersOops")
 unittest {
     q{
         void check(in int left, in int right) {
@@ -206,7 +206,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.refParameter")
+@("ir.refParameter")
 unittest {
     q{
         void addOne(ref int value) {
@@ -221,7 +221,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.refParameterOops")
+@("ir.refParameterOops")
 unittest {
     q{
         void addOne(ref int value) {
@@ -236,7 +236,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.multipleRefParameters")
+@("ir.multipleRefParameters")
 unittest {
     q{
         void add(int left, ref int right) {
@@ -251,7 +251,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.refSizeTParameter")
+@("ir.refSizeTParameter")
 unittest {
     q{
         void advance(ref size_t pos) {
@@ -266,7 +266,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.refSizeTParameterOops")
+@("ir.refSizeTParameterOops")
 unittest {
     q{
         void advance(ref size_t pos) {
@@ -291,7 +291,7 @@ static foreach (T; imported!"std.meta".AliasSeq!(
     long,
     ulong,
 )) {
-    @("simple.integralType." ~ T.stringof)
+    @("ir.integralType." ~ T.stringof)
     unittest {
         import std.conv: text;
 
@@ -322,7 +322,7 @@ static foreach (T; imported!"std.meta".AliasSeq!(
     }
 }
 
-@("simple.longLiteral")
+@("ir.longLiteral")
 unittest {
     q{
         long answer() {
@@ -335,7 +335,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intLessThan")
+@("ir.intLessThan")
 unittest {
     q{
         int answer() {
@@ -348,7 +348,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intLessThanOops")
+@("ir.intLessThanOops")
 unittest {
     q{
         int answer() {
@@ -361,7 +361,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.intLessOrEqual")
+@("ir.intLessOrEqual")
 unittest {
     q{
         int answer() {
@@ -374,7 +374,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intLessOrEqualOops")
+@("ir.intLessOrEqualOops")
 unittest {
     q{
         int answer() {
@@ -387,7 +387,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.intGreaterThan")
+@("ir.intGreaterThan")
 unittest {
     q{
         int answer() {
@@ -400,7 +400,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intGreaterThanOops")
+@("ir.intGreaterThanOops")
 unittest {
     q{
         int answer() {
@@ -413,7 +413,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.intGreaterOrEqual")
+@("ir.intGreaterOrEqual")
 unittest {
     q{
         int answer() {
@@ -426,7 +426,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intGreaterOrEqualOops")
+@("ir.intGreaterOrEqualOops")
 unittest {
     q{
         int answer() {
@@ -439,7 +439,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.intNotEqual")
+@("ir.intNotEqual")
 unittest {
     q{
         int answer() {
@@ -452,7 +452,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.intNotEqualOops")
+@("ir.intNotEqualOops")
 unittest {
     q{
         int answer() {
@@ -465,7 +465,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.logicalNot")
+@("ir.logicalNot")
 unittest {
     q{
         unittest {
@@ -475,7 +475,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalNotCall")
+@("ir.logicalNotCall")
 unittest {
     q{
         bool isReady() {
@@ -488,7 +488,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalAnd")
+@("ir.logicalAnd")
 unittest {
     q{
         unittest {
@@ -499,7 +499,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalAndCall")
+@("ir.logicalAndCall")
 unittest {
     q{
         bool left() {
@@ -516,7 +516,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalAndShortCircuit")
+@("ir.logicalAndShortCircuit")
 unittest {
     q{
         unittest {
@@ -527,7 +527,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalAndCallShortCircuit")
+@("ir.logicalAndCallShortCircuit")
 unittest {
     q{
         bool isReady() {
@@ -545,7 +545,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalOrShortCircuit")
+@("ir.logicalOrShortCircuit")
 unittest {
     q{
         unittest {
@@ -556,7 +556,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalOrBoolResult")
+@("ir.logicalOrBoolResult")
 unittest {
     q{
         unittest {
@@ -565,7 +565,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalOr")
+@("ir.logicalOr")
 unittest {
     q{
         unittest {
@@ -576,7 +576,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.logicalOrOops")
+@("ir.logicalOrOops")
 unittest {
     q{
         unittest {
@@ -587,7 +587,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.ifElse")
+@("ir.ifElse")
 unittest {
     q{
         int answer(int value) {
@@ -604,7 +604,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.ifElseOops")
+@("ir.ifElseOops")
 unittest {
     q{
         int answer(int value) {
@@ -620,7 +620,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.ifElseUntakenBranch")
+@("ir.ifElseUntakenBranch")
 unittest {
     q{
         int zero() {
@@ -640,7 +640,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.earlyReturn")
+@("ir.earlyReturn")
 unittest {
     q{
         int answer(int value) {
@@ -657,7 +657,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.multipleEarlyReturns")
+@("ir.multipleEarlyReturns")
 unittest {
     q{
         int answer(int value) {
@@ -678,7 +678,7 @@ unittest {
     }.runTests;
 }
 
-@("simple.functionParameterOops")
+@("ir.functionParameterOops")
 unittest {
     q{
         int answer(int value) {
@@ -691,7 +691,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.localIntReturnOops")
+@("ir.localIntReturnOops")
 unittest {
     q{
         int answer() {
@@ -705,7 +705,7 @@ unittest {
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
 }
 
-@("simple.oops")
+@("ir.oops")
 unittest {
     q{
         int answer() {
