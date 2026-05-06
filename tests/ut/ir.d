@@ -235,6 +235,19 @@ unittest {
     }.runTests;
 }
 
+@("ir.intAddAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto value = 40;
+            value += 2;
+            assert(value == 42);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{

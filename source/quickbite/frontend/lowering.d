@@ -304,6 +304,13 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto addAssign = expression.isAddAssignExp)
+            return lowerCompoundAssignment(
+                addAssign,
+                Operation.add,
+                lowerer,
+            );
+
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
