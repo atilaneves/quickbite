@@ -345,6 +345,24 @@ unittest {
     }.runTests;
 }
 
+@("ir.refUbyteArrayParameterAppend")
+unittest {
+    q{
+        void appendAnswer(ref ubyte[] values) {
+            values ~= 0x2au;
+        }
+
+        unittest {
+            // The explicit type is intentional: this exercises ubyte[] rather
+            // than an inferred array type.
+            ubyte[] values = [];
+            appendAnswer(values);
+            assert(values.length == 1);
+            assert(values[0] == 0x2au);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{

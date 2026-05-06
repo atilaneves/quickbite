@@ -18,6 +18,7 @@ public void runIrTests(in string source) {
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
+        long[][] arrays;
         long[string][] structs;
         executeInstructions(
             module_,
@@ -25,6 +26,7 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
             test.numTemporaries,
             0,
             [],
+            arrays,
             structs,
         );
     }
@@ -35,6 +37,7 @@ long executeFunction(
     in string calleeName,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[][] arrays,
     ref long[string][] structs,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
@@ -49,6 +52,7 @@ long executeFunction(
                 function_.numTemporaries,
                 callerTemporaries,
                 argumentIndices,
+                arrays,
                 structs,
             );
     }
@@ -65,6 +69,7 @@ long executeFunctionBody(
     in uint numTemporaries,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[][] arrays,
     ref long[string][] structs,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
@@ -74,6 +79,7 @@ long executeFunctionBody(
         numTemporaries,
         numParameters,
         arguments,
+        arrays,
         structs,
     );
     writeRefArguments(
@@ -103,10 +109,10 @@ ExecutionResult executeInstructions(
     in uint numTemporaries,
     in uint numParameters = 0,
     in long[] arguments = [],
+    ref long[][] arrays,
     ref long[string][] structs,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
-    long[][] arrays;
     writeArguments(temporaries, numParameters, arguments);
 
     ExecutionResult result;
@@ -164,6 +170,7 @@ InstructionEffect executeInstruction(
                     instruction.calleeName,
                     temporaries,
                     instruction.arguments,
+                    arrays,
                     structs,
                 );
             return nextInstruction;
