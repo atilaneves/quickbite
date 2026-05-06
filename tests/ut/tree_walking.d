@@ -4,6 +4,22 @@ import quickbite: ExecutorBackend, runTests;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
 
+@("treeWalking.minicerealEncodeUbyte")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] buf;
+                encode(cast(ubyte) 42, buf);
+                assert(buf.length == 1);
+                assert(buf[0] == 42);
+            }
+        },
+    );
+}
+
 @("treeWalking.ok")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

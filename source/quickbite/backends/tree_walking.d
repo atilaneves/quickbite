@@ -622,13 +622,12 @@ private struct BodyWalker {
         auto initializer = variable._init.isExpInitializer;
         if (initializer is null)
             unsupportedDecl;
-        auto construct = initializer.exp.isConstructExp;
-        if (construct is null)
+        if (initializer.exp.isAssignExp || initializer.exp.isBlitExp)
             unsupportedDecl;
-        Value value = coerceValueToType(
-            runExpression(construct.e2, interpreter),
-            variable.type,
-        );
+        auto construct = initializer.exp.isConstructExp;
+        Value value = construct !is null
+            ? coerceValueToType(runExpression(construct.e2, interpreter), variable.type)
+            : coerceValueToType(runExpression(initializer.exp, interpreter), variable.type);
         locals[variable] = value;
         return value;
     }
