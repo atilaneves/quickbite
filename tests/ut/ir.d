@@ -141,6 +141,46 @@ unittest {
     }.runTests;
 }
 
+@("ir.intShiftRight")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal shifts before IR lowering.
+            const value = 168;
+            const shift = 2;
+            assert(value >> shift == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intShiftLeft")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal shifts and const locals before
+            // IR lowering. Mutable locals keep the shift in the lowered AST,
+            // so auto is intentional here.
+            auto value = 21;
+            auto shift = 1;
+            assert(value << shift == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intBitwiseOr")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto left = 40;
+            auto right = 2;
+            assert((left | right) == 42);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{

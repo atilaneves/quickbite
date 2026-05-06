@@ -319,6 +319,15 @@ void executeBinaryInstruction(
             enforceNonZeroDivisor(rightValue, "Integer modulo by zero.");
             result = leftValue % rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.leftShift:
+            result = leftValue << rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.rightShift:
+            result = leftValue >> rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseOr:
+            result = leftValue | rightValue;
+            break;
         case imported!"quickbite.ir.instruction".Operation.equal:
             result = leftValue == rightValue;
             break;

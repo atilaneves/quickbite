@@ -234,6 +234,15 @@ struct BodyLowerer {
         if (auto modulo = expression.isModExp)
             return lowerBinaryExpression(modulo, Operation.modulo, lowerer);
 
+        if (auto leftShift = expression.isShlExp)
+            return lowerBinaryExpression(leftShift, Operation.leftShift, lowerer);
+
+        if (auto rightShift = expression.isShrExp)
+            return lowerBinaryExpression(rightShift, Operation.rightShift, lowerer);
+
+        if (auto or = expression.isOrExp)
+            return lowerBinaryExpression(or, Operation.bitwiseOr, lowerer);
+
         if (auto negate = expression.isNegExp) {
             const value = lowerExpression(negate.e1, lowerer);
             const destination = allocateTemporary;
