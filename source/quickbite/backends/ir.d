@@ -18,10 +18,14 @@ public void runIrTests(in string source) {
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
+        long[string][] structs;
         executeInstructions(
             module_,
             test.instructions,
             test.numTemporaries,
+            0,
+            [],
+            structs,
         );
     }
 }
@@ -31,6 +35,7 @@ long executeFunction(
     in string calleeName,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[string][] structs,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -44,6 +49,7 @@ long executeFunction(
                 function_.numTemporaries,
                 callerTemporaries,
                 argumentIndices,
+                structs,
             );
     }
 
@@ -59,6 +65,7 @@ long executeFunctionBody(
     in uint numTemporaries,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[string][] structs,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
     ExecutionResult result = executeInstructions(
@@ -67,6 +74,7 @@ long executeFunctionBody(
         numTemporaries,
         numParameters,
         arguments,
+        structs,
     );
     writeRefArguments(
         result.temporaries,
@@ -95,10 +103,10 @@ ExecutionResult executeInstructions(
     in uint numTemporaries,
     in uint numParameters = 0,
     in long[] arguments = [],
+    ref long[string][] structs,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     long[][] arrays;
-    long[string][] structs;
     writeArguments(temporaries, numParameters, arguments);
 
     ExecutionResult result;
@@ -156,6 +164,7 @@ InstructionEffect executeInstruction(
                     instruction.calleeName,
                     temporaries,
                     instruction.arguments,
+                    structs,
                 );
             return nextInstruction;
         },
