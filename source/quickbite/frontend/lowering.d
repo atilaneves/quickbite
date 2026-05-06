@@ -297,6 +297,13 @@ struct BodyLowerer {
         if (auto assignment = expression.isAssignExp)
             return lowerAssignment(assignment, lowerer);
 
+        if (auto orAssign = expression.isOrAssignExp)
+            return lowerCompoundAssignment(
+                orAssign,
+                Operation.bitwiseOr,
+                lowerer,
+            );
+
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
                 if (auto temporary = var in localTemporaries)
@@ -472,6 +479,41 @@ struct BodyLowerer {
         instructions ~= Instruction(Copy(
             *destination,
             source,
+        ));
+        return *destination;
+    }
+
+    uint lowerCompoundAssignment(
+        imported!"dmd.expression".BinAssignExp assignment,
+        in imported!"quickbite.ir.instruction".Operation operation,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Copy, Instruction;
+        import std.conv: text;
+
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+
+        const source = lowerExpression(assignment.e2, lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            *destination,
+            source,
+            operation,
+        ));
+        instructions ~= Instruction(Copy(
+            *destination,
+            result,
         ));
         return *destination;
     }

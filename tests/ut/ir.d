@@ -222,6 +222,19 @@ unittest {
     }.runTests;
 }
 
+@("ir.intOrAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto value = 0x28u;
+            value |= 0x02u;
+            assert(value == 0x2au);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
