@@ -29,6 +29,11 @@ public enum Operation {
     multiply,
     divide,
     modulo,
+    leftShift,
+    rightShift,
+    bitwiseAnd,
+    bitwiseOr,
+    bitwiseXor,
     equal,
     notEqual,
     lessThan,
@@ -46,6 +51,7 @@ public struct UnaryOp {
 public enum UnaryOperation {
     negate,
     not,
+    complement,
 }
 
 public struct Select {
@@ -91,6 +97,49 @@ public struct Assert_ {
     uint condition;
 }
 
+public struct ArrayLiteral {
+    uint destination;
+    uint[] elements;
+}
+
+public struct ArrayAppend {
+    uint array;
+    uint value;
+}
+
+public struct ArrayLength {
+    uint destination;
+    uint array;
+}
+
+public struct ArrayIndex {
+    uint destination;
+    uint array;
+    uint index;
+}
+
+public struct ArraySet {
+    uint array;
+    uint index;
+    uint value;
+}
+
+public struct StructNew {
+    uint destination;
+}
+
+public struct StructGet {
+    uint destination;
+    uint struct_;
+    string fieldName;
+}
+
+public struct StructSet {
+    uint struct_;
+    string fieldName;
+    uint value;
+}
+
 public struct ReturnValue {
     uint value;
 }
@@ -106,5 +155,13 @@ public alias Instruction = SumType!(
     Copy,
     CastInt,
     Assert_,
+    ArrayLiteral,
+    ArrayAppend,
+    ArrayLength,
+    ArrayIndex,
+    ArraySet,
+    StructNew,
+    StructGet,
+    StructSet,
     ReturnValue,
 );

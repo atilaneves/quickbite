@@ -152,6 +152,9 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto literal = expression.isArrayLiteralExp)
+            return lowerArrayLiteral(literal, lowerer);
+
         if (auto call = expression.isCallExp) {
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
@@ -234,6 +237,21 @@ struct BodyLowerer {
         if (auto modulo = expression.isModExp)
             return lowerBinaryExpression(modulo, Operation.modulo, lowerer);
 
+        if (auto leftShift = expression.isShlExp)
+            return lowerBinaryExpression(leftShift, Operation.leftShift, lowerer);
+
+        if (auto rightShift = expression.isShrExp)
+            return lowerBinaryExpression(rightShift, Operation.rightShift, lowerer);
+
+        if (auto and = expression.isAndExp)
+            return lowerBinaryExpression(and, Operation.bitwiseAnd, lowerer);
+
+        if (auto or = expression.isOrExp)
+            return lowerBinaryExpression(or, Operation.bitwiseOr, lowerer);
+
+        if (auto xor = expression.isXorExp)
+            return lowerBinaryExpression(xor, Operation.bitwiseXor, lowerer);
+
         if (auto negate = expression.isNegExp) {
             const value = lowerExpression(negate.e1, lowerer);
             const destination = allocateTemporary;
@@ -256,8 +274,28 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto complement = expression.isComExp) {
+            const value = lowerExpression(complement.e1, lowerer);
+            const destination = allocateTemporary;
+            instructions ~= Instruction(UnaryOp(
+                destination,
+                value,
+                UnaryOperation.complement,
+            ));
+            return destination;
+        }
+
         if (auto cast_ = expression.isCastExp)
             return lowerCast(cast_, lowerer);
+
+        if (auto length = expression.isArrayLengthExp)
+            return lowerArrayLength(length, lowerer);
+
+        if (auto index = expression.isIndexExp)
+            return lowerArrayIndex(index, lowerer);
+
+        if (auto dot = expression.isDotVarExp)
+            return lowerStructFieldRead(dot, lowerer);
 
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
@@ -270,6 +308,37 @@ struct BodyLowerer {
 
         if (auto assignment = expression.isAssignExp)
             return lowerAssignment(assignment, lowerer);
+
+        if (auto orAssign = expression.isOrAssignExp)
+            return lowerCompoundAssignment(
+                orAssign,
+                Operation.bitwiseOr,
+                lowerer,
+            );
+
+        if (auto addAssign = expression.isAddAssignExp)
+            return lowerCompoundAssignment(
+                addAssign,
+                Operation.add,
+                lowerer,
+            );
+
+        if (auto subtractAssign = expression.isMinAssignExp)
+            return lowerCompoundAssignment(
+                subtractAssign,
+                Operation.subtract,
+                lowerer,
+            );
+
+        if (auto append = expression.isCatElemAssignExp)
+            return lowerArrayAppendAssignment(append, lowerer);
+
+        if (auto post = expression.isPostExp) {
+            import dmd.tokens: EXP;
+
+            if (post.op == EXP.plusPlus)
+                return lowerPostIncrement(post, lowerer);
+        }
 
         if (auto variable = expression.isVarExp) {
             if (auto var = variable.var.isVarDeclaration) {
@@ -302,6 +371,25 @@ struct BodyLowerer {
             left,
             right,
             operation,
+        ));
+        return destination;
+    }
+
+    uint lowerArrayLiteral(
+        imported!"dmd.expression".ArrayLiteralExp literal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+        uint[] elements;
+        if (literal.elements !is null)
+            foreach (element; arrayLiteralElements(literal))
+                elements ~= lowerExpression(element, lowerer);
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLiteral(
+            destination,
+            elements,
         ));
         return destination;
     }
@@ -407,6 +495,24 @@ struct BodyLowerer {
         if (variable is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
+        if (typeIsStruct(variable.type)) {
+            import quickbite.ir.instruction: Instruction, StructNew;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(StructNew(value));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
+        if (typeIsDynamicArray(variable.type) && variable._init is null) {
+            import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(value, []));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         if (variable._init is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -414,7 +520,25 @@ struct BodyLowerer {
         if (initializer is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
+        if (auto blit = initializer.exp.isBlitExp) {
+            if (!typeIsDynamicArray(variable.type) || blit.e2.isNullExp is null)
+                throw new Exception(text("Unsupported expression: ", declaration.op));
+
+            import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(value, []));
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         auto construct = initializer.exp.isConstructExp;
+        if (construct is null && initializer.exp.isIntegerExp !is null) {
+            const value = lowerExpression(initializer.exp, lowerer);
+            localTemporaries[variable] = value;
+            return value;
+        }
+
         if (construct is null)
             throw new Exception(text("Unsupported expression: ", declaration.op));
 
@@ -429,6 +553,12 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: Copy, Instruction;
         import std.conv: text;
+
+        if (auto index = assignment.e1.isIndexExp)
+            return lowerArrayIndexAssignment(index, assignment.e2, lowerer);
+
+        if (auto dot = assignment.e1.isDotVarExp)
+            return lowerStructFieldAssignment(dot, assignment.e2, lowerer);
 
         auto variable = assignment.e1.isVarExp;
         if (variable is null)
@@ -448,6 +578,224 @@ struct BodyLowerer {
             source,
         ));
         return *destination;
+    }
+
+    uint lowerPostIncrement(
+        imported!"dmd.expression".PostExp post,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, ConstInt, Copy, Instruction;
+        import std.conv: text;
+
+        auto variable = post.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", post.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", post.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(post.e1)));
+
+        const result = allocateTemporary;
+        instructions ~= Instruction(Copy(
+            result,
+            *destination,
+        ));
+
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+        const incremented = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            incremented,
+            *destination,
+            one,
+            imported!"quickbite.ir.instruction".Operation.add,
+        ));
+        instructions ~= Instruction(Copy(
+            *destination,
+            incremented,
+        ));
+        return result;
+    }
+
+    uint lowerArrayIndexAssignment(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySet, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        const indexValue = lowerExpression(index.e2, lowerer);
+        const source = lowerExpression(sourceExpression, lowerer);
+        instructions ~= Instruction(ArraySet(
+            array,
+            indexValue,
+            source,
+        ));
+        return source;
+    }
+
+    uint lowerStructFieldAssignment(
+        imported!"dmd.expression".DotVarExp dot,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructSet;
+        import std.conv: text;
+
+        auto owner = dot.e1.isVarExp;
+        if (owner is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto declaration = owner.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto struct_ = declaration in localTemporaries;
+        if (struct_ is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(dot.e1)));
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const source = lowerExpression(sourceExpression, lowerer);
+        instructions ~= Instruction(StructSet(
+            *struct_,
+            declarationName(field),
+            source,
+        ));
+        return source;
+    }
+
+    uint lowerStructFieldRead(
+        imported!"dmd.expression".DotVarExp dot,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+        import std.conv: text;
+
+        auto owner = dot.e1.isVarExp;
+        if (owner is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto declaration = owner.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        auto struct_ = declaration in localTemporaries;
+        if (struct_ is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(dot.e1)));
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            destination,
+            *struct_,
+            declarationName(field),
+        ));
+        return destination;
+    }
+
+    uint lowerCompoundAssignment(
+        imported!"dmd.expression".BinAssignExp assignment,
+        in imported!"quickbite.ir.instruction".Operation operation,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Copy, Instruction;
+        import std.conv: text;
+
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+
+        const source = lowerExpression(assignment.e2, lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            *destination,
+            source,
+            operation,
+        ));
+        instructions ~= Instruction(Copy(
+            *destination,
+            result,
+        ));
+        return *destination;
+    }
+
+    uint lowerArrayAppendAssignment(
+        imported!"dmd.expression".BinAssignExp assignment,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayAppend, Instruction;
+        import std.conv: text;
+
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception(text("Unsupported expression: ", assignment.op));
+
+        auto destination = declaration in localTemporaries;
+        if (destination is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+
+        const value = lowerExpression(assignment.e2, lowerer);
+        instructions ~= Instruction(ArrayAppend(
+            *destination,
+            value,
+        ));
+        return *destination;
+    }
+
+    uint lowerArrayLength(
+        imported!"dmd.expression".ArrayLengthExp length,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLength, Instruction;
+
+        const array = lowerExpression(length.e1, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(
+            destination,
+            array,
+        ));
+        return destination;
+    }
+
+    uint lowerArrayIndex(
+        imported!"dmd.expression".IndexExp index,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayIndex, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        const indexValue = lowerExpression(index.e2, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(
+            destination,
+            array,
+            indexValue,
+        ));
+        return destination;
     }
 
     uint lowerCast(
@@ -653,6 +1001,20 @@ private imported!"quickbite.ir.instruction".IntegerType castTarget(
     throw new Exception("Unsupported cast.");
 }
 
+private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && type.isTypeStruct !is null;
+}
+
+private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && type.isTypeDArray !is null;
+}
+
+private string declarationName(
+    imported!"dmd.declaration".VarDeclaration declaration,
+) @trusted {
+    return declaration.ident.toString.idup;
+}
+
 private ref auto compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
 ) @trusted {
@@ -671,4 +1033,11 @@ private ref auto functionParameters(
 private ref auto callArguments(imported!"dmd.expression".CallExp call) @trusted {
     // Caller checked `arguments` for null; DMD owns the array.
     return *call.arguments;
+}
+
+private ref auto arrayLiteralElements(
+    imported!"dmd.expression".ArrayLiteralExp literal,
+) @trusted {
+    // Caller checked `elements` for null; DMD owns the array.
+    return *literal.elements;
 }

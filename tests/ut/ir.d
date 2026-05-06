@@ -141,6 +141,244 @@ unittest {
     }.runTests;
 }
 
+@("ir.intShiftRight")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal shifts before IR lowering.
+            const value = 168;
+            const shift = 2;
+            assert(value >> shift == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intShiftLeft")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal shifts and const locals before
+            // IR lowering. Mutable locals keep the shift in the lowered AST,
+            // so auto is intentional here.
+            auto value = 21;
+            auto shift = 1;
+            assert(value << shift == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intBitwiseOr")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto left = 40;
+            auto right = 2;
+            assert((left | right) == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intBitwiseAnd")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto left = 46;
+            auto right = 58;
+            assert((left & right) == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intBitwiseXor")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto left = 0x2e;
+            auto right = 0x04;
+            assert((left ^ right) == 0x2a);
+        }
+    }.runTests;
+}
+
+@("ir.intBitwiseComplement")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto value = 0x2a;
+            assert(~value == -0x2b);
+        }
+    }.runTests;
+}
+
+@("ir.intOrAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto value = 0x28u;
+            value |= 0x02u;
+            assert(value == 0x2au);
+        }
+    }.runTests;
+}
+
+@("ir.intAddAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto value = 40;
+            value += 2;
+            assert(value == 42);
+        }
+    }.runTests;
+}
+
+@("ir.intSubtractAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto value = 44;
+            value -= 2;
+            assert(value == 42);
+        }
+    }.runTests;
+}
+
+@("ir.ubyteArrayAppendAssign")
+unittest {
+    q{
+        unittest {
+            // Compound assignment requires a mutable local; auto is intentional
+            // because const cannot be assigned to.
+            auto values = [0x2au];
+            values ~= 0x2bu;
+            assert(values.length == 2);
+        }
+    }.runTests;
+}
+
+@("ir.ubyteArrayIndexRead")
+unittest {
+    q{
+        unittest {
+            // The explicit type is intentional: this exercises ubyte[] rather
+            // than the uint[] inferred from unsigned integer literals.
+            ubyte[] values = [0x29u, 0x2au];
+            assert(values[1] == 0x2au);
+        }
+    }.runTests;
+}
+
+@("ir.ubyteArrayIndexWrite")
+unittest {
+    q{
+        unittest {
+            // The explicit type is intentional: this exercises ubyte[] rather
+            // than the uint[] inferred from unsigned integer literals.
+            ubyte[] values = [0x29u, 0x00u];
+            values[1] = 0x2au;
+            assert(values[1] == 0x2au);
+        }
+    }.runTests;
+}
+
+@("ir.postIncrementSizeTIndex")
+unittest {
+    q{
+        unittest {
+            ubyte[] values = [0x29u, 0x2au];
+            size_t index = 0;
+            assert(values[index++] == 0x29u);
+            assert(index == 1);
+        }
+    }.runTests;
+}
+
+@("ir.scalarStructField")
+unittest {
+    q{
+        struct Value {
+            int value;
+        }
+
+        unittest {
+            Value wrapper;
+            wrapper.value = 42;
+            assert(wrapper.value == 42);
+        }
+    }.runTests;
+}
+
+@("ir.scalarStructPassedToFunction")
+unittest {
+    q{
+        struct Value {
+            int value;
+        }
+
+        int read(Value wrapper) {
+            return wrapper.value;
+        }
+
+        unittest {
+            Value wrapper;
+            wrapper.value = 42;
+            assert(read(wrapper) == 42);
+        }
+    }.runTests;
+}
+
+@("ir.refUbyteArrayParameterAppend")
+unittest {
+    q{
+        void appendAnswer(ref ubyte[] values) {
+            values ~= 0x2au;
+        }
+
+        unittest {
+            // The explicit type is intentional: this exercises ubyte[] rather
+            // than an inferred array type.
+            ubyte[] values = [];
+            appendAnswer(values);
+            assert(values.length == 1);
+            assert(values[0] == 0x2au);
+        }
+    }.runTests;
+}
+
+@("ir.minicerealEncodeUbyte")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] output;
+                encode!ubyte(0x2au, output);
+                assert(output.length == 1);
+                assert(output[0] == 0x2au);
+            }
+        }
+    ).runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{

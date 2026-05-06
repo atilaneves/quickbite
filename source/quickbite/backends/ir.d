@@ -18,10 +18,16 @@ public void runIrTests(in string source) {
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
+        long[][] arrays;
+        long[string][] structs;
         executeInstructions(
             module_,
             test.instructions,
             test.numTemporaries,
+            0,
+            [],
+            arrays,
+            structs,
         );
     }
 }
@@ -31,6 +37,8 @@ long executeFunction(
     in string calleeName,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[][] arrays,
+    ref long[string][] structs,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -44,6 +52,8 @@ long executeFunction(
                 function_.numTemporaries,
                 callerTemporaries,
                 argumentIndices,
+                arrays,
+                structs,
             );
     }
 
@@ -59,6 +69,8 @@ long executeFunctionBody(
     in uint numTemporaries,
     ref long[] callerTemporaries,
     in uint[] argumentIndices,
+    ref long[][] arrays,
+    ref long[string][] structs,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
     ExecutionResult result = executeInstructions(
@@ -67,6 +79,8 @@ long executeFunctionBody(
         numTemporaries,
         numParameters,
         arguments,
+        arrays,
+        structs,
     );
     writeRefArguments(
         result.temporaries,
@@ -95,6 +109,8 @@ ExecutionResult executeInstructions(
     in uint numTemporaries,
     in uint numParameters = 0,
     in long[] arguments = [],
+    ref long[][] arrays,
+    ref long[string][] structs,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
@@ -108,6 +124,8 @@ ExecutionResult executeInstructions(
             module_,
             instructions[instructionPointer],
             temporaries,
+            arrays,
+            structs,
         );
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -131,9 +149,12 @@ InstructionEffect executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction instruction,
     ref long[] temporaries,
+    ref long[][] arrays,
+    ref long[string][] structs,
 ) @safe pure {
-    import quickbite.ir.instruction: Assert_, BinaryOp, Call, CastInt, ConstInt,
-        Copy, JumpIfFalse, JumpIfTrue, ReturnValue, Select, UnaryOp;
+    import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength, ArraySet,
+        ArrayLiteral, Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
+        JumpIfTrue, ReturnValue, Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -149,6 +170,8 @@ InstructionEffect executeInstruction(
                     instruction.calleeName,
                     temporaries,
                     instruction.arguments,
+                    arrays,
+                    structs,
                 );
             return nextInstruction;
         },
@@ -210,6 +233,60 @@ InstructionEffect executeInstruction(
             if (!readTemporaryValue(temporaries, instruction.condition))
                 throw new Exception("Unittest assertion failed.");
 
+            return nextInstruction;
+        },
+        (const ArrayLiteral instruction) {
+            long[] values;
+            foreach (element; instruction.elements)
+                values ~= readTemporaryValue(temporaries, element);
+
+            arrays ~= values;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (ArrayAppend instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)] ~=
+                readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (ArrayLength instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) arrays[arrayIndex(temporaries, instruction.array)].length;
+            return nextInstruction;
+        },
+        (ArrayIndex instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                arrays[arrayIndex(temporaries, instruction.array)][
+                    arrayIndex(temporaries, instruction.index)
+                ];
+            return nextInstruction;
+        },
+        (ArraySet instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)][
+                arrayIndex(temporaries, instruction.index)
+            ] = readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (StructNew instruction) {
+            structs ~= (long[string]).init;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (structs.length - 1);
+            return nextInstruction;
+        },
+        (const StructGet instruction) {
+            const index = structIndex(temporaries, instruction.struct_);
+            long value;
+            if (auto stored = instruction.fieldName in structs[index])
+                value = *stored;
+
+            writeTemporaryValue(temporaries, instruction.destination) = value;
+            return nextInstruction;
+        },
+        (const StructSet instruction) {
+            structs[structIndex(temporaries, instruction.struct_)][
+                instruction.fieldName
+            ] = readTemporaryValue(temporaries, instruction.value);
             return nextInstruction;
         },
         (ReturnValue instruction) {
@@ -319,6 +396,21 @@ void executeBinaryInstruction(
             enforceNonZeroDivisor(rightValue, "Integer modulo by zero.");
             result = leftValue % rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.leftShift:
+            result = leftValue << rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.rightShift:
+            result = leftValue >> rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseAnd:
+            result = leftValue & rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseOr:
+            result = leftValue | rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseXor:
+            result = leftValue ^ rightValue;
+            break;
         case imported!"quickbite.ir.instruction".Operation.equal:
             result = leftValue == rightValue;
             break;
@@ -357,6 +449,9 @@ void executeUnaryInstruction(
         case imported!"quickbite.ir.instruction".UnaryOperation.not:
             writeTemporaryValue(temporaries, destination) = !sourceValue;
             break;
+        case imported!"quickbite.ir.instruction".UnaryOperation.complement:
+            writeTemporaryValue(temporaries, destination) = ~sourceValue;
+            break;
     }
 }
 
@@ -373,6 +468,22 @@ long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
 ref long writeTemporaryValue(ref long[] temporaries, in uint index) @safe pure {
     enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
+}
+
+size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
+    const value = readTemporaryValue(temporaries, temporary);
+    if (value < 0)
+        throw new Exception("IR: array index out of range");
+
+    return cast(size_t) value;
+}
+
+size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
+    const value = readTemporaryValue(temporaries, temporary);
+    if (value < 0)
+        throw new Exception("IR: struct index out of range");
+
+    return cast(size_t) value;
 }
 
 void enforceTemporaryIndex(in ulong length, in uint index) @safe pure {
