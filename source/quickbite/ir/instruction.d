@@ -33,6 +33,7 @@ public enum Operation {
     rightShift,
     bitwiseAnd,
     bitwiseOr,
+    bitwiseXor,
     equal,
     notEqual,
     lessThan,

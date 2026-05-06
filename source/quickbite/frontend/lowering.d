@@ -246,6 +246,9 @@ struct BodyLowerer {
         if (auto or = expression.isOrExp)
             return lowerBinaryExpression(or, Operation.bitwiseOr, lowerer);
 
+        if (auto xor = expression.isXorExp)
+            return lowerBinaryExpression(xor, Operation.bitwiseXor, lowerer);
+
         if (auto negate = expression.isNegExp) {
             const value = lowerExpression(negate.e1, lowerer);
             const destination = allocateTemporary;

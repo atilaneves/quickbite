@@ -331,6 +331,9 @@ void executeBinaryInstruction(
         case imported!"quickbite.ir.instruction".Operation.bitwiseOr:
             result = leftValue | rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseXor:
+            result = leftValue ^ rightValue;
+            break;
         case imported!"quickbite.ir.instruction".Operation.equal:
             result = leftValue == rightValue;
             break;
