@@ -271,6 +271,17 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto complement = expression.isComExp) {
+            const value = lowerExpression(complement.e1, lowerer);
+            const destination = allocateTemporary;
+            instructions ~= Instruction(UnaryOp(
+                destination,
+                value,
+                UnaryOperation.complement,
+            ));
+            return destination;
+        }
+
         if (auto cast_ = expression.isCastExp)
             return lowerCast(cast_, lowerer);
 

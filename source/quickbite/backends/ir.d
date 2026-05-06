@@ -372,6 +372,9 @@ void executeUnaryInstruction(
         case imported!"quickbite.ir.instruction".UnaryOperation.not:
             writeTemporaryValue(temporaries, destination) = !sourceValue;
             break;
+        case imported!"quickbite.ir.instruction".UnaryOperation.complement:
+            writeTemporaryValue(temporaries, destination) = ~sourceValue;
+            break;
     }
 }
 

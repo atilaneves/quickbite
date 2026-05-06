@@ -51,6 +51,7 @@ public struct UnaryOp {
 public enum UnaryOperation {
     negate,
     not,
+    complement,
 }
 
 public struct Select {

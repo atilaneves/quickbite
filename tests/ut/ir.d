@@ -209,6 +209,19 @@ unittest {
     }.runTests;
 }
 
+@("ir.intBitwiseComplement")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds all-literal bit operations and const locals
+            // before IR lowering. Mutable locals keep the bit operation in the
+            // lowered AST, so auto is intentional here.
+            auto value = 0x2a;
+            assert(~value == -0x2b);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
