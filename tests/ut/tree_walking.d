@@ -603,6 +603,18 @@ unittest {
     });
 }
 
+@("treeWalking.postIncrement")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            // `auto` is intentional: post-increment needs a mutable local.
+            auto pos = 0u;
+            assert(pos++ == 0u);
+            assert(pos == 1u);
+        }
+    });
+}
+
 @("treeWalking.arrayLength")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

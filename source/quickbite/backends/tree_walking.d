@@ -243,6 +243,22 @@ private struct BodyWalker {
             unsupported;
         }
 
+        if (auto post = expression.isPostExp) {
+            import dmd.tokens: EXP;
+
+            if (post.op == EXP.plusPlus)
+                if (auto var = post.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals) {
+                            const oldVal = locals[varDecl].asLong;
+                            locals[varDecl] = Value(
+                                coerceIntegerToType(oldVal + 1, varDecl.type),
+                            );
+                            return Value(oldVal);
+                        }
+            unsupported;
+        }
+
         if (auto add = expression.isAddExp)
             return Value(
                 runExpression(add.e1, interpreter).asLong +
