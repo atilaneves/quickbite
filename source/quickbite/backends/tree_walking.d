@@ -255,6 +255,12 @@ private struct BodyWalker {
                 runExpression(rightShift.e2, interpreter).asLong,
             );
 
+        if (auto leftShift = expression.isShlExp)
+            return Value(
+                runExpression(leftShift.e1, interpreter).asLong <<
+                runExpression(leftShift.e2, interpreter).asLong,
+            );
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
