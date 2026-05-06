@@ -369,6 +369,26 @@ unittest {
     });
 }
 
+@("treeWalking.refStructArrayFieldParameter")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Buffer {
+            ubyte[] bytes;
+        }
+
+        void append42(ref ubyte[] output) {
+            output ~= cast(ubyte) 42;
+        }
+
+        unittest {
+            Buffer buffer;
+            append42(buffer.bytes);
+            assert(buffer.bytes.length == 1);
+            assert(buffer.bytes[0] == 42);
+        }
+    });
+}
+
 @("treeWalking.structPassedToFunction")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

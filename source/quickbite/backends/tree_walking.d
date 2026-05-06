@@ -15,6 +15,8 @@ private struct FunctionResult {
 private struct CallArgument {
     private Value value;
     private imported!"dmd.declaration".VarDeclaration refSource;
+    private imported!"dmd.declaration".VarDeclaration refOwner;
+    private imported!"dmd.declaration".VarDeclaration refField;
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -114,7 +116,8 @@ private struct BodyWalker {
             if ((param.storage_class & (STC.out_ | STC.lazy_)) != STC.none)
                 throw new Exception("Unsupported parameter storage class.");
             if ((param.storage_class & STC.ref_) != STC.none &&
-                args[i].refSource is null)
+                args[i].refSource is null &&
+                args[i].refField is null)
                 throw new Exception("Unsupported ref argument.");
             locals[param] = args[i].value;
         }
@@ -346,6 +349,16 @@ private struct BodyWalker {
                         const i = runExpression(index.e2, interpreter).asLong;
                         return Value(locals[varDecl].asArray[cast(size_t) i]);
                     }
+            if (auto dotVar = index.e1.isDotVarExp)
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto fields = ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const i = runExpression(index.e2, interpreter).asLong;
+                                return Value(
+                                    (*fields)[fieldDecl].asArray[cast(size_t) i],
+                                );
+                            }
             unsupported;
         }
 
@@ -443,13 +456,37 @@ private struct BodyWalker {
                     if (auto var = arg.isVarExp)
                         if (auto varDecl = var.var.isVarDeclaration)
                             if (varDecl in locals) {
-                                args ~= CallArgument(locals[varDecl], varDecl);
+                                args ~= CallArgument(
+                                    locals[varDecl],
+                                    varDecl,
+                                    null,
+                                    null,
+                                );
                                 continue;
                             }
+                    if (auto dotVar = arg.isDotVarExp)
+                        if (auto ownerVar = dotVar.e1.isVarExp)
+                            if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                                if (auto fields = ownerDecl in structFields)
+                                    if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                        args ~= CallArgument(
+                                            (*fields)
+                                                .get(fieldDecl, Value((long[]).init)),
+                                            null,
+                                            ownerDecl,
+                                            fieldDecl,
+                                        );
+                                        continue;
+                                    }
                     throw new Exception("Unsupported ref argument.");
                 }
 
-                args ~= CallArgument(runExpression(arg, interpreter), null);
+                args ~= CallArgument(
+                    runExpression(arg, interpreter),
+                    null,
+                    null,
+                    null,
+                );
             }
 
         // `auto` is intentional: `const` would block ref propagation.
@@ -477,7 +514,11 @@ private struct BodyWalker {
 
             if ((param.storage_class & STC.ref_) == STC.none)
                 continue;
-            locals[args[i].refSource] = refValues[refIndex];
+            if (args[i].refSource !is null)
+                locals[args[i].refSource] = refValues[refIndex];
+            else
+                structFields[args[i].refOwner][args[i].refField] =
+                    refValues[refIndex];
             refIndex = refIndex + 1;
         }
     }
