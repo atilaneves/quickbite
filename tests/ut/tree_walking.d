@@ -591,6 +591,18 @@ unittest {
     });
 }
 
+@("treeWalking.bitwiseOrAssign")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            // `auto` is intentional: compound assignment needs a mutable local.
+            auto value = 0b00101000u;
+            value |= 0b10000000u;
+            assert(value == 0b10101000u);
+        }
+    });
+}
+
 @("treeWalking.arrayLength")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
