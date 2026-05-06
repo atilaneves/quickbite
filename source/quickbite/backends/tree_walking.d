@@ -213,6 +213,12 @@ private struct BodyWalker {
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign, interpreter);
 
+        if (auto append = expression.isCatAssignExp)
+            return runArrayAppendExpression(append, interpreter);
+
+        if (auto append = expression.isCatElemAssignExp)
+            return runArrayAppendExpression(append, interpreter);
+
         if (auto addAssign = expression.isAddAssignExp) {
             if (auto var = addAssign.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
@@ -295,6 +301,27 @@ private struct BodyWalker {
 
         unsupported;
         assert(false);
+    }
+
+    private Value runArrayAppendExpression(
+        imported!"dmd.expression".CatAssignExp append,
+        ref Interpreter interpreter,
+    ) {
+        if (auto var = append.e1.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (varDecl in locals) {
+                    // Explicit type: `elements` must be mutable for append.
+                    long[] elements = locals[varDecl].asArray;
+                    elements ~= coerceIntegerToType(
+                        runExpression(append.e2, interpreter).asLong,
+                        arrayElementType(varDecl.type),
+                    );
+                    locals[varDecl] = Value(elements);
+                    return locals[varDecl];
+                }
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported expression: ", expressionChars(append)));
     }
 
     private Value runCallExpression(
@@ -415,7 +442,24 @@ private struct BodyWalker {
         if (initializer is null)
             throw new Exception(unsupportedMessage);
 
+        if (auto assign = initializer.exp.isAssignExp)
+            if (assign.e2.isNullExp) {
+                locals[variable] = Value((long[]).init);
+                return Value(0L);
+            }
+
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e2.isNullExp) {
+                locals[variable] = Value((long[]).init);
+                return Value(0L);
+            }
+
         if (auto construct = initializer.exp.isConstructExp) {
+            if (construct.e2.isNullExp) {
+                locals[variable] = Value((long[]).init);
+                return Value(0L);
+            }
+
             if (auto literal = construct.e2.isArrayLiteralExp) {
                 long[] elements;
                 if (literal.elements !is null)

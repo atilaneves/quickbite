@@ -610,6 +610,18 @@ unittest {
     });
 }
 
+@("treeWalking.arrayAppend")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            ubyte[] arr;
+            arr ~= cast(ubyte) 42;
+            assert(arr.length == 1);
+            assert(arr[0] == 42);
+        }
+    });
+}
+
 @("treeWalking.castUbyteTruncates")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
