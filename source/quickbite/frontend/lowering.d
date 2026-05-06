@@ -508,6 +508,9 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Copy, Instruction;
         import std.conv: text;
 
+        if (auto index = assignment.e1.isIndexExp)
+            return lowerArrayIndexAssignment(index, assignment.e2, lowerer);
+
         auto variable = assignment.e1.isVarExp;
         if (variable is null)
             throw new Exception(text("Unsupported expression: ", assignment.op));
@@ -526,6 +529,24 @@ struct BodyLowerer {
             source,
         ));
         return *destination;
+    }
+
+    uint lowerArrayIndexAssignment(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySet, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        const indexValue = lowerExpression(index.e2, lowerer);
+        const source = lowerExpression(sourceExpression, lowerer);
+        instructions ~= Instruction(ArraySet(
+            array,
+            indexValue,
+            source,
+        ));
+        return source;
     }
 
     uint lowerCompoundAssignment(

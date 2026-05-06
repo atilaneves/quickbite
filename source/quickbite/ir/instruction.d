@@ -118,6 +118,12 @@ public struct ArrayIndex {
     uint index;
 }
 
+public struct ArraySet {
+    uint array;
+    uint index;
+    uint value;
+}
+
 public struct ReturnValue {
     uint value;
 }
@@ -137,5 +143,6 @@ public alias Instruction = SumType!(
     ArrayAppend,
     ArrayLength,
     ArrayIndex,
+    ArraySet,
     ReturnValue,
 );

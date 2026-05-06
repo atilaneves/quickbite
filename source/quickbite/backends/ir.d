@@ -135,7 +135,7 @@ InstructionEffect executeInstruction(
     ref long[] temporaries,
     ref long[][] arrays,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength,
+    import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength, ArraySet,
         ArrayLiteral, Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
         JumpIfTrue, ReturnValue, Select, UnaryOp;
     import std.sumtype: match;
@@ -241,6 +241,12 @@ InstructionEffect executeInstruction(
                 arrays[arrayIndex(temporaries, instruction.array)][
                     arrayIndex(temporaries, instruction.index)
                 ];
+            return nextInstruction;
+        },
+        (ArraySet instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)][
+                arrayIndex(temporaries, instruction.index)
+            ] = readTemporaryValue(temporaries, instruction.value);
             return nextInstruction;
         },
         (ReturnValue instruction) {

@@ -286,6 +286,19 @@ unittest {
     }.runTests;
 }
 
+@("ir.ubyteArrayIndexWrite")
+unittest {
+    q{
+        unittest {
+            // The explicit type is intentional: this exercises ubyte[] rather
+            // than the uint[] inferred from unsigned integer literals.
+            ubyte[] values = [0x29u, 0x00u];
+            values[1] = 0x2au;
+            assert(values[1] == 0x2au);
+        }
+    }.runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
