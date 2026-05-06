@@ -240,6 +240,9 @@ struct BodyLowerer {
         if (auto rightShift = expression.isShrExp)
             return lowerBinaryExpression(rightShift, Operation.rightShift, lowerer);
 
+        if (auto and = expression.isAndExp)
+            return lowerBinaryExpression(and, Operation.bitwiseAnd, lowerer);
+
         if (auto or = expression.isOrExp)
             return lowerBinaryExpression(or, Operation.bitwiseOr, lowerer);
 

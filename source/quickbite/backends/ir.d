@@ -325,6 +325,9 @@ void executeBinaryInstruction(
         case imported!"quickbite.ir.instruction".Operation.rightShift:
             result = leftValue >> rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.bitwiseAnd:
+            result = leftValue & rightValue;
+            break;
         case imported!"quickbite.ir.instruction".Operation.bitwiseOr:
             result = leftValue | rightValue;
             break;

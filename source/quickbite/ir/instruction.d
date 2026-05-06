@@ -31,6 +31,7 @@ public enum Operation {
     modulo,
     leftShift,
     rightShift,
+    bitwiseAnd,
     bitwiseOr,
     equal,
     notEqual,
