@@ -44,10 +44,13 @@ private struct Interpreter {
     private FunctionResult executeFunction(
         imported!"dmd.func".FuncDeclaration func,
         CallArgument[] args = [],
+        Value[imported!"dmd.declaration".VarDeclaration] thisFields = null,
     ) {
         if (func.fbody is null)
             throw new Exception("No function body to execute.");
         BodyWalker w;
+        if (func.vthis !is null)
+            w.structFields[func.vthis] = thisFields;
         w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
 
@@ -229,6 +232,11 @@ private struct BodyWalker {
             if (auto ownerVar = dotVar.e1.isVarExp)
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                     if (auto fields = ownerDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                            return (*fields).get(fieldDecl, Value(0L));
+            if (auto thisExp = dotVar.e1.isThisExp)
+                if (auto thisDecl = thisExp.var.isVarDeclaration)
+                    if (auto fields = thisDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
                             return (*fields).get(fieldDecl, Value(0L));
             unsupported;
@@ -489,8 +497,15 @@ private struct BodyWalker {
                 );
             }
 
+        Value[VarDeclaration] thisFields;
+        if (auto dotVar = call.e1.isDotVarExp)
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (auto fields = ownerDecl in structFields)
+                        thisFields = *fields;
+
         // `auto` is intentional: `const` would block ref propagation.
-        auto result = interpreter.executeFunction(call.f, args);
+        auto result = interpreter.executeFunction(call.f, args, thisFields);
         propagateRefArguments(call, args, result.refValues);
         if (!result.hasValue) {
             if (resultIgnored)

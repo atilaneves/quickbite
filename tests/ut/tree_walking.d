@@ -389,6 +389,25 @@ unittest {
     });
 }
 
+@("treeWalking.structMethodReadsField")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Box {
+            int value;
+
+            int get() {
+                return value;
+            }
+        }
+
+        unittest {
+            Box box;
+            box.value = 42;
+            assert(box.get == 42);
+        }
+    });
+}
+
 @("treeWalking.structPassedToFunction")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
