@@ -254,7 +254,7 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArrayCopy instruction) {
-            arrays ~= arrays[arrayIndex(temporaries, instruction.source)].dup;
+            arrays ~= arrays[arrayIndex(temporaries, instruction.source)];
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) (arrays.length - 1);
             return nextInstruction;
