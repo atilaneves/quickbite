@@ -140,6 +140,7 @@ ExecutionResult executeInstructions(
 }
 
 struct InstructionEffect {
+    // signed so backward Jumps (loops) can produce a negative delta.
     int offset;
     bool hasReturn;
     uint returnValue;
