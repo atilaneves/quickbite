@@ -57,6 +57,44 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             }
         }, b).shouldThrowWithMessage("Unsupported expression: declaration");
     }
+
+    @(b.to!string ~ ".externalCallee")
+    unittest {
+        runTests(q{
+            extern int externalFunc();
+
+            unittest {
+                externalFunc;
+            }
+        }, b).shouldThrowWithMessage("No function body to execute.");
+    }
+
+    @(b.to!string ~ ".externalCalleeWithArg")
+    unittest {
+        runTests(q{
+            extern int externalFunc(int value);
+
+            unittest {
+                externalFunc(42);
+            }
+        }, b).shouldThrowWithMessage("No function body to execute.");
+    }
+
+    @(b.to!string ~ ".externalCalleeArgNotEvaluated")
+    unittest {
+        runTests(q{
+            extern int externalFunc(int value);
+
+            int boom() {
+                assert(false);
+                return 0;
+            }
+
+            unittest {
+                externalFunc(boom);
+            }
+        }, b).shouldThrowWithMessage("No function body to execute.");
+    }
 }
 
 @("ir.outParameter")

@@ -3,44 +3,6 @@ module ut.tree_walking;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
 
-@("treeWalking.externalCallee")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        extern int externalFunc();
-
-        unittest {
-            externalFunc;
-        }
-    }).shouldThrowWithMessage("No function body to execute.");
-}
-
-@("treeWalking.externalCalleeWithArg")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        extern int externalFunc(int value);
-
-        unittest {
-            externalFunc(42);
-        }
-    }).shouldThrowWithMessage("No function body to execute.");
-}
-
-@("treeWalking.externalCalleeArgNotEvaluated")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        extern int externalFunc(int value);
-
-        int boom() {
-            assert(false);
-            return 0;
-        }
-
-        unittest {
-            externalFunc(boom);
-        }
-    }).shouldThrowWithMessage("No function body to execute.");
-}
-
 @("treeWalking.while_")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

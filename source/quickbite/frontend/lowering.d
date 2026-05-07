@@ -53,6 +53,9 @@ struct Lowerer {
         if (name in loweredFunctions)
             return;
 
+        if (function_.fbody is null)
+            throw new Exception("No function body to execute.");
+
         loweredFunctions[name] = true;
 
         BodyLowerer builder;
