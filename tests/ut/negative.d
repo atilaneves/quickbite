@@ -189,19 +189,3 @@ static foreach (b; EnumMembers!ExecutorBackend) {
     }
 }
 
-@("ir.ifBodyAssignment")
-unittest {
-    q{
-        int answer(int value) {
-            if (value == 1)
-                value = 2;
-
-            return value;
-        }
-
-        unittest {
-            assert(answer(1) == 2);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported if-branch: expected return");
-}
-

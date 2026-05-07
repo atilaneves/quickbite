@@ -1065,12 +1065,12 @@ struct BodyLowerer {
         imported!"dmd.statement".IfStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, JumpIfFalse;
+        import quickbite.ir.instruction: Instruction, Jump, JumpIfFalse;
 
         const condition = lowerTruthValue(lowerExpression(statement.condition, lowerer));
         const ifFalseJumpIndex = instructions.length;
         instructions ~= Instruction(JumpIfFalse(condition, 0));
-        const ifTrueReturns = lowerReturnBranch(statement.ifbody, lowerer);
+        const ifTrueReturns = lowerBranch(statement.ifbody, lowerer);
 
         if (statement.elsebody is null) {
             replaceJumpOffset(
@@ -1082,16 +1082,30 @@ struct BodyLowerer {
             return;
         }
 
+        size_t skipElseJumpIndex = size_t.max;
+        if (!ifTrueReturns) {
+            skipElseJumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+        }
+
         replaceJumpOffset(
             instructions,
             cast(uint) ifFalseJumpIndex,
             cast(uint) (instructions.length - ifFalseJumpIndex - 1),
         );
-        const ifFalseReturns = lowerReturnBranch(statement.elsebody, lowerer);
+        const ifFalseReturns = lowerBranch(statement.elsebody, lowerer);
+
+        if (skipElseJumpIndex != size_t.max)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) skipElseJumpIndex,
+                cast(uint) (instructions.length - skipElseJumpIndex),
+            );
+
         hasReturn = ifTrueReturns && ifFalseReturns;
     }
 
-    bool lowerReturnBranch(
+    bool lowerBranch(
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
@@ -1100,10 +1114,6 @@ struct BodyLowerer {
         lowerStatement(statement, lowerer);
         const branchHasReturn = hasReturn;
         hasReturn = previousHasReturn;
-
-        if (!branchHasReturn)
-            throw new Exception("Unsupported if-branch: expected return");
-
         return branchHasReturn;
     }
 
@@ -1209,7 +1219,7 @@ private void replaceJumpOffset(
     in uint index,
     in uint offset,
 ) @safe {
-    import quickbite.ir.instruction: JumpIfFalse, JumpIfTrue;
+    import quickbite.ir.instruction: Jump, JumpIfFalse, JumpIfTrue;
     import std.sumtype: match;
 
     instructions[index].match!(
@@ -1218,6 +1228,9 @@ private void replaceJumpOffset(
         },
         (ref JumpIfTrue instruction) {
             instruction.offset = offset;
+        },
+        (ref Jump instruction) {
+            instruction.offset = cast(int) offset;
         },
         (_) {
             assert(0, "Expected jump instruction");
