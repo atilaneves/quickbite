@@ -729,6 +729,26 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".ulongHighBitLessOrEqual")
+    unittest {
+        runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL <= value);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".ulongHighBitGreaterOrEqual")
+    unittest {
+        runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value >= 0UL);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".ulongHighBitGreaterThan")
     unittest {
         runTests(q{

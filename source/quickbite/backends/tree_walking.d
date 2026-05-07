@@ -885,7 +885,12 @@ private struct BodyWalker {
         if (expression.op == EXP.greaterThan)
             return Value(left > right ? 1L : 0L);
         if (expression.op == EXP.lessOrEqual)
+            if (comparisonUsesUnsignedOperand(cmp))
+                return Value(cast(ulong) left <= cast(ulong) right ? 1L : 0L);
+        if (expression.op == EXP.lessOrEqual)
             return Value(left <= right ? 1L : 0L);
+        if (comparisonUsesUnsignedOperand(cmp))
+            return Value(cast(ulong) left >= cast(ulong) right ? 1L : 0L);
         return Value(left >= right ? 1L : 0L);
     }
 

@@ -3,26 +3,6 @@ module ut.ir;
 import quickbite;
 import unit_threaded;
 
-@("ir.ulongHighBitLessOrEqual")
-unittest {
-    q{
-        unittest {
-            auto value = 0x8070605040302010UL;
-            assert(0UL <= value);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.ulongHighBitGreaterOrEqual")
-unittest {
-    q{
-        unittest {
-            auto value = 0x8070605040302010UL;
-            assert(value >= 0UL);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.scalarStructPassedToFunction")
 unittest {
     q{
