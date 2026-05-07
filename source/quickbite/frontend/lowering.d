@@ -70,9 +70,12 @@ struct Lowerer {
         loweredModule.functions ~= result;
     }
 
-    // DMD Identifier.toString is not const-callable through FuncDeclaration.
-    string functionName(imported!"dmd.func".FuncDeclaration function_) @safe {
-        return function_.ident.toString().idup;
+    // DMD mangling distinguishes template instantiations and overloads.
+    string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
+        import dmd.mangle: mangleExact;
+        import std.string: fromStringz;
+
+        return fromStringz(mangleExact(function_)).idup;
     }
 }
 
@@ -95,6 +98,7 @@ struct BodyLowerer {
 
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
+    private uint[] dollarArrays;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
@@ -152,12 +156,21 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (expression.isDollarExp)
+            return lowerDollar;
+
         if (auto literal = expression.isArrayLiteralExp)
             return lowerArrayLiteral(literal, lowerer);
+
+        if (auto slice = expression.isSliceExp)
+            return lowerArraySlice(slice, lowerer);
 
         if (auto call = expression.isCallExp) {
             if (call.f is null)
                 throw new Exception("Unsupported callee.");
+
+            if (isArrayEqualityCall(call))
+                return lowerArrayEqualityCall(call, lowerer);
 
             lowerer.ensureFunctionLowered(call.f);
             // `const` would make the array incompatible with Call.arguments.
@@ -187,30 +200,34 @@ struct BodyLowerer {
         import dmd.tokens: EXP;
 
         if (expression.op == EXP.lessThan)
-            return lowerBinaryExpression(
+            return lowerComparison(
                 castCmpExpression(expression),
                 Operation.lessThan,
+                Operation.unsignedLessThan,
                 lowerer,
             );
 
         if (expression.op == EXP.lessOrEqual)
-            return lowerBinaryExpression(
+            return lowerComparison(
                 castCmpExpression(expression),
                 Operation.lessOrEqual,
+                Operation.unsignedLessOrEqual,
                 lowerer,
             );
 
         if (expression.op == EXP.greaterThan)
-            return lowerBinaryExpression(
+            return lowerComparison(
                 castCmpExpression(expression),
                 Operation.greaterThan,
+                Operation.unsignedGreaterThan,
                 lowerer,
             );
 
         if (expression.op == EXP.greaterOrEqual)
-            return lowerBinaryExpression(
+            return lowerComparison(
                 castCmpExpression(expression),
                 Operation.greaterOrEqual,
+                Operation.unsignedGreaterOrEqual,
                 lowerer,
             );
 
@@ -346,6 +363,9 @@ struct BodyLowerer {
                     return *temporary;
             }
 
+            if (expressionChars(expression) == "$")
+                return lowerDollar;
+
             import std.conv: text;
 
             throw new Exception(text("Unsupported expression: ", expressionChars(expression)));
@@ -371,6 +391,81 @@ struct BodyLowerer {
             left,
             right,
             operation,
+        ));
+        return destination;
+    }
+
+    uint lowerComparison(
+        imported!"dmd.expression".CmpExp comparison,
+        in imported!"quickbite.ir.instruction".Operation signedOperation,
+        in imported!"quickbite.ir.instruction".Operation unsignedOperation,
+        ref Lowerer lowerer,
+    ) @safe {
+        const operation = comparisonUsesUnsignedOperand(comparison)
+            ? unsignedOperation
+            : signedOperation;
+        return lowerBinaryExpression(comparison, operation, lowerer);
+    }
+
+    uint lowerArraySlice(
+        imported!"dmd.expression".SliceExp slice,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySlice, Instruction;
+        import std.conv: text;
+
+        if (slice.lwr is null && slice.upr is null)
+            return lowerExpression(slice.e1, lowerer);
+
+        if (slice.lwr !is null && slice.upr !is null) {
+            const array = lowerExpression(slice.e1, lowerer);
+            dollarArrays ~= array;
+            const lower = lowerExpression(slice.lwr, lowerer);
+            const upper = lowerExpression(slice.upr, lowerer);
+            dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ArraySlice(
+                destination,
+                array,
+                lower,
+                upper,
+            ));
+            return destination;
+        }
+
+        throw new Exception(text("Unsupported expression: ", slice.op));
+    }
+
+    uint lowerDollar() @safe {
+        import quickbite.ir.instruction: ArrayLength, Instruction;
+
+        if (dollarArrays.length == 0)
+            throw new Exception("Unsupported expression: $");
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(
+            destination,
+            dollarArrays[$ - 1],
+        ));
+        return destination;
+    }
+
+    uint lowerArrayEqualityCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayEqual, Instruction;
+
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception("Unsupported array equality.");
+
+        const left = lowerExpression(callArguments(call)[0], lowerer);
+        const right = lowerExpression(callArguments(call)[1], lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayEqual(
+            destination,
+            left,
+            right,
         ));
         return destination;
     }
@@ -492,15 +587,39 @@ struct BodyLowerer {
         import std.conv: text;
 
         auto variable = declaration.declaration.isVarDeclaration;
+        if (variable is null && declaration.declaration.isAliasDeclaration !is null) {
+            import quickbite.ir.instruction: ConstInt, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ConstInt(value, 0));
+            return value;
+        }
+
         if (variable is null)
-            throw new Exception(text("Unsupported expression: ", declaration.op));
+            throw new Exception(text(
+                "Unsupported declaration: ",
+                declarationKind(declaration.declaration),
+            ));
 
         if (typeIsStruct(variable.type)) {
-            import quickbite.ir.instruction: Instruction, StructNew;
+            import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
+                StructSet;
 
             const value = allocateTemporary;
             instructions ~= Instruction(StructNew(value));
             localTemporaries[variable] = value;
+            foreach (field; structFields(variable.type)) {
+                if (!typeIsDynamicArray(field.type))
+                    continue;
+
+                const fieldValue = allocateTemporary;
+                instructions ~= Instruction(ArrayLiteral(fieldValue, []));
+                instructions ~= Instruction(StructSet(
+                    value,
+                    declarationName(field),
+                    fieldValue,
+                ));
+            }
             return value;
         }
 
@@ -648,10 +767,13 @@ struct BodyLowerer {
         import std.conv: text;
 
         auto owner = dot.e1.isVarExp;
-        if (owner is null)
+        auto this_ = dot.e1.isThisExp;
+        if (owner is null && this_ is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
 
-        auto declaration = owner.var.isVarDeclaration;
+        auto declaration = owner !is null
+            ? owner.var.isVarDeclaration
+            : this_.var;
         if (declaration is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
 
@@ -680,10 +802,13 @@ struct BodyLowerer {
         import std.conv: text;
 
         auto owner = dot.e1.isVarExp;
-        if (owner is null)
+        auto this_ = dot.e1.isThisExp;
+        if (owner is null && this_ is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
 
-        auto declaration = owner.var.isVarDeclaration;
+        auto declaration = owner !is null
+            ? owner.var.isVarDeclaration
+            : this_.var;
         if (declaration is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
 
@@ -709,10 +834,14 @@ struct BodyLowerer {
         in imported!"quickbite.ir.instruction".Operation operation,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: BinaryOp, Copy, Instruction;
+        import quickbite.ir.instruction: BinaryOp, CastInt, Copy, Instruction;
         import std.conv: text;
 
         auto variable = assignment.e1.isVarExp;
+        if (auto cast_ = assignment.e1.isCastExp)
+            variable = cast_.e1.isVarExp;
+        if (auto nested = assignment.e1.isOrAssignExp)
+            return lowerCompoundAssignment(nested, operation, lowerer);
         if (variable is null)
             throw new Exception(text("Unsupported expression: ", assignment.op));
 
@@ -732,9 +861,15 @@ struct BodyLowerer {
             source,
             operation,
         ));
+        const stored = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            stored,
+            result,
+            integerType(declaration.type),
+        ));
         instructions ~= Instruction(Copy(
             *destination,
-            result,
+            stored,
         ));
         return *destination;
     }
@@ -745,6 +880,16 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: ArrayAppend, Instruction;
         import std.conv: text;
+
+        if (auto dot = assignment.e1.isDotVarExp) {
+            const destination = lowerStructFieldRead(dot, lowerer);
+            const value = lowerExpression(assignment.e2, lowerer);
+            instructions ~= Instruction(ArrayAppend(
+                destination,
+                value,
+            ));
+            return destination;
+        }
 
         auto variable = assignment.e1.isVarExp;
         if (variable is null)
@@ -870,10 +1015,16 @@ struct BodyLowerer {
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
-        if (function_.parameters is null)
-            return 0;
-
         uint numParameters;
+        if (function_.vthis !is null) {
+            localTemporaries[function_.vthis] = allocateTemporary;
+            refParameters ~= true;
+            ++numParameters;
+        }
+
+        if (function_.parameters is null)
+            return numParameters;
+
         foreach (parameter; functionParameters(function_)) {
             if (parameterHasUnsupportedStorage(parameter))
                 throw new Exception("Unsupported function parameters.");
@@ -910,14 +1061,30 @@ struct BodyLowerer {
         imported!"dmd.expression".CallExp call,
         ref Lowerer lowerer,
     ) @safe {
-        if (call.arguments is null)
-            return [];
-
         uint[] arguments;
-        foreach (argument; callArguments(call))
-            arguments ~= lowerExpression(argument, lowerer);
+        if (call.f.vthis !is null)
+            arguments ~= lowerCallReceiver(call, lowerer);
+
+        if (call.arguments !is null)
+            foreach (argument; callArguments(call))
+                arguments ~= lowerExpression(argument, lowerer);
 
         return arguments;
+    }
+
+    uint lowerCallReceiver(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import std.conv: text;
+
+        if (auto dot = call.e1.isDotVarExp)
+            return lowerExpression(dot.e1, lowerer);
+
+        if (auto dot = call.e1.isDotTemplateInstanceExp)
+            return lowerExpression(dot.e1, lowerer);
+
+        throw new Exception(text("Unsupported expression: ", call.e1.op));
     }
 
     uint allocateTemporary() @safe pure nothrow @nogc {
@@ -960,6 +1127,12 @@ private string expressionChars(
     return fromStringz(expression.toChars()).idup;
 }
 
+private string declarationKind(imported!"dmd.dsymbol".Dsymbol symbol) @trusted {
+    import std.string: fromStringz;
+
+    return fromStringz(symbol.kind).idup;
+}
+
 private imported!"dmd.expression".CmpExp castCmpExpression(
     imported!"dmd.expression".Expression expression,
 ) @trusted {
@@ -968,34 +1141,70 @@ private imported!"dmd.expression".CmpExp castCmpExpression(
     return result;
 }
 
+private bool comparisonUsesUnsignedOperand(
+    imported!"dmd.expression".CmpExp comparison,
+) @safe {
+    return expressionHasUnsignedIntegerType(comparison.e1) ||
+        expressionHasUnsignedIntegerType(comparison.e2);
+}
+
+private bool expressionHasUnsignedIntegerType(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (expression.type is null)
+        return false;
+
+    const type = expression.type.toBasetype;
+    return type.ty == TY.Tuns8 ||
+        type.ty == TY.Tuns16 ||
+        type.ty == TY.Tuns32 ||
+        type.ty == TY.Tuns64;
+}
+
+private bool isArrayEqualityCall(imported!"dmd.expression".CallExp call) @trusted {
+    import dmd.id: Id;
+
+    return call.f.ident == Id.__equals;
+}
+
 private imported!"quickbite.ir.instruction".IntegerType castTarget(
     imported!"dmd.expression".CastExp cast_,
+) @trusted {
+    return integerType(cast_.to);
+}
+
+private imported!"quickbite.ir.instruction".IntegerType integerType(
+    imported!"dmd.mtype".Type type,
 ) @trusted {
     import dmd.astenums: TY;
     import quickbite.ir.instruction: IntegerType;
 
-    if (cast_.to.toBasetype().ty == TY.Tint8)
+    const basetype = type.toBasetype;
+
+    if (basetype.ty == TY.Tint8)
         return IntegerType.i8;
 
-    if (cast_.to.toBasetype().ty == TY.Tuns8)
+    if (basetype.ty == TY.Tuns8)
         return IntegerType.u8;
 
-    if (cast_.to.toBasetype().ty == TY.Tint16)
+    if (basetype.ty == TY.Tint16)
         return IntegerType.i16;
 
-    if (cast_.to.toBasetype().ty == TY.Tuns16)
+    if (basetype.ty == TY.Tuns16)
         return IntegerType.u16;
 
-    if (cast_.to.toBasetype().ty == TY.Tint32)
+    if (basetype.ty == TY.Tint32)
         return IntegerType.i32;
 
-    if (cast_.to.toBasetype().ty == TY.Tuns32)
+    if (basetype.ty == TY.Tuns32)
         return IntegerType.u32;
 
-    if (cast_.to.toBasetype().ty == TY.Tint64)
+    if (basetype.ty == TY.Tint64)
         return IntegerType.i64;
 
-    if (cast_.to.toBasetype().ty == TY.Tuns64)
+    if (basetype.ty == TY.Tuns64)
         return IntegerType.u64;
 
     throw new Exception("Unsupported cast.");
@@ -1007,6 +1216,12 @@ private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.isTypeDArray !is null;
+}
+
+private ref auto structFields(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    return type.toBasetype.isTypeStruct.sym.fields;
 }
 
 private string declarationName(

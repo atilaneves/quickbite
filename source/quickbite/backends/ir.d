@@ -152,9 +152,10 @@ InstructionEffect executeInstruction(
     ref long[][] arrays,
     ref long[string][] structs,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayIndex, ArrayLength, ArraySet,
-        ArrayLiteral, Assert_, BinaryOp, Call, CastInt, ConstInt, Copy, JumpIfFalse,
-        JumpIfTrue, ReturnValue, Select, StructGet, StructNew, StructSet, UnaryOp;
+    import quickbite.ir.instruction: ArrayAppend, ArrayEqual, ArrayIndex,
+        ArrayLength, ArraySet, ArraySlice, ArrayLiteral, Assert_, BinaryOp,
+        Call, CastInt, ConstInt, Copy, JumpIfFalse, JumpIfTrue, ReturnValue,
+        Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -266,6 +267,21 @@ InstructionEffect executeInstruction(
             arrays[arrayIndex(temporaries, instruction.array)][
                 arrayIndex(temporaries, instruction.index)
             ] = readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (ArrayEqual instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                arrays[arrayIndex(temporaries, instruction.left)] ==
+                arrays[arrayIndex(temporaries, instruction.right)];
+            return nextInstruction;
+        },
+        (ArraySlice instruction) {
+            arrays ~= arrays[arrayIndex(temporaries, instruction.array)][
+                arrayIndex(temporaries, instruction.lower) ..
+                arrayIndex(temporaries, instruction.upper)
+            ];
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
             return nextInstruction;
         },
         (StructNew instruction) {
@@ -420,14 +436,26 @@ void executeBinaryInstruction(
         case imported!"quickbite.ir.instruction".Operation.lessThan:
             result = leftValue < rightValue;
             break;
+        case imported!"quickbite.ir.instruction".Operation.unsignedLessThan:
+            result = cast(ulong) leftValue < cast(ulong) rightValue;
+            break;
         case imported!"quickbite.ir.instruction".Operation.lessOrEqual:
             result = leftValue <= rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.unsignedLessOrEqual:
+            result = cast(ulong) leftValue <= cast(ulong) rightValue;
             break;
         case imported!"quickbite.ir.instruction".Operation.greaterThan:
             result = leftValue > rightValue;
             break;
         case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
             result = leftValue >= rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.unsignedGreaterOrEqual:
+            result = cast(ulong) leftValue >= cast(ulong) rightValue;
+            break;
+        case imported!"quickbite.ir.instruction".Operation.unsignedGreaterThan:
+            result = cast(ulong) leftValue > cast(ulong) rightValue;
             break;
     }
 

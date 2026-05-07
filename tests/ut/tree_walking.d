@@ -53,6 +53,215 @@ unittest {
     );
 }
 
+@("treeWalking.minicerealStructRoundTripInt")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put(42);
+                size_t pos = 0;
+                assert(cereal.get!int(pos) == 42);
+                assert(pos == 4);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructDecodeKnownInt")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes = [4, 3, 2, 1];
+                size_t pos = 0;
+                assert(cereal.get!int(pos) == 0x01020304);
+                assert(pos == 4);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructAppendByte")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes ~= cast(ubyte) 42;
+                size_t pos = 0;
+                assert(cereal.get!ubyte(pos) == 42);
+                assert(pos == 1);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructEncodeKnownInt")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put(0x01020304);
+                assert(cereal.bytes[] == [4, 3, 2, 1]);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructBoundedSliceBytes")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes = [1, 2, 3, 4];
+                ubyte[] expected = [2, 3];
+                assert(cereal.bytes[1 .. 3] == expected[]);
+            }
+        },
+    );
+}
+
+@("treeWalking.bitwiseAndMasksLowByte")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            uint value = 0x01020304;
+            assert((value & 0xff) == 4);
+        }
+    });
+}
+
+@("treeWalking.bitwiseXorFlipsMaskedByte")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            uint value = 0x01020304;
+            assert((value ^ 0xff) == 0x010203fb);
+        }
+    });
+}
+
+@("treeWalking.bitwiseComplementFlipsMaskedByte")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            uint value = 0xffff_ff00;
+            assert((~value & 0xff) == 0xff);
+        }
+    });
+}
+
+@("treeWalking.minicerealStructIndexWriteByte")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes = [0];
+                cereal.bytes[0] = cast(ubyte) 42;
+                size_t pos = 0;
+                assert(cereal.get!ubyte(pos) == 42);
+            }
+        },
+    );
+}
+
+@("treeWalking.structMethodIndexWritesArrayField")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Buffer {
+            ubyte[] bytes;
+
+            void patchFirst() {
+                bytes[0] = cast(ubyte) 42;
+            }
+        }
+
+        unittest {
+            Buffer buffer;
+            buffer.bytes = [0];
+            buffer.patchFirst;
+            assert(buffer.bytes[0] == 42);
+        }
+    });
+}
+
+@("treeWalking.structMethodPostIncrementsSizeTField")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Cursor {
+            size_t pos;
+
+            size_t next() {
+                return pos++;
+            }
+        }
+
+        unittest {
+            Cursor cursor;
+            assert(cursor.next == 0);
+            assert(cursor.pos == 1);
+        }
+    });
+}
+
+@("treeWalking.structMethodReadsArrayFieldAtPostIncrementedField")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Reader {
+            ubyte[] bytes;
+            size_t pos;
+
+            ubyte next() {
+                return bytes[pos++];
+            }
+        }
+
+        unittest {
+            Reader reader;
+            reader.bytes = [42];
+            assert(reader.next == 42);
+            assert(reader.pos == 1);
+        }
+    });
+}
+
+@("treeWalking.structMethodAppendsArrayField")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        struct Writer {
+            ubyte[] bytes;
+
+            void put(ubyte value) {
+                bytes ~= value;
+            }
+        }
+
+        unittest {
+            Writer writer;
+            writer.put(cast(ubyte) 42);
+            assert(writer.bytes.length == 1);
+            assert(writer.bytes[0] == 42);
+        }
+    });
+}
+
 @("treeWalking.ok")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
@@ -555,6 +764,30 @@ unittest {
 
         unittest {
             assert(three < 5);
+        }
+    });
+}
+
+@("treeWalking.ulongHighBitLessThan")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            // `auto` is intentional: const locals can be folded by DMD before
+            // the tree walker sees the unsigned comparison.
+            auto value = 0x8070605040302010UL;
+            assert(0UL < value);
+        }
+    });
+}
+
+@("treeWalking.ulongHighBitGreaterThan")
+unittest {
+    (new TreeWalkingExecutor).runTests(q{
+        unittest {
+            // `auto` is intentional: const locals can be folded by DMD before
+            // the tree walker sees the unsigned comparison.
+            auto value = 0x8070605040302010UL;
+            assert(value > 0UL);
         }
     });
 }

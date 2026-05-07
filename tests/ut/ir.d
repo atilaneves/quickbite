@@ -379,6 +379,204 @@ unittest {
     ).runTests;
 }
 
+@("ir.minicerealDecodeNegativeInt")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
+                size_t pos = 0;
+                assert(decode!int(input, pos) == -1);
+                assert(pos == 4);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealStructDefaultBytes")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                assert(cereal.bytes.length == 0);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealStructBytesAppend")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes ~= 0x2au;
+                assert(cereal.bytes.length == 1);
+                assert(cereal.bytes[0] == 0x2au);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutUbyte")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x2au);
+                assert(cereal.bytes.length == 1);
+                assert(cereal.bytes[0] == 0x2au);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutUbyteBytesEqual")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x2au);
+                ubyte[] expected = [0x2au];
+                assert(cereal.bytes == expected);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutMultipleIntegralWidths")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x2au);
+                cereal.put!ushort(0x1234u);
+                ubyte[] expected = [0x2au, 0x34u, 0x12u];
+                assert(cereal.bytes == expected);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutIntBytesSliceEqual")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put(0x01020304);
+                ubyte[] expected = [4u, 3u, 2u, 1u];
+                assert(cereal.bytes[] == expected);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutUshortMiddleBytesSliceEqual")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x99u);
+                cereal.put!ushort(0x1234u);
+                ubyte[] expected = [0x34u, 0x12u];
+                assert(cereal.bytes[1 .. 3] == expected);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealPutIntTailBytesDollarSliceEqual")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x99u);
+                cereal.put(0x01020304);
+                ubyte[] expected = [4u, 3u, 2u, 1u];
+                assert(cereal.bytes[$ - 4 .. $] == expected);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealRoundTripUbyte")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x2au);
+                size_t pos = 0;
+                assert(cereal.get!ubyte(pos) == 0x2au);
+                assert(pos == 1);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealRoundTripHighBitUlong")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                const value = 0x8070605040302010UL;
+                Minicereal cereal;
+                cereal.put(value);
+                size_t pos = 0;
+                const decoded = cereal.get!ulong(pos);
+                assert(decoded == value);
+                assert(decoded > 0UL);
+                assert(pos == 8);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealDecodeUbyteAtOffset")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] input = [0x99u, 0x2au];
+                size_t pos = 1;
+                assert(decode!ubyte(input, pos) == 0x2au);
+                assert(pos == 2);
+            }
+        }
+    ).runTests;
+}
+
 @("ir.functionParameter")
 unittest {
     q{
@@ -597,6 +795,45 @@ unittest {
             assert(answer < 42);
         }
     }.runTests.shouldThrowWithMessage("Unittest assertion failed.");
+}
+
+@("ir.ulongHighBitLessThan")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds const locals before IR lowering. Mutable
+            // local keeps the comparison in the lowered AST, so auto is
+            // intentional here.
+            auto value = 0x8070605040302010UL;
+            assert(0UL < value);
+        }
+    }.runTests;
+}
+
+@("ir.ulongHighBitLessOrEqual")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds const locals before IR lowering. Mutable
+            // local keeps the comparison in the lowered AST, so auto is
+            // intentional here.
+            auto value = 0x8070605040302010UL;
+            assert(0UL <= value);
+        }
+    }.runTests;
+}
+
+@("ir.ulongHighBitGreaterOrEqual")
+unittest {
+    q{
+        unittest {
+            // DMD constant-folds const locals before IR lowering. Mutable
+            // local keeps the comparison in the lowered AST, so auto is
+            // intentional here.
+            auto value = 0x8070605040302010UL;
+            assert(value >= 0UL);
+        }
+    }.runTests;
 }
 
 @("ir.intLessOrEqual")

@@ -232,6 +232,11 @@ private struct BodyWalker {
         if (auto integer = expression.isIntegerExp)
             return Value(integerValue(integer));
 
+        if (auto comma = expression.isCommaExp) {
+            runExpression(comma.e1, interpreter, true);
+            return runExpression(comma.e2, interpreter, resultIgnored);
+        }
+
         if (auto call = expression.isCallExp)
             return runCallExpression(call, interpreter, resultIgnored);
 
@@ -314,7 +319,7 @@ private struct BodyWalker {
         if (auto post = expression.isPostExp) {
             import dmd.tokens: EXP;
 
-            if (post.op == EXP.plusPlus)
+            if (post.op == EXP.plusPlus) {
                 if (auto var = post.e1.isVarExp)
                     if (auto varDecl = var.var.isVarDeclaration)
                         if (varDecl in locals) {
@@ -324,6 +329,23 @@ private struct BodyWalker {
                             );
                             return Value(oldVal);
                         }
+                if (auto dotVar = post.e1.isDotVarExp)
+                    if (auto thisExp = dotVar.e1.isThisExp)
+                        if (auto thisDecl = thisExp.var.isVarDeclaration)
+                            if (auto fields = thisDecl in structFields)
+                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                    const oldVal = (*fields)
+                                        .get(fieldDecl, Value(0L))
+                                        .asLong;
+                                    (*fields)[fieldDecl] = Value(
+                                        coerceIntegerToType(
+                                            oldVal + 1,
+                                            fieldDecl.type,
+                                        ),
+                                    );
+                                    return Value(oldVal);
+                                }
+            }
             unsupported;
         }
 
@@ -357,6 +379,21 @@ private struct BodyWalker {
                 runExpression(leftShift.e2, interpreter).asLong,
             );
 
+        if (auto bitAnd = expression.isAndExp)
+            return Value(
+                runExpression(bitAnd.e1, interpreter).asLong &
+                runExpression(bitAnd.e2, interpreter).asLong,
+            );
+
+        if (auto bitXor = expression.isXorExp)
+            return Value(
+                runExpression(bitXor.e1, interpreter).asLong ^
+                runExpression(bitXor.e2, interpreter).asLong,
+            );
+
+        if (auto complement = expression.isComExp)
+            return Value(~runExpression(complement.e1, interpreter).asLong);
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
@@ -374,12 +411,37 @@ private struct BodyWalker {
         if (auto cast_ = expression.isCastExp)
             return coerceValueToType(runExpression(cast_.e1, interpreter), cast_.to);
 
+        if (auto literal = expression.isArrayLiteralExp) {
+            long[] elements;
+            if (literal.elements !is null)
+                foreach (elem; arrayLiteralElements(literal))
+                    elements ~= runExpression(elem, interpreter).asLong;
+            return Value(elements);
+        }
+
         if (auto slice = expression.isSliceExp) {
+            if (slice.lwr !is null && slice.upr !is null) {
+                const array = runExpression(slice.e1, interpreter).asArray;
+                const lower = runExpression(slice.lwr, interpreter).asLong;
+                const upper = runExpression(slice.upr, interpreter).asLong;
+                // Explicit type: Value stores mutable array slices.
+                long[] elements = array[cast(size_t) lower .. cast(size_t) upper]
+                    .dup;
+                return Value(elements);
+            }
             if (slice.lwr is null && slice.upr is null)
                 if (auto var = slice.e1.isVarExp)
                     if (auto varDecl = var.var.isVarDeclaration)
                         if (varDecl in locals)
                             return locals[varDecl];
+            if (slice.lwr is null && slice.upr is null)
+                if (auto dotVar = slice.e1.isDotVarExp)
+                    if (auto ownerVar = dotVar.e1.isVarExp)
+                        if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                            if (auto fields = ownerDecl in structFields)
+                                if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                                    return (*fields)
+                                        .get(fieldDecl, Value((long[]).init));
             unsupported;
         }
 
@@ -394,6 +456,16 @@ private struct BodyWalker {
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                         if (auto fields = ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const i = runExpression(index.e2, interpreter).asLong;
+                                return Value(
+                                    (*fields)[fieldDecl].asArray[cast(size_t) i],
+                                );
+                            }
+            if (auto dotVar = index.e1.isDotVarExp)
+                if (auto thisExp = dotVar.e1.isThisExp)
+                    if (auto thisDecl = thisExp.var.isVarDeclaration)
+                        if (auto fields = thisDecl in structFields)
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
                                 return Value(
@@ -448,6 +520,39 @@ private struct BodyWalker {
                     locals[varDecl] = Value(elements);
                     return locals[varDecl];
                 }
+
+        if (auto dotVar = append.e1.isDotVarExp)
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (auto fields = ownerDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            // Explicit type: `elements` must be mutable for append.
+                            long[] elements = (*fields)
+                                .get(fieldDecl, Value((long[]).init))
+                                .asArray;
+                            elements ~= coerceIntegerToType(
+                                runExpression(append.e2, interpreter).asLong,
+                                arrayElementType(fieldDecl.type),
+                            );
+                            structFields[ownerDecl][fieldDecl] = Value(elements);
+                            return structFields[ownerDecl][fieldDecl];
+                        }
+        if (auto dotVar = append.e1.isDotVarExp)
+            if (auto thisExp = dotVar.e1.isThisExp)
+                if (auto thisDecl = thisExp.var.isVarDeclaration)
+                    if (auto fields = thisDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            // Explicit type: `elements` must be mutable for append.
+                            long[] elements = (*fields)
+                                .get(fieldDecl, Value((long[]).init))
+                                .asArray;
+                            elements ~= coerceIntegerToType(
+                                runExpression(append.e2, interpreter).asLong,
+                                arrayElementType(fieldDecl.type),
+                            );
+                            structFields[thisDecl][fieldDecl] = Value(elements);
+                            return structFields[thisDecl][fieldDecl];
+                        }
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(append)));
@@ -726,7 +831,13 @@ private struct BodyWalker {
         const right = runExpression(cmp.e2, interpreter).asLong;
 
         if (expression.op == EXP.lessThan)
+            if (comparisonUsesUnsignedOperand(cmp))
+                return Value(cast(ulong) left < cast(ulong) right ? 1L : 0L);
+        if (expression.op == EXP.lessThan)
             return Value(left < right ? 1L : 0L);
+        if (expression.op == EXP.greaterThan)
+            if (comparisonUsesUnsignedOperand(cmp))
+                return Value(cast(ulong) left > cast(ulong) right ? 1L : 0L);
         if (expression.op == EXP.greaterThan)
             return Value(left > right ? 1L : 0L);
         if (expression.op == EXP.lessOrEqual)
@@ -757,7 +868,7 @@ private struct BodyWalker {
                             return value;
                         }
 
-        if (auto index = assign.e1.isIndexExp)
+        if (auto index = assign.e1.isIndexExp) {
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals) {
@@ -769,6 +880,33 @@ private struct BodyWalker {
                             );
                         return value;
                     }
+            if (auto dotVar = index.e1.isDotVarExp)
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto fields = ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const i = runExpression(index.e2, interpreter).asLong;
+                                (*fields)[fieldDecl].asArray[cast(size_t) i] =
+                                    coerceIntegerToType(
+                                        value.asLong,
+                                        arrayElementType(fieldDecl.type),
+                                    );
+                                return value;
+                            }
+            if (auto dotVar = index.e1.isDotVarExp)
+                if (auto thisExp = dotVar.e1.isThisExp)
+                    if (auto thisDecl = thisExp.var.isVarDeclaration)
+                        if (auto fields = thisDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const i = runExpression(index.e2, interpreter).asLong;
+                                (*fields)[fieldDecl].asArray[cast(size_t) i] =
+                                    coerceIntegerToType(
+                                        value.asLong,
+                                        arrayElementType(fieldDecl.type),
+                                    );
+                                return value;
+                            }
+        }
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
@@ -869,6 +1007,28 @@ private long integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) @trusted {
     return integer.getInteger;
+}
+
+private bool comparisonUsesUnsignedOperand(
+    imported!"dmd.expression".BinExp comparison,
+) @safe {
+    return expressionHasUnsignedIntegerType(comparison.e1) ||
+        expressionHasUnsignedIntegerType(comparison.e2);
+}
+
+private bool expressionHasUnsignedIntegerType(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (expression.type is null)
+        return false;
+
+    const type = expression.type.toBasetype;
+    return type.ty == TY.Tuns8 ||
+        type.ty == TY.Tuns16 ||
+        type.ty == TY.Tuns32 ||
+        type.ty == TY.Tuns64;
 }
 
 private string expressionChars(

@@ -37,9 +37,13 @@ public enum Operation {
     equal,
     notEqual,
     lessThan,
+    unsignedLessThan,
     lessOrEqual,
+    unsignedLessOrEqual,
     greaterThan,
     greaterOrEqual,
+    unsignedGreaterOrEqual,
+    unsignedGreaterThan,
 }
 
 public struct UnaryOp {
@@ -124,6 +128,19 @@ public struct ArraySet {
     uint value;
 }
 
+public struct ArrayEqual {
+    uint destination;
+    uint left;
+    uint right;
+}
+
+public struct ArraySlice {
+    uint destination;
+    uint array;
+    uint lower;
+    uint upper;
+}
+
 public struct StructNew {
     uint destination;
 }
@@ -160,6 +177,8 @@ public alias Instruction = SumType!(
     ArrayLength,
     ArrayIndex,
     ArraySet,
+    ArrayEqual,
+    ArraySlice,
     StructNew,
     StructGet,
     StructSet,

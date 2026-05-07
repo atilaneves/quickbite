@@ -87,3 +87,21 @@
 
 - Stop before changing tests and ask for feedback, even for test-name or
   fixture-style cleanup. Do not apply the test diff first and ask after.
+
+- When adding a sibling branch under `if (auto x = ...)`, use braces if
+  both branches need `x`; otherwise the second branch is outside scope.
+
+- Do not add helper functions to test fixtures just to avoid constant
+  folding unless the function has a clear purpose. If a helper function
+  is needed, add a comment explaining why; otherwise use the smallest
+  direct runtime expression, such as a mutable local when mutation or
+  non-const evaluation is needed.
+
+- When the user asks for subagents to continue backend work, do not only
+  spawn read-only explorers and then implement everything in the main
+  thread. After test approval, delegate bounded implementation work to
+  worker agents with disjoint file ownership.
+
+- When subagents are expected to edit code, set up separate git
+  worktrees first unless the user explicitly asks to share one checkout.
+  File ownership alone does not isolate incomplete edits or test runs.
