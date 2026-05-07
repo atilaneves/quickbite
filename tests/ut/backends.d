@@ -1033,6 +1033,63 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".logicalAnd")
+    unittest {
+        runTests(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert(left && right);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalAndCall")
+    unittest {
+        runTests(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert(left && right);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalAndShortCircuit")
+    unittest {
+        runTests(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0));
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalAndCallShortCircuit")
+    unittest {
+        runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert(!(isReady && failIfCalled));
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".logicalOrBoolResult")
     unittest {
         runTests(q{

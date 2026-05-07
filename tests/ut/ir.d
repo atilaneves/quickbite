@@ -42,63 +42,6 @@ unittest {
     }.runTests(ExecutorBackend.ir);
 }
 
-@("ir.logicalAnd")
-unittest {
-    q{
-        unittest {
-            bool left = true;
-            bool right = true;
-            assert(left && right);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalAndCall")
-unittest {
-    q{
-        bool left() {
-            return true;
-        }
-
-        bool right() {
-            return true;
-        }
-
-        unittest {
-            assert(left && right);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalAndShortCircuit")
-unittest {
-    q{
-        unittest {
-            bool left = false;
-            int zero = 0;
-            assert(!(left && 42 / zero == 0));
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalAndCallShortCircuit")
-unittest {
-    q{
-        bool isReady() {
-            return false;
-        }
-
-        bool failIfCalled() {
-            assert(0);
-            return true;
-        }
-
-        unittest {
-            assert(!(isReady && failIfCalled));
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.logicalOrShortCircuit")
 unittest {
     q{
