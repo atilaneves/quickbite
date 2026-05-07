@@ -1098,6 +1098,39 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             }
         }, b);
     }
+
+    @(b.to!string ~ ".logicalOr")
+    unittest {
+        runTests(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert(left || right);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalOrOops")
+    unittest {
+        runTests(q{
+            unittest {
+                bool left = false;
+                bool right = false;
+                assert(left || right);
+            }
+        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+    }
+
+    @(b.to!string ~ ".logicalOrShortCircuit")
+    unittest {
+        runTests(q{
+            unittest {
+                bool left = true;
+                int zero = 0;
+                assert(left || 42 / zero == 0);
+            }
+        }, b);
+    }
 }
 
 static foreach (b; EnumMembers!ExecutorBackend) {
