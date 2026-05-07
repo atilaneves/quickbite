@@ -18,6 +18,8 @@ private struct CallArgument {
     private imported!"dmd.declaration".VarDeclaration refSource;
     private imported!"dmd.declaration".VarDeclaration refOwner;
     private imported!"dmd.declaration".VarDeclaration refField;
+    private Value[imported!"dmd.declaration".VarDeclaration] structFields;
+    private bool isStruct;
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -148,6 +150,10 @@ private struct BodyWalker {
                 args[i].refSource is null &&
                 args[i].refField is null)
                 throw new Exception("Unsupported ref argument.");
+            if (args[i].isStruct) {
+                structFields[param] = args[i].structFields.dup;
+                continue;
+            }
             locals[param] = args[i].value;
         }
     }
@@ -690,6 +696,16 @@ private struct BodyWalker {
                                     }
                     throw new Exception("Unsupported ref argument.");
                 }
+
+                if (auto var = arg.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (auto fields = varDecl in structFields) {
+                            CallArgument structArg;
+                            structArg.structFields = (*fields).dup;
+                            structArg.isStruct = true;
+                            args ~= structArg;
+                            continue;
+                        }
 
                 args ~= CallArgument(
                     runExpression(arg, interpreter),

@@ -149,27 +149,6 @@ unittest {
     });
 }
 
-@("treeWalking.structPassedToFunction")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        struct Point {
-            int x;
-            int y;
-        }
-
-        int sum(Point p) {
-            return p.x + p.y;
-        }
-
-        unittest {
-            Point p;
-            p.x = 21;
-            p.y = 21;
-            assert(sum(p) == 42);
-        }
-    }).shouldThrowWithMessage("Unsupported expression: p");
-}
-
 @("treeWalking.foreachArray")
 unittest {
     (new TreeWalkingExecutor).runTests(q{
