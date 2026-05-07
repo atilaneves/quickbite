@@ -58,6 +58,36 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b).shouldThrowWithMessage("Unsupported expression: declaration");
     }
 
+    @(b.to!string ~ ".outParameter")
+    unittest {
+        runTests(q{
+            void setAnswer(out int value) {
+                value = 42;
+            }
+
+            unittest {
+                int value = 0;
+                setAnswer(value);
+                assert(value == 42);
+            }
+        }, b).shouldThrowWithMessage("Unsupported function parameters.");
+    }
+
+    @(b.to!string ~ ".multipleOutParameters")
+    unittest {
+        runTests(q{
+            void add(int left, out int right) {
+                right = left + 2;
+            }
+
+            unittest {
+                int value = 0;
+                add(40, value);
+                assert(value == 42);
+            }
+        }, b).shouldThrowWithMessage("Unsupported function parameters.");
+    }
+
     @(b.to!string ~ ".externalCallee")
     unittest {
         runTests(q{
@@ -95,36 +125,6 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             }
         }, b).shouldThrowWithMessage("No function body to execute.");
     }
-}
-
-@("ir.outParameter")
-unittest {
-    q{
-        void setAnswer(out int value) {
-            value = 42;
-        }
-
-        unittest {
-            int value = 0;
-            setAnswer(value);
-            assert(value == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported function parameters.");
-}
-
-@("ir.multipleOutParameters")
-unittest {
-    q{
-        void add(int left, out int right) {
-            right = left + 2;
-        }
-
-        unittest {
-            int value = 0;
-            add(40, value);
-            assert(value == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported function parameters.");
 }
 
 @("ir.ifBodyAssignment")

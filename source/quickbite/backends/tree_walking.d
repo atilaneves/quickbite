@@ -145,7 +145,7 @@ private struct BodyWalker {
         foreach (i, param; functionParameters(func)) {
             import dmd.astenums: STC;
             if ((param.storage_class & (STC.out_ | STC.lazy_)) != STC.none)
-                throw new Exception("Unsupported parameter storage class.");
+                throw new Exception("Unsupported function parameters.");
             if ((param.storage_class & STC.ref_) != STC.none &&
                 args[i].refSource is null &&
                 args[i].refField is null)
