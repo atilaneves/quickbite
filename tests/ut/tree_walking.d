@@ -135,6 +135,100 @@ unittest {
     );
 }
 
+@("treeWalking.minicerealStructDollarTailSliceBytes")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x99u);
+                cereal.put(0x01020304);
+                ubyte[] expected = [4u, 3u, 2u, 1u];
+                assert(cereal.bytes[$ - 4 .. $] == expected);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructRoundTripHighBitUlong")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                const value = 0x8070605040302010UL;
+                Minicereal cereal;
+                cereal.put(value);
+                size_t pos = 0;
+                const decoded = cereal.get!ulong(pos);
+                assert(decoded == value);
+                assert(decoded > 0UL);
+                assert(pos == 8);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealEncodeHighBitUlongBytes")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                ubyte[] buf;
+                encode(0x8070605040302010UL, buf);
+                ubyte[] expected = [
+                    0x10u,
+                    0x20u,
+                    0x30u,
+                    0x40u,
+                    0x50u,
+                    0x60u,
+                    0x70u,
+                    0x80u,
+                ];
+                assert(buf == expected);
+            }
+        },
+    );
+}
+
+@("treeWalking.minicerealStructRoundTripsIntegralTypes")
+unittest {
+    import std.file: readText;
+
+    (new TreeWalkingExecutor).runTests(
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.put!ubyte(0x2au);
+                cereal.put!byte(cast(byte) -42);
+                cereal.put!ushort(0x1234u);
+                cereal.put!short(cast(short) -1234);
+                cereal.put!uint(0x01020304u);
+                cereal.put!int(-0x01020304);
+                cereal.put!ulong(0x8070605040302010UL);
+                cereal.put!long(-0x0102030405060708L);
+
+                size_t pos = 0;
+                assert(cereal.get!ubyte(pos) == 0x2au);
+                assert(cereal.get!byte(pos) == cast(byte) -42);
+                assert(cereal.get!ushort(pos) == 0x1234u);
+                assert(cereal.get!short(pos) == cast(short) -1234);
+                assert(cereal.get!uint(pos) == 0x01020304u);
+                assert(cereal.get!int(pos) == -0x01020304);
+                assert(cereal.get!ulong(pos) == 0x8070605040302010UL);
+                assert(cereal.get!long(pos) == -0x0102030405060708L);
+                assert(pos == cereal.bytes.length);
+            }
+        },
+    );
+}
+
 @("treeWalking.bitwiseAndMasksLowByte")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

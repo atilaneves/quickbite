@@ -105,3 +105,8 @@
 - When subagents are expected to edit code, set up separate git
   worktrees first unless the user explicitly asks to share one checkout.
   File ownership alone does not isolate incomplete edits or test runs.
+
+- In strict TDD, do not add broad acceptance tests as the next step
+  unless there is a concrete reason to expect the current implementation
+  to fail them. If they pass immediately, they did not drive production
+  code.
