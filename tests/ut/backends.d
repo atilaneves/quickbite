@@ -688,6 +688,22 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".ifBodyAssignment")
+    unittest {
+        runTests(q{
+            int answer(int value) {
+                if (value == 1)
+                    value = 2;
+
+                return value;
+            }
+
+            unittest {
+                assert(answer(1) == 2);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".ifElse")
     unittest {
         runTests(q{
