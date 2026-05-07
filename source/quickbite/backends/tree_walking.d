@@ -424,6 +424,18 @@ private struct BodyWalker {
         if (auto not = expression.isNotExp)
             return Value(cast(long) (runExpression(not.e1, interpreter).asLong == 0));
 
+        if (auto and = expression.isLogicalExp) {
+            import dmd.tokens: EXP;
+
+            if (and.op == EXP.andAnd) {
+                if (runExpression(and.e1, interpreter).asLong == 0)
+                    return Value(0L);
+                return Value(
+                    cast(long) (runExpression(and.e2, interpreter).asLong != 0),
+                );
+            }
+        }
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
