@@ -27,7 +27,7 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-24.04'
-        run: dub run -q -c unittest-cov -- -s
+        run: dub run -q -b unittest-cov -c unittest-cov -- -s
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-24.04'
