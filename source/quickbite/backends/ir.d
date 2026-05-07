@@ -4,22 +4,18 @@ private:
 
 public final class IrExecutor : imported!"quickbite.executor".Executor {
     public void runTests(in string source) {
-        source.runIrTests;
+        import quickbite.frontend.compiler: parseModule;
+
+        auto parsed = parseModule(source);
+        runParsedTests(parsed.module_);
     }
-}
 
-public void runIrTests(in string source) {
-    import quickbite.frontend.compiler: ParsedModule, parseModule;
+    public void runParsedTests(imported!"dmd.dmodule".Module module_) {
+        import quickbite.frontend.compiler: lowerModule;
 
-    ParsedModule parsed = parseModule(source);
-    runParsedIrTests(parsed.module_);
-}
-
-public void runParsedIrTests(imported!"dmd.dmodule".Module module_) {
-    import quickbite.frontend.compiler: lowerModule;
-
-    const loweredModule = lowerModule(module_);
-    executeUnitTests(loweredModule);
+        const loweredModule = lowerModule(module_);
+        executeUnitTests(loweredModule);
+    }
 }
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
