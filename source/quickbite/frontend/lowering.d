@@ -1248,9 +1248,13 @@ private ref auto functionParameters(
     return *function_.parameters;
 }
 
-private ref auto callArguments(imported!"dmd.expression".CallExp call) @trusted {
-    // Caller checked `arguments` for null; DMD owns the array.
-    return *call.arguments;
+private imported!"dmd.expression".Expression[] callArguments(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    // Caller checked `arguments` for null; DMD owns the array. `opSlice`
+    // is `@safe`-inferred whereas `opIndex` is not, so returning a slice
+    // lets `@safe` callers index without a `@trusted` escape per call site.
+    return (*call.arguments)[];
 }
 
 private ref auto arrayLiteralElements(
