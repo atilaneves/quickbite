@@ -1,26 +1,9 @@
 module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
-import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import std.conv: to;
 import std.traits: EnumMembers;
 import unit_threaded;
-
-@("ir.minicerealEncodeUbyte")
-unittest {
-    import std.file: readText;
-
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] output;
-                encode!ubyte(0x2au, output);
-                assert(output.length == 1);
-                assert(output[0] == 0x2au);
-            }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
 
 static foreach (b; EnumMembers!ExecutorBackend) {
     @(b.to!string ~ ".minicerealFile")
@@ -29,461 +12,392 @@ static foreach (b; EnumMembers!ExecutorBackend) {
 
         readText("tests/minicereal.d").runTests(b);
     }
-}
 
-@("ir.minicerealDecodeNegativeInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealEncodeUbyte")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
-                size_t pos = 0;
-                assert(decode!int(input, pos) == -1);
-                assert(pos == 4);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    ubyte[] output;
+                    encode!ubyte(0x2au, output);
+                    assert(output.length == 1);
+                    assert(output[0] == 0x2au);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealStructDefaultBytes")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealDecodeUbyte")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                assert(cereal.bytes.length == 0);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    ubyte[] buf = [0x2au];
+                    size_t pos = 0;
+                    assert(decode!ubyte(buf, pos) == 0x2au);
+                    assert(pos == 1);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealStructBytesAppend")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealDecodeUbyteAtOffset")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes ~= 0x2au;
-                assert(cereal.bytes.length == 1);
-                assert(cereal.bytes[0] == 0x2au);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    ubyte[] input = [0x99u, 0x2au];
+                    size_t pos = 1;
+                    assert(decode!ubyte(input, pos) == 0x2au);
+                    assert(pos == 2);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutUbyte")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealDecodeNegativeInt")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x2au);
-                assert(cereal.bytes.length == 1);
-                assert(cereal.bytes[0] == 0x2au);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
+                    size_t pos = 0;
+                    assert(decode!int(input, pos) == -1);
+                    assert(pos == 4);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutUbyteBytesEqual")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealRoundTripNegativeInt")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x2au);
-                ubyte[] expected = [0x2au];
-                assert(cereal.bytes == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    const value = -42;
+                    ubyte[] buf;
+                    encode(value, buf);
+                    size_t pos = 0;
+                    assert(decode!int(buf, pos) == value);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutMultipleIntegralWidths")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealEncodeHighBitUlongBytes")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x2au);
-                cereal.put!ushort(0x1234u);
-                ubyte[] expected = [0x2au, 0x34u, 0x12u];
-                assert(cereal.bytes == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    ubyte[] buf;
+                    encode(0x8070605040302010UL, buf);
+                    ubyte[] expected = [
+                        0x10u,
+                        0x20u,
+                        0x30u,
+                        0x40u,
+                        0x50u,
+                        0x60u,
+                        0x70u,
+                        0x80u,
+                    ];
+                    assert(buf == expected);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutIntBytesSliceEqual")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructDefaultBytes")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put(0x01020304);
-                ubyte[] expected = [4u, 3u, 2u, 1u];
-                assert(cereal.bytes[] == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    assert(cereal.bytes.length == 0);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutUshortMiddleBytesSliceEqual")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructBytesAppend")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x99u);
-                cereal.put!ushort(0x1234u);
-                ubyte[] expected = [0x34u, 0x12u];
-                assert(cereal.bytes[1 .. 3] == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.bytes ~= 0x2au;
+                    assert(cereal.bytes.length == 1);
+                    assert(cereal.bytes[0] == 0x2au);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealPutIntTailBytesDollarSliceEqual")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructAppendByte")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x99u);
-                cereal.put(0x01020304);
-                ubyte[] expected = [4u, 3u, 2u, 1u];
-                assert(cereal.bytes[$ - 4 .. $] == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.bytes ~= cast(ubyte) 42;
+                    size_t pos = 0;
+                    assert(cereal.get!ubyte(pos) == 42);
+                    assert(pos == 1);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealRoundTripUbyte")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructIndexWriteByte")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x2au);
-                size_t pos = 0;
-                assert(cereal.get!ubyte(pos) == 0x2au);
-                assert(pos == 1);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.bytes = [0];
+                    cereal.bytes[0] = cast(ubyte) 42;
+                    size_t pos = 0;
+                    assert(cereal.get!ubyte(pos) == 42);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealStructDecodeKnownInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutUbyte")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes = [4u, 3u, 2u, 1u];
-                size_t pos = 0;
-                assert(cereal.get!int(pos) == 0x01020304);
-                assert(pos == 4);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x2au);
+                    assert(cereal.bytes.length == 1);
+                    assert(cereal.bytes[0] == 0x2au);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealRoundTripHighBitUlong")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutUbyteBytesEqual")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                const value = 0x8070605040302010UL;
-                Minicereal cereal;
-                cereal.put(value);
-                size_t pos = 0;
-                const decoded = cereal.get!ulong(pos);
-                assert(decoded == value);
-                assert(decoded > 0UL);
-                assert(pos == 8);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x2au);
+                    ubyte[] expected = [0x2au];
+                    assert(cereal.bytes == expected);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("ir.minicerealDecodeUbyteAtOffset")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutMultipleIntegralWidths")
+    unittest {
+        import std.file: readText;
 
-    (
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] input = [0x99u, 0x2au];
-                size_t pos = 1;
-                assert(decode!ubyte(input, pos) == 0x2au);
-                assert(pos == 2);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x2au);
+                    cereal.put!ushort(0x1234u);
+                    ubyte[] expected = [0x2au, 0x34u, 0x12u];
+                    assert(cereal.bytes == expected);
+                }
             }
-        }
-    ).runTests(ExecutorBackend.ir);
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealEncodeUbyte")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutIntBytesSliceEqual")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] buf;
-                encode(cast(ubyte) 42, buf);
-                assert(buf.length == 1);
-                assert(buf[0] == 42);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put(0x01020304);
+                    ubyte[] expected = [4u, 3u, 2u, 1u];
+                    assert(cereal.bytes[] == expected);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealDecodeUbyte")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutUshortMiddleBytesSliceEqual")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] buf = [42];
-                size_t pos = 0;
-                assert(decode!ubyte(buf, pos) == 42);
-                assert(pos == 1);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x99u);
+                    cereal.put!ushort(0x1234u);
+                    ubyte[] expected = [0x34u, 0x12u];
+                    assert(cereal.bytes[1 .. 3] == expected);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealRoundTripNegativeInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructBoundedSliceBytes")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                const value = -42;
-                ubyte[] buf;
-                encode(value, buf);
-                size_t pos = 0;
-                assert(decode!int(buf, pos) == value);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.bytes = [1, 2, 3, 4];
+                    ubyte[] expected = [2, 3];
+                    assert(cereal.bytes[1 .. 3] == expected[]);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructRoundTripInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealPutIntTailBytesDollarSliceEqual")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put(42);
-                size_t pos = 0;
-                assert(cereal.get!int(pos) == 42);
-                assert(pos == 4);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x99u);
+                    cereal.put(0x01020304);
+                    ubyte[] expected = [4u, 3u, 2u, 1u];
+                    assert(cereal.bytes[$ - 4 .. $] == expected);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructDecodeKnownInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealRoundTripUbyte")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes = [4, 3, 2, 1];
-                size_t pos = 0;
-                assert(cereal.get!int(pos) == 0x01020304);
-                assert(pos == 4);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x2au);
+                    size_t pos = 0;
+                    assert(cereal.get!ubyte(pos) == 0x2au);
+                    assert(pos == 1);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructAppendByte")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructRoundTripInt")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes ~= cast(ubyte) 42;
-                size_t pos = 0;
-                assert(cereal.get!ubyte(pos) == 42);
-                assert(pos == 1);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put(42);
+                    size_t pos = 0;
+                    assert(cereal.get!int(pos) == 42);
+                    assert(pos == 4);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructEncodeKnownInt")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructDecodeKnownInt")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put(0x01020304);
-                assert(cereal.bytes[] == [4, 3, 2, 1]);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.bytes = [4u, 3u, 2u, 1u];
+                    size_t pos = 0;
+                    assert(cereal.get!int(pos) == 0x01020304);
+                    assert(pos == 4);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructBoundedSliceBytes")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructRoundTripHighBitUlong")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes = [1, 2, 3, 4];
-                ubyte[] expected = [2, 3];
-                assert(cereal.bytes[1 .. 3] == expected[]);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    const value = 0x8070605040302010UL;
+                    Minicereal cereal;
+                    cereal.put(value);
+                    size_t pos = 0;
+                    const decoded = cereal.get!ulong(pos);
+                    assert(decoded == value);
+                    assert(decoded > 0UL);
+                    assert(pos == 8);
+                }
             }
-        },
-    );
-}
+        ).runTests(b);
+    }
 
-@("treeWalking.minicerealStructDollarTailSliceBytes")
-unittest {
-    import std.file: readText;
+    @(b.to!string ~ ".minicerealStructRoundTripsIntegralTypes")
+    unittest {
+        import std.file: readText;
 
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x99u);
-                cereal.put(0x01020304);
-                ubyte[] expected = [4u, 3u, 2u, 1u];
-                assert(cereal.bytes[$ - 4 .. $] == expected);
+        (
+            readText("tests/minicereal.d") ~ q{
+                unittest {
+                    Minicereal cereal;
+                    cereal.put!ubyte(0x2au);
+                    cereal.put!byte(cast(byte) -42);
+                    cereal.put!ushort(0x1234u);
+                    cereal.put!short(cast(short) -1234);
+                    cereal.put!uint(0x01020304u);
+                    cereal.put!int(-0x01020304);
+                    cereal.put!ulong(0x8070605040302010UL);
+                    cereal.put!long(-0x0102030405060708L);
+
+                    size_t pos = 0;
+                    assert(cereal.get!ubyte(pos) == 0x2au);
+                    assert(cereal.get!byte(pos) == cast(byte) -42);
+                    assert(cereal.get!ushort(pos) == 0x1234u);
+                    assert(cereal.get!short(pos) == cast(short) -1234);
+                    assert(cereal.get!uint(pos) == 0x01020304u);
+                    assert(cereal.get!int(pos) == -0x01020304);
+                    assert(cereal.get!ulong(pos) == 0x8070605040302010UL);
+                    assert(cereal.get!long(pos) == -0x0102030405060708L);
+                    assert(pos == cereal.bytes.length);
+                }
             }
-        },
-    );
-}
-
-@("treeWalking.minicerealStructRoundTripHighBitUlong")
-unittest {
-    import std.file: readText;
-
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                const value = 0x8070605040302010UL;
-                Minicereal cereal;
-                cereal.put(value);
-                size_t pos = 0;
-                const decoded = cereal.get!ulong(pos);
-                assert(decoded == value);
-                assert(decoded > 0UL);
-                assert(pos == 8);
-            }
-        },
-    );
-}
-
-@("treeWalking.minicerealEncodeHighBitUlongBytes")
-unittest {
-    import std.file: readText;
-
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                ubyte[] buf;
-                encode(0x8070605040302010UL, buf);
-                ubyte[] expected = [
-                    0x10u,
-                    0x20u,
-                    0x30u,
-                    0x40u,
-                    0x50u,
-                    0x60u,
-                    0x70u,
-                    0x80u,
-                ];
-                assert(buf == expected);
-            }
-        },
-    );
-}
-
-@("treeWalking.minicerealStructRoundTripsIntegralTypes")
-unittest {
-    import std.file: readText;
-
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.put!ubyte(0x2au);
-                cereal.put!byte(cast(byte) -42);
-                cereal.put!ushort(0x1234u);
-                cereal.put!short(cast(short) -1234);
-                cereal.put!uint(0x01020304u);
-                cereal.put!int(-0x01020304);
-                cereal.put!ulong(0x8070605040302010UL);
-                cereal.put!long(-0x0102030405060708L);
-
-                size_t pos = 0;
-                assert(cereal.get!ubyte(pos) == 0x2au);
-                assert(cereal.get!byte(pos) == cast(byte) -42);
-                assert(cereal.get!ushort(pos) == 0x1234u);
-                assert(cereal.get!short(pos) == cast(short) -1234);
-                assert(cereal.get!uint(pos) == 0x01020304u);
-                assert(cereal.get!int(pos) == -0x01020304);
-                assert(cereal.get!ulong(pos) == 0x8070605040302010UL);
-                assert(cereal.get!long(pos) == -0x0102030405060708L);
-                assert(pos == cereal.bytes.length);
-            }
-        },
-    );
-}
-
-@("treeWalking.minicerealStructIndexWriteByte")
-unittest {
-    import std.file: readText;
-
-    (new TreeWalkingExecutor).runTests(
-        readText("tests/minicereal.d") ~ q{
-            unittest {
-                Minicereal cereal;
-                cereal.bytes = [0];
-                cereal.bytes[0] = cast(ubyte) 42;
-                size_t pos = 0;
-                assert(cereal.get!ubyte(pos) == 42);
-            }
-        },
-    );
+        ).runTests(b);
+    }
 }
