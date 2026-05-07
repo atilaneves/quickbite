@@ -74,6 +74,19 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".voidFunctionExplicitReturn")
+    unittest {
+        runTests(q{
+            void foo() {
+                return;
+            }
+
+            unittest {
+                foo;
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".voidFunctionOops")
     unittest {
         runTests(q{
