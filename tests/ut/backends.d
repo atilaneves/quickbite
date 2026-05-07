@@ -74,6 +74,32 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".foreachArray")
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] arr = [1, 2, 3];
+                int sum = 0;
+                foreach (x; arr)
+                    sum = sum + x;
+                assert(sum == 6);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".foreachEmptyArray")
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] arr = [];
+                int count = 0;
+                foreach (x; arr)
+                    count = count + 1;
+                assert(count == 0);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".whileNeverRuns")
     unittest {
         runTests(q{
