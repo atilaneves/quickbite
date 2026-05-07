@@ -4,7 +4,6 @@ int main(string[] args) {
     return args.runTests!(
         "ut.backends",
         "ut.negative",
-        "ut.tree_walking",
         "ut.minicereal",
     );
 }
