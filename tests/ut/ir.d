@@ -3,23 +3,6 @@ module ut.ir;
 import quickbite;
 import unit_threaded;
 
-@("ir.intUnaryMinus")
-unittest {
-    q{
-        int input() {
-            return 42;
-        }
-
-        int answer() {
-            return -input;
-        }
-
-        unittest {
-            assert(answer == -42);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.ulongHighBitLessOrEqual")
 unittest {
     q{

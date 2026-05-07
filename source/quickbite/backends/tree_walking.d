@@ -412,6 +412,9 @@ private struct BodyWalker {
         if (auto complement = expression.isComExp)
             return Value(~runExpression(complement.e1, interpreter).asLong);
 
+        if (auto negate = expression.isNegExp)
+            return Value(-runExpression(negate.e1, interpreter).asLong);
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
