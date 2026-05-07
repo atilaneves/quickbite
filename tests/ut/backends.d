@@ -1010,6 +1010,29 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".logicalNot")
+    unittest {
+        runTests(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalNotCall")
+    unittest {
+        runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".logicalOrBoolResult")
     unittest {
         runTests(q{

@@ -42,29 +42,6 @@ unittest {
     }.runTests(ExecutorBackend.ir);
 }
 
-@("ir.logicalNot")
-unittest {
-    q{
-        unittest {
-            bool isReady = false;
-            assert(!isReady);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalNotCall")
-unittest {
-    q{
-        bool isReady() {
-            return false;
-        }
-
-        unittest {
-            assert(!isReady);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.logicalAnd")
 unittest {
     q{
