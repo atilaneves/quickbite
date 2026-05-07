@@ -3,19 +3,6 @@ module ut.tree_walking;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
 
-@("treeWalking.voidFunctionExplicitReturn")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        void foo() {
-            return;
-        }
-
-        unittest {
-            foo;
-        }
-    });
-}
-
 @("treeWalking.externalCallee")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

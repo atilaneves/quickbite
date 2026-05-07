@@ -1012,8 +1012,12 @@ struct BodyLowerer {
         imported!"dmd.statement".ReturnStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, ReturnValue;
+        import quickbite.ir.instruction: Instruction, ReturnValue, ReturnVoid;
 
+        if (statement.exp is null) {
+            instructions ~= Instruction(ReturnVoid.init);
+            return;
+        }
         instructions ~= Instruction(ReturnValue(lowerExpression(statement.exp, lowerer)));
     }
 
