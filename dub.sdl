@@ -15,6 +15,21 @@ configuration "unittest" {
     dependency "unit-threaded" version="*"
 }
 
+configuration "unittest-cov" {
+    targetType "executable"
+    targetName "ut-cov"
+
+    mainSourceFile "tests/main.d"
+    sourcePaths "tests"
+    includePaths "tests"
+
+    buildOptions "unittests" "coverage"
+    lflags "--allow-multiple-definition" platform="linux"
+
+    dependency "dmd:frontend" version="~>2.111.0-rc.1"
+    dependency "unit-threaded" version="*"
+}
+
 configuration "benchmark" {
     targetType "executable"
     targetName "bench"
