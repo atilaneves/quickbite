@@ -121,3 +121,8 @@ what has already been done.
 
 * When asked to write something to a markdown file, make it 80 columns
 wide at most.
+
+## Github
+
+* If you comment on a PR, state that it's coming from an agent, and
+  which agent.
