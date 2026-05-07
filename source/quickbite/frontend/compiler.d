@@ -13,6 +13,11 @@ public alias ParsedModule = imported!"std.typecons".Tuple!(
 // mutex and is initialized once for this process.
 __gshared Compiler compiler;
 // DMD registers modules by filename, so each parse call needs a unique name.
+// TODO: bench harness re-runs grow this monotonically and DMD retains
+// process-global semantic state keyed off the name. At small fixture counts
+// the bias is below stddev, but as the fixture set grows we will need either
+// a deinitializeDMD/initDMD reset between runs or a way to evict the
+// registered module from DMD's tables.
 private shared uint _moduleCounter;
 
 shared static this() {

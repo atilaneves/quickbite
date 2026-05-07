@@ -22,16 +22,18 @@ private struct CallArgument {
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler;
+        import quickbite.frontend.compiler: parseModule;
 
         // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
-        auto parsed = quickbite.frontend.compiler.parseModule(source);
-        walkModule(parsed.module_);
+        auto parsed = parseModule(source);
+        runParsedTests(parsed.module_);
     }
-}
 
-public void runParsedTreeWalkingTests(imported!"dmd.dmodule".Module module_) {
-    walkModule(module_);
+    public override void runParsedTests(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        walkModule(module_);
+    }
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {

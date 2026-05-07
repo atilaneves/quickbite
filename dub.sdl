@@ -23,7 +23,9 @@ configuration "unittest-cov" {
     sourcePaths "tests"
     includePaths "tests"
 
-    buildOptions "unittests" "coverage"
+    // Pair this config with `--build=unittest-cov`; dub will then pass
+    // `-unittest -cov`. dub warns if these are listed as buildOptions
+    // here directly.
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.111.0-rc.1"
