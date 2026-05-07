@@ -32,7 +32,10 @@ void main() {
         Backend("treeWalking", &runParsedTreeWalkingTests),
     ];
 
-    writefln("%-20s %-14s %10s %10s", "fixture", "backend", "min", "median");
+    writefln(
+        "%-20s %-14s %10s %10s %10s",
+        "fixture", "backend", "min", "median", "stddev",
+    );
 
     foreach (fixture; fixtures) {
         const source = readText(fixture.path);
@@ -46,11 +49,12 @@ void main() {
                 iterations,
             );
             writefln(
-                "%-20s %-14s %7.2f ms %7.2f ms",
+                "%-20s %-14s %7.2f ms %7.2f ms %7.2f ms",
                 fixture.name,
                 backend.name,
                 result.min.total!"usecs" / 1000.0,
                 result.median.total!"usecs" / 1000.0,
+                result.stddevUsecs / 1000.0,
             );
         }
     }
