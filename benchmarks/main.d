@@ -20,13 +20,21 @@ private struct Backend {
 enum size_t warmup = 1;
 enum size_t iterations = 10;
 
-void main() {
+int main(string[] args) {
+    import std.algorithm.iteration: map;
+    import std.array: array;
     import std.file: readText;
-    import std.stdio: writefln, writeln;
+    import std.path: baseName;
+    import std.stdio: stderr, writefln;
 
-    const fixtures = [
-        Fixture("minicereal.d", "tests/minicereal.d"),
-    ];
+    if (args.length < 2) {
+        stderr.writefln("usage: %s <module.d> [<module.d> ...]", args[0]);
+        return 1;
+    }
+
+    const fixtures = args[1 .. $]
+        .map!(path => Fixture(path.baseName, path))
+        .array;
     const backends = [
         Backend("ir",          &runParsedIrTests),
         Backend("treeWalking", &runParsedTreeWalkingTests),
@@ -58,4 +66,6 @@ void main() {
             );
         }
     }
+
+    return 0;
 }
