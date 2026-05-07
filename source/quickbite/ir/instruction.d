@@ -110,6 +110,11 @@ public struct ArrayLiteral {
     uint[] elements;
 }
 
+public struct ArrayCopy {
+    uint destination;
+    uint source;
+}
+
 public struct ArrayAppend {
     uint array;
     uint value;
@@ -181,6 +186,7 @@ public alias Instruction = SumType!(
     CastInt,
     Assert_,
     ArrayLiteral,
+    ArrayCopy,
     ArrayAppend,
     ArrayLength,
     ArrayIndex,

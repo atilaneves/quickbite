@@ -1209,8 +1209,8 @@ struct BodyLowerer {
         imported!"dmd.mtype".Type type,
         in uint source,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, StructGet, StructNew,
-            StructSet;
+        import quickbite.ir.instruction: ArrayCopy, Instruction, StructGet,
+            StructNew, StructSet;
 
         const destination = allocateTemporary;
         instructions ~= Instruction(StructNew(destination));
@@ -1218,6 +1218,13 @@ struct BodyLowerer {
             const fieldValue = allocateTemporary;
             const name = declarationName(field);
             instructions ~= Instruction(StructGet(fieldValue, source, name));
+            if (typeIsDynamicArray(field.type)) {
+                const copied = allocateTemporary;
+                instructions ~= Instruction(ArrayCopy(copied, fieldValue));
+                instructions ~= Instruction(StructSet(destination, name, copied));
+                continue;
+            }
+
             instructions ~= Instruction(StructSet(destination, name, fieldValue));
         }
         return destination;

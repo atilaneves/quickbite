@@ -963,6 +963,25 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
+    @(backend.text ~ ".structByValueArrayFieldMutationDoesNotLeak")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+            }
+
+            void mutate(Buffer buffer) {
+                buffer.bytes ~= cast(ubyte) 42;
+            }
+
+            unittest {
+                Buffer buffer;
+                mutate(buffer);
+                assert(buffer.bytes.length == 0);
+            }
+        }, backend);
+    }
+
     @(backend.text ~ ".scalarStructField")
     unittest {
         runTests(q{

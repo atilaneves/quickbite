@@ -155,10 +155,11 @@ InstructionEffect executeInstruction(
     ref long[][] arrays,
     ref long[string][] structs,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayEqual, ArrayIndex,
-        ArrayLength, ArraySet, ArraySlice, ArrayLiteral, Assert_, BinaryOp,
-        Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue, ReturnValue,
-        ReturnVoid, Select, StructGet, StructNew, StructSet, UnaryOp;
+    import quickbite.ir.instruction: ArrayAppend, ArrayCopy, ArrayEqual,
+        ArrayIndex, ArrayLength, ArrayLiteral, ArraySet, ArraySlice, Assert_,
+        BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
+        ReturnValue, ReturnVoid, Select, StructGet, StructNew, StructSet,
+        UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -248,6 +249,12 @@ InstructionEffect executeInstruction(
                 values ~= readTemporaryValue(temporaries, element);
 
             arrays ~= values;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (ArrayCopy instruction) {
+            arrays ~= arrays[arrayIndex(temporaries, instruction.source)].dup;
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) (arrays.length - 1);
             return nextInstruction;
