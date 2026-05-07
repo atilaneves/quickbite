@@ -2,6 +2,8 @@ module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
+import std.conv: to;
+import std.traits: EnumMembers;
 import unit_threaded;
 
 @("ir.minicerealEncodeUbyte")
@@ -20,11 +22,13 @@ unittest {
     ).runTests;
 }
 
-@("ir.minicerealFile")
-unittest {
-    import std.file: readText;
+static foreach (b; EnumMembers!ExecutorBackend) {
+    @(b.to!string ~ ".minicerealFile")
+    unittest {
+        import std.file: readText;
 
-    readText("tests/minicereal.d").runTests;
+        readText("tests/minicereal.d").runTests(b);
+    }
 }
 
 @("ir.minicerealDecodeNegativeInt")
@@ -371,13 +375,6 @@ unittest {
             }
         },
     );
-}
-
-@("treeWalking.minicerealFile")
-unittest {
-    import std.file: readText;
-
-    readText("tests/minicereal.d").runTests(ExecutorBackend.treeWalking);
 }
 
 @("treeWalking.minicerealStructDollarTailSliceBytes")
