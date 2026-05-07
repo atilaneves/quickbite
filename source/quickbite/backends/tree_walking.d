@@ -424,14 +424,22 @@ private struct BodyWalker {
         if (auto not = expression.isNotExp)
             return Value(cast(long) (runExpression(not.e1, interpreter).asLong == 0));
 
-        if (auto and = expression.isLogicalExp) {
+        if (auto logical = expression.isLogicalExp) {
             import dmd.tokens: EXP;
 
-            if (and.op == EXP.andAnd) {
-                if (runExpression(and.e1, interpreter).asLong == 0)
+            if (logical.op == EXP.andAnd) {
+                if (runExpression(logical.e1, interpreter).asLong == 0)
                     return Value(0L);
                 return Value(
-                    cast(long) (runExpression(and.e2, interpreter).asLong != 0),
+                    cast(long) (runExpression(logical.e2, interpreter).asLong != 0),
+                );
+            }
+
+            if (logical.op == EXP.orOr) {
+                if (runExpression(logical.e1, interpreter).asLong != 0)
+                    return Value(1L);
+                return Value(
+                    cast(long) (runExpression(logical.e2, interpreter).asLong != 0),
                 );
             }
         }

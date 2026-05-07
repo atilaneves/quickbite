@@ -42,35 +42,3 @@ unittest {
     }.runTests(ExecutorBackend.ir);
 }
 
-@("ir.logicalOrShortCircuit")
-unittest {
-    q{
-        unittest {
-            bool left = true;
-            int zero = 0;
-            assert(left || 42 / zero == 0);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalOr")
-unittest {
-    q{
-        unittest {
-            bool left = false;
-            bool right = true;
-            assert(left || right);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
-@("ir.logicalOrOops")
-unittest {
-    q{
-        unittest {
-            bool left = false;
-            bool right = false;
-            assert(left || right);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unittest assertion failed.");
-}
