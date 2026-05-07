@@ -759,6 +759,46 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".structPassedToFunction")
+    unittest {
+        runTests(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int sum(Point p) {
+                return p.x + p.y;
+            }
+
+            unittest {
+                Point p;
+                p.x = 21;
+                p.y = 21;
+                assert(sum(p) == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".scalarStructPassedToFunction")
+    unittest {
+        runTests(q{
+            struct Value {
+                int value;
+            }
+
+            int read(Value wrapper) {
+                return wrapper.value;
+            }
+
+            unittest {
+                Value wrapper;
+                wrapper.value = 42;
+                assert(read(wrapper) == 42);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".scalarStructField")
     unittest {
         runTests(q{
