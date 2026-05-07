@@ -788,6 +788,197 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             }
         }, b);
     }
+
+    @(b.to!string ~ ".struct_")
+    unittest {
+        runTests(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int answer() {
+                Point p;
+                p.x = 21;
+                p.y = 21;
+                return p.x + p.y;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structFieldDefaultsToZero")
+    unittest {
+        runTests(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int answer() {
+                Point p;
+                p.x = 42;
+                return p.x + p.y;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structArrayFieldDefaultsToEmpty")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+            }
+
+            unittest {
+                Buffer buffer;
+                assert(buffer.bytes.length == 0);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".refStructArrayFieldParameter")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+            }
+
+            void append42(ref ubyte[] output) {
+                output ~= cast(ubyte) 42;
+            }
+
+            unittest {
+                Buffer buffer;
+                append42(buffer.bytes);
+                assert(buffer.bytes.length == 1);
+                assert(buffer.bytes[0] == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structMethodReadsField")
+    unittest {
+        runTests(q{
+            struct Box {
+                int value;
+
+                int get() {
+                    return value;
+                }
+            }
+
+            unittest {
+                Box box;
+                box.value = 42;
+                assert(box.get == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structMethodPassesFieldByRef")
+    unittest {
+        runTests(q{
+            void append42(ref ubyte[] output) {
+                output ~= cast(ubyte) 42;
+            }
+
+            struct Buffer {
+                ubyte[] bytes;
+
+                void append() {
+                    append42(bytes);
+                }
+            }
+
+            unittest {
+                Buffer buffer;
+                buffer.append;
+                assert(buffer.bytes.length == 1);
+                assert(buffer.bytes[0] == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structTemplateMethodPassesFieldByRef")
+    unittest {
+        runTests(q{
+            void appendValue(T)(T value, ref ubyte[] output) {
+                output ~= cast(ubyte) value;
+            }
+
+            struct Buffer {
+                ubyte[] bytes;
+
+                void append(T)(T value) {
+                    appendValue(value, bytes);
+                }
+            }
+
+            unittest {
+                Buffer buffer;
+                buffer.append(42);
+                assert(buffer.bytes.length == 1);
+                assert(buffer.bytes[0] == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structMethodIndexWritesArrayField")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+
+                void patchFirst() {
+                    bytes[0] = cast(ubyte) 42;
+                }
+            }
+
+            unittest {
+                Buffer buffer;
+                buffer.bytes = [0];
+                buffer.patchFirst;
+                assert(buffer.bytes[0] == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structMethodAppendsArrayField")
+    unittest {
+        runTests(q{
+            struct Writer {
+                ubyte[] bytes;
+
+                void put(ubyte value) {
+                    bytes ~= value;
+                }
+            }
+
+            unittest {
+                Writer writer;
+                writer.put(cast(ubyte) 42);
+                assert(writer.bytes.length == 1);
+                assert(writer.bytes[0] == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".logicalOrBoolResult")
+    unittest {
+        runTests(q{
+            unittest {
+                assert((2 || false) == true);
+            }
+        }, b);
+    }
 }
 
 static foreach (b; EnumMembers!ExecutorBackend) {

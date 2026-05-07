@@ -5,6 +5,72 @@ parallel: one for the IR backend and one for the tree-walking backend.
 Future agents can read this file, `AGENTS.md`, `ai/mistakes.md`, and
 `ai/plans/*`, then spawn the same two backend-focused subagents again.
 
+## Cross-backend audit (sweep 1)
+
+Each per-backend test was tried against the *other* backend. Results below
+inform which tests are free moves vs. gaps to plug in sweep 2.
+
+### From `tests/ut/ir.d` — IR bodies tried on tree-walker
+
+| Test                              | TW result | Disposition                     |
+| --------------------------------- | --------- | ------------------------------- |
+| `intBitwiseOr`                    | FAIL      | gap: TW missing `\|` |
+| `intSubtractAssign`               | FAIL      | gap: TW missing `-=` |
+| `intUnaryMinus`                   | FAIL      | gap: TW missing unary `-` |
+| `ulongHighBitLessOrEqual`         | FAIL      | gap: TW unsigned `<=` wrong |
+| `ulongHighBitGreaterOrEqual`      | FAIL      | gap: TW unsigned `>=` wrong |
+| `scalarStructPassedToFunction`    | FAIL      | gap: TW struct-by-value to fn |
+| `logicalNot`                      | FAIL      | gap: TW missing `!` |
+| `logicalNotCall`                  | FAIL      | gap: TW missing `!fn()` |
+| `logicalAnd`                      | FAIL      | gap: TW missing `&&` |
+| `logicalAndCall`                  | FAIL      | gap: TW missing `&&` over calls |
+| `logicalAndShortCircuit`          | FAIL      | gap: TW missing `&&` short-circuit |
+| `logicalAndCallShortCircuit`      | FAIL      | gap: TW missing `&&` short-circuit |
+| `logicalOrShortCircuit`           | FAIL      | gap: TW missing `\|\|` short-circuit |
+| `logicalOrBoolResult`             | PASS      | **free move** |
+| `logicalOr`                       | FAIL      | gap: TW missing `\|\|` |
+| `logicalOrOops`                   | FAIL      | gap: TW missing `\|\|` |
+
+### From `tests/ut/tree_walking.d` — TW bodies tried on IR
+
+| Test                                                    | IR result    | Disposition |
+| ------------------------------------------------------- | ------------ | ----------- |
+| `voidFunctionExplicitReturn`                            | SEGV         | gap: IR explicit `return;` in void |
+| `externalCallee`, `externalCalleeWithArg`,               | SEGV         | gap: IR `extern` decls (3 tests) |
+| `externalCalleeArgNotEvaluated`                         |              | |
+| `uninitializedDecl`                                     | PASS (throws same msg) | **delete**: pure duplicate of `negative.d:multiStatementBody` |
+| `nonLiteralReturn`                                      | PASS (throws same msg) | **delete**: pure duplicate of `negative.d:nonLiteralReturn` |
+| `while_`, `whileNeverRuns`, `whileRunsOnce`             | SEGV         | gap: IR `while` |
+| `struct_`                                               | PASS         | **free move** |
+| `structFieldDefaultsToZero`                             | PASS         | **free move** |
+| `structArrayFieldDefaultsToEmpty`                       | PASS         | **free move** |
+| `refStructArrayFieldParameter`                          | PASS         | **free move** |
+| `structMethodReadsField`                                | PASS         | **free move** |
+| `structMethodPassesFieldByRef`                          | PASS         | **free move** |
+| `structTemplateMethodPassesFieldByRef`                  | PASS         | **free move** |
+| `structMethodIndexWritesArrayField`                     | PASS         | **free move** |
+| `structMethodPostIncrementsSizeTField`                  | FAIL         | gap: IR `pos++` as RHS |
+| `structMethodReadsArrayFieldAtPostIncrementedField`     | FAIL         | gap: same |
+| `structMethodAppendsArrayField`                         | PASS         | **free move** |
+| `structPassedToFunction`                                | IR supports it | gap is on TW side: needs struct-by-value; once TW gets it, recast as positive parameterized test |
+| `foreachArray`, `foreachEmptyArray`                     | FAIL         | gap: IR `foreach` |
+
+### From `tests/ut/negative.d` IR-only tail — bodies tried on tree-walker
+
+| Test                                       | TW emits                                | Disposition |
+| ------------------------------------------ | --------------------------------------- | ----------- |
+| `outParameter`, `multipleOutParameters`    | "Unsupported parameter storage class."  | gap: align TW message to "Unsupported function parameters." |
+| `ifBodyAssignment`                         | does not throw (TW accepts it)          | gap: TW must reject if-body assignment with same message as IR |
+| `divisionByZero`, `divisionByZeroCall`     | "Division by zero."                     | gap: align TW message to "Integer division by zero." |
+| `moduloByZero`, `moduloByZeroCall`         | "Division by zero." (also for `%`)      | gap: TW must distinguish modulo and emit "Integer modulo by zero." |
+
+### Minicereal split — to be audited test-by-test during sweep 3
+
+The IR-only and tree-walker-only halves of `tests/ut/minicereal.d` will be
+audited during sweep 3 when we collapse the file. Many overlap in intent
+(byte append, decode-known-int, integral round-trips); the audit will
+identify which IR-only tests already pass on TW and vice versa.
+
 ## Current Verification
 
 The latest full suite run passed:
