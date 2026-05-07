@@ -1,61 +1,65 @@
 module ut.negative;
 
-import quickbite;
+import quickbite: ExecutorBackend, runTests;
+import std.conv: to;
+import std.traits: EnumMembers;
 import unit_threaded;
 
-@("negative.voidFunction")
-unittest {
-    q{
-        void foo() {
+static foreach (b; EnumMembers!ExecutorBackend) {
+    @(b.to!string ~ ".voidFunction")
+    unittest {
+        runTests(q{
+            void foo() {
+                int value;
+            }
+
+            unittest {
+                foo;
+            }
+        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+    }
+
+    @(b.to!string ~ ".multiStatementBody")
+    unittest {
+        runTests(q{
+            int answer() {
+                int value;
+                return value;
+            }
+
+            unittest {
+                assert(answer == 0);
+            }
+        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+    }
+
+    @(b.to!string ~ ".nonLiteralReturn")
+    unittest {
+        runTests(q{
             int value;
-        }
 
-        unittest {
-            foo;
-        }
-    }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
+            int answer() {
+                return value;
+            }
+
+            unittest {
+                assert(answer == 0);
+            }
+        }, b).shouldThrowWithMessage("Unsupported expression: value");
+    }
+
+    @(b.to!string ~ ".unsupportedAssert")
+    unittest {
+        runTests(q{
+            unittest {
+                int value;
+                assert(value);
+            }
+        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+    }
 }
 
-@("negative.multiStatementBody")
-unittest {
-    q{
-        int answer() {
-            int value;
-            return value;
-        }
-
-        unittest {
-            assert(answer == 0);
-        }
-    }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
-}
-
-@("negative.nonLiteralReturn")
-unittest {
-    q{
-        int value;
-
-        int answer() {
-            return value;
-        }
-
-        unittest {
-            assert(answer == 0);
-        }
-    }.runTests.shouldThrowWithMessage("Unsupported expression: value");
-}
-
-@("negative.unsupportedAssert")
-unittest {
-    q{
-        unittest {
-            int value;
-            assert(value);
-        }
-    }.runTests.shouldThrowWithMessage("Unsupported expression: declaration");
-}
-
-@("negative.outParameter")
+@("ir.outParameter")
 unittest {
     q{
         void setAnswer(out int value) {
@@ -67,10 +71,10 @@ unittest {
             setAnswer(value);
             assert(value == 42);
         }
-    }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported function parameters.");
 }
 
-@("negative.multipleOutParameters")
+@("ir.multipleOutParameters")
 unittest {
     q{
         void add(int left, out int right) {
@@ -82,10 +86,10 @@ unittest {
             add(40, value);
             assert(value == 42);
         }
-    }.runTests.shouldThrowWithMessage("Unsupported function parameters.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported function parameters.");
 }
 
-@("negative.ifBodyAssignment")
+@("ir.ifBodyAssignment")
 unittest {
     q{
         int answer(int value) {
@@ -98,10 +102,10 @@ unittest {
         unittest {
             assert(answer(1) == 2);
         }
-    }.runTests.shouldThrowWithMessage("Unsupported if-branch: expected return");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported if-branch: expected return");
 }
 
-@("negative.divisionByZero")
+@("ir.divisionByZero")
 unittest {
     q{
         int answer() {
@@ -112,10 +116,10 @@ unittest {
         unittest {
             assert(answer == 42);
         }
-    }.runTests.shouldThrowWithMessage("Integer division by zero.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer division by zero.");
 }
 
-@("negative.divisionByZeroCall")
+@("ir.divisionByZeroCall")
 unittest {
     q{
         int zero() {
@@ -129,10 +133,10 @@ unittest {
         unittest {
             assert(answer == 42);
         }
-    }.runTests.shouldThrowWithMessage("Integer division by zero.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer division by zero.");
 }
 
-@("negative.moduloByZero")
+@("ir.moduloByZero")
 unittest {
     q{
         int answer() {
@@ -143,10 +147,10 @@ unittest {
         unittest {
             assert(answer == 42);
         }
-    }.runTests.shouldThrowWithMessage("Integer modulo by zero.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer modulo by zero.");
 }
 
-@("negative.moduloByZeroCall")
+@("ir.moduloByZeroCall")
 unittest {
     q{
         int zero() {
@@ -160,5 +164,5 @@ unittest {
         unittest {
             assert(answer == 42);
         }
-    }.runTests.shouldThrowWithMessage("Integer modulo by zero.");
+    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer modulo by zero.");
 }
