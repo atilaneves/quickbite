@@ -422,8 +422,8 @@ private struct BodyWalker {
         if (auto slice = expression.isSliceExp) {
             if (slice.lwr !is null && slice.upr !is null) {
                 const array = runExpression(slice.e1, interpreter).asArray;
-                const lower = runExpression(slice.lwr, interpreter).asLong;
-                const upper = runExpression(slice.upr, interpreter).asLong;
+                const lower = runSliceBound(slice.lwr, interpreter, array.length);
+                const upper = runSliceBound(slice.upr, interpreter, array.length);
                 // Explicit type: Value stores mutable array slices.
                 long[] elements = array[cast(size_t) lower .. cast(size_t) upper]
                     .dup;
@@ -910,6 +910,27 @@ private struct BodyWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
+
+    private long runSliceBound(
+        imported!"dmd.expression".Expression expression,
+        ref Interpreter interpreter,
+        in size_t arrayLength,
+    ) {
+        import dmd.id: Id;
+        import dmd.tokens: EXP;
+
+        if (expression.op == EXP.dollar)
+            return cast(long) arrayLength;
+        if (auto var = expression.isVarExp)
+            if (var.var.ident == Id.dollar)
+                return cast(long) arrayLength;
+
+        if (auto subtract = expression.isMinExp)
+            return runSliceBound(subtract.e1, interpreter, arrayLength) -
+                runSliceBound(subtract.e2, interpreter, arrayLength);
+
+        return runExpression(expression, interpreter).asLong;
     }
 }
 

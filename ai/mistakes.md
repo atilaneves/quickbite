@@ -109,3 +109,8 @@
 - Unit-threaded focused test arguments must use the full name from
   `./ut -l`, such as `ut.ir.ir.minicerealFile`, not only the display
   label shown by the `@("...")` attribute.
+
+- In strict TDD, do not add broad acceptance tests as the next step
+  unless there is a concrete reason to expect the current implementation
+  to fail them. If they pass immediately, they did not drive production
+  code.
