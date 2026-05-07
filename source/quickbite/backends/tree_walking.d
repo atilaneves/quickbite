@@ -421,6 +421,9 @@ private struct BodyWalker {
         if (auto negate = expression.isNegExp)
             return Value(-runExpression(negate.e1, interpreter).asLong);
 
+        if (auto not = expression.isNotExp)
+            return Value(cast(long) (runExpression(not.e1, interpreter).asLong == 0));
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
