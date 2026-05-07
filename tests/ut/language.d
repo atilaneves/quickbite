@@ -949,6 +949,59 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
+    @(backend.text ~ ".structByValueMutationDoesNotLeak")
+    unittest {
+        runTests(q{
+            struct Point { int x; }
+            void mutate(Point p) { p.x = 99; }
+            unittest {
+                Point p;
+                p.x = 5;
+                mutate(p);
+                assert(p.x == 5);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".structByValueArrayFieldMutationDoesNotLeak")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+            }
+
+            void mutate(Buffer buffer) {
+                buffer.bytes ~= cast(ubyte) 42;
+            }
+
+            unittest {
+                Buffer buffer;
+                mutate(buffer);
+                assert(buffer.bytes.length == 0);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".structByValueArrayFieldElementMutationLeaks")
+    unittest {
+        runTests(q{
+            struct Buffer {
+                ubyte[] bytes;
+            }
+
+            void mutate(Buffer buffer) {
+                buffer.bytes[0] = 99;
+            }
+
+            unittest {
+                Buffer buffer;
+                buffer.bytes = [cast(ubyte) 1];
+                mutate(buffer);
+                assert(buffer.bytes[0] == 99);
+            }
+        }, backend);
+    }
+
     @(backend.text ~ ".scalarStructField")
     unittest {
         runTests(q{
