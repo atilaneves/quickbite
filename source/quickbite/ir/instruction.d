@@ -75,6 +75,10 @@ public struct JumpIfTrue {
     uint offset;
 }
 
+public struct Jump {
+    int offset;
+}
+
 public struct Copy {
     uint destination;
     uint source;
@@ -172,6 +176,7 @@ public alias Instruction = SumType!(
     Select,
     JumpIfFalse,
     JumpIfTrue,
+    Jump,
     Copy,
     CastInt,
     Assert_,

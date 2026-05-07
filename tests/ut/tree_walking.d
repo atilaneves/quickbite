@@ -3,61 +3,6 @@ module ut.tree_walking;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import unit_threaded;
 
-@("treeWalking.while_")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        int answer() {
-            int i = 0;
-            int result = 0;
-            while (i < 6) {
-                result = result + 7;
-                i = i + 1;
-            }
-            return result;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    });
-}
-
-@("treeWalking.whileNeverRuns")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        int answer() {
-            int i = 0;
-            while (i > 0) {
-                i = i + 1;
-            }
-            return 42;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    });
-}
-
-@("treeWalking.whileRunsOnce")
-unittest {
-    (new TreeWalkingExecutor).runTests(q{
-        int answer() {
-            int i = 0;
-            int result = 0;
-            while (i < 1) {
-                result = 42;
-                i = i + 1;
-            }
-            return result;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    });
-}
-
 @("treeWalking.structMethodPostIncrementsSizeTField")
 unittest {
     (new TreeWalkingExecutor).runTests(q{

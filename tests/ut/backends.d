@@ -74,6 +74,61 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".whileNeverRuns")
+    unittest {
+        runTests(q{
+            int answer() {
+                int i = 0;
+                while (i > 0) {
+                    i = i + 1;
+                }
+                return 42;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".whileRunsOnce")
+    unittest {
+        runTests(q{
+            int answer() {
+                int i = 0;
+                int result = 0;
+                while (i < 1) {
+                    result = 42;
+                    i = i + 1;
+                }
+                return result;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".while_")
+    unittest {
+        runTests(q{
+            int answer() {
+                int i = 0;
+                int result = 0;
+                while (i < 6) {
+                    result = result + 7;
+                    i = i + 1;
+                }
+                return result;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".voidFunctionExplicitReturn")
     unittest {
         runTests(q{
