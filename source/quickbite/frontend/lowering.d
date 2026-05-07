@@ -190,7 +190,7 @@ struct BodyLowerer {
             replaceJumpOffset(
                 instructions,
                 cast(uint) exitJumpIndex,
-                cast(uint) (instructions.length - exitJumpIndex - 1),
+                cast(int) (instructions.length - exitJumpIndex - 1),
             );
     }
 
@@ -581,7 +581,7 @@ struct BodyLowerer {
         replaceJumpOffset(
             instructions,
             cast(uint) jumpIndex,
-            cast(uint) (instructions.length - jumpIndex - 1),
+            cast(int) (instructions.length - jumpIndex - 1),
         );
         return destination;
     }
@@ -611,7 +611,7 @@ struct BodyLowerer {
         replaceJumpOffset(
             instructions,
             cast(uint) jumpIndex,
-            cast(uint) (instructions.length - jumpIndex - 1),
+            cast(int) (instructions.length - jumpIndex - 1),
         );
         return destination;
     }
@@ -1076,7 +1076,7 @@ struct BodyLowerer {
             replaceJumpOffset(
                 instructions,
                 cast(uint) ifFalseJumpIndex,
-                cast(uint) (instructions.length - ifFalseJumpIndex - 1),
+                cast(int) (instructions.length - ifFalseJumpIndex - 1),
             );
             hasReturn = false;
             return;
@@ -1091,7 +1091,7 @@ struct BodyLowerer {
         replaceJumpOffset(
             instructions,
             cast(uint) ifFalseJumpIndex,
-            cast(uint) (instructions.length - ifFalseJumpIndex - 1),
+            cast(int) (instructions.length - ifFalseJumpIndex - 1),
         );
         const ifFalseReturns = lowerBranch(statement.elsebody, lowerer);
 
@@ -1099,7 +1099,7 @@ struct BodyLowerer {
             replaceJumpOffset(
                 instructions,
                 cast(uint) skipElseJumpIndex,
-                cast(uint) (instructions.length - skipElseJumpIndex),
+                cast(int) (instructions.length - skipElseJumpIndex),
             );
 
         hasReturn = ifTrueReturns && ifFalseReturns;
@@ -1217,7 +1217,7 @@ private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted
 private void replaceJumpOffset(
     ref imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint index,
-    in uint offset,
+    in int offset,
 ) @safe {
     import quickbite.ir.instruction: Jump, JumpIfFalse, JumpIfTrue;
     import std.sumtype: match;
@@ -1230,7 +1230,7 @@ private void replaceJumpOffset(
             instruction.offset = offset;
         },
         (ref Jump instruction) {
-            instruction.offset = cast(int) offset;
+            instruction.offset = offset;
         },
         (_) {
             assert(0, "Expected jump instruction");

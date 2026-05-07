@@ -1,12 +1,12 @@
 module ut.negative;
 
 import quickbite: ExecutorBackend, runTests;
-import std.conv: to;
+import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
-static foreach (b; EnumMembers!ExecutorBackend) {
-    @(b.to!string ~ ".voidFunction")
+static foreach (backend; EnumMembers!ExecutorBackend) {
+    @(backend.text ~ ".voidFunction")
     unittest {
         runTests(q{
             void foo() {
@@ -16,10 +16,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 foo;
             }
-        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+        }, backend).shouldThrowWithMessage("Unsupported expression: declaration");
     }
 
-    @(b.to!string ~ ".multiStatementBody")
+    @(backend.text ~ ".multiStatementBody")
     unittest {
         runTests(q{
             int answer() {
@@ -30,10 +30,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 0);
             }
-        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+        }, backend).shouldThrowWithMessage("Unsupported expression: declaration");
     }
 
-    @(b.to!string ~ ".nonLiteralReturn")
+    @(backend.text ~ ".nonLiteralReturn")
     unittest {
         runTests(q{
             int value;
@@ -45,20 +45,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 0);
             }
-        }, b).shouldThrowWithMessage("Unsupported expression: value");
+        }, backend).shouldThrowWithMessage("Unsupported expression: value");
     }
 
-    @(b.to!string ~ ".unsupportedAssert")
+    @(backend.text ~ ".unsupportedAssert")
     unittest {
         runTests(q{
             unittest {
                 int value;
                 assert(value);
             }
-        }, b).shouldThrowWithMessage("Unsupported expression: declaration");
+        }, backend).shouldThrowWithMessage("Unsupported expression: declaration");
     }
 
-    @(b.to!string ~ ".outParameter")
+    @(backend.text ~ ".outParameter")
     unittest {
         runTests(q{
             void setAnswer(out int value) {
@@ -70,10 +70,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 setAnswer(value);
                 assert(value == 42);
             }
-        }, b).shouldThrowWithMessage("Unsupported function parameters.");
+        }, backend).shouldThrowWithMessage("Unsupported function parameters.");
     }
 
-    @(b.to!string ~ ".multipleOutParameters")
+    @(backend.text ~ ".multipleOutParameters")
     unittest {
         runTests(q{
             void add(int left, out int right) {
@@ -85,10 +85,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 add(40, value);
                 assert(value == 42);
             }
-        }, b).shouldThrowWithMessage("Unsupported function parameters.");
+        }, backend).shouldThrowWithMessage("Unsupported function parameters.");
     }
 
-    @(b.to!string ~ ".externalCallee")
+    @(backend.text ~ ".externalCallee")
     unittest {
         runTests(q{
             extern int externalFunc();
@@ -96,10 +96,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 externalFunc;
             }
-        }, b).shouldThrowWithMessage("No function body to execute.");
+        }, backend).shouldThrowWithMessage("No function body to execute.");
     }
 
-    @(b.to!string ~ ".externalCalleeWithArg")
+    @(backend.text ~ ".externalCalleeWithArg")
     unittest {
         runTests(q{
             extern int externalFunc(int value);
@@ -107,10 +107,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 externalFunc(42);
             }
-        }, b).shouldThrowWithMessage("No function body to execute.");
+        }, backend).shouldThrowWithMessage("No function body to execute.");
     }
 
-    @(b.to!string ~ ".externalCalleeArgNotEvaluated")
+    @(backend.text ~ ".externalCalleeArgNotEvaluated")
     unittest {
         runTests(q{
             extern int externalFunc(int value);
@@ -123,10 +123,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 externalFunc(boom);
             }
-        }, b).shouldThrowWithMessage("No function body to execute.");
+        }, backend).shouldThrowWithMessage("No function body to execute.");
     }
 
-    @(b.to!string ~ ".divisionByZero")
+    @(backend.text ~ ".divisionByZero")
     unittest {
         runTests(q{
             int answer() {
@@ -137,10 +137,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b).shouldThrowWithMessage("Integer division by zero.");
+        }, backend).shouldThrowWithMessage("Integer division by zero.");
     }
 
-    @(b.to!string ~ ".divisionByZeroCall")
+    @(backend.text ~ ".divisionByZeroCall")
     unittest {
         runTests(q{
             int zero() {
@@ -154,10 +154,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b).shouldThrowWithMessage("Integer division by zero.");
+        }, backend).shouldThrowWithMessage("Integer division by zero.");
     }
 
-    @(b.to!string ~ ".moduloByZero")
+    @(backend.text ~ ".moduloByZero")
     unittest {
         runTests(q{
             int answer() {
@@ -168,10 +168,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b).shouldThrowWithMessage("Integer modulo by zero.");
+        }, backend).shouldThrowWithMessage("Integer modulo by zero.");
     }
 
-    @(b.to!string ~ ".moduloByZeroCall")
+    @(backend.text ~ ".moduloByZeroCall")
     unittest {
         runTests(q{
             int zero() {
@@ -185,7 +185,7 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b).shouldThrowWithMessage("Integer modulo by zero.");
+        }, backend).shouldThrowWithMessage("Integer modulo by zero.");
     }
 }
 

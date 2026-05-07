@@ -135,7 +135,7 @@ ExecutionResult executeInstructions(
             return result;
         }
 
-        instructionPointer = cast(uint) (cast(int) instructionPointer + effect.offset);
+        instructionPointer += effect.offset;
     }
 
     return result;
@@ -209,13 +209,13 @@ InstructionEffect executeInstruction(
         },
         (JumpIfFalse instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
-                return jump(cast(int) (instruction.offset + 1));
+                return jump(instruction.offset + 1);
 
             return nextInstruction;
         },
         (JumpIfTrue instruction) {
             if (readTemporaryValue(temporaries, instruction.condition))
-                return jump(cast(int) (instruction.offset + 1));
+                return jump(instruction.offset + 1);
 
             return nextInstruction;
         },

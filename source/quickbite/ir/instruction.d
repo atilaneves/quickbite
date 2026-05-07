@@ -67,12 +67,12 @@ public struct Select {
 
 public struct JumpIfFalse {
     uint condition;
-    uint offset;
+    int offset;
 }
 
 public struct JumpIfTrue {
     uint condition;
-    uint offset;
+    int offset;
 }
 
 public struct Jump {

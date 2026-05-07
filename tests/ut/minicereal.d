@@ -1,19 +1,19 @@
 module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
-import std.conv: to;
+import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
-static foreach (b; EnumMembers!ExecutorBackend) {
-    @(b.to!string ~ ".minicerealFile")
+static foreach (backend; EnumMembers!ExecutorBackend) {
+    @(backend.text ~ ".minicerealFile")
     unittest {
         import std.file: readText;
 
-        readText("tests/minicereal.d").runTests(b);
+        readText("tests/minicereal.d").runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealEncodeUbyte")
+    @(backend.text ~ ".minicerealEncodeUbyte")
     unittest {
         import std.file: readText;
 
@@ -26,10 +26,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(output[0] == 0x2au);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealDecodeUbyte")
+    @(backend.text ~ ".minicerealDecodeUbyte")
     unittest {
         import std.file: readText;
 
@@ -42,10 +42,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 1);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealDecodeUbyteAtOffset")
+    @(backend.text ~ ".minicerealDecodeUbyteAtOffset")
     unittest {
         import std.file: readText;
 
@@ -58,10 +58,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 2);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealDecodeNegativeInt")
+    @(backend.text ~ ".minicerealDecodeNegativeInt")
     unittest {
         import std.file: readText;
 
@@ -74,10 +74,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 4);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealRoundTripNegativeInt")
+    @(backend.text ~ ".minicerealRoundTripNegativeInt")
     unittest {
         import std.file: readText;
 
@@ -91,10 +91,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(decode!int(buf, pos) == value);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealEncodeHighBitUlongBytes")
+    @(backend.text ~ ".minicerealEncodeHighBitUlongBytes")
     unittest {
         import std.file: readText;
 
@@ -116,10 +116,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(buf == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructDefaultBytes")
+    @(backend.text ~ ".minicerealStructDefaultBytes")
     unittest {
         import std.file: readText;
 
@@ -130,10 +130,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes.length == 0);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructBytesAppend")
+    @(backend.text ~ ".minicerealStructBytesAppend")
     unittest {
         import std.file: readText;
 
@@ -146,10 +146,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[0] == 0x2au);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructAppendByte")
+    @(backend.text ~ ".minicerealStructAppendByte")
     unittest {
         import std.file: readText;
 
@@ -163,10 +163,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 1);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructIndexWriteByte")
+    @(backend.text ~ ".minicerealStructIndexWriteByte")
     unittest {
         import std.file: readText;
 
@@ -180,10 +180,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.get!ubyte(pos) == 42);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutUbyte")
+    @(backend.text ~ ".minicerealPutUbyte")
     unittest {
         import std.file: readText;
 
@@ -196,10 +196,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[0] == 0x2au);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutUbyteBytesEqual")
+    @(backend.text ~ ".minicerealPutUbyteBytesEqual")
     unittest {
         import std.file: readText;
 
@@ -212,10 +212,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutMultipleIntegralWidths")
+    @(backend.text ~ ".minicerealPutMultipleIntegralWidths")
     unittest {
         import std.file: readText;
 
@@ -229,10 +229,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutIntBytesSliceEqual")
+    @(backend.text ~ ".minicerealPutIntBytesSliceEqual")
     unittest {
         import std.file: readText;
 
@@ -245,10 +245,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[] == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutUshortMiddleBytesSliceEqual")
+    @(backend.text ~ ".minicerealPutUshortMiddleBytesSliceEqual")
     unittest {
         import std.file: readText;
 
@@ -262,10 +262,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[1 .. 3] == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructBoundedSliceBytes")
+    @(backend.text ~ ".minicerealStructBoundedSliceBytes")
     unittest {
         import std.file: readText;
 
@@ -278,10 +278,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[1 .. 3] == expected[]);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealPutIntTailBytesDollarSliceEqual")
+    @(backend.text ~ ".minicerealPutIntTailBytesDollarSliceEqual")
     unittest {
         import std.file: readText;
 
@@ -295,10 +295,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(cereal.bytes[$ - 4 .. $] == expected);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealRoundTripUbyte")
+    @(backend.text ~ ".minicerealRoundTripUbyte")
     unittest {
         import std.file: readText;
 
@@ -312,10 +312,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 1);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructRoundTripInt")
+    @(backend.text ~ ".minicerealStructRoundTripInt")
     unittest {
         import std.file: readText;
 
@@ -329,10 +329,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 4);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructDecodeKnownInt")
+    @(backend.text ~ ".minicerealStructDecodeKnownInt")
     unittest {
         import std.file: readText;
 
@@ -346,10 +346,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 4);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructRoundTripHighBitUlong")
+    @(backend.text ~ ".minicerealStructRoundTripHighBitUlong")
     unittest {
         import std.file: readText;
 
@@ -366,10 +366,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == 8);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 
-    @(b.to!string ~ ".minicerealStructRoundTripsIntegralTypes")
+    @(backend.text ~ ".minicerealStructRoundTripsIntegralTypes")
     unittest {
         import std.file: readText;
 
@@ -398,6 +398,6 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     assert(pos == cereal.bytes.length);
                 }
             }
-        ).runTests(b);
+        ).runTests(backend);
     }
 }

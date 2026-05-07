@@ -1,15 +1,15 @@
-module ut.backends;
+module ut.language;
 
 private:
 
 import quickbite: ExecutorBackend, runTests;
-import std.conv: to;
+import std.conv: text;
 import std.meta: AliasSeq;
 import std.traits: EnumMembers;
 import unit_threaded;
 
-static foreach (b; EnumMembers!ExecutorBackend) {
-    @(b.to!string ~ ".ok")
+static foreach (backend; EnumMembers!ExecutorBackend) {
+    @(backend.text ~ ".ok")
     unittest {
         runTests(q{
             int answer() {
@@ -19,10 +19,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".oops")
+    @(backend.text ~ ".oops")
     unittest {
         runTests(q{
             int answer() {
@@ -32,10 +32,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 43);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".localIntReturn")
+    @(backend.text ~ ".localIntReturn")
     unittest {
         runTests(q{
             int answer() {
@@ -46,10 +46,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".localIntReturnOops")
+    @(backend.text ~ ".localIntReturnOops")
     unittest {
         runTests(q{
             int answer() {
@@ -60,10 +60,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 43);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".voidFunction")
+    @(backend.text ~ ".voidFunction")
     unittest {
         runTests(q{
             void foo() {}
@@ -71,10 +71,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 foo;
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodPostIncrementsSizeTField")
+    @(backend.text ~ ".structMethodPostIncrementsSizeTField")
     unittest {
         runTests(q{
             struct Cursor {
@@ -90,10 +90,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(cursor.next == 0);
                 assert(cursor.pos == 1);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodReadsArrayFieldAtPostIncrementedField")
+    @(backend.text ~ ".structMethodReadsArrayFieldAtPostIncrementedField")
     unittest {
         runTests(q{
             struct Reader {
@@ -111,10 +111,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(reader.next == 42);
                 assert(reader.pos == 1);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".foreachArray")
+    @(backend.text ~ ".foreachArray")
     unittest {
         runTests(q{
             unittest {
@@ -124,10 +124,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     sum = sum + x;
                 assert(sum == 6);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".foreachEmptyArray")
+    @(backend.text ~ ".foreachEmptyArray")
     unittest {
         runTests(q{
             unittest {
@@ -137,10 +137,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                     count = count + 1;
                 assert(count == 0);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".whileNeverRuns")
+    @(backend.text ~ ".whileNeverRuns")
     unittest {
         runTests(q{
             int answer() {
@@ -154,10 +154,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".whileRunsOnce")
+    @(backend.text ~ ".whileRunsOnce")
     unittest {
         runTests(q{
             int answer() {
@@ -173,10 +173,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".while_")
+    @(backend.text ~ ".while_")
     unittest {
         runTests(q{
             int answer() {
@@ -192,10 +192,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".voidFunctionExplicitReturn")
+    @(backend.text ~ ".voidFunctionExplicitReturn")
     unittest {
         runTests(q{
             void foo() {
@@ -205,10 +205,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 foo;
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".voidFunctionOops")
+    @(backend.text ~ ".voidFunctionOops")
     unittest {
         runTests(q{
             void foo() {
@@ -218,10 +218,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 foo;
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intAddition")
+    @(backend.text ~ ".intAddition")
     unittest {
         runTests(q{
             int answer() {
@@ -232,10 +232,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intSubtraction")
+    @(backend.text ~ ".intSubtraction")
     unittest {
         runTests(q{
             int answer() {
@@ -246,10 +246,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intMultiplication")
+    @(backend.text ~ ".intMultiplication")
     unittest {
         runTests(q{
             int answer() {
@@ -260,10 +260,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intDivision")
+    @(backend.text ~ ".intDivision")
     unittest {
         runTests(q{
             int answer() {
@@ -274,10 +274,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intModulo")
+    @(backend.text ~ ".intModulo")
     unittest {
         runTests(q{
             int answer() {
@@ -288,10 +288,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intShiftRight")
+    @(backend.text ~ ".intShiftRight")
     unittest {
         runTests(q{
             unittest {
@@ -299,10 +299,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 const shift = 2;
                 assert(value >> shift == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intShiftLeft")
+    @(backend.text ~ ".intShiftLeft")
     unittest {
         runTests(q{
             unittest {
@@ -310,10 +310,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 auto shift = 1;
                 assert(value << shift == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intBitwiseOr")
+    @(backend.text ~ ".intBitwiseOr")
     unittest {
         runTests(q{
             unittest {
@@ -321,10 +321,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 auto right = 2;
                 assert((left | right) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intBitwiseAnd")
+    @(backend.text ~ ".intBitwiseAnd")
     unittest {
         runTests(q{
             unittest {
@@ -332,10 +332,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 auto right = 58;
                 assert((left & right) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intBitwiseXor")
+    @(backend.text ~ ".intBitwiseXor")
     unittest {
         runTests(q{
             unittest {
@@ -343,10 +343,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 auto right = 0x04;
                 assert((left ^ right) == 0x2a);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intUnaryMinus")
+    @(backend.text ~ ".intUnaryMinus")
     unittest {
         runTests(q{
             int input() {
@@ -360,20 +360,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == -42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intBitwiseComplement")
+    @(backend.text ~ ".intBitwiseComplement")
     unittest {
         runTests(q{
             unittest {
                 auto value = 0x2a;
                 assert(~value == -0x2b);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intOrAssign")
+    @(backend.text ~ ".intOrAssign")
     unittest {
         runTests(q{
             unittest {
@@ -381,10 +381,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 value |= 0x02u;
                 assert(value == 0x2au);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intSubtractAssign")
+    @(backend.text ~ ".intSubtractAssign")
     unittest {
         runTests(q{
             unittest {
@@ -392,10 +392,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 value -= 2;
                 assert(value == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intAddAssign")
+    @(backend.text ~ ".intAddAssign")
     unittest {
         runTests(q{
             unittest {
@@ -403,10 +403,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 value += 2;
                 assert(value == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ubyteArrayAppendAssign")
+    @(backend.text ~ ".ubyteArrayAppendAssign")
     unittest {
         runTests(q{
             unittest {
@@ -414,20 +414,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 values ~= 0x2bu;
                 assert(values.length == 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ubyteArrayIndexRead")
+    @(backend.text ~ ".ubyteArrayIndexRead")
     unittest {
         runTests(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 assert(values[1] == 0x2au);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ubyteArrayIndexWrite")
+    @(backend.text ~ ".ubyteArrayIndexWrite")
     unittest {
         runTests(q{
             unittest {
@@ -435,10 +435,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 values[1] = 0x2au;
                 assert(values[1] == 0x2au);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".postIncrementSizeTIndex")
+    @(backend.text ~ ".postIncrementSizeTIndex")
     unittest {
         runTests(q{
             unittest {
@@ -447,10 +447,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(values[index++] == 0x29u);
                 assert(index == 1);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".refUbyteArrayParameterAppend")
+    @(backend.text ~ ".refUbyteArrayParameterAppend")
     unittest {
         runTests(q{
             void appendAnswer(ref ubyte[] values) {
@@ -463,10 +463,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(values.length == 1);
                 assert(values[0] == 0x2au);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".functionParameter")
+    @(backend.text ~ ".functionParameter")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -476,10 +476,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(41) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".functionParameters")
+    @(backend.text ~ ".functionParameters")
     unittest {
         runTests(q{
             int answer(int left, int right) {
@@ -489,10 +489,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(40, 2) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".functionParametersOops")
+    @(backend.text ~ ".functionParametersOops")
     unittest {
         runTests(q{
             int answer(int left, int right) {
@@ -502,10 +502,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(40, 3) == 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".functionParameterOops")
+    @(backend.text ~ ".functionParameterOops")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -515,10 +515,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(41) == 43);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".refParameter")
+    @(backend.text ~ ".refParameter")
     unittest {
         runTests(q{
             void addOne(ref int value) {
@@ -530,10 +530,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 addOne(value);
                 assert(value == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".refParameterOops")
+    @(backend.text ~ ".refParameterOops")
     unittest {
         runTests(q{
             void addOne(ref int value) {
@@ -545,10 +545,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 addOne(value);
                 assert(value == 43);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intLessThan")
+    @(backend.text ~ ".intLessThan")
     unittest {
         runTests(q{
             int answer() {
@@ -558,10 +558,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer < 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intLessThanOops")
+    @(backend.text ~ ".intLessThanOops")
     unittest {
         runTests(q{
             int answer() {
@@ -571,10 +571,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer < 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intLessOrEqual")
+    @(backend.text ~ ".intLessOrEqual")
     unittest {
         runTests(q{
             int answer() {
@@ -584,10 +584,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer <= 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intLessOrEqualOops")
+    @(backend.text ~ ".intLessOrEqualOops")
     unittest {
         runTests(q{
             int answer() {
@@ -597,10 +597,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer <= 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intGreaterThan")
+    @(backend.text ~ ".intGreaterThan")
     unittest {
         runTests(q{
             int answer() {
@@ -610,10 +610,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer > 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intGreaterThanOops")
+    @(backend.text ~ ".intGreaterThanOops")
     unittest {
         runTests(q{
             int answer() {
@@ -623,10 +623,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer > 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intGreaterOrEqual")
+    @(backend.text ~ ".intGreaterOrEqual")
     unittest {
         runTests(q{
             int answer() {
@@ -636,10 +636,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer >= 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intGreaterOrEqualOops")
+    @(backend.text ~ ".intGreaterOrEqualOops")
     unittest {
         runTests(q{
             int answer() {
@@ -649,10 +649,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer >= 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".intNotEqual")
+    @(backend.text ~ ".intNotEqual")
     unittest {
         runTests(q{
             int answer() {
@@ -662,10 +662,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer != 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".intNotEqualOops")
+    @(backend.text ~ ".intNotEqualOops")
     unittest {
         runTests(q{
             int answer() {
@@ -675,20 +675,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer != 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".ulongHighBitLessThan")
+    @(backend.text ~ ".ulongHighBitLessThan")
     unittest {
         runTests(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL < value);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ifBodyAssignment")
+    @(backend.text ~ ".ifBodyAssignment")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -701,10 +701,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(1) == 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ifElse")
+    @(backend.text ~ ".ifElse")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -718,10 +718,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(answer(1) == 42);
                 assert(answer(2) == 43);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ifElseOops")
+    @(backend.text ~ ".ifElseOops")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -734,10 +734,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(2) == 42);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".ifElseUntakenBranch")
+    @(backend.text ~ ".ifElseUntakenBranch")
     unittest {
         runTests(q{
             int zero() {
@@ -754,10 +754,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer(true) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".earlyReturn")
+    @(backend.text ~ ".earlyReturn")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -771,10 +771,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(answer(1) == 42);
                 assert(answer(2) == 43);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".multipleEarlyReturns")
+    @(backend.text ~ ".multipleEarlyReturns")
     unittest {
         runTests(q{
             int answer(int value) {
@@ -792,10 +792,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(answer(2) == 42);
                 assert(answer(3) == 43);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".inFunctionParameters")
+    @(backend.text ~ ".inFunctionParameters")
     unittest {
         runTests(q{
             void check(in int left, in int right) {
@@ -805,10 +805,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 check(40, 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".inFunctionParametersOops")
+    @(backend.text ~ ".inFunctionParametersOops")
     unittest {
         runTests(q{
             void check(in int left, in int right) {
@@ -818,10 +818,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 check(40, 3);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".multipleRefParameters")
+    @(backend.text ~ ".multipleRefParameters")
     unittest {
         runTests(q{
             void add(int left, ref int right) {
@@ -833,10 +833,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 add(40, value);
                 assert(value == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".refSizeTParameter")
+    @(backend.text ~ ".refSizeTParameter")
     unittest {
         runTests(q{
             void advance(ref size_t pos) {
@@ -848,10 +848,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 advance(pos);
                 assert(pos == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".refSizeTParameterOops")
+    @(backend.text ~ ".refSizeTParameterOops")
     unittest {
         runTests(q{
             void advance(ref size_t pos) {
@@ -863,10 +863,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 advance(pos);
                 assert(pos == 43);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".longLiteral")
+    @(backend.text ~ ".longLiteral")
     unittest {
         runTests(q{
             long answer() {
@@ -876,40 +876,40 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer > 0L);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ulongHighBitLessOrEqual")
+    @(backend.text ~ ".ulongHighBitLessOrEqual")
     unittest {
         runTests(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL <= value);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ulongHighBitGreaterOrEqual")
+    @(backend.text ~ ".ulongHighBitGreaterOrEqual")
     unittest {
         runTests(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value >= 0UL);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ulongHighBitGreaterThan")
+    @(backend.text ~ ".ulongHighBitGreaterThan")
     unittest {
         runTests(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value > 0UL);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structPassedToFunction")
+    @(backend.text ~ ".structPassedToFunction")
     unittest {
         runTests(q{
             struct Point {
@@ -927,10 +927,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 p.y = 21;
                 assert(sum(p) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".scalarStructPassedToFunction")
+    @(backend.text ~ ".scalarStructPassedToFunction")
     unittest {
         runTests(q{
             struct Value {
@@ -946,10 +946,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 wrapper.value = 42;
                 assert(read(wrapper) == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".scalarStructField")
+    @(backend.text ~ ".scalarStructField")
     unittest {
         runTests(q{
             struct Value {
@@ -961,30 +961,30 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 wrapper.value = 42;
                 assert(wrapper.value == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".arrayLength")
+    @(backend.text ~ ".arrayLength")
     unittest {
         runTests(q{
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 assert(arr.length == 3);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".emptyArrayLength")
+    @(backend.text ~ ".emptyArrayLength")
     unittest {
         runTests(q{
             unittest {
                 ubyte[] arr = [];
                 assert(arr.length == 0);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".arrayEqualTrue")
+    @(backend.text ~ ".arrayEqualTrue")
     unittest {
         runTests(q{
             unittest {
@@ -992,10 +992,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 ubyte[] b = [1, 2, 3];
                 assert(a[] == b[]);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".arrayEqualFalse")
+    @(backend.text ~ ".arrayEqualFalse")
     unittest {
         runTests(q{
             unittest {
@@ -1003,20 +1003,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 ubyte[] b = [1, 2, 4];
                 assert(a[] == b[]);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".castUbyteTruncates")
+    @(backend.text ~ ".castUbyteTruncates")
     unittest {
         runTests(q{
             unittest {
                 int value = 258;
                 assert(cast(ubyte) value == 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ubyteLocalTruncatesOnStore")
+    @(backend.text ~ ".ubyteLocalTruncatesOnStore")
     unittest {
         runTests(q{
             unittest {
@@ -1024,10 +1024,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 ubyte value = cast(ubyte) source;
                 assert(value == 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".ubyteArrayLiteralTruncatesElements")
+    @(backend.text ~ ".ubyteArrayLiteralTruncatesElements")
     unittest {
         runTests(q{
             unittest {
@@ -1035,10 +1035,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 ubyte[] arr = [cast(ubyte) value];
                 assert(arr[0] == 2);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".struct_")
+    @(backend.text ~ ".struct_")
     unittest {
         runTests(q{
             struct Point {
@@ -1056,10 +1056,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structFieldDefaultsToZero")
+    @(backend.text ~ ".structFieldDefaultsToZero")
     unittest {
         runTests(q{
             struct Point {
@@ -1076,10 +1076,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structArrayFieldDefaultsToEmpty")
+    @(backend.text ~ ".structArrayFieldDefaultsToEmpty")
     unittest {
         runTests(q{
             struct Buffer {
@@ -1090,10 +1090,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 Buffer buffer;
                 assert(buffer.bytes.length == 0);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".refStructArrayFieldParameter")
+    @(backend.text ~ ".refStructArrayFieldParameter")
     unittest {
         runTests(q{
             struct Buffer {
@@ -1110,10 +1110,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(buffer.bytes.length == 1);
                 assert(buffer.bytes[0] == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodReadsField")
+    @(backend.text ~ ".structMethodReadsField")
     unittest {
         runTests(q{
             struct Box {
@@ -1129,10 +1129,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 box.value = 42;
                 assert(box.get == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodPassesFieldByRef")
+    @(backend.text ~ ".structMethodPassesFieldByRef")
     unittest {
         runTests(q{
             void append42(ref ubyte[] output) {
@@ -1153,10 +1153,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(buffer.bytes.length == 1);
                 assert(buffer.bytes[0] == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structTemplateMethodPassesFieldByRef")
+    @(backend.text ~ ".structTemplateMethodPassesFieldByRef")
     unittest {
         runTests(q{
             void appendValue(T)(T value, ref ubyte[] output) {
@@ -1177,10 +1177,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(buffer.bytes.length == 1);
                 assert(buffer.bytes[0] == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodIndexWritesArrayField")
+    @(backend.text ~ ".structMethodIndexWritesArrayField")
     unittest {
         runTests(q{
             struct Buffer {
@@ -1197,10 +1197,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 buffer.patchFirst;
                 assert(buffer.bytes[0] == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".structMethodAppendsArrayField")
+    @(backend.text ~ ".structMethodAppendsArrayField")
     unittest {
         runTests(q{
             struct Writer {
@@ -1217,20 +1217,20 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 assert(writer.bytes.length == 1);
                 assert(writer.bytes[0] == 42);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalNot")
+    @(backend.text ~ ".logicalNot")
     unittest {
         runTests(q{
             unittest {
                 bool isReady = false;
                 assert(!isReady);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalNotCall")
+    @(backend.text ~ ".logicalNotCall")
     unittest {
         runTests(q{
             bool isReady() {
@@ -1240,10 +1240,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(!isReady);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalAnd")
+    @(backend.text ~ ".logicalAnd")
     unittest {
         runTests(q{
             unittest {
@@ -1251,10 +1251,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 bool right = true;
                 assert(left && right);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalAndCall")
+    @(backend.text ~ ".logicalAndCall")
     unittest {
         runTests(q{
             bool left() {
@@ -1268,10 +1268,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(left && right);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalAndShortCircuit")
+    @(backend.text ~ ".logicalAndShortCircuit")
     unittest {
         runTests(q{
             unittest {
@@ -1279,10 +1279,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 int zero = 0;
                 assert(!(left && 42 / zero == 0));
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalAndCallShortCircuit")
+    @(backend.text ~ ".logicalAndCallShortCircuit")
     unittest {
         runTests(q{
             bool isReady() {
@@ -1297,19 +1297,19 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(!(isReady && failIfCalled));
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalOrBoolResult")
+    @(backend.text ~ ".logicalOrBoolResult")
     unittest {
         runTests(q{
             unittest {
                 assert((2 || false) == true);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalOr")
+    @(backend.text ~ ".logicalOr")
     unittest {
         runTests(q{
             unittest {
@@ -1317,10 +1317,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 bool right = true;
                 assert(left || right);
             }
-        }, b);
+        }, backend);
     }
 
-    @(b.to!string ~ ".logicalOrOops")
+    @(backend.text ~ ".logicalOrOops")
     unittest {
         runTests(q{
             unittest {
@@ -1328,10 +1328,10 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 bool right = false;
                 assert(left || right);
             }
-        }, b).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(b.to!string ~ ".logicalOrShortCircuit")
+    @(backend.text ~ ".logicalOrShortCircuit")
     unittest {
         runTests(q{
             unittest {
@@ -1339,13 +1339,13 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                 int zero = 0;
                 assert(left || 42 / zero == 0);
             }
-        }, b);
+        }, backend);
     }
 }
 
-static foreach (b; EnumMembers!ExecutorBackend) {
+static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
-        @(b.to!string ~ ".integralType." ~ T.stringof)
+        @(backend.text ~ ".integralType." ~ T.stringof)
         unittest {
             import std.conv: text;
 
@@ -1374,7 +1374,7 @@ static foreach (b; EnumMembers!ExecutorBackend) {
                         assert(value == expected);
                     }
                 }),
-                b,
+                backend,
             );
         }
     }
