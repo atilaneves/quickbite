@@ -3,17 +3,6 @@ module ut.ir;
 import quickbite;
 import unit_threaded;
 
-@("ir.intSubtractAssign")
-unittest {
-    q{
-        unittest {
-            auto value = 44;
-            value -= 2;
-            assert(value == 42);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.intUnaryMinus")
 unittest {
     q{

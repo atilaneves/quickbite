@@ -233,6 +233,17 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".intSubtractAssign")
+    unittest {
+        runTests(q{
+            unittest {
+                auto value = 44;
+                value -= 2;
+                assert(value == 42);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".intAddAssign")
     unittest {
         runTests(q{
