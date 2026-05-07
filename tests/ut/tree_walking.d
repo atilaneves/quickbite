@@ -135,6 +135,13 @@ unittest {
     );
 }
 
+@("treeWalking.minicerealFile")
+unittest {
+    import std.file: readText;
+
+    readText("tests/minicereal.d").runTests(ExecutorBackend.treeWalking);
+}
+
 @("treeWalking.minicerealStructDollarTailSliceBytes")
 unittest {
     import std.file: readText;
