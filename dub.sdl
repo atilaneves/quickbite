@@ -14,3 +14,14 @@ configuration "unittest" {
     dependency "dmd:frontend" version="~>2.111.0-rc.1"
     dependency "unit-threaded" version="*"
 }
+
+configuration "benchmark" {
+    targetType "executable"
+    targetName "bench"
+
+    mainSourceFile "benchmarks/main.d"
+    sourcePaths "benchmarks"
+    includePaths "benchmarks"
+
+    dependency "dmd:frontend" version="~>2.111.0-rc.1"
+}

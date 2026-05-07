@@ -30,6 +30,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     }
 }
 
+public void runParsedTreeWalkingTests(imported!"dmd.dmodule".Module module_) {
+    walkModule(module_);
+}
+
 private void walkModule(imported!"dmd.dmodule".Module module_) {
     if (module_.members is null)
         return;

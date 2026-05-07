@@ -9,10 +9,16 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
 }
 
 public void runIrTests(in string source) {
-    import quickbite.frontend.compiler: ParsedModule, lowerModule, parseModule;
+    import quickbite.frontend.compiler: ParsedModule, parseModule;
 
     ParsedModule parsed = parseModule(source);
-    const loweredModule = lowerModule(parsed.module_);
+    runParsedIrTests(parsed.module_);
+}
+
+public void runParsedIrTests(imported!"dmd.dmodule".Module module_) {
+    import quickbite.frontend.compiler: lowerModule;
+
+    const loweredModule = lowerModule(module_);
     executeUnitTests(loweredModule);
 }
 

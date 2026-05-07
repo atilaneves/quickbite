@@ -19,5 +19,6 @@ quickbite-test-*
 \#*#
 tmp
 /ut
+/bench
 .codex
 .claude
