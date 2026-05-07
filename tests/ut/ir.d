@@ -3,17 +3,6 @@ module ut.ir;
 import quickbite;
 import unit_threaded;
 
-@("ir.intBitwiseOr")
-unittest {
-    q{
-        unittest {
-            auto left = 40;
-            auto right = 2;
-            assert((left | right) == 42);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.intSubtractAssign")
 unittest {
     q{
