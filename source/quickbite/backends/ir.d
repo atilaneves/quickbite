@@ -135,14 +135,14 @@ ExecutionResult executeInstructions(
             return result;
         }
 
-        instructionPointer += effect.offset;
+        instructionPointer = cast(uint) (cast(int) instructionPointer + effect.offset);
     }
 
     return result;
 }
 
 struct InstructionEffect {
-    uint offset;
+    int offset;
     bool hasReturn;
     uint returnValue;
 }
@@ -156,7 +156,7 @@ InstructionEffect executeInstruction(
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayEqual, ArrayIndex,
         ArrayLength, ArraySet, ArraySlice, ArrayLiteral, Assert_, BinaryOp,
-        Call, CastInt, ConstInt, Copy, JumpIfFalse, JumpIfTrue, ReturnValue,
+        Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue, ReturnValue,
         ReturnVoid, Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
@@ -209,15 +209,18 @@ InstructionEffect executeInstruction(
         },
         (JumpIfFalse instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition))
-                return jump(instruction.offset + 1);
+                return jump(cast(int) (instruction.offset + 1));
 
             return nextInstruction;
         },
         (JumpIfTrue instruction) {
             if (readTemporaryValue(temporaries, instruction.condition))
-                return jump(instruction.offset + 1);
+                return jump(cast(int) (instruction.offset + 1));
 
             return nextInstruction;
+        },
+        (Jump instruction) {
+            return jump(instruction.offset);
         },
         (Copy instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -320,7 +323,7 @@ InstructionEffect nextInstruction() @safe pure nothrow @nogc {
     return InstructionEffect(1);
 }
 
-InstructionEffect jump(in uint offset) @safe pure nothrow @nogc {
+InstructionEffect jump(in int offset) @safe pure nothrow @nogc {
     return InstructionEffect(offset);
 }
 

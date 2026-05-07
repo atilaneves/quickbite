@@ -114,6 +114,12 @@ struct BodyLowerer {
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
+        if (auto scope_ = statement.isScopeStatement) {
+            if (scope_.statement !is null)
+                lowerStatement(scope_.statement, lowerer);
+            return;
+        }
+
         if (auto compound = statement.isCompoundStatement) {
             foreach (child; compoundStatements(compound)) {
                 lowerStatement(child, lowerer);
@@ -140,9 +146,52 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto forStatement = statement.isForStatement) {
+            lowerForStatement(forStatement, lowerer);
+            return;
+        }
+
         import std.conv: text;
 
         throw new Exception(text("Unsupported statement: ", statement.stmt));
+    }
+
+    void lowerForStatement(
+        imported!"dmd.statement".ForStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, Jump, JumpIfFalse;
+
+        if (statement._init !is null)
+            lowerStatement(statement._init, lowerer);
+
+        const loopStart = instructions.length;
+
+        size_t exitJumpIndex;
+        bool hasCondition = statement.condition !is null;
+        if (hasCondition) {
+            const condition = lowerTruthValue(
+                lowerExpression(statement.condition, lowerer),
+            );
+            exitJumpIndex = instructions.length;
+            instructions ~= Instruction(JumpIfFalse(condition, 0));
+        }
+
+        if (statement._body !is null)
+            lowerStatement(statement._body, lowerer);
+        if (statement.increment !is null)
+            lowerExpression(statement.increment, lowerer);
+
+        instructions ~= Instruction(Jump(
+            cast(int) loopStart - cast(int) instructions.length,
+        ));
+
+        if (hasCondition)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) exitJumpIndex,
+                cast(uint) (instructions.length - exitJumpIndex - 1),
+            );
     }
 
     // DMD Expression downcast/accessor helpers are not const-qualified.
