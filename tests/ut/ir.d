@@ -386,6 +386,24 @@ unittest {
     readText("tests/minicereal.d").runTests;
 }
 
+@("ir.unittestBodyEndsWithReturnVoid")
+unittest {
+    import quickbite.frontend.compiler: ParsedModule, lowerModule, parseModule;
+    import quickbite.ir.instruction: ReturnVoid;
+    import std.sumtype: match;
+
+    ParsedModule parsed = parseModule(q{
+        unittest {
+        }
+    });
+    const lowered = lowerModule(parsed.module_);
+
+    lowered.tests[0].instructions[$ - 1].match!(
+        (ReturnVoid instruction) {},
+        (_) => assert(0),
+    );
+}
+
 @("ir.minicerealDecodeNegativeInt")
 unittest {
     import std.file: readText;

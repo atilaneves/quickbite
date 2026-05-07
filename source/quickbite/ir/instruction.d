@@ -161,6 +161,9 @@ public struct ReturnValue {
     uint value;
 }
 
+public struct ReturnVoid {
+}
+
 public alias Instruction = SumType!(
     ConstInt,
     Call,
@@ -183,4 +186,5 @@ public alias Instruction = SumType!(
     StructGet,
     StructSet,
     ReturnValue,
+    ReturnVoid,
 );

@@ -155,7 +155,7 @@ InstructionEffect executeInstruction(
     import quickbite.ir.instruction: ArrayAppend, ArrayEqual, ArrayIndex,
         ArrayLength, ArraySet, ArraySlice, ArrayLiteral, Assert_, BinaryOp,
         Call, CastInt, ConstInt, Copy, JumpIfFalse, JumpIfTrue, ReturnValue,
-        Select, StructGet, StructNew, StructSet, UnaryOp;
+        ReturnVoid, Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -308,6 +308,9 @@ InstructionEffect executeInstruction(
         (ReturnValue instruction) {
             return returnFromFunction(instruction.value);
         },
+        (ReturnVoid instruction) {
+            return returnFromVoid;
+        },
     );
 }
 
@@ -321,6 +324,10 @@ InstructionEffect jump(in uint offset) @safe pure nothrow @nogc {
 
 InstructionEffect returnFromFunction(in uint value) @safe pure nothrow @nogc {
     return InstructionEffect(0, true, value);
+}
+
+InstructionEffect returnFromVoid() @safe pure nothrow @nogc {
+    return InstructionEffect(0, true);
 }
 
 long castInteger(

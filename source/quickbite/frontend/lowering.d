@@ -33,10 +33,13 @@ struct Lowerer {
     imported!"quickbite.ir.test".Test lowerTest(
         imported!"dmd.declaration".UnitTestDeclaration unitTest,
     ) @safe {
+        import quickbite.ir.instruction: Instruction, ReturnVoid;
+
         imported!"quickbite.ir.test".Test result;
         BodyLowerer builder;
 
         builder.lowerStatement(unitTest.fbody, this);
+        builder.instructions ~= Instruction(ReturnVoid.init);
         result.instructions = builder.instructions.dup;
         result.numTemporaries = builder.nextTemporary;
         return result;
