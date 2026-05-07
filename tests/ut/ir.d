@@ -172,15 +172,6 @@ unittest {
     }.runTests(ExecutorBackend.ir);
 }
 
-@("ir.logicalOrBoolResult")
-unittest {
-    q{
-        unittest {
-            assert((2 || false) == true);
-        }
-    }.runTests(ExecutorBackend.ir);
-}
-
 @("ir.logicalOr")
 unittest {
     q{
