@@ -125,6 +125,68 @@ static foreach (b; EnumMembers!ExecutorBackend) {
             }
         }, b).shouldThrowWithMessage("No function body to execute.");
     }
+
+    @(b.to!string ~ ".divisionByZero")
+    unittest {
+        runTests(q{
+            int answer() {
+                int zero = 0;
+                return 42 / zero;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b).shouldThrowWithMessage("Integer division by zero.");
+    }
+
+    @(b.to!string ~ ".divisionByZeroCall")
+    unittest {
+        runTests(q{
+            int zero() {
+                return 0;
+            }
+
+            int answer() {
+                return 42 / zero;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b).shouldThrowWithMessage("Integer division by zero.");
+    }
+
+    @(b.to!string ~ ".moduloByZero")
+    unittest {
+        runTests(q{
+            int answer() {
+                int zero = 0;
+                return 42 % zero;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b).shouldThrowWithMessage("Integer modulo by zero.");
+    }
+
+    @(b.to!string ~ ".moduloByZeroCall")
+    unittest {
+        runTests(q{
+            int zero() {
+                return 0;
+            }
+
+            int answer() {
+                return 42 % zero;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, b).shouldThrowWithMessage("Integer modulo by zero.");
+    }
 }
 
 @("ir.ifBodyAssignment")
@@ -143,64 +205,3 @@ unittest {
     }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Unsupported if-branch: expected return");
 }
 
-@("ir.divisionByZero")
-unittest {
-    q{
-        int answer() {
-            int zero = 0;
-            return 42 / zero;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer division by zero.");
-}
-
-@("ir.divisionByZeroCall")
-unittest {
-    q{
-        int zero() {
-            return 0;
-        }
-
-        int answer() {
-            return 42 / zero;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer division by zero.");
-}
-
-@("ir.moduloByZero")
-unittest {
-    q{
-        int answer() {
-            int zero = 0;
-            return 42 % zero;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer modulo by zero.");
-}
-
-@("ir.moduloByZeroCall")
-unittest {
-    q{
-        int zero() {
-            return 0;
-        }
-
-        int answer() {
-            return 42 % zero;
-        }
-
-        unittest {
-            assert(answer == 42);
-        }
-    }.runTests(ExecutorBackend.ir).shouldThrowWithMessage("Integer modulo by zero.");
-}
