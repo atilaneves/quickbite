@@ -379,6 +379,13 @@ unittest {
     ).runTests;
 }
 
+@("ir.minicerealFile")
+unittest {
+    import std.file: readText;
+
+    readText("tests/minicereal.d").runTests;
+}
+
 @("ir.minicerealDecodeNegativeInt")
 unittest {
     import std.file: readText;
@@ -536,6 +543,23 @@ unittest {
                 size_t pos = 0;
                 assert(cereal.get!ubyte(pos) == 0x2au);
                 assert(pos == 1);
+            }
+        }
+    ).runTests;
+}
+
+@("ir.minicerealStructDecodeKnownInt")
+unittest {
+    import std.file: readText;
+
+    (
+        readText("tests/minicereal.d") ~ q{
+            unittest {
+                Minicereal cereal;
+                cereal.bytes = [4u, 3u, 2u, 1u];
+                size_t pos = 0;
+                assert(cereal.get!int(pos) == 0x01020304);
+                assert(pos == 4);
             }
         }
     ).runTests;

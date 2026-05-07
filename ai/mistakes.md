@@ -105,3 +105,7 @@
 - When subagents are expected to edit code, set up separate git
   worktrees first unless the user explicitly asks to share one checkout.
   File ownership alone does not isolate incomplete edits or test runs.
+
+- Unit-threaded focused test arguments must use the full name from
+  `./ut -l`, such as `ut.ir.ir.minicerealFile`, not only the display
+  label shown by the `@("...")` attribute.
