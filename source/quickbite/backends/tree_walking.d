@@ -297,6 +297,18 @@ private struct BodyWalker {
             unsupported;
         }
 
+        if (auto minAssign = expression.isMinAssignExp) {
+            if (auto var = minAssign.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const newVal = locals[varDecl].asLong -
+                            runExpression(minAssign.e2, interpreter).asLong;
+                        locals[varDecl] = Value(newVal);
+                        return Value(newVal);
+                    }
+            unsupported;
+        }
+
         if (auto orAssign = expression.isOrAssignExp) {
             if (auto var = orAssign.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
