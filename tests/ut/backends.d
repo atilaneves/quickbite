@@ -212,6 +212,23 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".intUnaryMinus")
+    unittest {
+        runTests(q{
+            int input() {
+                return 42;
+            }
+
+            int answer() {
+                return -input;
+            }
+
+            unittest {
+                assert(answer == -42);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".intBitwiseComplement")
     unittest {
         runTests(q{
