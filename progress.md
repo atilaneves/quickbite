@@ -5,6 +5,44 @@ parallel: one for the IR backend and one for the tree-walking backend.
 Future agents can read this file, `AGENTS.md`, `ai/mistakes.md`, and
 `ai/plans/*`, then spawn the same two backend-focused subagents again.
 
+## Unified backend test status
+
+`dub test -- -s` runs **278 tests, 0 failed**.
+
+Every test in `tests/ut/` now runs against both backends through a
+`static foreach (b; EnumMembers!ExecutorBackend)`. The per-backend
+modules `ut.ir` and `ut.tree_walking` no longer exist — `ut.backends`,
+`ut.minicereal` and `ut.negative` are the only test modules and each
+exclusively contains parameterized blocks.
+
+### Production-side parity changes landed during the sweep
+
+Tree-walker:
+- Added `OrExp`, `MinAssignExp`, `NegExp`, `NotExp` and `LogicalExp`
+  (`&&` / `||` with short-circuit) handlers.
+- Fixed unsigned `<=` and `>=` for ulong operands.
+- Added struct-by-value parameter passing via a new `CallArgument`
+  branch and a structFields copy at parameter binding.
+- Aligned error messages: `out`/`lazy` parameters now throw
+  "Unsupported function parameters." (was "Unsupported parameter
+  storage class."); div/mod by zero now throws "Integer division by
+  zero." / "Integer modulo by zero." instead of the shared
+  "Division by zero.".
+
+IR / lowering:
+- `lowerReturnStatement` emits `ReturnVoid` for `return;` (was a
+  null-deref segfault).
+- `ensureFunctionLowered` now throws "No function body to execute."
+  for `extern` declarations instead of segfaulting.
+- New `Jump` IR instruction with signed offset; `InstructionEffect`
+  uses `int` so backward jumps work without uint-wraparound tricks.
+- `lowerStatement` handles `ScopeStatement` (unwrap) and
+  `ForStatement` (covers `while` and `foreach` after DMD lowering).
+- `lowerPostIncrement` recognizes `DotVarExp` so `pos++` works on
+  struct fields.
+- `lowerIfStatement` no longer requires every branch to return; it
+  emits a `Jump` past the elsebody when the ifbody falls through.
+
 ## Cross-backend audit (sweep 1)
 
 Each per-backend test was tried against the *other* backend. Results below
