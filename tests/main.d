@@ -5,5 +5,6 @@ int main(string[] args) {
         "ut.negative",
         "ut.ir",
         "ut.tree_walking",
+        "ut.minicereal",
     );
 }
