@@ -19,7 +19,7 @@ unittest {
                 assert(output[0] == 0x2au);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 static foreach (b; EnumMembers!ExecutorBackend) {
@@ -44,7 +44,7 @@ unittest {
                 assert(pos == 4);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealStructDefaultBytes")
@@ -58,7 +58,7 @@ unittest {
                 assert(cereal.bytes.length == 0);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealStructBytesAppend")
@@ -74,7 +74,7 @@ unittest {
                 assert(cereal.bytes[0] == 0x2au);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutUbyte")
@@ -90,7 +90,7 @@ unittest {
                 assert(cereal.bytes[0] == 0x2au);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutUbyteBytesEqual")
@@ -106,7 +106,7 @@ unittest {
                 assert(cereal.bytes == expected);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutMultipleIntegralWidths")
@@ -123,7 +123,7 @@ unittest {
                 assert(cereal.bytes == expected);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutIntBytesSliceEqual")
@@ -139,7 +139,7 @@ unittest {
                 assert(cereal.bytes[] == expected);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutUshortMiddleBytesSliceEqual")
@@ -156,7 +156,7 @@ unittest {
                 assert(cereal.bytes[1 .. 3] == expected);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealPutIntTailBytesDollarSliceEqual")
@@ -173,7 +173,7 @@ unittest {
                 assert(cereal.bytes[$ - 4 .. $] == expected);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealRoundTripUbyte")
@@ -190,7 +190,7 @@ unittest {
                 assert(pos == 1);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealStructDecodeKnownInt")
@@ -207,7 +207,7 @@ unittest {
                 assert(pos == 4);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealRoundTripHighBitUlong")
@@ -227,7 +227,7 @@ unittest {
                 assert(pos == 8);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("ir.minicerealDecodeUbyteAtOffset")
@@ -243,7 +243,7 @@ unittest {
                 assert(pos == 2);
             }
         }
-    ).runTests;
+    ).runTests(ExecutorBackend.ir);
 }
 
 @("treeWalking.minicerealEncodeUbyte")
