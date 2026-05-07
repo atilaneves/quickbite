@@ -74,6 +74,46 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".structMethodPostIncrementsSizeTField")
+    unittest {
+        runTests(q{
+            struct Cursor {
+                size_t pos;
+
+                size_t next() {
+                    return pos++;
+                }
+            }
+
+            unittest {
+                Cursor cursor;
+                assert(cursor.next == 0);
+                assert(cursor.pos == 1);
+            }
+        }, b);
+    }
+
+    @(b.to!string ~ ".structMethodReadsArrayFieldAtPostIncrementedField")
+    unittest {
+        runTests(q{
+            struct Reader {
+                ubyte[] bytes;
+                size_t pos;
+
+                ubyte next() {
+                    return bytes[pos++];
+                }
+            }
+
+            unittest {
+                Reader reader;
+                reader.bytes = [42];
+                assert(reader.next == 42);
+                assert(reader.pos == 1);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".foreachArray")
     unittest {
         runTests(q{

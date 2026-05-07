@@ -758,8 +758,55 @@ struct BodyLowerer {
         imported!"dmd.expression".PostExp post,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: BinaryOp, ConstInt, Copy, Instruction;
+        import quickbite.ir.instruction:
+            BinaryOp, ConstInt, Copy, Instruction, StructGet, StructSet;
         import std.conv: text;
+
+        if (auto dot = post.e1.isDotVarExp) {
+            auto this_ = dot.e1.isThisExp;
+            auto owner = dot.e1.isVarExp;
+            if (this_ is null && owner is null)
+                throw new Exception(text("Unsupported expression: ", post.op));
+
+            auto declaration = this_ !is null
+                ? this_.var
+                : owner.var.isVarDeclaration;
+            if (declaration is null)
+                throw new Exception(text("Unsupported expression: ", post.op));
+
+            auto struct_ = declaration in localTemporaries;
+            if (struct_ is null)
+                throw new Exception(
+                    text("Unsupported expression: ", expressionChars(post.e1)),
+                );
+
+            auto field = dot.var.isVarDeclaration;
+            if (field is null)
+                throw new Exception(text("Unsupported expression: ", post.op));
+
+            const result = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                result,
+                *struct_,
+                declarationName(field),
+            ));
+
+            const one = allocateTemporary;
+            instructions ~= Instruction(ConstInt(one, 1));
+            const incremented = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                incremented,
+                result,
+                one,
+                imported!"quickbite.ir.instruction".Operation.add,
+            ));
+            instructions ~= Instruction(StructSet(
+                *struct_,
+                declarationName(field),
+                incremented,
+            ));
+            return result;
+        }
 
         auto variable = post.e1.isVarExp;
         if (variable is null)
