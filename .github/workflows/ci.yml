@@ -22,11 +22,7 @@ jobs:
           compiler: ${{ matrix.dc }}
 
       - name: Run tests
-        run: dub test -q -- -s
-
-      - name: Run tests with coverage
-        if: matrix.os == 'ubuntu-24.04'
-        run: dub test -q -b unittest-cov -- -s
+        run: dub test -q -b ${{ matrix.os == 'ubuntu-24.04' && 'unittest-cov' || 'unittest' }} -- -s
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-24.04'
