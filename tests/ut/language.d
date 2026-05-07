@@ -949,6 +949,20 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
+    @(backend.text ~ ".structByValueMutationDoesNotLeak")
+    unittest {
+        runTests(q{
+            struct Point { int x; }
+            void mutate(Point p) { p.x = 99; }
+            unittest {
+                Point p;
+                p.x = 5;
+                mutate(p);
+                assert(p.x == 5);
+            }
+        }, backend);
+    }
+
     @(backend.text ~ ".scalarStructField")
     unittest {
         runTests(q{

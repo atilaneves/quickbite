@@ -1181,11 +1181,46 @@ struct BodyLowerer {
         if (call.f.vthis !is null)
             arguments ~= lowerCallReceiver(call, lowerer);
 
-        if (call.arguments !is null)
-            foreach (argument; callArguments(call))
-                arguments ~= lowerExpression(argument, lowerer);
+        if (call.arguments is null)
+            return arguments;
+
+        // Pulled in parallel so we can detect non-ref struct parameters and
+        // copy by value at the call site, matching D semantics. `auto`
+        // because `parameterIsRef` takes a mutable `VarDeclaration`.
+        auto parameters = call.f.parameters !is null
+            ? functionParameterSlice(call.f)
+            : null;
+        foreach (i, argument; callArguments(call)) {
+            const source = lowerExpression(argument, lowerer);
+            if (i < parameters.length
+                && !parameterIsRef(parameters[i])
+                && typeIsStruct(argument.type))
+            {
+                arguments ~= copyStructByValue(argument.type, source);
+                continue;
+            }
+            arguments ~= source;
+        }
 
         return arguments;
+    }
+
+    uint copyStructByValue(
+        imported!"dmd.mtype".Type type,
+        in uint source,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet, StructNew,
+            StructSet;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructNew(destination));
+        foreach (field; structFields(type)) {
+            const fieldValue = allocateTemporary;
+            const name = declarationName(field);
+            instructions ~= Instruction(StructGet(fieldValue, source, name));
+            instructions ~= Instruction(StructSet(destination, name, fieldValue));
+        }
+        return destination;
     }
 
     uint lowerCallReceiver(
@@ -1362,6 +1397,14 @@ private ref auto functionParameters(
 ) @trusted {
     // Caller checked `parameters` for null; DMD owns the array.
     return *function_.parameters;
+}
+
+private imported!"dmd.declaration".VarDeclaration[] functionParameterSlice(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    // Caller checked `parameters` for null; DMD owns the array. Slicing
+    // avoids `@trusted` at every parameter index access site.
+    return (*function_.parameters)[];
 }
 
 private imported!"dmd.expression".Expression[] callArguments(
