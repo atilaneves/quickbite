@@ -9,7 +9,7 @@ public enum ExecutorBackend {
 
 public void runTests(
     in string source,
-    in ExecutorBackend backend,
+    in ExecutorBackend backend = ExecutorBackend.ir,
 ) {
     final switch (backend) {
         case ExecutorBackend.ir:
