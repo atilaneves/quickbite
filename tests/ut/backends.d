@@ -179,6 +179,17 @@ static foreach (b; EnumMembers!ExecutorBackend) {
         }, b);
     }
 
+    @(b.to!string ~ ".intBitwiseOr")
+    unittest {
+        runTests(q{
+            unittest {
+                auto left = 40;
+                auto right = 2;
+                assert((left | right) == 42);
+            }
+        }, b);
+    }
+
     @(b.to!string ~ ".intBitwiseAnd")
     unittest {
         runTests(q{

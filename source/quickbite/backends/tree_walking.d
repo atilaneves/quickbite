@@ -391,6 +391,12 @@ private struct BodyWalker {
                 runExpression(bitXor.e2, interpreter).asLong,
             );
 
+        if (auto bitOr = expression.isOrExp)
+            return Value(
+                runExpression(bitOr.e1, interpreter).asLong |
+                runExpression(bitOr.e2, interpreter).asLong,
+            );
+
         if (auto complement = expression.isComExp)
             return Value(~runExpression(complement.e1, interpreter).asLong);
 
