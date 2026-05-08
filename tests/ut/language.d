@@ -35,6 +35,15 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
+    @(backend.text ~ ".throwingTest")
+    unittest {
+        runTests(q{
+            unittest {
+                throw new Exception("boom");
+            }
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+    }
+
     @(backend.text ~ ".localIntReturn")
     unittest {
         runTests(q{

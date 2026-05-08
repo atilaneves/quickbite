@@ -425,11 +425,11 @@ void executeBinaryInstruction(
             result = leftValue * rightValue;
             break;
         case imported!"quickbite.ir.instruction".Operation.divide:
-            enforceNonZeroDivisor(rightValue, "Integer division by zero.");
+            enforceNonZeroDivisor(rightValue, "Unittest assertion failed.");
             result = leftValue / rightValue;
             break;
         case imported!"quickbite.ir.instruction".Operation.modulo:
-            enforceNonZeroDivisor(rightValue, "Integer modulo by zero.");
+            enforceNonZeroDivisor(rightValue, "Unittest assertion failed.");
             result = leftValue % rightValue;
             break;
         case imported!"quickbite.ir.instruction".Operation.leftShift:

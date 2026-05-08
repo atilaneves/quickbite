@@ -5,6 +5,7 @@ private:
 public enum ExecutorBackend {
     ir,
     treeWalking,
+    dmdCtfe,
 }
 
 public void runTests(
@@ -19,6 +20,10 @@ public void runTests(
         case ExecutorBackend.treeWalking:
             import quickbite.backends.tree_walking: TreeWalkingExecutor;
             (new TreeWalkingExecutor).runTests(source);
+            return;
+        case ExecutorBackend.dmdCtfe:
+            import quickbite.backends.dmd_ctfe: DmdCtfe;
+            (new DmdCtfe).runTests(source);
             return;
     }
 }
