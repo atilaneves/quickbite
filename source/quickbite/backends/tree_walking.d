@@ -1083,11 +1083,7 @@ private imported!"dmd.mtype".Type arrayElementType(
     return type.toBasetype.nextOf;
 }
 
-private ref auto moduleMembers(
-    imported!"dmd.dmodule".Module module_,
-) @trusted pure {
-    return *module_.members;
-}
+private alias moduleMembers = imported!"quickbite.dmd_util".moduleMembers;
 
 private ref auto compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
