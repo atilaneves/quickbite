@@ -73,7 +73,9 @@ private immutable unitThreadedStub = q{
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
         static if (testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/utils.d")
+            testFile == "vendor/cerealed/tests/utils.d" ||
+            testFile == "vendor/cerealed/tests/compile_time.d" ||
+            testFile == "vendor/cerealed/tests/example.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -105,23 +107,54 @@ private string processLibraryFile(in string content) @safe {
 // Strip lines that become redundant or undefined after concatenation:
 // module declarations, intra-library imports, and unit_threaded imports
 // (whose symbols are provided by the stub above).
+// Multi-line `import cerealed.X:\n    sym1, sym2;` imports are handled by
+// tracking a continuation state so both lines are dropped together.
 private string processFile(in string content) @safe {
     import std.string: splitLines, strip, startsWith;
     import std.array: appender;
 
     auto result = appender!string; // auto: appender result must be mutable
+    bool droppingImport;
     foreach (line; content.splitLines) {
         const trimmed = line.strip;
+        // A continuation line from a multi-line `import cerealed.*:` import.
+        if (droppingImport) {
+            // The continuation ends when the line has a `;` before any `//`.
+            if (lineHasSemicolon(trimmed))
+                droppingImport = false;
+            continue;
+        }
         if (trimmed.startsWith("module cerealed.") ||
             trimmed.startsWith("module tests.") ||
             trimmed.startsWith("import cerealed") ||
             trimmed.startsWith("public import cerealed") ||
             trimmed.startsWith("import unit_threaded"))
+        {
+            // If the stripped line does not contain ';' before any inline
+            // comment, it is a multi-line import; flag continuation lines.
+            if (!lineHasSemicolon(trimmed))
+                droppingImport = true;
             continue;
+        }
         result ~= line;
         result ~= "\n";
     }
     return result[];
+}
+
+// Returns true when `line` contains a `;` that is not inside a `//` comment.
+// This correctly handles single-line imports with trailing comments such as
+//   `import cerealed.scopebuffer; // some comment`
+private bool lineHasSemicolon(in string line) @safe pure nothrow @nogc {
+    size_t i;
+    while (i < line.length) {
+        if (line[i] == ';')
+            return true;
+        if (i + 1 < line.length && line[i] == '/' && line[i + 1] == '/')
+            return false;
+        i = i + 1;
+    }
+    return false;
 }
 
 private string stripUnittestBlocks(in string content) @safe {
