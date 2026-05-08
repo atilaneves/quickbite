@@ -95,7 +95,12 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
             testFile == "vendor/cerealed/tests/pointers.d" ||
             testFile == "vendor/cerealed/tests/enums.d" ||
-            testFile == "vendor/cerealed/tests/static_array.d")
+            testFile == "vendor/cerealed/tests/static_array.d" ||
+            testFile == "vendor/cerealed/tests/classes.d" ||
+            testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
+            testFile == "vendor/cerealed/tests/property.d" ||
+            testFile == "vendor/cerealed/tests/protocol_unit.d" ||
+            testFile == "vendor/cerealed/tests/range.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
