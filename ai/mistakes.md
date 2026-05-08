@@ -114,3 +114,7 @@
   unless there is a concrete reason to expect the current implementation
   to fail them. If they pass immediately, they did not drive production
   code.
+
+- When passing review text through a shell command, do not put Markdown
+  backticks inside double quotes. Use a body file or single-quoted input
+  so the shell cannot execute command substitutions.

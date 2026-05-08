@@ -46,7 +46,7 @@ final class Compiler {
 
     private this() {
         import core.sync.mutex: Mutex;
-        import dmd.errors: diagnostics;
+        import dmd.errors: diagnostics, fatalErrorHandler;
         import dmd.frontend: addImport, findImportPaths, initDMD;
         import dmd.globals: global;
         import std.algorithm.iteration: each;
@@ -54,6 +54,11 @@ final class Compiler {
         mutex = new Mutex;
         initDMD;
         findImportPaths.each!addImport;
+
+        // Prevent DMD from calling exit() when too many cascading errors
+        // accumulate.  parseModule already checks global.errors after
+        // fullSemantic and throws an Exception, so returning true here is safe.
+        fatalErrorHandler = () => true;
 
         global.params.useUnitTests = true;
         global.errors = 0;
