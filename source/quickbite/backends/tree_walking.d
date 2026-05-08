@@ -224,6 +224,9 @@ private struct BodyWalker {
             return;
         }
 
+        if (statement.isThrowStatement !is null)
+            throw new Exception("Unittest assertion failed.");
+
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
     }

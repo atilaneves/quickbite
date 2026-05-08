@@ -76,10 +76,22 @@ private immutable unitThreadedStub = q{
 // be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
-        @ShouldFail
-        @(backend.text ~ ".cerealed." ~ testFile)
-        unittest {
-            makeCerealSource(testFile).runTests(backend);
+        static if (backend == ExecutorBackend.dmdCtfe && (
+            testFile == "vendor/cerealed/tests/reset.d" ||
+            testFile == "vendor/cerealed/tests/utils.d"))
+        {
+            @(backend.text ~ ".cerealed." ~ testFile)
+            unittest {
+                makeCerealSource(testFile).runTests(backend);
+            }
+        }
+        else
+        {
+            @ShouldFail
+            @(backend.text ~ ".cerealed." ~ testFile)
+            unittest {
+                makeCerealSource(testFile).runTests(backend);
+            }
         }
     }
 }

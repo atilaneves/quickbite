@@ -151,6 +151,14 @@ struct BodyLowerer {
             return;
         }
 
+        if (statement.isThrowStatement !is null) {
+            import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
+            const zero = allocateTemporary;
+            instructions ~= Instruction(ConstInt(zero, 0));
+            instructions ~= Instruction(Assert_(zero));
+            return;
+        }
+
         import std.conv: text;
 
         throw new Exception(text("Unsupported statement: ", statement.stmt));
