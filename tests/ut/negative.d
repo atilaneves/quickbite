@@ -136,12 +136,6 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
 
     @(backend.text ~ ".divisionByZero")
     unittest {
-        static if (backend == ExecutorBackend.dmdCtfe)
-            // TODO: CTFE does not distinguish arithmetic errors from assertion failures.
-            const msg = "Unittest assertion failed.";
-        else
-            const msg = "Integer division by zero.";
-
         runTests(q{
             int answer() {
                 int zero = 0;
@@ -151,16 +145,11 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, backend).shouldThrowWithMessage(msg);
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
     @(backend.text ~ ".divisionByZeroCall")
     unittest {
-        static if (backend == ExecutorBackend.dmdCtfe)
-            const msg = "Unittest assertion failed.";
-        else
-            const msg = "Integer division by zero.";
-
         runTests(q{
             int zero() {
                 return 0;
@@ -173,17 +162,11 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, backend).shouldThrowWithMessage(msg);
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
     @(backend.text ~ ".moduloByZero")
     unittest {
-        static if (backend == ExecutorBackend.dmdCtfe)
-            // TODO: CTFE does not distinguish arithmetic errors from assertion failures.
-            const msg = "Unittest assertion failed.";
-        else
-            const msg = "Integer modulo by zero.";
-
         runTests(q{
             int answer() {
                 int zero = 0;
@@ -193,16 +176,11 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, backend).shouldThrowWithMessage(msg);
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
     @(backend.text ~ ".moduloByZeroCall")
     unittest {
-        static if (backend == ExecutorBackend.dmdCtfe)
-            const msg = "Unittest assertion failed.";
-        else
-            const msg = "Integer modulo by zero.";
-
         runTests(q{
             int zero() {
                 return 0;
@@ -215,6 +193,6 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 assert(answer == 42);
             }
-        }, backend).shouldThrowWithMessage(msg);
+        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 }

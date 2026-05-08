@@ -453,14 +453,14 @@ private struct BodyWalker {
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
-                throw new Exception("Integer division by zero.");
+                throw new Exception("Unittest assertion failed.");
             return Value(runExpression(divide.e1, interpreter).asLong / right);
         }
 
         if (auto modulo = expression.isModExp) {
             const right = runExpression(modulo.e2, interpreter).asLong;
             if (right == 0)
-                throw new Exception("Integer modulo by zero.");
+                throw new Exception("Unittest assertion failed.");
             return Value(runExpression(modulo.e1, interpreter).asLong % right);
         }
 
