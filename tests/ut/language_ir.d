@@ -2,8 +2,17 @@ module ut.language_ir;
 
 private:
 
-import quickbite: ExecutorBackend, runTests;
 import unit_threaded;
+import quickbite: ExecutorBackend, runTests;
 
-// IR-specific language feature tests.
-// These drive features needed to make cerealed's IR tests pass.
+@("ir.structFieldReadWrite")
+unittest {
+    q{
+        struct Foo { int x; }
+        unittest {
+            Foo f;
+            f.x = 42;
+            assert(f.x == 42);
+        }
+    }.runTests(ExecutorBackend.ir);
+}

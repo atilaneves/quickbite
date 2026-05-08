@@ -79,7 +79,9 @@ private immutable unitThreadedStub = q{
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
         static if (testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/utils.d")
+            testFile == "vendor/cerealed/tests/utils.d" ||
+            testFile == "vendor/cerealed/tests/compile_time.d" ||
+            testFile == "vendor/cerealed/tests/example.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -123,8 +125,10 @@ private string processLibraryFile(in string content) @safe {
 // Multi-line imports (where the first line ends with ':' and the symbols
 // continue on subsequent lines) are stripped in full: once a strippable
 // import line is found we keep skipping until the terminating ';' is seen.
+// Single-line imports with trailing comments (e.g. `import foo; // note`)
+// are treated as terminated because the ';' precedes the comment.
 private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith, endsWith;
+    import std.string: splitLines, strip, startsWith, indexOf;
     import std.array: appender;
 
     auto result = appender!string; // auto: appender result must be mutable
@@ -134,7 +138,7 @@ private string processFile(in string content) @safe {
 
         if (strippingImport) {
             // Keep stripping until we find the terminating semicolon.
-            if (trimmed.endsWith(";"))
+            if (statementEnds(trimmed))
                 strippingImport = false;
             continue;
         }
@@ -144,9 +148,10 @@ private string processFile(in string content) @safe {
             trimmed.startsWith("import cerealed") ||
             trimmed.startsWith("public import cerealed") ||
             trimmed.startsWith("import unit_threaded")) {
-            // If the stripped line does not end with ';', it is a multi-line
-            // import; flag that we need to skip continuation lines too.
-            if (!trimmed.endsWith(";"))
+            // If the stripped line does not contain ';' before any comment,
+            // it is a multi-line import; flag that we need to skip
+            // continuation lines too.
+            if (!statementEnds(trimmed))
                 strippingImport = true;
             continue;
         }
@@ -154,6 +159,20 @@ private string processFile(in string content) @safe {
         result ~= "\n";
     }
     return result[];
+}
+
+// Returns true if the (stripped) line ends the statement, i.e. contains a
+// semicolon before any inline // comment.  This handles imports like:
+//     import foo; // trailing comment
+// which endsWith(";") would reject because the line ends with the comment.
+private bool statementEnds(in string trimmed) @safe pure nothrow {
+    import std.string: indexOf;
+
+    const semicolon = trimmed.indexOf(';');
+    if (semicolon < 0)
+        return false;
+    const comment = trimmed.indexOf("//");
+    return comment < 0 || semicolon < comment;
 }
 
 private string stripUnittestBlocks(in string content) @safe {
