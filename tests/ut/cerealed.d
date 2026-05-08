@@ -54,10 +54,12 @@ private immutable unitThreadedStub = q{
             assert(t == u, "shouldEqual failed");
     }
     // shouldThrow is a no-op until exception support lands in both backends.
-    void shouldThrow(T)(T) {}
-    void shouldThrow(E, T)(T) {}
-    void shouldThrowWithMessage(T)(T, string) {}
-    void shouldNotThrow(T)(T) {}
+    void shouldThrow(lazy void action) {}
+    void shouldThrow(E : Throwable, T)(T) {}
+    void shouldThrowWithMessage(lazy void action, string) {}
+    void shouldNotThrow(lazy void action) {}
+    void shouldNotThrow(E : Throwable, T)(T) {}
+    void shouldNotEqual(T, U)(T t, U u) {}
     void shouldBeTrue(T)(T val) { assert(val); }
     void shouldBeFalse(T)(T val) { assert(!val); }
     enum SingleThreaded;
@@ -75,7 +77,9 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         static if (testFile == "vendor/cerealed/tests/reset.d" ||
             testFile == "vendor/cerealed/tests/utils.d" ||
             testFile == "vendor/cerealed/tests/compile_time.d" ||
-            testFile == "vendor/cerealed/tests/example.d")
+            testFile == "vendor/cerealed/tests/example.d" ||
+            testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
+            testFile == "vendor/cerealed/tests/pointers.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
