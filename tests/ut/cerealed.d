@@ -63,6 +63,8 @@ private immutable unitThreadedStub = q{
     void shouldBeTrue(T)(T val) { assert(val); }
     void shouldBeFalse(T)(T val) { assert(!val); }
     enum SingleThreaded;
+    struct Types(T...) {}
+    void check(alias F, int numFuncCalls = 100)() {}
 };
 
 // One test per (backend, test-file) pair.  Each test exercises only
@@ -86,6 +88,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
             testFile == "vendor/cerealed/tests/nested.d" ||
             testFile == "vendor/cerealed/tests/pointers.d" ||
+            testFile == "vendor/cerealed/tests/property.d" ||
             testFile == "vendor/cerealed/tests/protocol_unit.d" ||
             testFile == "vendor/cerealed/tests/range.d" ||
             testFile == "vendor/cerealed/tests/reset.d" ||
