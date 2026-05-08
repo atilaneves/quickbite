@@ -16,3 +16,23 @@ unittest {
         }
     }.runTests(ExecutorBackend.ir);
 }
+
+// Regression test: std.conv.text() with an enum argument triggers
+// std.conv.enumRep → Appender → _d_arraysetlengthTImpl during DMD-as-library
+// fullSemantic.  After processLibraryFile patches the enum grain overload in
+// cereal.d to use a string literal instead, this code pattern compiles and runs.
+// This test verifies the FIXED pattern (string literal) works in dmdCtfe.
+@("dmdCtfe.cereal.enumGrainStringLiteral")
+unittest {
+    q{
+        enum MyEnum { Foo, Bar, Baz }
+        void grainEnum(ref MyEnum val) {
+            if (val < MyEnum.min || val > MyEnum.max)
+                throw new Exception("Illegal enum value");
+        }
+        unittest {
+            MyEnum v = MyEnum.Bar;
+            grainEnum(v);
+        }
+    }.runTests(ExecutorBackend.dmdCtfe);
+}
