@@ -5,6 +5,7 @@ int main(string[] args) {
         "ut.language",
         "ut.negative",
         "ut.minicereal",
+        "ut.cerealed",
         "ut.dmd_ctfe",
     );
 }

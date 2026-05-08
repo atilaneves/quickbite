@@ -50,7 +50,7 @@ final class Compiler {
 
     private this() {
         import core.sync.mutex: Mutex;
-        import dmd.errors: diagnostics;
+        import dmd.errors: diagnostics, fatalErrorHandler;
         import dmd.frontend: addImport, findImportPaths, initDMD;
         import dmd.globals: global;
         import std.algorithm.iteration: each;
@@ -58,6 +58,14 @@ final class Compiler {
         mutex = new Mutex;
         initDMD;
         findImportPaths.each!addImport;
+
+        // Prevent DMD from calling exit() when too many cascading errors
+        // accumulate.  parseModule already checks global.errors after
+        // fullSemantic and throws an Exception, so returning true here is safe.
+        // This is intentionally process-global: the correct response to a DMD
+        // fatal error in any quickbite test is a thrown Exception, not a
+        // process abort that silently kills all subsequent tests.
+        fatalErrorHandler = () => true;
 
         global.params.useUnitTests = true;
         global.errors = 0;
