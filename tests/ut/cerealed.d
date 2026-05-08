@@ -120,19 +120,36 @@ private string processLibraryFile(in string content) @safe {
 // Strip lines that become redundant or undefined after concatenation:
 // module declarations, intra-library imports, and unit_threaded imports
 // (whose symbols are provided by the stub above).
+// Multi-line imports (where the first line ends with ':' and the symbols
+// continue on subsequent lines) are stripped in full: once a strippable
+// import line is found we keep skipping until the terminating ';' is seen.
 private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith;
+    import std.string: splitLines, strip, startsWith, endsWith;
     import std.array: appender;
 
     auto result = appender!string; // auto: appender result must be mutable
+    bool strippingImport; // true while consuming continuation lines of a stripped import
     foreach (line; content.splitLines) {
         const trimmed = line.strip;
+
+        if (strippingImport) {
+            // Keep stripping until we find the terminating semicolon.
+            if (trimmed.endsWith(";"))
+                strippingImport = false;
+            continue;
+        }
+
         if (trimmed.startsWith("module cerealed.") ||
             trimmed.startsWith("module tests.") ||
             trimmed.startsWith("import cerealed") ||
             trimmed.startsWith("public import cerealed") ||
-            trimmed.startsWith("import unit_threaded"))
+            trimmed.startsWith("import unit_threaded")) {
+            // If the stripped line does not end with ';', it is a multi-line
+            // import; flag that we need to skip continuation lines too.
+            if (!trimmed.endsWith(";"))
+                strippingImport = true;
             continue;
+        }
         result ~= line;
         result ~= "\n";
     }
