@@ -1,6 +1,7 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
+import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
 import quickbite.executor: Executor;
@@ -53,6 +54,7 @@ int main(string[] args) {
     Executor[string] backends;
     backends["ir"]          = new IrExecutor;
     backends["treeWalking"] = new TreeWalkingExecutor;
+    backends["dmd-ctfe"]    = new DmdCtfe;
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
@@ -61,7 +63,7 @@ int main(string[] args) {
         auto parsed = parseModule(source);
         auto module_ = parsed.module_;
 
-        foreach (name; ["ir", "treeWalking"]) {
+        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
             auto executor = backends[name];
             printRow(
                 path, name, warmup, iterations,

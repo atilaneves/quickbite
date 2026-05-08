@@ -6,5 +6,6 @@ int main(string[] args) {
         "ut.negative",
         "ut.minicereal",
         "ut.cerealed",
+        "ut.dmd_ctfe",
     );
 }
