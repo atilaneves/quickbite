@@ -25,12 +25,11 @@ void grain(C, T)(auto ref C cereal, ref T val) @safe if(isCereal!C && !is(T == e
 
 // If the type is an enum, get the unqualified base type and cast it to that.
 void grain(C, T)(auto ref C cereal, ref T val) @safe if(isCereal!C && is(T == enum)) {
-    import std.conv: text;
-
     alias BaseType = Unqual!(OriginalType!(T));
     cereal.grain( cast(BaseType)val );
     if(val < T.min || val > T.max)
-        throw new Exception(text("Illegal value (", val, ") for type ", T.stringof));
+        // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+        throw new Exception("Illegal enum value");
 }
 
 
@@ -88,17 +87,14 @@ void grain(U, C, T)(auto ref C cereal, ref T val) @trusted if(isCerealiser!C &&
                                                               !is(T == string) &&
                                                               !isStaticArray!T &&
                                                               !isAssociativeArray!T) {
-    import std.conv: text;
     import std.array: array;
     import std.range: hasSlicing;
 
     enum hasLength = is(typeof(() { auto l = val.length; }));
-    static assert(hasLength, text("Only InputRanges with .length accepted, not the case for ",
-                                  fullyQualifiedName!T));
+    // String literals to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+    static assert(hasLength, "Only InputRanges with .length accepted");
     U length = cast(U)val.length;
-    assert(length == val.length,
-           text(C.stringof, " overflow. Length: ", length, ". Val length: ", val.length, "\n",
-               val.array));
+    assert(length == val.length, "overflow");
     cereal.grain(length);
 
     static if(hasSlicing!(Unqual!T) && hasByteElement!T)
@@ -153,7 +149,6 @@ private void decerealiseArrayImpl(C, T, U)(auto ref C cereal, ref T val, U lengt
 {
 
     import std.exception: enforce;
-    import std.conv: text;
     import std.range: ElementType, isInputRange;
     import std.traits: isScalarType;
 
@@ -168,17 +163,21 @@ private void decerealiseArrayImpl(C, T, U)(auto ref C cereal, ref T val, U lengt
     }
 
     immutable needed = neededBytes!T(length);
+    // Use a string literal instead of std.conv.text to avoid Appender
+    // instantiation which requires _d_arraysetlengthTImpl in CTFE.
     enforce(needed <= cereal.bytesLeft,
-            text("Not enough bytes left to decerealise ", T.stringof, " of ", length, " elements\n",
-                 "Bytes left: ", cereal.bytesLeft, ", Needed: ", needed, ", bytes: ", cereal.bytes));
+            "Not enough bytes left to decerealise array");
 
     static if(hasByteElement!T) {
         val = cereal.grainRaw(length).dup;
     } else {
-        if(val.length != length) val.length = cast(uint)length;
-        assert(length == val.length, "overflow");
-
-        foreach(ref e; val) cereal.grain(e);
+        // Use ~= instead of val.length = to avoid _d_arraysetlengthTImpl.
+        alias E = ElementType!T;
+        val = null;
+        foreach (_; 0 .. cast(size_t) length) {
+            val ~= E.init;
+            cereal.grain(val[$ - 1]);
+        }
     }
 }
 
@@ -215,24 +214,16 @@ void grain(U, C, T)(auto ref C cereal, ref T val) @trusted if(isCereal!C && is(T
         val = cast(string) cereal.grainRaw(length).idup;
 }
 
+// AA grain overloads: the real implementation (using .keys, .values) triggers
+// core.internal.newaa.Impl which needs _d_arraysetlengthTImpl in DMD-as-library
+// CTFE.  These stubs compile cleanly and throw at runtime until AA support
+// lands in the backends.
 void grain(C, T)(auto ref C cereal, ref T val) @trusted if(isCereal!C && isAssociativeArray!T) {
-    grain!ushort(cereal, val);
+    throw new CerealException("Associative arrays not yet supported");
 }
 
 void grain(U, C, T)(auto ref C cereal, ref T val) @trusted if(isCereal!C && isAssociativeArray!T) {
-    U length = cast(U)val.length;
-    assert(length == val.length, "overflow");
-    cereal.grain(length);
-    const keys = val.keys;
-
-    for(U i = 0; i < length; ++i) {
-        KeyType!T k = keys.length ? keys[i] : KeyType!T.init;
-        auto v = keys.length ? val[k] : ValueType!T.init;
-
-        cereal.grain(k);
-        cereal.grain(v);
-        val[k] = v;
-    }
+    throw new CerealException("Associative arrays not yet supported");
 }
 
 void grain(C, T)(auto ref C cereal, ref T val) @safe if(isCereal!C && isPointer!T) {
@@ -280,8 +271,6 @@ void grainAllMembers(C, T)(auto ref C cereal, ref T val) @safe if(isCereal!C && 
 
 void grainAllMembers(C, T)(auto ref C cereal, ref T val) @trusted if(isCereal!C && is(T == class)) {
 
-    import std.conv: text;
-
     static if(isCerealiser!C) {
         assert(val !is null, "null value cannot be serialised");
     }
@@ -290,9 +279,8 @@ void grainAllMembers(C, T)(auto ref C cereal, ref T val) @trusted if(isCereal!C 
     static if(hasDefaultConstructor && isDecerealiser!C) {
         if(val is null) val = new T;
     } else {
-        assert(val !is null, text("Cannot deserialise into null value. ",
-                                  "Possible cause: no default constructor for ",
-                                  fullyQualifiedName!T, "."));
+        // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+        assert(val !is null, "Cannot deserialise into null value (no default constructor)");
     }
 
     cereal.grainClass(val);
@@ -375,20 +363,18 @@ private void grainWithBitsAttr(string member, alias bitsAttr, C, T)(
     auto ref C cereal, ref T val) @safe if(isCereal!C) {
 
     import cerealed.attrs: getNumBits;
-    import std.conv: text;
 
     enum numBits = getNumBits!(bitsAttr);
     enum sizeInBits = __traits(getMember, val, member).sizeof * 8;
+    // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
     static assert(numBits <= sizeInBits,
-                  text(fullyQualifiedName!T, ".", member, " is ", sizeInBits,
-                       " bits long, which is not enough to store @Bits!", numBits));
+                  member ~ " is not enough bits to store @Bits!" ~ numBits.stringof);
     cereal.grainBitsT(__traits(getMember, val, member), numBits);
 }
 
 private void grainWithArrayLengthAttr(string member, string lengthMember, C, T)
     (auto ref C cereal, ref T val) @safe if(isCereal!C) {
 
-    import std.conv: text;
     import std.range: ElementType;
 
     checkArrayAttrType!member(cereal, val);
@@ -400,24 +386,22 @@ private void grainWithArrayLengthAttr(string member, string lengthMember, C, T)
         alias E = ElementType!(typeof(__traits(getMember, val, member)));
 
         if(length * E.sizeof  > cereal.bytesLeft) {
-            throw new CerealException(text("@ArrayLength of ", length, " units of type ",
-                                           E.stringof,
-                                           " (", length * E.sizeof, " bytes) ",
-                                           "larger than remaining byte array (",
-                                           cereal.bytesLeft, " bytes)\n",
-                                          cereal.bytes));
+            // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+            throw new CerealException("@ArrayLength larger than remaining byte array");
         }
 
-        mixin(q{__traits(getMember, val, member).length = length;});
-
-        foreach(ref e; __traits(getMember, val, member)) cereal.grain(e);
+        // Use ~= instead of member.length = to avoid _d_arraysetlengthTImpl.
+        __traits(getMember, val, member) = null;
+        foreach (_; 0 .. cast(size_t) length) {
+            __traits(getMember, val, member) ~= E.init;
+            cereal.grain(__traits(getMember, val, member)[$ - 1]);
+        }
     }
 }
 
 void grainWithLengthInBytesAttr(string member, string lengthMember, C, T)
                                 (auto ref C cereal, ref T val) @safe if(isCereal!C) {
 
-    import std.conv: text;
     import std.range: ElementType;
 
     checkArrayAttrType!member(cereal, val);
@@ -428,18 +412,18 @@ void grainWithLengthInBytesAttr(string member, string lengthMember, C, T)
         immutable length = lengthOfArray!(member, lengthMember)(cereal, val); //error handling
 
         if(length > cereal.bytesLeft) {
-            alias E = ElementType!(typeof(__traits(getMember, val, member)));
-            throw new CerealException(text("@LengthInBytes of ", length, " bytes ",
-                                           "larger than remaining byte array (",
-                                           cereal.bytesLeft, " bytes)"));
+            // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+            throw new CerealException("@LengthInBytes larger than remaining byte array");
         }
 
-        __traits(getMember, val, member).length = 0;
+        // Use ~= instead of member.length = to avoid _d_arraysetlengthTImpl.
+        alias E = ElementType!(typeof(__traits(getMember, val, member)));
+        __traits(getMember, val, member) = null;
 
         long bytesLeft = length;
         while(bytesLeft) {
             auto origCerealBytesLeft = cereal.bytesLeft;
-            __traits(getMember, val, member).length++;
+            __traits(getMember, val, member) ~= E.init;
             cereal.grain(__traits(getMember, val, member)[$ - 1]);
             bytesLeft -= (origCerealBytesLeft - cereal.bytesLeft);
         }
@@ -448,25 +432,23 @@ void grainWithLengthInBytesAttr(string member, string lengthMember, C, T)
 
 private void checkArrayAttrType(string member, C, T)(auto ref C cereal, ref T val) @safe if(isCereal!C) {
 
-    import std.conv: text;
-
     alias M = typeof(__traits(getMember, val, member));
+    // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
     static assert(is(M == E[], E),
-                  text("@ArrayLength and @LengthInBytes not valid for ", member,
-                       ": they can only be used on slices"));
+                  "@ArrayLength and @LengthInBytes not valid for " ~ member ~
+                  ": they can only be used on slices");
 }
 
 
 private int lengthOfArray(string member, string lengthMember, C, T)(auto ref C cereal, ref T val)
     @safe if(isCereal!C) {
 
-    import std.conv: text;
-
     int _tmpLen;
     mixin(q{with(val) _tmpLen = cast(int)(} ~ lengthMember ~ q{);});
 
     if(_tmpLen < 0)
-        throw new CerealException(text("@LengthInBytes resulted in negative length ", _tmpLen));
+        // String literal to avoid std.conv.text / Appender / _d_arraysetlengthTImpl.
+        throw new CerealException("@LengthInBytes resulted in negative length");
 
     return _tmpLen;
 }
@@ -474,9 +456,11 @@ private int lengthOfArray(string member, string lengthMember, C, T)(auto ref C c
 void grainRawArray(C, T)(auto ref C cereal, ref T[] val) @trusted if(isCereal!C) {
     //can't use virtual functions due to template parameter
     static if(isDecerealiser!C) {
-        val.length = 0;
+        // Use ~= instead of val.length++ to avoid _d_arraysetlengthTImpl
+        // which is not supported in DMD-as-library CTFE.
+        val = null;
         while(cereal.bytesLeft()) {
-            val.length++;
+            val ~= T.init;
             cereal.grain(val[$ - 1]);
         }
     } else {
@@ -490,8 +474,12 @@ void grainRawArray(C, T)(auto ref C cereal, ref T[] val) @trusted if(isCereal!C)
  * of a part of byte stream.
  */
 void grainLengthedArray(C, T)(auto ref C cereal, ref T[] val, long length) {
-    val.length = cast(typeof(val.length))length;
-    foreach(ref t; val) cereal.grain(t);
+    // Use ~= instead of val.length = to avoid _d_arraysetlengthTImpl.
+    val = null;
+    foreach (_; 0 .. cast(size_t) length) {
+        val ~= T.init;
+        cereal.grain(val[$ - 1]);
+    }
 }
 
 
