@@ -45,13 +45,6 @@ private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
         failed = ctfeInterpret(callExp).isErrorExp !is null;
     });
 
-    if (failed) {
-        import std.conv: text;
-        import std.string: fromStringz;
-        const fname = utd.loc.filename;
-        throw new Exception(text(
-            fname ? fromStringz(fname) : "?",
-            "(", utd.loc.linnum, "): unittest failed in CTFE",
-        ));
-    }
+    if (failed)
+        throw new Exception("Unittest assertion failed.");
 }

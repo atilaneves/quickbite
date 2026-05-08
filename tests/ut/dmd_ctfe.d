@@ -19,32 +19,28 @@ unittest {
 unittest {
     import quickbite.backends.dmd_ctfe: DmdCtfe;
     import quickbite.frontend.compiler: parseModule;
-    import std.conv: text;
 
     auto parsed = parseModule(q{
         unittest {
             assert(false);
         }
     });
-    const fname = parsed.module_.srcfile.toString.idup;
     (new DmdCtfe).runParsedTests(parsed.module_)
-        .shouldThrowWithMessage(text(fname, "(2): unittest failed in CTFE"));
+        .shouldThrowWithMessage("Unittest assertion failed.");
 }
 
 @("runParsedTests.throwingTest")
 unittest {
     import quickbite.backends.dmd_ctfe: DmdCtfe;
     import quickbite.frontend.compiler: parseModule;
-    import std.conv: text;
 
     auto parsed = parseModule(q{
         unittest {
             throw new Exception("boom");
         }
     });
-    const fname = parsed.module_.srcfile.toString.idup;
     (new DmdCtfe).runParsedTests(parsed.module_)
-        .shouldThrowWithMessage(text(fname, "(2): unittest failed in CTFE"));
+        .shouldThrowWithMessage("Unittest assertion failed.");
 }
 
 @("runParsedTests.noUnittests")
