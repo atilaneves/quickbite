@@ -71,10 +71,52 @@ private string makeCerealSource(in string testFile) @safe {
     return processFile(readText(testFile));
 }
 
-// Strip the module declaration so DMD registers each snippet under its unique
-// snippet_N filename rather than the shared `module tests.*` name — which would
-// collide across backends running the same file.
+// Library files provide declarations for the selected test file.  Their own
+// unittest blocks would make every per-file test run dependency tests too.
+private string processLibraryFile(in string content) @safe {
+    return stripUnittestBlocks(processFile(content));
+}
+
+// Strip lines that become redundant or undefined after concatenation:
+// module declarations, intra-library imports, and unit_threaded imports
+// (whose symbols are provided by the stub above).
+// Multi-line imports (where the first line ends with ':' and the symbols
+// continue on subsequent lines) are stripped in full: once a strippable
+// import line is found we keep skipping until the terminating ';' is seen.
 private string processFile(in string content) @safe {
+    import std.string: splitLines, strip, startsWith, endsWith;
+    import std.array: appender;
+
+    auto result = appender!string; // auto: appender result must be mutable
+    bool strippingImport; // true while consuming continuation lines of a stripped import
+    foreach (line; content.splitLines) {
+        const trimmed = line.strip;
+
+        if (strippingImport) {
+            // Keep stripping until we find the terminating semicolon.
+            if (trimmed.endsWith(";"))
+                strippingImport = false;
+            continue;
+        }
+
+        if (trimmed.startsWith("module cerealed.") ||
+            trimmed.startsWith("module tests.") ||
+            trimmed.startsWith("import cerealed") ||
+            trimmed.startsWith("public import cerealed") ||
+            trimmed.startsWith("import unit_threaded")) {
+            // If the stripped line does not end with ';', it is a multi-line
+            // import; flag that we need to skip continuation lines too.
+            if (!trimmed.endsWith(";"))
+                strippingImport = true;
+            continue;
+        }
+        result ~= line;
+        result ~= "\n";
+    }
+    return result[];
+}
+
+private string stripUnittestBlocks(in string content) @safe {
     import std.array: appender;
     import std.string: splitLines, startsWith, strip;
 
