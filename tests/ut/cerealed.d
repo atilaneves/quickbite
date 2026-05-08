@@ -67,8 +67,15 @@ private immutable unitThreadedStub = q{
     void shouldNotThrow(T)(T) {}
     void shouldNotThrow(lazy void) {}
     void shouldNotThrow(E : Throwable, T)(T) {}
+    void shouldNotEqual(T, U)(T t, U u) {
+        static if (__traits(compiles, t == u))
+            assert(t != u, "shouldNotEqual failed");
+    }
     void shouldBeTrue(T)(T val) { assert(val); }
     void shouldBeFalse(T)(T val) { assert(!val); }
+    // unit_threaded property-testing stubs — no-ops until property testing lands.
+    struct Types(T...) {}
+    void check(alias pred)() {}
     enum SingleThreaded;
 };
 
@@ -85,7 +92,8 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             testFile == "vendor/cerealed/tests/utils.d" ||
             testFile == "vendor/cerealed/tests/compile_time.d" ||
             testFile == "vendor/cerealed/tests/example.d" ||
-            testFile == "vendor/cerealed/tests/cerealiser_impl.d")
+            testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
+            testFile == "vendor/cerealed/tests/pointers.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
