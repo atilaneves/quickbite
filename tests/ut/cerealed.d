@@ -52,12 +52,14 @@ private immutable testFiles = [
 // support lands in both backends.
 private immutable unitThreadedStub = q{
     void writelnUt(T...)(T) {}
-    // shouldEqual is a no-op: the real version asserts T == U but DMD
-    // rejects == for mismatched const-ness (e.g. int[int] vs
-    // const(int[int])).  TODO: once all cerealed tests pass and
-    // @ShouldFail annotations are removed, replace this with the real
-    // assertion so correctness regressions are caught.
-    void shouldEqual(T, U)(T, U) {}
+    // Asserts t == u when == compiles (e.g. arrays, integrals).  For types
+    // where == is rejected by DMD (e.g. int[int] vs const(int[int])), the
+    // static-if branch is skipped and the call is a no-op.
+    void shouldEqual(T, U)(T t, U u) {
+        static if (__traits(compiles, t == u))
+            assert(t == u, "shouldEqual failed");
+    }
+    // shouldThrow is a no-op until exception support lands in both backends.
     void shouldThrow(T)(T) {}
     void shouldThrow(E, T)(T) {}
     void shouldThrowWithMessage(T)(T, string) {}
@@ -167,6 +169,9 @@ private string stripUnittestBlocks(in string content) @safe {
     return result[];
 }
 
+// Known limitation: braces inside string literals or comments are counted,
+// which can produce incorrect results for lines like `string s = "open {";`.
+// This is acceptable for the current cerealed sources which have no such lines.
 private int braceDelta(in string line) @safe pure nothrow @nogc {
     int delta;
     foreach (ch; line) {
