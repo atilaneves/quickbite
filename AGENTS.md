@@ -31,9 +31,9 @@ Consult `ai/plans` for implementation plans.
 ## Git worktrees
 
 If asked to use a worktree named, e.g. "foo", then create a git
-worktree with that name using a directory with the same name at the
-root of the git repo.  In the example, the directory would be `./foo`
-at root.
+worktree with that name using a directory with the same name in
+`worktrees` in the root of the git repo. In the example, the directory
+would be `./worktrees/foo` at root.
 
 ## TDD
 
@@ -126,3 +126,4 @@ wide at most.
 
 * If you comment on a PR, state that it's coming from an agent, and
   which agent.
+* When you create a PR, open it in my browser.
