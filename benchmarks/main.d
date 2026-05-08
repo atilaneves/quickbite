@@ -78,7 +78,7 @@ int main(string[] args) {
     foreach (path; fixtures) {
         const source = readText(path);
 
-        foreach (name; ["ir", "treeWalking"]) {
+        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
             auto executor = backends[name];
             printRow(
                 path, name, warmup, iterations,
