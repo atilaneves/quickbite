@@ -118,3 +118,8 @@
 - When passing review text through a shell command, do not put Markdown
   backticks inside double quotes. Use a body file or single-quoted input
   so the shell cannot execute command substitutions.
+
+- When asked to review a PR, do not run the local test suite just to
+  verify what CI already reports or what is clear from the diff. Use the
+  diff and CI signal for the review unless the user asks for local
+  verification.
