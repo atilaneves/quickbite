@@ -62,6 +62,13 @@ final class Compiler {
 
         mutex = new Mutex;
         initDMD;
+        // Prepend the druntime that matches the DMD-as-library version.
+        // The system druntime may be a different version and lack hooks
+        // (e.g. `_d_arraysetlengthTImpl`) that DMD-as-library expects.
+        // Deriving the path from the DMD frontend module's source location
+        // ensures we always use the bundled druntime regardless of the
+        // user's system druntime version.
+        addImport(dmdDruntimeSrcPath);
         findImportPaths.each!addImport;
 
         // Prevent DMD from calling exit() when too many cascading errors
@@ -136,6 +143,37 @@ final class Compiler {
 
         return parsed;
     }
+}
+
+// Returns the path to the druntime `src` directory bundled with the
+// DMD-as-library dub package.  DMD-as-library's `fullSemantic` resolves
+// runtime hooks such as `_d_arraysetlengthTImpl` from `object.d` in the
+// import path.  The system druntime may be a different version and may
+// not contain those hooks, so we derive the path from the location of
+// the DMD frontend source file (which is inside the same dub package).
+//
+// Example: the frontend lives at
+//   .dub/packages/dmd/2.111.0/dmd/compiler/src/dmd/frontend.d
+// The druntime src is at:
+//   .dub/packages/dmd/2.111.0/dmd/druntime/src
+//
+// The transformation: strip the trailing `compiler/src/dmd/<file>.d`
+// part (4 path components) and append `druntime/src`.
+string dmdDruntimeSrcPath() {
+    import dmd.frontend: dmdParseModule = parseModule;
+    import std.path: buildPath, dirName;
+
+    // __traits(getLocation, ...) returns a tuple (file, line, col);
+    // take the first element.
+    const frontendFile = __traits(getLocation, dmdParseModule)[0];
+    // Go up 4 directories from frontend.d to reach the package root:
+    //   frontend.d -> compiler/src/dmd/ -> compiler/src/ -> compiler/ -> pkg/
+    const packageRoot = frontendFile
+        .dirName  // compiler/src/dmd/
+        .dirName  // compiler/src/
+        .dirName  // compiler/
+        .dirName; // package root (e.g. .dub/packages/dmd/2.111.0/dmd)
+    return buildPath(packageRoot, "druntime", "src");
 }
 
 string diagnosticMessage() {

@@ -79,7 +79,12 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             testFile == "vendor/cerealed/tests/compile_time.d" ||
             testFile == "vendor/cerealed/tests/example.d" ||
             testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
-            testFile == "vendor/cerealed/tests/pointers.d")
+            testFile == "vendor/cerealed/tests/pointers.d" ||
+            testFile == "vendor/cerealed/tests/classes.d" ||
+            testFile == "vendor/cerealed/tests/decode.d" ||
+            testFile == "vendor/cerealed/tests/enums.d" ||
+            testFile == "vendor/cerealed/tests/protocol_unit.d" ||
+            testFile == "vendor/cerealed/tests/static_array.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -108,13 +113,18 @@ private string processLibraryFile(in string content) @safe {
     return stripUnittestBlocks(processFile(content));
 }
 
+// Package-visible wrapper around processFile for unit tests in sibling modules.
+package string processFilePackage(in string content) @safe {
+    return processFile(content);
+}
+
 // Strip lines that become redundant or undefined after concatenation:
 // module declarations, intra-library imports, and unit_threaded imports
 // (whose symbols are provided by the stub above).
 // Multi-line `import cerealed.X:\n    sym1, sym2;` imports are handled by
 // tracking a continuation state so both lines are dropped together.
 private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith;
+    import std.string: splitLines, strip, startsWith, replace;
     import std.array: appender;
 
     auto result = appender!string; // auto: appender result must be mutable
@@ -140,7 +150,13 @@ private string processFile(in string content) @safe {
                 droppingImport = true;
             continue;
         }
-        result ~= line;
+        // Strip `pure` from unittest attribute combos so that non-pure
+        // library functions can be called from unittest blocks without a
+        // "pure function cannot call impure" compile error.
+        const processed = line
+            .replace("@safe pure unittest", "@safe unittest")
+            .replace("pure @safe unittest", "@safe unittest");
+        result ~= processed;
         result ~= "\n";
     }
     return result[];
