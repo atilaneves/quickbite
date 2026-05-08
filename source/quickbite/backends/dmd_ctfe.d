@@ -3,12 +3,17 @@ module quickbite.backends.dmd_ctfe;
 private:
 
 public final class DmdCtfe : imported!"quickbite.executor".Executor {
-    public void runTests(in string source) {
+    public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
         runParsedTests(parseModule(source).module_);
     }
 
-    public void runParsedTests(imported!"dmd.dmodule".Module module_) {
+    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
+        import quickbite.dmd_util: moduleMembers;
+
+        if (module_.members is null)
+            return;
+
         foreach (member; moduleMembers(module_)) {
             if (auto utd = member.isUnitTestDeclaration)
                 runCtfe(utd);
@@ -17,6 +22,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 }
 
 private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
+    import quickbite.frontend.compiler: withCompilerLock;
     import dmd.arraytypes: Expressions;
     import dmd.dinterpret: ctfeInterpret;
     import dmd.expression: CallExp, VarExp;
@@ -24,20 +30,28 @@ private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
     import dmd.location: Loc;
     import dmd.mtype: Type;
 
+    // auto: both nodes are mutated after construction (type and f fields).
     FuncDeclaration fd = utd;
     auto varExp = new VarExp(Loc.initial, fd);
     varExp.type = fd.type;
     auto callExp = new CallExp(Loc.initial, varExp, new Expressions);
     callExp.type = Type.tvoid;
+    // Direct field write: skipping expressionSemantic because all type
+    // information is already set from the fully-semantic'd FuncDeclaration.
     callExp.f    = fd;
 
-    const result = ctfeInterpret(callExp);
-    if (result.isErrorExp)
-        throw new Exception("unittest failed in CTFE");
-}
+    bool failed;
+    withCompilerLock(() {
+        failed = ctfeInterpret(callExp).isErrorExp !is null;
+    });
 
-private ref auto moduleMembers(
-    imported!"dmd.dmodule".Module module_,
-) @trusted pure {
-    return *module_.members;
+    if (failed) {
+        import std.conv: text;
+        import std.string: fromStringz;
+        const fname = utd.loc.filename;
+        throw new Exception(text(
+            fname ? fromStringz(fname) : "?",
+            "(", utd.loc.linnum, "): unittest failed in CTFE",
+        ));
+    }
 }

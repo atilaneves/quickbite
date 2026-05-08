@@ -32,6 +32,10 @@ public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
+public void withCompilerLock(scope void delegate() action) {
+    compiler.withLock(action);
+}
+
 public imported!"quickbite.ir.module_".Module lowerModule(
     imported!"dmd.dmodule".Module module_,
 ) {
@@ -73,6 +77,20 @@ final class Compiler {
 
         deinitializeDMD;
         initialized = false;
+    }
+
+    void withLock(scope void delegate() action) {
+        import dmd.errors: diagnostics;
+        import dmd.globals: global;
+
+        mutex.lock;
+        scope(exit) {
+            global.errors = 0;
+            global.warnings = 0;
+            diagnostics.length = 0;
+            mutex.unlock;
+        }
+        action();
     }
 
     ParsedModule parseModule(in string source) {
