@@ -57,6 +57,15 @@ final class Compiler {
 
         mutex = new Mutex;
         initDMD;
+        // Prepend a patched druntime that has both:
+        //   - `_d_arraysetlengthTImpl` (in bundled 2.111, absent in system 2.112)
+        //   - `_d_newarrayU` re-exported from object.d (in system 2.112, absent
+        //     in bundled 2.111, but needed by system phobos std/array.d)
+        // The patched path contains a copy of the bundled object.d with the
+        // missing `_d_newarrayU` public import added.  All other bundled
+        // druntime files are still resolved from dmdDruntimeSrcPath.
+        addImport(patchedDruntimePath);
+        addImport(dmdDruntimeSrcPath);
         findImportPaths.each!addImport;
 
         // Prevent DMD from calling exit() when too many cascading errors
@@ -147,4 +156,79 @@ string diagnosticMessage() {
         return "DMD reported an error without a diagnostic message.";
 
     return messages.join("\n");
+}
+
+// Returns the path to the druntime `src` directory bundled with the
+// DMD-as-library dub package.  DMD-as-library's `fullSemantic` resolves
+// runtime hooks such as `_d_arraysetlengthTImpl` from `object.d` in the
+// import path.  The system druntime may be a different version and may
+// not contain those hooks, so we derive the path from the location of
+// the DMD frontend source file (which is inside the same dub package).
+//
+// Example: the frontend lives at
+//   .dub/packages/dmd/2.111.0/dmd/compiler/src/dmd/frontend.d
+// The druntime src is at:
+//   .dub/packages/dmd/2.111.0/dmd/druntime/src
+//
+// The transformation: strip the trailing `compiler/src/dmd/<file>.d`
+// part (4 path components) and append `druntime/src`.
+string dmdDruntimeSrcPath() {
+    import dmd.frontend: dmdParseModule = parseModule;
+    import std.path: buildPath, dirName;
+
+    // __traits(getLocation, ...) returns a tuple (file, line, col);
+    // take the first element.
+    const frontendFile = __traits(getLocation, dmdParseModule)[0];
+    // Go up 4 directories from frontend.d to reach the package root:
+    //   frontend.d -> compiler/src/dmd/ -> compiler/src/ -> compiler/ -> pkg/
+    const packageRoot = frontendFile
+        .dirName  // compiler/src/dmd/
+        .dirName  // compiler/src/
+        .dirName  // compiler/
+        .dirName; // package root (e.g. .dub/packages/dmd/2.111.0/dmd)
+    return buildPath(packageRoot, "druntime", "src");
+}
+
+// Returns a temporary directory containing a patched `object.d` that adds
+// a missing `public import core.internal.array.construction : _d_newarrayU;`
+// re-export.  This re-export is present in the system druntime (>= 2.112) and
+// is required by the system phobos `std/array.d`, but the bundled druntime
+// (2.111) does not have it.  By placing this directory first in the import
+// path, `std/array.d` can resolve `_d_newarrayU` from the patched `object.d`
+// while still getting `_d_arraysetlengthTImpl` from the bundled druntime.
+//
+// The directory is created once per process in `/tmp/quickbite-druntime-<PID>`
+// and is intentionally leaked (never deleted): the OS cleans it on process
+// exit, and creating/deleting it for every compiler initialisation would be
+// racy.
+string patchedDruntimePath() {
+    import core.sys.posix.unistd: getpid;
+    import std.conv: text;
+    import std.file: mkdirRecurse, readText, write;
+    import std.path: buildPath;
+    import std.string: indexOf;
+
+    const bundledObjectD = buildPath(dmdDruntimeSrcPath, "object.d");
+    const content = readText(bundledObjectD);
+
+    // Check whether the re-export is already present; if so, reuse bundled.
+    const needle = "public import core.internal.array.construction : _d_newarrayU;";
+    if (content.indexOf(needle) >= 0)
+        return dmdDruntimeSrcPath;
+
+    // Insert the missing re-export after the existing `_d_newarrayT` line.
+    const anchor = "public import core.internal.array.construction : _d_newarrayT;";
+    const anchorIdx = content.indexOf(anchor);
+    if (anchorIdx < 0)
+        return dmdDruntimeSrcPath; // Cannot patch; fall back to bundled.
+
+    const afterAnchor = anchorIdx + anchor.length;
+    const patched = content[0 .. afterAnchor] ~ "\n" ~ needle ~ content[afterAnchor .. $];
+
+    // Write the patched object.d into a per-process temp directory so
+    // concurrent dub test runs don't trample each other.
+    const patchDir = buildPath("/tmp", text("quickbite-druntime-", getpid));
+    mkdirRecurse(patchDir);
+    write(buildPath(patchDir, "object.d"), patched);
+    return patchDir;
 }

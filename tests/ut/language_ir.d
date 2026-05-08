@@ -5,6 +5,22 @@ private:
 import unit_threaded;
 import quickbite: ExecutorBackend, runTests;
 
+// Regression test: setting arr.length triggers _d_newarrayU during
+// DMD-as-library fullSemantic.  This requires the patched druntime
+// object.d that re-exports _d_newarrayU so system phobos std/array.d
+// can resolve it.  Uses dmdCtfe backend so both compilation and
+// execution are exercised without hitting IR lowering limitations.
+@("dmdCtfe.arrayLengthSet")
+unittest {
+    q{
+        unittest {
+            int[] arr;
+            arr.length = 3;
+            assert(arr.length == 3);
+        }
+    }.runTests(ExecutorBackend.dmdCtfe);
+}
+
 @("ir.structFieldReadWrite")
 unittest {
     q{
