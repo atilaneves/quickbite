@@ -100,7 +100,13 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
             testFile == "vendor/cerealed/tests/property.d" ||
             testFile == "vendor/cerealed/tests/protocol_unit.d" ||
-            testFile == "vendor/cerealed/tests/range.d")
+            testFile == "vendor/cerealed/tests/range.d" ||
+            testFile == "vendor/cerealed/tests/bugs.d" ||
+            testFile == "vendor/cerealed/tests/decode.d" ||
+            testFile == "vendor/cerealed/tests/encode.d" ||
+            testFile == "vendor/cerealed/tests/encode_decode.d" ||
+            testFile == "vendor/cerealed/tests/nested.d" ||
+            testFile == "vendor/cerealed/tests/structs.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -211,17 +217,21 @@ private string patchTestSource(in string content) @safe {
         );
 }
 
-// Strip grain overloads for associative arrays from library source.
+// Replace bodies of grain overloads for associative arrays with no-ops.
 // Their bodies call val.keys which calls core.internal.newaa which does
 // arr.length = n → object._d_arraysetlengthTImpl during fullSemantic.
 // Grain overloads for AAs start with a line containing "grain(" and
 // have "isAssociativeArray!T" in their template constraint.
+// We keep the signature so that DMD can resolve overloads for structs with
+// AA fields, but replace the body with an empty body to avoid the runtime
+// hook issue.
 private string stripAaGrainOverloads(in string content) @safe {
     import std.array: appender;
     import std.string: splitLines, strip, indexOf;
 
     auto result = appender!string; // auto: appender result must be mutable
     bool skipping;
+    bool emittedClose;
     int braceDepth;
 
     foreach (line; content.splitLines) {
@@ -229,12 +239,23 @@ private string stripAaGrainOverloads(in string content) @safe {
 
         if (!skipping && isAaGrainSignature(trimmed)) {
             skipping = true;
+            emittedClose = false;
             braceDepth = braceDelta(line);
+            // Emit the signature line but strip its opening brace, then
+            // immediately close with an empty body.
+            result ~= line;
+            result ~= "\n";
             continue;
         }
 
         if (skipping) {
             braceDepth += braceDelta(line);
+            // Emit the closing brace once, right after the signature, to
+            // form an empty function body.  Skip all original body lines.
+            if (!emittedClose) {
+                result ~= "}\n";
+                emittedClose = true;
+            }
             if (braceDepth == 0)
                 skipping = false;
             continue;
