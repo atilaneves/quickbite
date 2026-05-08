@@ -76,9 +76,8 @@ private immutable unitThreadedStub = q{
 // be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
-        static if (backend == ExecutorBackend.dmdCtfe && (
-            testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/utils.d"))
+        static if (testFile == "vendor/cerealed/tests/reset.d" ||
+            testFile == "vendor/cerealed/tests/utils.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -105,9 +104,15 @@ private string makeCerealSource(in string testFile) @safe {
     auto source = appender!string; // auto: appender result must be mutable
     source ~= unitThreadedStub;
     foreach (lib; libFiles)
-        source ~= processFile(readText(lib));
+        source ~= processLibraryFile(readText(lib));
     source ~= processFile(readText(testFile));
     return source[];
+}
+
+// Library files provide declarations for the selected test file.  Their own
+// unittest blocks would make every per-file test run dependency tests too.
+private string processLibraryFile(in string content) @safe {
+    return stripUnittestBlocks(processFile(content));
 }
 
 // Strip lines that become redundant or undefined after concatenation:
@@ -130,4 +135,48 @@ private string processFile(in string content) @safe {
         result ~= "\n";
     }
     return result[];
+}
+
+private string stripUnittestBlocks(in string content) @safe {
+    import std.array: appender;
+    import std.string: splitLines, startsWith, strip;
+
+    auto result = appender!string; // auto: appender result must be mutable
+    bool skipping;
+    int braceDepth;
+
+    foreach (line; content.splitLines) {
+        const trimmed = line.strip;
+        if (!skipping && trimmed.startsWith("unittest")) {
+            skipping = true;
+            braceDepth = braceDelta(line);
+            continue;
+        }
+
+        if (skipping) {
+            braceDepth += braceDelta(line);
+            if (braceDepth == 0)
+                skipping = false;
+            continue;
+        }
+
+        result ~= line;
+        result ~= "\n";
+    }
+
+    return result[];
+}
+
+private int braceDelta(in string line) @safe pure nothrow @nogc {
+    int delta;
+    foreach (ch; line) {
+        if (ch == '{') {
+            ++delta;
+            continue;
+        }
+
+        if (ch == '}')
+            --delta;
+    }
+    return delta;
 }

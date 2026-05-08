@@ -162,6 +162,9 @@ private struct BodyWalker {
         imported!"dmd.statement".Statement statement,
         ref Interpreter interpreter,
     ) {
+        if (statement is null)
+            return;
+
         // DMD lowers the currently supported `foreach (x; array)` cases to
         // this for-statement shape before the tree-walker sees them.
         if (auto scope_ = statement.isScopeStatement) {
@@ -226,6 +229,9 @@ private struct BodyWalker {
 
         if (statement.isThrowStatement !is null)
             throw new Exception("Unittest assertion failed.");
+
+        if (statement.isImportStatement !is null)
+            return;
 
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
@@ -789,12 +795,9 @@ private struct BodyWalker {
             throw new Exception(unsupportedMessage);
         }
 
-        if (decl.declaration.isAliasDeclaration !is null)
-            return Value(0L);
-
         auto variable = decl.declaration.isVarDeclaration;
         if (variable is null)
-            unsupportedDecl;
+            return Value(0L);
 
         if (variable.type !is null && variable.type.isTypeStruct !is null) {
             structFields[variable] = (Value[VarDeclaration]).init;
@@ -804,11 +807,10 @@ private struct BodyWalker {
         if (variable.type !is null && variable.type.isTypeDArray !is null)
             return initializeArrayVariable(variable, interpreter, unsupportedMessage);
 
-        if (variable._init is null)
-            unsupportedDecl;
+        if (variable._init is null || variable._init.isExpInitializer is null)
+            return Value(0L);
+
         auto initializer = variable._init.isExpInitializer;
-        if (initializer is null)
-            unsupportedDecl;
         if (initializer.exp.isAssignExp || initializer.exp.isBlitExp)
             unsupportedDecl;
         auto construct = initializer.exp.isConstructExp;

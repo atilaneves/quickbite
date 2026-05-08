@@ -53,8 +53,11 @@ struct Lowerer {
         if (name in loweredFunctions)
             return;
 
-        if (function_.fbody is null)
-            throw new Exception("No function body to execute.");
+        if (function_.fbody is null) {
+            import std.conv: text;
+
+            throw new Exception(text("No function body to execute: ", name));
+        }
 
         loweredFunctions[name] = true;
 
@@ -114,6 +117,9 @@ struct BodyLowerer {
         imported!"dmd.statement".Statement statement,
         ref Lowerer lowerer,
     ) @safe {
+        if (statement is null)
+            return;
+
         if (auto scope_ = statement.isScopeStatement) {
             if (scope_.statement !is null)
                 lowerStatement(scope_.statement, lowerer);
@@ -158,6 +164,9 @@ struct BodyLowerer {
             instructions ~= Instruction(Assert_(zero));
             return;
         }
+
+        if (statement.isImportStatement !is null)
+            return;
 
         import std.conv: text;
 
@@ -650,19 +659,13 @@ struct BodyLowerer {
         import std.conv: text;
 
         auto variable = declaration.declaration.isVarDeclaration;
-        if (variable is null && declaration.declaration.isAliasDeclaration !is null) {
+        if (variable is null) {
             import quickbite.ir.instruction: ConstInt, Instruction;
 
             const value = allocateTemporary;
             instructions ~= Instruction(ConstInt(value, 0));
             return value;
         }
-
-        if (variable is null)
-            throw new Exception(text(
-                "Unsupported declaration: ",
-                declarationKind(declaration.declaration),
-            ));
 
         if (typeIsStruct(variable.type)) {
             import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
@@ -695,12 +698,16 @@ struct BodyLowerer {
             return value;
         }
 
-        if (variable._init is null)
-            throw new Exception(text("Unsupported expression: ", declaration.op));
+        if (variable._init is null || variable._init.isExpInitializer is null) {
+            import quickbite.ir.instruction: ConstInt, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(ConstInt(value, 0));
+            localTemporaries[variable] = value;
+            return value;
+        }
 
         auto initializer = variable._init.isExpInitializer;
-        if (initializer is null)
-            throw new Exception(text("Unsupported expression: ", declaration.op));
 
         if (auto blit = initializer.exp.isBlitExp) {
             if (!typeIsDynamicArray(variable.type) || blit.e2.isNullExp is null)
