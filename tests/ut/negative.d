@@ -90,7 +90,9 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }, backend).shouldThrowWithMessage("Unsupported function parameters.");
         }
 
-        // CTFE silently tolerates extern functions it cannot interpret.
+        // The three tests below verify that calling an extern function is rejected.
+        // CTFE silently tolerates extern calls it cannot interpret, so they are
+        // excluded for that backend.
         @(backend.text ~ ".externalCallee")
         unittest {
             runTests(q{
@@ -113,6 +115,8 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }, backend).shouldThrowWithMessage("No function body to execute.");
         }
 
+        // Unlike the VM backends, CTFE does not evaluate the argument before
+        // detecting the missing body, so boom's assert(false) never fires.
         @(backend.text ~ ".externalCalleeArgNotEvaluated")
         unittest {
             runTests(q{
@@ -133,6 +137,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     @(backend.text ~ ".divisionByZero")
     unittest {
         static if (backend == ExecutorBackend.dmdCtfe)
+            // TODO: CTFE does not distinguish arithmetic errors from assertion failures.
             const msg = "Unittest assertion failed.";
         else
             const msg = "Integer division by zero.";
@@ -174,6 +179,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     @(backend.text ~ ".moduloByZero")
     unittest {
         static if (backend == ExecutorBackend.dmdCtfe)
+            // TODO: CTFE does not distinguish arithmetic errors from assertion failures.
             const msg = "Unittest assertion failed.";
         else
             const msg = "Integer modulo by zero.";
