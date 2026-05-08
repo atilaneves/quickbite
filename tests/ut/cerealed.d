@@ -74,17 +74,24 @@ private immutable unitThreadedStub = q{
 // be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
-        static if (testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/utils.d" ||
-            testFile == "vendor/cerealed/tests/compile_time.d" ||
-            testFile == "vendor/cerealed/tests/example.d" ||
+        static if (testFile == "vendor/cerealed/tests/bugs.d" ||
             testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
-            testFile == "vendor/cerealed/tests/pointers.d" ||
             testFile == "vendor/cerealed/tests/classes.d" ||
+            testFile == "vendor/cerealed/tests/compile_time.d" ||
             testFile == "vendor/cerealed/tests/decode.d" ||
+            testFile == "vendor/cerealed/tests/encode.d" ||
+            testFile == "vendor/cerealed/tests/encode_decode.d" ||
             testFile == "vendor/cerealed/tests/enums.d" ||
+            testFile == "vendor/cerealed/tests/example.d" ||
+            testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
+            testFile == "vendor/cerealed/tests/nested.d" ||
+            testFile == "vendor/cerealed/tests/pointers.d" ||
             testFile == "vendor/cerealed/tests/protocol_unit.d" ||
-            testFile == "vendor/cerealed/tests/static_array.d")
+            testFile == "vendor/cerealed/tests/range.d" ||
+            testFile == "vendor/cerealed/tests/reset.d" ||
+            testFile == "vendor/cerealed/tests/static_array.d" ||
+            testFile == "vendor/cerealed/tests/structs.d" ||
+            testFile == "vendor/cerealed/tests/utils.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {

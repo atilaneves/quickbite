@@ -62,12 +62,14 @@ final class Compiler {
 
         mutex = new Mutex;
         initDMD;
-        // Prepend the druntime that matches the DMD-as-library version.
-        // The system druntime may be a different version and lack hooks
-        // (e.g. `_d_arraysetlengthTImpl`) that DMD-as-library expects.
-        // Deriving the path from the DMD frontend module's source location
-        // ensures we always use the bundled druntime regardless of the
-        // user's system druntime version.
+        // Prepend a patched druntime that has both:
+        //   - `_d_arraysetlengthTImpl` (in bundled 2.111, absent in system 2.112)
+        //   - `_d_newarrayU` re-exported from object.d (in system 2.112, absent
+        //     in bundled 2.111, but needed by system phobos std/array.d)
+        // The patched path contains a copy of the bundled object.d with the
+        // missing `_d_newarrayU` public import added.  All other bundled
+        // druntime files are still resolved from dmdDruntimeSrcPath.
+        addImport(patchedDruntimePath);
         addImport(dmdDruntimeSrcPath);
         findImportPaths.each!addImport;
 
@@ -174,6 +176,50 @@ string dmdDruntimeSrcPath() {
         .dirName  // compiler/
         .dirName; // package root (e.g. .dub/packages/dmd/2.111.0/dmd)
     return buildPath(packageRoot, "druntime", "src");
+}
+
+// Returns a temporary directory containing a patched `object.d` that adds
+// a missing `public import core.internal.array.construction : _d_newarrayU;`
+// re-export.  This re-export is present in the system druntime (≥ 2.112) and
+// is required by the system phobos `std/array.d`, but the bundled druntime
+// (2.111) does not have it.  By placing this directory first in the import
+// path, `std/array.d` can resolve `_d_newarrayU` from the patched `object.d`
+// while still getting `_d_arraysetlengthTImpl` from the bundled druntime.
+//
+// The directory is created once per process in `std.file.tempDir` and is
+// intentionally leaked (never deleted): the OS cleans it on process exit, and
+// creating/deleting it for every compiler initialisation would be racy.
+string patchedDruntimePath() {
+    import std.file: mkdirRecurse, readText, tempDir, write;
+    import std.path: buildPath;
+    import std.string: indexOf;
+
+    const bundledObjectD = buildPath(dmdDruntimeSrcPath, "object.d");
+    const content = readText(bundledObjectD);
+
+    // Check whether the re-export is already present; if so, reuse bundled.
+    const needle = "public import core.internal.array.construction : _d_newarrayU;";
+    if (content.indexOf(needle) >= 0)
+        return dmdDruntimeSrcPath;
+
+    // Insert the missing re-export after the existing `_d_newarrayT` line.
+    const anchor = "public import core.internal.array.construction : _d_newarrayT;";
+    const anchorIdx = content.indexOf(anchor);
+    if (anchorIdx < 0)
+        return dmdDruntimeSrcPath; // Cannot patch; fall back to bundled.
+
+    const afterAnchor = anchorIdx + anchor.length;
+    const patched = content[0 .. afterAnchor] ~ "\n" ~ needle ~ content[afterAnchor .. $];
+
+    // Write the patched object.d into a per-process temp directory so
+    // concurrent dub test runs don't trample each other.
+    import core.sys.posix.unistd: getpid;
+    import std.conv: text;
+
+    const patchDir = buildPath(tempDir, text("quickbite_druntime_patch_", getpid));
+    mkdirRecurse(patchDir);
+    write(buildPath(patchDir, "object.d"), patched);
+    return patchDir;
 }
 
 string diagnosticMessage() {
