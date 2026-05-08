@@ -61,9 +61,12 @@ private immutable unitThreadedStub = q{
     }
     // shouldThrow is a no-op until exception support lands in both backends.
     void shouldThrow(T)(T) {}
-    void shouldThrow(E, T)(T) {}
+    void shouldThrow(lazy void) {}
+    void shouldThrow(E : Throwable, T)(T) {}
     void shouldThrowWithMessage(T)(T, string) {}
     void shouldNotThrow(T)(T) {}
+    void shouldNotThrow(lazy void) {}
+    void shouldNotThrow(E : Throwable, T)(T) {}
     void shouldBeTrue(T)(T val) { assert(val); }
     void shouldBeFalse(T)(T val) { assert(!val); }
     enum SingleThreaded;
@@ -81,7 +84,8 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         static if (testFile == "vendor/cerealed/tests/reset.d" ||
             testFile == "vendor/cerealed/tests/utils.d" ||
             testFile == "vendor/cerealed/tests/compile_time.d" ||
-            testFile == "vendor/cerealed/tests/example.d")
+            testFile == "vendor/cerealed/tests/example.d" ||
+            testFile == "vendor/cerealed/tests/cerealiser_impl.d")
         {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
@@ -128,7 +132,7 @@ private string processLibraryFile(in string content) @safe {
 // Single-line imports with trailing comments (e.g. `import foo; // note`)
 // are treated as terminated because the ';' precedes the comment.
 private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith, indexOf;
+    import std.string: splitLines, strip, startsWith, indexOf, replace;
     import std.array: appender;
 
     auto result = appender!string; // auto: appender result must be mutable
@@ -155,10 +159,35 @@ private string processFile(in string content) @safe {
                 strippingImport = true;
             continue;
         }
-        result ~= line;
+        // Strip `pure` from unittest attribute lists so that unittest blocks
+        // that are marked `@safe pure unittest` compile even when the code
+        // under test (e.g. cerealise) is not pure.
+        const processed = stripPureFromUnittest(line);
+        result ~= processed;
         result ~= "\n";
     }
     return result[];
+}
+
+// Remove `pure` attribute tokens from lines that contain `unittest` so that
+// unittest blocks annotated `@safe pure unittest` or `pure @safe unittest`
+// do not cause DMD errors when the called functions are not pure.
+private string stripPureFromUnittest(in string line) @safe pure {
+    import std.string: strip, replace, indexOf, endsWith;
+
+    const trimmed = line.strip;
+    // Only touch lines that are unittest declarations (not calls inside blocks).
+    if (!trimmed.endsWith("unittest") && trimmed.indexOf("unittest") < 0)
+        return line;
+    // Replace the known combinations in order longest first.
+    return line
+        .replace("@safe pure unittest", "@safe unittest")
+        .replace("pure @safe unittest", "@safe unittest")
+        .replace("pure nothrow @safe unittest", "@safe unittest")
+        .replace("@safe nothrow pure unittest", "@safe unittest")
+        .replace("nothrow pure @safe unittest", "@safe unittest")
+        .replace("@nogc @safe pure unittest", "@safe unittest")
+        .replace("pure unittest", "unittest");
 }
 
 // Returns true if the (stripped) line ends the statement, i.e. contains a
