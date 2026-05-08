@@ -58,6 +58,9 @@ final class Compiler {
         // Prevent DMD from calling exit() when too many cascading errors
         // accumulate.  parseModule already checks global.errors after
         // fullSemantic and throws an Exception, so returning true here is safe.
+        // This is intentionally process-global: the correct response to a DMD
+        // fatal error in any quickbite test is a thrown Exception, not a
+        // process abort that silently kills all subsequent tests.
         fatalErrorHandler = () => true;
 
         global.params.useUnitTests = true;

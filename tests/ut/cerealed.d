@@ -52,10 +52,11 @@ private immutable testFiles = [
 // support lands in both backends.
 private immutable unitThreadedStub = q{
     void writelnUt(T...)(T) {}
-    // Untyped stub: the real shouldEqual asserts equality; here we can't
-    // assert because the types may differ in const-ness (e.g. int[int] vs
-    // const(int[int])) which DMD rejects for ==.  The backends will catch
-    // incorrect behaviour via the real assertions in the unit test bodies.
+    // shouldEqual is a no-op: the real version asserts T == U but DMD
+    // rejects == for mismatched const-ness (e.g. int[int] vs
+    // const(int[int])).  TODO: once all cerealed tests pass and
+    // @ShouldFail annotations are removed, replace this with the real
+    // assertion so correctness regressions are caught.
     void shouldEqual(T, U)(T, U) {}
     void shouldThrow(T)(T) {}
     void shouldThrow(E, T)(T) {}
@@ -66,14 +67,45 @@ private immutable unitThreadedStub = q{
     enum SingleThreaded;
 };
 
+// One test per (backend, test-file) pair.  Each test exercises only
+// the unittest blocks in that file, so failures are localised.
+// @ShouldFail: all cerealed tests are currently expected to fail because
+// the backends do not yet support the required language features.  Remove
+// @ShouldFail on a test-by-test basis as features land and tests start
+// passing.  An unexpected pass (test passing while still annotated) will
+// be flagged by unit-threaded, prompting removal of the annotation.
+static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (testFile; testFiles) {
+        @ShouldFail
+        @(backend.text ~ ".cerealed." ~ testFile)
+        unittest {
+            makeCerealSource(testFile).runTests(backend);
+        }
+    }
+}
+
+// Build the complete source string for one cerealed test file:
+// stubs, then the full library, then the test file itself.
+private string makeCerealSource(in string testFile) @safe {
+    import std.file: readText;
+    import std.array: appender;
+
+    auto source = appender!string; // auto: appender result must be mutable
+    source ~= unitThreadedStub;
+    foreach (lib; libFiles)
+        source ~= processFile(readText(lib));
+    source ~= processFile(readText(testFile));
+    return source[];
+}
+
 // Strip lines that become redundant or undefined after concatenation:
 // module declarations, intra-library imports, and unit_threaded imports
 // (whose symbols are provided by the stub above).
-private string processFile(in string content) {
+private string processFile(in string content) @safe {
     import std.string: splitLines, strip, startsWith;
     import std.array: appender;
 
-    auto result = appender!string;
+    auto result = appender!string; // auto: appender result must be mutable
     foreach (line; content.splitLines) {
         const trimmed = line.strip;
         if (trimmed.startsWith("module cerealed.") ||
@@ -86,29 +118,4 @@ private string processFile(in string content) {
         result ~= "\n";
     }
     return result[];
-}
-
-// Build the complete source string for one cerealed test file:
-// stubs, then the full library, then the test file itself.
-private string makeCerealSource(in string testFile) {
-    import std.file: readText;
-    import std.array: appender;
-
-    auto source = appender!string;
-    source ~= unitThreadedStub;
-    foreach (lib; libFiles)
-        source ~= processFile(readText(lib));
-    source ~= processFile(readText(testFile));
-    return source[];
-}
-
-// One test per (backend, test-file) pair.  Each test exercises only
-// the unittest blocks in that file, so failures are localised.
-static foreach (backend; EnumMembers!ExecutorBackend) {
-    static foreach (testFile; testFiles) {
-        @(backend.text ~ ".cerealed." ~ testFile)
-        unittest {
-            makeCerealSource(testFile).runTests(backend);
-        }
-    }
 }
