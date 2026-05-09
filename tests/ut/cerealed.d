@@ -32,32 +32,75 @@ private immutable testFiles = [
     "vendor/cerealed/tests/utils.d",
 ];
 
-// Derive the unit_threaded source directory from the location of a known
-// symbol in the package so we don't hardcode a dub cache path.
-private immutable unitThreadedSrcPath = () {
-    import std.path: buildPath, dirName;
-    import unit_threaded.runner.attrs: ShouldFail;
-    // ShouldFail is defined in unit_threaded/runner/attrs.d
-    // Go up four directories: attrs.d → runner → unit_threaded → source
-    const attrsFile = __traits(getLocation, ShouldFail)[0];
-    return attrsFile.dirName.dirName.dirName.dirName;
-}();
+// All unit_threaded import directories, initialized at runtime because
+// discovering subpackage directories requires OS calls that cannot run at
+// compile time.
+private string[] unitThreadedImportPaths;
+private string[] cerealImportPaths;
 
-private immutable cerealImportPaths = ["vendor/cerealed/src", unitThreadedSrcPath];
+// Derive all unit_threaded import directories from the location of a known
+// symbol so we don't hardcode a dub cache path.
+//
+// unit_threaded 2.2.3 splits its source across a main directory and several
+// subpackages under `subpackages/*/source/`.  All of them must appear on the
+// import path for `import unit_threaded;` to resolve fully.
+//
+// ShouldFail lives in the runner subpackage at:
+//   unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
+// The package root is 6 directories up from attrs.d.
+shared static this() {
+    import std.path: buildPath, dirName;
+    import std.file: dirEntries, SpanMode, exists;
+    import unit_threaded.runner.attrs: ShouldFail;
+    const attrsFile = __traits(getLocation, ShouldFail)[0];
+    // 6 dirNames up: attrs.d → runner → unit_threaded → source → runner → subpackages → root
+    const packageRoot = attrsFile
+        .dirName  // runner
+        .dirName  // unit_threaded
+        .dirName  // source (subpackage source)
+        .dirName  // runner (subpackage dir)
+        .dirName  // subpackages
+        .dirName; // unit-threaded (package root)
+    unitThreadedImportPaths = [buildPath(packageRoot, "source")];
+    foreach (entry; dirEntries(buildPath(packageRoot, "subpackages"), SpanMode.shallow)) {
+        const subSrc = buildPath(entry.name, "source");
+        if (exists(subSrc))
+            unitThreadedImportPaths ~= subSrc;
+    }
+    cerealImportPaths = ["vendor/cerealed/src"] ~ unitThreadedImportPaths;
+}
+
+// Tests that are expected to fail because they expose current limitations.
+// The dmdCtfe backend cannot compile all cerealed files:
+//   - cerealiser_impl.d: type-mismatch in unit_threaded.assertions template
+//   - encode.d: pure function cannot call impure cerealise template
+//   - property.d: `Types!(...)` template from unit_threaded.property not found
+//   - reset.d: some runtime assertion or compilation error
+// All ir and treeWalking cerealed tests pass because they use the cached DMD
+// module from the first (dmdCtfe) run and execute correctly.
+private enum shouldFail(ExecutorBackend backend, string testFile) =
+    backend == ExecutorBackend.dmdCtfe && (
+        testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
+        testFile == "vendor/cerealed/tests/encode.d" ||
+        testFile == "vendor/cerealed/tests/property.d" ||
+        testFile == "vendor/cerealed/tests/reset.d"
+    );
 
 // One test per (backend, test-file) pair.  Each test exercises only
 // the unittest blocks in that file, so failures are localised.
-// @ShouldFail: all cerealed tests are currently expected to fail because
-// the backends do not yet support the required language features.  Remove
-// @ShouldFail on a test-by-test basis as features land and tests start
-// passing.  An unexpected pass (test passing while still annotated) will
-// be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
-        @ShouldFail
-        @(backend.text ~ ".cerealed." ~ testFile)
-        unittest {
-            runTests(testFile, cerealImportPaths, backend);
+        static if (shouldFail!(backend, testFile)) {
+            @ShouldFail
+            @(backend.text ~ ".cerealed." ~ testFile)
+            unittest {
+                runTests(testFile, cerealImportPaths, backend);
+            }
+        } else {
+            @(backend.text ~ ".cerealed." ~ testFile)
+            unittest {
+                runTests(testFile, cerealImportPaths, backend);
+            }
         }
     }
 }

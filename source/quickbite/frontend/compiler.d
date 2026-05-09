@@ -51,6 +51,17 @@ public imported!"quickbite.ir.module_".Module lowerModule(
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
+    // Cache parsed modules by file path so the same real file is not parsed
+    // twice.  Running three backends against the same cerealed test file must
+    // call dmdParseModule exactly once; subsequent calls return the cached
+    // result immediately.  The DMD module registry is process-global and does
+    // not allow the same file path to be registered twice.
+    //
+    // ParsedModule contains an immutable Diagnostics field, so it cannot be
+    // stored directly in an AA (D AAs require assignability).  We store the
+    // DMD Module class (a reference type) keyed by file path and reconstruct
+    // a ParsedModule on every cache hit.
+    private imported!"dmd.dmodule".Module[string] fileCache;
 
     private this() {
         import core.sync.mutex: Mutex;
@@ -145,6 +156,16 @@ final class Compiler {
         mutex.lock;
         scope(exit) mutex.unlock;
 
+        // Return cached result if this file was already parsed.
+        // DMD's module registry is process-global and does not allow the same
+        // file to be registered twice; the cache prevents "specified twice" errors
+        // when multiple backends run the same test file.
+        if (auto cached = filePath in fileCache) {
+            ParsedModule result;
+            result.module_ = *cached;
+            return result;
+        }
+
         foreach (importPath; importPaths)
             addImport(importPath);
 
@@ -154,6 +175,14 @@ final class Compiler {
 
         const content = readText(filePath);
         ParsedModule parsed = dmdParseModule(filePath, content);
+        // Cache the module immediately after parsing so that subsequent calls
+        // with the same file path return the cached module even if semantic
+        // analysis fails.  DMD registers modules in its internal table during
+        // parsing; not caching here would cause "specified twice" errors when
+        // another backend tries to parse the same file after a semantic failure.
+        if (parsed.module_ !is null)
+            fileCache[filePath] = parsed.module_;
+
         if (parsed.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
 
