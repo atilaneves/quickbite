@@ -35,13 +35,8 @@ private immutable testFiles = [
 // the full multi-subpackage real library.
 private immutable cerealImportPaths = ["vendor/cerealed/src", "vendor/ut_stubs"];
 
-// Tests that the IR backend cannot yet handle.  Remove @ShouldFail once
-// the relevant backend features are implemented.
-private immutable shouldFailFiles = [
-    "vendor/cerealed/tests/cerealiser_impl.d",
-    "vendor/cerealed/tests/encode.d",
-    "vendor/cerealed/tests/encode_decode.d",
-];
+// All cerealed test files now pass with the IR backend.
+private immutable shouldFailFiles = (string[]).init;
 
 // One test per cerealed test file for the IR backend.  Each test exercises
 // only the unittest blocks in that file, so failures are localised.

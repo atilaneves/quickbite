@@ -9,11 +9,11 @@ template isCerealiserRange(R) {
 
 
 struct DynamicArrayRange {
-    void put(in ubyte val) nothrow @safe {
+    void put(in ubyte val) pure nothrow @safe {
         _bytes ~= val;
     }
 
-    void put(in ubyte[] val) nothrow @safe {
+    void put(in ubyte[] val) pure nothrow @safe {
         _bytes ~= val;
     }
 

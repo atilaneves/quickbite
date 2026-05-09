@@ -10,10 +10,11 @@ public void shouldEqual(T, U)(T t, U u) {
 }
 
 public void shouldNotEqual(T, U)(T t, U u) {}
-public void shouldThrow(T)(T) {}
-public void shouldThrow(E, T)(T) {}
-public void shouldThrowWithMessage(T)(T, string) {}
-public void shouldNotThrow(T)(T) {}
+public void shouldThrow(T)(lazy T) {}
+public void shouldThrow(E, T)(lazy T) {}
+public void shouldThrowWithMessage(T)(lazy T, string) {}
+public void shouldNotThrow(T)(lazy T) {}
+public void shouldNotThrow(E, T)(lazy T) {}
 public void shouldBeTrue(T)(T val) { assert(val); }
 public void shouldBeFalse(T)(T val) { assert(!val); }
 public struct Types(T...) {}
