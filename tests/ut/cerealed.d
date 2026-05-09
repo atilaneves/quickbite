@@ -4,23 +4,7 @@ private:
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
-import std.traits: EnumMembers;
 import unit_threaded;
-
-// cerealed library source files, in inclusion order.
-// package.d is excluded — it becomes empty after import-stripping.
-private immutable libFiles = [
-    "vendor/cerealed/src/attrs.d",
-    "vendor/cerealed/src/traits.d",
-    "vendor/cerealed/src/utils.d",
-    "vendor/cerealed/src/scopebuffer.d",
-    "vendor/cerealed/src/range.d",
-    "vendor/cerealed/src/cereal.d",
-    "vendor/cerealed/src/cerealiser.d",
-    "vendor/cerealed/src/decerealiser.d",
-    "vendor/cerealed/src/cerealizer.d",
-    "vendor/cerealed/src/decerealizer.d",
-];
 
 // One entry per cerealed test file.  Each runs independently against
 // the full library source so there are no cross-file symbol conflicts.
@@ -46,362 +30,32 @@ private immutable testFiles = [
     "vendor/cerealed/tests/utils.d",
 ];
 
-// Minimal stubs for unit_threaded symbols used inside unittest blocks.
-// These are defined in D so DMD can type-check them; quickbite's VM
-// executes them.  shouldThrow variants are no-ops until exception
-// support lands in both backends.
-private immutable unitThreadedStub = q{
-    void writelnUt(T...)(T) {}
-    // Asserts t == u when == compiles (e.g. arrays, integrals).  For types
-    // where == is rejected by DMD (e.g. int[int] vs const(int[int])), the
-    // static-if branch is skipped and the call is a no-op.
-    void shouldEqual(T, U)(T t, U u) {
-        static if (__traits(compiles, t == u))
-            assert(t == u, "shouldEqual failed");
-    }
-    // shouldThrow is a no-op until exception support lands in both backends.
-    void shouldThrow(T)(T) {}
-    void shouldThrow(lazy void) {}
-    void shouldThrow(E : Throwable, T)(T) {}
-    void shouldThrowWithMessage(T)(T, string) {}
-    void shouldNotThrow(T)(T) {}
-    void shouldNotThrow(lazy void) {}
-    void shouldNotThrow(E : Throwable, T)(T) {}
-    void shouldNotEqual(T, U)(T t, U u) {
-        static if (__traits(compiles, t == u))
-            assert(t != u, "shouldNotEqual failed");
-    }
-    void shouldBeTrue(T)(T val) { assert(val); }
-    void shouldBeFalse(T)(T val) { assert(!val); }
-    // unit_threaded property-testing stubs — no-ops until property testing lands.
-    struct Types(T...) {}
-    void check(alias pred)() {}
-    enum SingleThreaded;
-};
+// Derive the unit_threaded source directory from the location of ShouldFail
+// so we don't hardcode a dub cache path.
+// ShouldFail is in: .../unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
+// Going up 6 dirs reaches .../unit-threaded/, then append "source".
+private immutable unitThreadedSrcPath = () {
+    import std.path: buildPath, dirName;
+    const attrsFile = __traits(getLocation, ShouldFail)[0];
+    return buildPath(
+        attrsFile.dirName.dirName.dirName.dirName.dirName.dirName,
+        "source",
+    );
+}();
 
-// One test per (backend, test-file) pair.  Each test exercises only
-// the unittest blocks in that file, so failures are localised.
+private immutable cerealImportPaths = ["vendor/cerealed/src", unitThreadedSrcPath];
+
+// One test per cerealed test file for the IR backend.  Each test exercises
+// only the unittest blocks in that file, so failures are localised.
 // @ShouldFail: all cerealed tests are currently expected to fail because
-// the backends do not yet support the required language features.  Remove
+// the IR backend does not yet support the required language features.  Remove
 // @ShouldFail on a test-by-test basis as features land and tests start
 // passing.  An unexpected pass (test passing while still annotated) will
 // be flagged by unit-threaded, prompting removal of the annotation.
-static foreach (backend; EnumMembers!ExecutorBackend) {
-    static foreach (testFile; testFiles) {
-        static if (testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/utils.d" ||
-            testFile == "vendor/cerealed/tests/compile_time.d" ||
-            testFile == "vendor/cerealed/tests/example.d" ||
-            testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
-            testFile == "vendor/cerealed/tests/pointers.d" ||
-            testFile == "vendor/cerealed/tests/enums.d" ||
-            testFile == "vendor/cerealed/tests/static_array.d" ||
-            testFile == "vendor/cerealed/tests/classes.d" ||
-            testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
-            testFile == "vendor/cerealed/tests/property.d" ||
-            testFile == "vendor/cerealed/tests/protocol_unit.d" ||
-            testFile == "vendor/cerealed/tests/range.d" ||
-            testFile == "vendor/cerealed/tests/bugs.d" ||
-            testFile == "vendor/cerealed/tests/decode.d" ||
-            testFile == "vendor/cerealed/tests/encode.d" ||
-            testFile == "vendor/cerealed/tests/encode_decode.d" ||
-            testFile == "vendor/cerealed/tests/nested.d" ||
-            testFile == "vendor/cerealed/tests/structs.d")
-        {
-            @(backend.text ~ ".cerealed." ~ testFile)
-            unittest {
-                makeCerealSource(testFile).runTests(backend);
-            }
-        }
-        else
-        {
-            @ShouldFail
-            @(backend.text ~ ".cerealed." ~ testFile)
-            unittest {
-                makeCerealSource(testFile).runTests(backend);
-            }
-        }
+static foreach (testFile; testFiles) {
+    @ShouldFail
+    @("ir.cerealed." ~ testFile)
+    unittest {
+        runTests(testFile, cerealImportPaths, ExecutorBackend.ir);
     }
-}
-
-// Build the complete source string for one cerealed test file:
-// stubs, then the full library, then the test file itself.
-private string makeCerealSource(in string testFile) @safe {
-    import std.file: readText;
-    import std.array: appender;
-
-    auto source = appender!string; // auto: appender result must be mutable
-    source ~= unitThreadedStub;
-    foreach (lib; libFiles)
-        source ~= processLibraryFile(readText(lib));
-    source ~= patchTestSource(processFile(readText(testFile)));
-    return source[];
-}
-
-// Library files provide declarations for the selected test file.  Their own
-// unittest blocks would make every per-file test run dependency tests too.
-private string processLibraryFile(in string content) @safe {
-    return stripAaGrainOverloads(stripUnittestBlocks(patchCerealSource(processFile(content))));
-}
-
-// Replace exact single-line patterns in cereal.d that trigger
-// _d_arraysetlengthTImpl in DMD-as-library fullSemantic.
-private string patchCerealSource(in string content) @safe {
-    import std.string: replace;
-    return content
-        // Replace val.length = cast(uint)length in decerealiseArrayImpl.
-        // length-set calls _d_arraysetlengthTImpl; new ElementType!T[n] is
-        // CTFE-safe.  ElementType!T is imported via std.range inside the
-        // surrounding function so the symbol is in scope.
-        .replace(
-            "if(val.length != length) val.length = cast(uint)length;",
-            "if(val.length != length) val = new ElementType!T[length];",
-        )
-        .replace(
-            `throw new Exception(text("Illegal value (", val, ") for type ", T.stringof));`,
-            `throw new Exception("Illegal enum value");`,
-        )
-        .replace(
-            "enforce(needed <= cereal.bytesLeft,\n"
-            ~ "            text(\"Not enough bytes left to decerealise \","
-            ~ " T.stringof, \" of \", length, \" elements\\n\",\n"
-            ~ "                 \"Bytes left: \", cereal.bytesLeft,"
-            ~ " \", Needed: \", needed, \", bytes: \", cereal.bytes));",
-            `enforce(needed <= cereal.bytesLeft, "Not enough bytes left.");`,
-        )
-        // Replace grainAllMembers text() assert message: text() with string args
-        // forces textImpl instantiation → Appender → _d_arraysetlengthTImpl.
-        .replace(
-            "        assert(val !is null, text(\"Cannot deserialise into null value. \",\n"
-            ~ "                                  \"Possible cause: no default constructor for \",\n"
-            ~ "                                  fullyQualifiedName!T, \".\"));",
-            "        assert(val !is null, \"Cannot deserialise into null value.\");",
-        )
-        // Replace grainRawArray's decerealiser branch: val.length = 0 / val.length++
-        // both call _d_arraysetlengthTImpl.  Replaced with ~= append loop which uses
-        // _d_arrayappendcTX (CTFE-safe).
-        .replace(
-            "        val.length = 0;\n"
-            ~ "        while(cereal.bytesLeft()) {\n"
-            ~ "            val.length++;\n"
-            ~ "            cereal.grain(val[$ - 1]);\n"
-            ~ "        }",
-            "        T[] _tmp;\n"
-            ~ "        while(cereal.bytesLeft()) {\n"
-            ~ "            _tmp ~= T.init;\n"
-            ~ "            cereal.grain(_tmp[$ - 1]);\n"
-            ~ "        }\n"
-            ~ "        val = _tmp;",
-        )
-        // Replace grainLengthedArray's val.length = cast(...) with array allocation.
-        // val.length assignment calls _d_arraysetlengthTImpl; new T[n] is CTFE-safe.
-        .replace(
-            "    val.length = cast(typeof(val.length))length;",
-            "    val = new T[cast(typeof(val.length))length];",
-        );
-}
-
-// Replace patterns in test files that trigger _d_arraysetlengthTImpl in
-// DMD-as-library fullSemantic.  Unlike library patches these are applied to
-// the test file itself rather than to the library declarations.
-// InnerClass.toString() in pointers.d calls std.conv.text() which forces
-// instantiation of textImpl → Appender → _d_arraysetlengthTImpl.  The method
-// is only used for shouldEqual output and never executed by a unittest block,
-// so replacing its body with a trivial string literal is safe.
-private string patchTestSource(in string content) @safe {
-    import std.string: replace;
-    return content
-        .replace(
-            `return text("InnerClass(", s, ", ", b, ")");`,
-            `return "InnerClass";`,
-        );
-}
-
-// Replace bodies of grain overloads for associative arrays with no-ops.
-// Their bodies call val.keys which calls core.internal.newaa which does
-// arr.length = n → object._d_arraysetlengthTImpl during fullSemantic.
-// Grain overloads for AAs start with a line containing "grain(" and
-// have "isAssociativeArray!T" in their template constraint.
-// We keep the signature so that DMD can resolve overloads for structs with
-// AA fields, but replace the body with an empty body to avoid the runtime
-// hook issue.
-private string stripAaGrainOverloads(in string content) @safe {
-    import std.array: appender;
-    import std.string: splitLines, strip, indexOf;
-
-    auto result = appender!string; // auto: appender result must be mutable
-    bool skipping;
-    bool emittedClose;
-    int braceDepth;
-
-    foreach (line; content.splitLines) {
-        const trimmed = line.strip;
-
-        if (!skipping && isAaGrainSignature(trimmed)) {
-            skipping = true;
-            emittedClose = false;
-            braceDepth = braceDelta(line);
-            // Emit the signature line but strip its opening brace, then
-            // immediately close with an empty body.
-            result ~= line;
-            result ~= "\n";
-            continue;
-        }
-
-        if (skipping) {
-            braceDepth += braceDelta(line);
-            // Emit the closing brace once, right after the signature, to
-            // form an empty function body.  Skip all original body lines.
-            if (!emittedClose) {
-                result ~= "}\n";
-                emittedClose = true;
-            }
-            if (braceDepth == 0)
-                skipping = false;
-            continue;
-        }
-
-        result ~= line;
-        result ~= "\n";
-    }
-
-    return result[];
-}
-
-// Returns true if the (trimmed) line is the start of a grain overload
-// that has an isAssociativeArray!T template constraint.
-// Such overloads have one of:
-//   void grain(C, T)(...) ... if(... && isAssociativeArray!T)
-//   void grain(U, C, T)(...) ... if(... && isAssociativeArray!T)
-private bool isAaGrainSignature(in string trimmed) @safe pure nothrow {
-    import std.string: indexOf, startsWith;
-    return trimmed.startsWith("void grain(") && trimmed.indexOf("isAssociativeArray!T") >= 0;
-}
-
-// Strip lines that become redundant or undefined after concatenation:
-// module declarations, intra-library imports, and unit_threaded imports
-// (whose symbols are provided by the stub above).
-// Multi-line imports (where the first line ends with ':' and the symbols
-// continue on subsequent lines) are stripped in full: once a strippable
-// import line is found we keep skipping until the terminating ';' is seen.
-// Single-line imports with trailing comments (e.g. `import foo; // note`)
-// are treated as terminated because the ';' precedes the comment.
-private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith, indexOf, replace;
-    import std.array: appender;
-
-    auto result = appender!string; // auto: appender result must be mutable
-    bool strippingImport; // true while consuming continuation lines of a stripped import
-    foreach (line; content.splitLines) {
-        const trimmed = line.strip;
-
-        if (strippingImport) {
-            // Keep stripping until we find the terminating semicolon.
-            if (statementEnds(trimmed))
-                strippingImport = false;
-            continue;
-        }
-
-        if (trimmed.startsWith("module cerealed.") ||
-            trimmed.startsWith("module tests.") ||
-            trimmed.startsWith("import cerealed") ||
-            trimmed.startsWith("public import cerealed") ||
-            trimmed.startsWith("import unit_threaded")) {
-            // If the stripped line does not contain ';' before any comment,
-            // it is a multi-line import; flag that we need to skip
-            // continuation lines too.
-            if (!statementEnds(trimmed))
-                strippingImport = true;
-            continue;
-        }
-        // Strip `pure` from unittest attribute lists so that unittest blocks
-        // that are marked `@safe pure unittest` compile even when the code
-        // under test (e.g. cerealise) is not pure.
-        const processed = stripPureFromUnittest(line);
-        result ~= processed;
-        result ~= "\n";
-    }
-    return result[];
-}
-
-// Remove `pure` attribute tokens from lines that contain `unittest` so that
-// unittest blocks annotated `@safe pure unittest` or `pure @safe unittest`
-// do not cause DMD errors when the called functions are not pure.
-private string stripPureFromUnittest(in string line) @safe pure {
-    import std.string: strip, replace, indexOf, endsWith;
-
-    const trimmed = line.strip;
-    // Only touch lines that are unittest declarations (not calls inside blocks).
-    if (!trimmed.endsWith("unittest") && trimmed.indexOf("unittest") < 0)
-        return line;
-    // Replace the known combinations in order longest first.
-    return line
-        .replace("@safe pure unittest", "@safe unittest")
-        .replace("pure @safe unittest", "@safe unittest")
-        .replace("pure nothrow @safe unittest", "@safe unittest")
-        .replace("@safe nothrow pure unittest", "@safe unittest")
-        .replace("nothrow pure @safe unittest", "@safe unittest")
-        .replace("@nogc @safe pure unittest", "@safe unittest")
-        .replace("pure unittest", "unittest");
-}
-
-// Returns true if the (stripped) line ends the statement, i.e. contains a
-// semicolon before any inline // comment.  This handles imports like:
-//     import foo; // trailing comment
-// which endsWith(";") would reject because the line ends with the comment.
-private bool statementEnds(in string trimmed) @safe pure nothrow {
-    import std.string: indexOf;
-
-    const semicolon = trimmed.indexOf(';');
-    if (semicolon < 0)
-        return false;
-    const comment = trimmed.indexOf("//");
-    return comment < 0 || semicolon < comment;
-}
-
-private string stripUnittestBlocks(in string content) @safe {
-    import std.array: appender;
-    import std.string: splitLines, startsWith, strip;
-
-    auto result = appender!string; // auto: appender result must be mutable
-    bool skipping;
-    int braceDepth;
-
-    foreach (line; content.splitLines) {
-        const trimmed = line.strip;
-        if (!skipping && trimmed.startsWith("unittest")) {
-            skipping = true;
-            braceDepth = braceDelta(line);
-            continue;
-        }
-
-        if (skipping) {
-            braceDepth += braceDelta(line);
-            if (braceDepth == 0)
-                skipping = false;
-            continue;
-        }
-
-        result ~= line;
-        result ~= "\n";
-    }
-
-    return result[];
-}
-
-// Known limitation: braces inside string literals or comments are counted,
-// which can produce incorrect results for lines like `string s = "open {";`.
-// This is acceptable for the current cerealed sources which have no such lines.
-private int braceDelta(in string line) @safe pure nothrow @nogc {
-    int delta;
-    foreach (ch; line) {
-        if (ch == '{') {
-            ++delta;
-            continue;
-        }
-
-        if (ch == '}')
-            --delta;
-    }
-    return delta;
 }
