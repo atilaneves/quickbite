@@ -3,7 +3,6 @@ module ut.cerealed;
 private:
 
 import quickbite: ExecutorBackend, runTests;
-import std.conv: text;
 import unit_threaded;
 
 // One entry per cerealed test file.  Each runs independently against
@@ -30,32 +29,40 @@ private immutable testFiles = [
     "vendor/cerealed/tests/utils.d",
 ];
 
-// Derive the unit_threaded source directory from the location of ShouldFail
-// so we don't hardcode a dub cache path.
-// ShouldFail is in: .../unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
-// Going up 6 dirs reaches .../unit-threaded/, then append "source".
-private immutable unitThreadedSrcPath = () {
-    import std.path: buildPath, dirName;
-    const attrsFile = __traits(getLocation, ShouldFail)[0];
-    return buildPath(
-        attrsFile.dirName.dirName.dirName.dirName.dirName.dirName,
-        "source",
-    );
-}();
+// vendor/ut_stubs provides a single-module stub for the unit_threaded
+// symbols used by cerealed tests (shouldEqual, shouldThrow, etc.).
+// This allows DMD to resolve `import unit_threaded` without pulling in
+// the full multi-subpackage real library.
+private immutable cerealImportPaths = ["vendor/cerealed/src", "vendor/ut_stubs"];
 
-private immutable cerealImportPaths = ["vendor/cerealed/src", unitThreadedSrcPath];
+// Tests that the IR backend cannot yet handle.  Remove @ShouldFail once
+// the relevant backend features are implemented.
+private immutable shouldFailFiles = [
+    "vendor/cerealed/tests/cerealiser_impl.d",
+    "vendor/cerealed/tests/encode.d",
+    "vendor/cerealed/tests/encode_decode.d",
+];
 
 // One test per cerealed test file for the IR backend.  Each test exercises
 // only the unittest blocks in that file, so failures are localised.
-// @ShouldFail: all cerealed tests are currently expected to fail because
-// the IR backend does not yet support the required language features.  Remove
-// @ShouldFail on a test-by-test basis as features land and tests start
-// passing.  An unexpected pass (test passing while still annotated) will
-// be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (testFile; testFiles) {
-    @ShouldFail
-    @("ir.cerealed." ~ testFile)
-    unittest {
-        runTests(testFile, cerealImportPaths, ExecutorBackend.ir);
+    static if (shouldFailFiles.contains(testFile)) {
+        @ShouldFail
+        @("ir.cerealed." ~ testFile)
+        unittest {
+            runTests(testFile, cerealImportPaths, ExecutorBackend.ir);
+        }
+    } else {
+        @("ir.cerealed." ~ testFile)
+        unittest {
+            runTests(testFile, cerealImportPaths, ExecutorBackend.ir);
+        }
     }
+}
+
+private bool contains(immutable string[] arr, string value) @safe pure nothrow {
+    foreach (elem; arr)
+        if (elem == value)
+            return true;
+    return false;
 }
