@@ -31,6 +31,14 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         runParsedTests(parsed.module_);
     }
 
+    public override void runTests(in string filePath, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseFile;
+
+        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
+        auto parsed = parseFile(filePath, importPaths);
+        runParsedTests(parsed.module_);
+    }
+
     public override void runParsedTests(
         imported!"dmd.dmodule".Module module_,
     ) {
@@ -766,7 +774,7 @@ private struct BodyWalker {
             else
                 structFields[args[i].refOwner][args[i].refField] =
                     refValues[refIndex];
-            refIndex = refIndex + 1;
+            ++refIndex;
         }
     }
 

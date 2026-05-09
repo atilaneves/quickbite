@@ -8,16 +8,8 @@ import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
-shared static this() {
-    import std.path: buildPath, dirName;
-    // __FILE_FULL_PATH__ is tests/ut/cerealed.d; project root is 3 levels up.
-    const projectRoot = __FILE_FULL_PATH__.dirName.dirName.dirName;
-    addImportPath(buildPath(projectRoot, "vendor", "cerealed", "src"));
-    addImportPath(buildPath(projectRoot, "vendor", "ut_stubs"));
-}
-
-// One entry per cerealed test file.  Each runs independently; DMD resolves
-// cerealed imports from the import path set up in shared static this().
+// One entry per cerealed test file.  Each runs independently against
+// the full library source so there are no cross-file symbol conflicts.
 private immutable testFiles = [
     "vendor/cerealed/tests/bugs.d",
     "vendor/cerealed/tests/cerealiser_impl.d",
@@ -40,32 +32,18 @@ private immutable testFiles = [
     "vendor/cerealed/tests/utils.d",
 ];
 
-// Minimal stubs for unit_threaded symbols used inside unittest blocks.
-// These are defined in D so DMD can type-check them; quickbite's VM
-// executes them.  shouldThrow variants are no-ops until exception
-// support lands in both backends.
-private immutable unitThreadedStub = q{
-    void writelnUt(T...)(T) {}
-    // Asserts t == u when == compiles (e.g. arrays, integrals).  For types
-    // where == is rejected by DMD (e.g. int[int] vs const(int[int])), the
-    // static-if branch is skipped and the call is a no-op.
-    void shouldEqual(T, U)(T t, U u) {
-        static if (__traits(compiles, t == u))
-            assert(t == u, "shouldEqual failed");
-    }
-    // shouldThrow is a no-op until exception support lands in both backends.
-    void shouldThrow(lazy void action) {}
-    void shouldThrow(E : Throwable, T)(T) {}
-    void shouldThrowWithMessage(lazy void action, string) {}
-    void shouldNotThrow(lazy void action) {}
-    void shouldNotThrow(E : Throwable, T)(T) {}
-    void shouldNotEqual(T, U)(T t, U u) {}
-    void shouldBeTrue(T)(T val) { assert(val); }
-    void shouldBeFalse(T)(T val) { assert(!val); }
-    enum SingleThreaded;
-    struct Types(T...) {}
-    void check(alias F, int numFuncCalls = 100)() {}
-};
+// Derive the unit_threaded source directory from the location of a known
+// symbol in the package so we don't hardcode a dub cache path.
+private immutable unitThreadedSrcPath = () {
+    import std.path: buildPath, dirName;
+    import unit_threaded.runner.attrs: ShouldFail;
+    // ShouldFail is defined in unit_threaded/runner/attrs.d
+    // Go up four directories: attrs.d → runner → unit_threaded → source
+    const attrsFile = __traits(getLocation, ShouldFail)[0];
+    return attrsFile.dirName.dirName.dirName.dirName;
+}();
+
+private immutable cerealImportPaths = ["vendor/cerealed/src", unitThreadedSrcPath];
 
 // One test per (backend, test-file) pair.  Each test exercises only
 // the unittest blocks in that file, so failures are localised.
@@ -76,127 +54,10 @@ private immutable unitThreadedStub = q{
 // be flagged by unit-threaded, prompting removal of the annotation.
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (testFile; testFiles) {
-        static if (testFile == "vendor/cerealed/tests/bugs.d" ||
-            testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
-            testFile == "vendor/cerealed/tests/classes.d" ||
-            testFile == "vendor/cerealed/tests/compile_time.d" ||
-            testFile == "vendor/cerealed/tests/decode.d" ||
-            testFile == "vendor/cerealed/tests/encode.d" ||
-            testFile == "vendor/cerealed/tests/encode_decode.d" ||
-            testFile == "vendor/cerealed/tests/enums.d" ||
-            testFile == "vendor/cerealed/tests/example.d" ||
-            testFile == "vendor/cerealed/tests/multidimensional_array.d" ||
-            testFile == "vendor/cerealed/tests/nested.d" ||
-            testFile == "vendor/cerealed/tests/pointers.d" ||
-            testFile == "vendor/cerealed/tests/property.d" ||
-            testFile == "vendor/cerealed/tests/protocol_unit.d" ||
-            testFile == "vendor/cerealed/tests/range.d" ||
-            testFile == "vendor/cerealed/tests/reset.d" ||
-            testFile == "vendor/cerealed/tests/static_array.d" ||
-            testFile == "vendor/cerealed/tests/structs.d" ||
-            testFile == "vendor/cerealed/tests/utils.d")
-        {
-            @(backend.text ~ ".cerealed." ~ testFile)
-            unittest {
-                makeCerealSource(testFile).runTests(backend);
-            }
-        }
-        else
-        {
-            @ShouldFail
-            @(backend.text ~ ".cerealed." ~ testFile)
-            unittest {
-                makeCerealSource(testFile).runTests(backend);
-            }
+        @ShouldFail
+        @(backend.text ~ ".cerealed." ~ testFile)
+        unittest {
+            runTests(testFile, cerealImportPaths, backend);
         }
     }
-}
-
-private string makeCerealSource(in string testFile) @safe {
-    import std.file: readText;
-    return processFile(readText(testFile));
-}
-
-// Library files provide declarations for the selected test file.  Their own
-// unittest blocks would make every per-file test run dependency tests too.
-private string processLibraryFile(in string content) @safe {
-    return stripUnittestBlocks(processFile(content));
-}
-
-// Package-visible wrapper around processFile for unit tests in sibling modules.
-package string processFilePackage(in string content) @safe {
-    return processFile(content);
-}
-
-// Strip lines that become redundant or undefined after concatenation:
-// module declarations, intra-library imports, and unit_threaded imports
-// (whose symbols are provided by the stub above).
-// Multi-line `import cerealed.X:\n    sym1, sym2;` imports are handled by
-// tracking a continuation state so both lines are dropped together.
-private string processFile(in string content) @safe {
-    import std.string: splitLines, strip, startsWith, replace;
-    import std.array: appender;
-
-    auto result = appender!string; // auto: appender result must be mutable
-    bool droppingImport;
-    foreach (line; content.splitLines) {
-        const trimmed = line.strip;
-        // A continuation line from a multi-line `import cerealed.*:` import.
-        if (droppingImport) {
-            // The continuation ends when the line has a `;` before any `//`.
-            if (lineHasSemicolon(trimmed))
-                droppingImport = false;
-            continue;
-        }
-        if (trimmed.startsWith("module cerealed.") ||
-            trimmed.startsWith("module tests.") ||
-            trimmed.startsWith("import cerealed") ||
-            trimmed.startsWith("public import cerealed") ||
-            trimmed.startsWith("import unit_threaded"))
-        {
-            // If the stripped line does not contain ';' before any inline
-            // comment, it is a multi-line import; flag continuation lines.
-            if (!lineHasSemicolon(trimmed))
-                droppingImport = true;
-            continue;
-        }
-        // Strip `pure` from unittest attribute combos so that non-pure
-        // library functions can be called from unittest blocks without a
-        // "pure function cannot call impure" compile error.
-        const processed = line
-            .replace("@safe pure unittest", "@safe unittest")
-            .replace("pure @safe unittest", "@safe unittest");
-        result ~= processed;
-        result ~= "\n";
-    }
-    return result[];
-}
-
-// Returns true when `line` contains a `;` that is not inside a `//` comment.
-// This correctly handles single-line imports with trailing comments such as
-//   `import cerealed.scopebuffer; // some comment`
-private bool lineHasSemicolon(in string line) @safe pure nothrow @nogc {
-    size_t i;
-    while (i < line.length) {
-        if (line[i] == ';')
-            return true;
-        if (i + 1 < line.length && line[i] == '/' && line[i + 1] == '/')
-            return false;
-        i = i + 1;
-    }
-    return false;
-}
-
-private string stripUnittestBlocks(in string content) @safe {
-    import std.array: appender;
-    import std.string: splitLines, startsWith, strip;
-
-    auto result = appender!string; // auto: appender result must be mutable
-    foreach (line; content.splitLines) {
-        if (line.strip.startsWith("module "))
-            continue;
-        result ~= line;
-        result ~= "\n";
-    }
-    return result[];
 }
