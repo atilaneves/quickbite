@@ -260,6 +260,18 @@ struct BodyLowerer {
         if (auto equal = expression.isEqualExp) {
             import dmd.tokens: EXP;
 
+            // In DMD 2.112+, array equality comparisons are stored as an
+            // EqualExp with a `lowering` field containing the actual
+            // __equals call.  Delegate to the lowering if present.
+            if (equal.lowering !is null)
+                return lowerExpression(equal.lowering, lowerer);
+
+            // In DMD 2.112+, simple array equality (e.g. ubyte[]) goes through
+            // memcmp rather than __equals, so the EqualExp has no lowering.
+            // Detect this via the operand type and emit ArrayEqual directly.
+            if (isArrayEqualExp(equal))
+                return lowerArrayEqualExp(equal, lowerer);
+
             if (equal.op == EXP.notEqual)
                 return lowerBinaryExpression(equal, Operation.notEqual, lowerer);
 
@@ -539,6 +551,39 @@ struct BodyLowerer {
             left,
             right,
         ));
+        return destination;
+    }
+
+    // Handles EqualExp for array types when DMD 2.112+ uses memcmp instead
+    // of __equals (no lowering field).  Emits ArrayEqual directly.
+    uint lowerArrayEqualExp(
+        imported!"dmd.expression".EqualExp equal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayEqual, Instruction, UnaryOp,
+            UnaryOperation;
+
+        const left = lowerExpression(equal.e1, lowerer);
+        const right = lowerExpression(equal.e2, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayEqual(
+            destination,
+            left,
+            right,
+        ));
+
+        import dmd.tokens: EXP;
+
+        if (equal.op == EXP.notEqual) {
+            const negated = allocateTemporary;
+            instructions ~= Instruction(UnaryOp(
+                negated,
+                destination,
+                UnaryOperation.not,
+            ));
+            return negated;
+        }
+
         return destination;
     }
 
@@ -1343,6 +1388,22 @@ private bool isArrayEqualityCall(imported!"dmd.expression".CallExp call) @truste
     import dmd.id: Id;
 
     return call.f.ident == Id.__equals;
+}
+
+// Returns true when the EqualExp compares two array-typed expressions.
+// Used to handle array equality in DMD 2.112+ where simple array
+// comparisons (e.g. ubyte[]) use memcmp instead of __equals, producing
+// an EqualExp without a lowering field.
+private bool isArrayEqualExp(
+    imported!"dmd.expression".EqualExp equal,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (equal.e1 is null || equal.e1.type is null)
+        return false;
+
+    const ty = equal.e1.type.toBasetype.ty;
+    return ty == TY.Tarray || ty == TY.Tsarray;
 }
 
 private imported!"quickbite.ir.instruction".IntegerType castTarget(
