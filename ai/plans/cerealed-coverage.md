@@ -1,225 +1,211 @@
-# Plan: Run Cerealed Unit Tests on Both Backends
+# Plan: Run Cerealed Tests Through DMD Import Resolution
 
-## Goal
+## Summary
 
-Run the real cerealed serialization library's `unittest` blocks through
-quickbite's IR and tree-walking backends, working toward full coverage.
-Both backends are extended in parallel using worktrees + subagents.
+The cerealed coverage work must compile the real vendored library and
+test files with the DMD frontend.  DMD should receive a real root file
+and explicit import paths, chase imports normally, run semantic analysis,
+and hand the resulting AST to quickbite's backends.
 
----
+There must be no vendor patching, source stripping, synthetic source
+assembly, druntime patching, fake runtime hooks, or other workarounds.
+If DMD produces an AST that a backend cannot handle, the backend grows
+support for that AST.
 
-## What Has Been Done (cerealed-setup branch)
+Continue work on the existing `ir-cerealed` and `tw-cerealed` branches,
+undoing workaround commits as needed.
 
-- **Vendored cerealed** into `vendor/cerealed/src/` and
-  `vendor/cerealed/tests/` (copied from `~/.dub/packages/cerealed/`).
-- **Added `tests/ut/cerealed.d`**: generates one test per
-  `(backend, testFile)` pair.  `makeCerealSource` concatenates the
-  unit_threaded stubs + all library `.d` files + the test file into one
-  string, stripping `module cerealed.*`, `module tests.*`,
-  `import cerealed*`, and `import unit_threaded` lines.
-- **Registered** `"ut.cerealed"` in `tests/main.d`.
-- **Set `fatalErrorHandler = () => true`** in `Compiler` to prevent DMD
-  from calling `exit()` on cascading errors; without this the first
-  failing cerealed test aborted the entire process.
-- **Patched `vendor/cerealed/src/cerealiser.d`**:
-  - Removed `AppenderCerealiser` and `ScopeBufferCerealiser` aliases.
-    Both trigger `_d_arraysetlengthTImpl` in DMD-as-library CTFE.
-  - Changed `Cerealiser` alias to `DynamicArrayCerealiser`.
-  - Changed `cerealise(alias F, ...)` to use `DynamicArrayCerealiser`.
-  - Replaced `enforce(..., text(...))` with a string literal because
-    `std.conv.text` uses `Appender` internally and also fails CTFE.
-  - Removed two `static assert(isCereal!)` / `static assert(isCerealiser!)`
-    calls that cascade through `grainBits` → CTFE failure.
-- **Patched `vendor/cerealed/src/range.d`**:
-  - Removed `static assert(isCerealiserRange!ScopeBufferRange)` (its
-    `put` uses C `realloc`, which fails in DMD-as-library CTFE).
+All changes live exclusively in the worktrees.  Nothing is committed to
+`master`.
 
 ---
 
-## Current Baseline (38 tests, 0 passing)
+## What Was Wrong
 
+The previous plan treated frontend failures as things to avoid by
+changing the input.  That is the wrong direction for this project.
+
+- Patching files under `vendor/` invalidates cerealed as a real-world
+  target.
+- Concatenating files into one string prevents DMD from exercising normal
+  module and import resolution.
+- Stripping module declarations, imports, attributes, or selected source
+  constructs changes the program under test.
+- Patching `object.d`, adding custom druntime paths, or defining fake
+  runtime hooks hides frontend/environment problems instead of fixing
+  them.
+
+The correct model is simple: configure DMD correctly, give it real files,
+and make quickbite execute the AST DMD gives back.
+
+---
+
+## Public API
+
+Extend the existing string-based API with an import-paths parameter:
+
+```d
+// compiler.d — extended entry point
+ParsedModule parseModule(string source, in string[] importPaths);
+
+// package.d — new runTests overload
+void runTests(string source, in string[] importPaths, ExecutorBackend backend);
 ```
-38 = 19 test files × 2 backends
+
+`parseModule(source, importPaths)` adds the given import paths then parses and
+semantically analyses the source.  `runTests(source, importPaths, backend)` calls
+`parseModule` then dispatches to the selected backend.
+
+Keep `runTests(string source, ExecutorBackend backend)` (no import paths) for
+small synthetic language fixtures that need no external imports.
+
+For each cerealed test case the caller reads the test file and passes its content:
+
+```d
+runTests(readText(testFile), cerealImportPaths, backend);
 ```
 
-| Failure category | Count | Root cause |
-|---|---|---|
-| DMD reported an error without a diagnostic message | 36 | `_d_arraysetlengthTImpl` not found during `fullSemantic` of templates that instantiate AA operations |
-| Unsupported declaration: struct (IR) | 1 | IR backend does not handle struct declarations |
-| Unsupported expression: declaration (tree-walking) | 1 | Tree-walking backend does not handle struct declarations |
+Import paths include `vendor/cerealed/src` and the path that provides
+`unit_threaded`.
 
-The silent-DMD-error category happens because `core.internal.newaa`
-uses `arr.length = n` (array length assignment) during template
-constraint evaluation, which is an unsupported CTFE intrinsic when DMD
-is used as a library.  Only `structs.d` avoids triggering these
-templates and therefore gets past DMD.
+### Module-collision handling via ParsedModule cache
+
+Running the same source against three backends must not parse it three times,
+and must not require stripping its `module` declaration.
+
+`Compiler` holds a `ParsedModule[string]` cache keyed by source content.
+`parseModule(source, importPaths)` checks the cache first; on a miss it calls
+`dmdParseModule` + `fullSemantic`, stores the result, and returns it.
+Subsequent calls with the same source return the cached module.
+Each backend receives the identical, immutable AST.
 
 ---
 
-## Phase 2: Unblock the Remaining 36 Tests
+## Frontend Requirements
 
-Before backend feature work makes sense, most tests need to pass DMD
-semantic analysis.
+- Upgrade `dmd:frontend` to an aligned DMD version, preferably
+  `~>2.112.1`, which is already cached locally and matches the installed
+  compiler family.
+- Use the aligned DMD frontend/compiler environment for standard library
+  and runtime import paths.
+- Add project import paths explicitly instead of rewriting source.
+- Let DMD own module declarations, import chasing, template
+  instantiation, CTFE during semantic analysis, and AST shape.
+- Do not patch or shadow druntime, Phobos, `object.d`, or cerealed.
 
-### 2.1 Identify the triggering templates
-
-The errors come from:
-```
-core.internal.newaa.Impl!(K, V) → arr.length = n → _d_arraysetlengthTImpl
-```
-instantiated when cerealed's template constraints evaluate `is(T ==
-struct)` on types that have an AA field somewhere in their template
-chain.  The triggering happens inside `grainMember` / `grainAllMembers`
-in `cereal.d` when a struct with an AA field is encountered.
-
-### 2.2 Patch cereal.d to avoid the AA CTFE path
-
-Option A (preferred): add an `@disable` guard or restructure the
-template constraints in `cereal.d` so that the AA grain functions are
-never evaluated during CTFE.  Concretely: wrap the AA-handling `grain`
-overload in a version block or move the `newaa` usage behind a runtime
-branch.
-
-Option B: strip the AA-handling grain overloads from the vendored
-cereal.d and re-enable them once associative arrays are supported by
-both backends.
-
-Implement in `vendor/cerealed/src/cereal.d`; add a comment explaining
-why.
+Repeated runs of the same source must not be handled by stripping module
+declarations.  The `ParsedModule` cache in `Compiler` ensures each unique
+source is compiled exactly once; the same semantic module is reused across
+backends.
 
 ---
 
-## Phase 3: Feature Roadmap
+## Backend-Specific Test Files
 
-Each feature must be added to **both backends in parallel** using
-worktrees + subagents.  TDD per AGENTS.md: write a failing test in
-`tests/ut/language.d` first, then implement.
-
-### 3.1 Struct declarations and field access (unblocks both failing tests)
-
-Already at the gate:
-- IR: `Unsupported declaration: struct` in lowering.d:654
-- TW: `Unsupported expression: declaration` in tree_walking.d:786
-
-**IR work:**
-- Emit a `StructType` record in the IR for struct declarations.
-- Add `FieldLoad` / `FieldStore` instructions for dot-var expressions.
-- Add struct instances to the value store (treat as a flat bag of
-  temporaries indexed by field).
-
-**Tree-walking work:**
-- Handle `StructDeclaration` and `VarDeclaration` of struct type.
-- Handle `DotVarExp` for field access.
-
-### 3.2 Operator overloading (`opOpAssign`, `opEquals`)
-
-Cerealed's public API is entirely driven by `enc ~= val` which DMD
-lowers to a `CallExp` on `opOpAssign!"~"` for the struct type.  Both
-backends need to handle this as a regular method call.  Verify first
-that `CatAssignExp` on a struct is already a `CallExp` after
-`fullSemantic` (it should be).
-
-### 3.3 Exception support
-
-Required to make `shouldThrow` stubs meaningful and for cerealed's own
-`CerealException` error paths.
-
-- `ThrowStatement` / throw expression
-- `TryCatchStatement` with typed catches
-- `Exception` class hierarchy (base case only)
-
-### 3.4 Strings
-
-- `string` as `immutable(char)[]`
-- String literals
-- String concatenation (`~`) and comparison
-- `char` type
-
-### 3.5 Floats
-
-- `float` / `double` literals and arithmetic
-- Bit-cast via union (cerealed's `FloatUnion` in utils.d)
-- Int ↔ float casts
-
-### 3.6 Associative arrays
-
-- `V[K]` type
-- Index read / write, `.length`, `.keys`, `.values`
-- `foreach (k; aa)` (key iteration)
-- `in` operator
-
-### 3.7 Classes
-
-- `new` expression (heap allocation)
-- Field access on class instances (`DotVarExp`)
-- Virtual method dispatch (direct first, then vtable)
-- `null` and `is null` / `!is null`
-
-### 3.8 Interfaces and virtual dispatch
-
-Needed for cerealed's output-range protocol.
-
-- Interface declarations
-- Virtual dispatch on interface references
-
-### 3.9 Pointers
-
-- `T*`, `new T` (pointer allocation), dereference (`*ptr`)
-- Null pointer checks
-
-### 3.10 `scope(exit)` and `with` statement
-
-- `ScopeGuardStatement`
-- `WithStatement`
+Each worktree may create a backend-specific test module
+(`tests/ut/language_ir.d`, `tests/ut/language_tw.d`).  These files are
+worktree-only by construction: just work in the worktree and they will
+never appear on `master`.  After both PRs are merged, the
+backend-specific tests are folded into `tests/ut/language.d` and the
+separate files are deleted.
 
 ---
 
-## Parallel Execution Model
+## Branch Cleanup
 
-Each feature phase (3.1–3.10) is implemented by two worktrees running
-as parallel subagents:
+Continue on `worktrees/ir-cerealed` and `worktrees/tw-cerealed`.
 
-| Worktree | Backend | Branch |
-|---|---|---|
-| `ir-<feature>` | IR + lowering | `ir-<feature>` |
-| `tw-<feature>` | Tree-walking | `tw-<feature>` |
+Before any new backend feature work, each branch must:
 
-Protocol per worktree:
-1. Write a failing test in `tests/ut/language.d`.
-2. Confirm it fails with `dub test -- -s <testname>`.
-3. Implement the feature.
-4. Confirm all tests pass with `dub test -- -s`.
-5. Open a PR for review.
+1. Upgrade `dmd:frontend` to `~>2.112.1` in `dub.sdl` as the first
+   commit.  Verify `dub test -- -s` passes clean before proceeding.
+2. Delete from `compiler.d`: `patchedDruntimePath()`, `dmdDruntimeSrcPath()`,
+   and the `addImport(patchedDruntimePath)` call in `Compiler.this`.
+3. Rewrite `tests/ut/cerealed.d`: remove `makeCerealSource`, `processFile`,
+   `processLibraryFile`, `patchCerealSource`, `patchTestSource`,
+   `stripAaGrainOverloads`, `stripUnittestBlocks`, `stripPureFromUnittest`,
+   `braceDelta`, `statementEnds`, `isAaGrainSignature`, and the inline
+   `unitThreadedStub` string.  Replace with `cerealImportPaths` + calls to
+   `runTests(readText(testFile), cerealImportPaths, backend)`.
+4. Mark all cerealed tests `@ShouldFail` and remove only those whose test
+   file now compiles and runs successfully on unmodified source.
+5. `dub test -- -s` clean.
 
-Do not merge both worktrees until both PRs are approved.
+`git diff -- vendor/` must stay empty.
+
+---
+
+## unit_threaded Boundary
+
+The current `vendor/ut_stubs/unit_threaded.d` is a test dependency
+boundary, not a workaround for cerealed or DMD.  It may remain only as a
+temporary replacement for the external test framework while quickbite is
+focused on cerealed itself.
+
+The stub must be imported as a normal module through DMD import
+resolution.  It must not be injected into generated source.
+
+Once cerealed coverage is stable, replace the stub by compiling the real
+`unit_threaded` dependency the same way: root file plus import paths.
+
+---
+
+## Feature Roadmap
+
+Use strict TDD for frontend, harness, and backend features.  For the
+new `parseModule(source, importPaths)` path, first add a failing test that
+compiles real source with its module declaration and an imported dependency,
+confirm it fails, and stop for feedback on the test before changing production
+code.  For backend work, add one failing language test, confirm it
+fails, make the smallest backend change that passes, then triangulate
+and refactor.
+
+When a cerealed test passes against unmodified source, remove its
+`@ShouldFail` in a separate commit.
+
+Initial backend areas remain:
+
+- struct declarations and field access,
+- method calls and operator overloads such as `opOpAssign` and
+  `opEquals`,
+- exception support,
+- strings and `char`,
+- floating point and casts,
+- associative arrays,
+- classes, interfaces, and virtual dispatch,
+- pointers,
+- `scope(exit)` and `with`.
+
+The exact next feature is determined by the first unsupported AST node
+seen after the real file frontend path is in place.
+
+---
+
+## Verification
+
+- Cerealed tests call `runTests(readText(testFile), cerealImportPaths, backend)`.
+- `tests/ut/cerealed.d` contains no string-building or source-transformation helpers.
+- Passing the same source for two different backends does not call
+  `dmdParseModule` twice (the cache returns the first result).
+- DMD import paths include `vendor/cerealed/src` and the `unit_threaded` path.
+- `git diff -- vendor/` is empty in both worktrees.
+- No `@ShouldFail` is removed until the unmodified test file compiles and
+  executes on the relevant backend.
+- `dub test -- -s` after each editing session.
 
 ---
 
 ## Critical Files
 
 | File | Role |
-|---|---|
-| `vendor/cerealed/` | Vendored cerealed source (patched) |
-| `tests/ut/cerealed.d` | Test driver (concat + runner) |
-| `tests/ut/language.d` | Language feature tests (TDD) |
-| `source/quickbite/backends/tree_walking.d` | Tree-walking backend |
-| `source/quickbite/backends/ir.d` | IR executor |
-| `source/quickbite/frontend/lowering.d` | IR lowering pass |
-| `source/quickbite/ir/instruction.d` | IR instruction set |
+|------|------|
+| `vendor/cerealed/src/cerealed/*.d` | Upstream originals, read-only |
+| `vendor/cerealed/tests/*.d` | Real cerealed test roots |
+| `vendor/ut_stubs/unit_threaded.d` | Temporary imported test stub |
+| `tests/ut/cerealed.d` | Cerealed test driver (`readText` + `runTests`) |
+| `dub.sdl` | Aligned `dmd:frontend` dependency |
 | `source/quickbite/frontend/compiler.d` | DMD-as-library wrapper |
-
----
-
-## Key Constraints
-
-- **No dub dependency on cerealed**: the vendored source is compiled
-  only via `parseModule` inside the test harness.
-- **No multi-module support needed**: single concatenated string per
-  test, with module declarations stripped.
-- **Only `unittest {}` blocks run**: named test functions
-  (`testEncDecBool`, etc.) are ignored by quickbite's discovery.
-- **Serial test execution**: `dub test -- -s` always, because DMD's
-  `__gshared` state is not thread-safe.
-- **CTFE limitations**: `std.array.Appender`, `std.conv.text`,
-  `core.internal.newaa` all fail in DMD-as-library CTFE.  Avoid them
-  in vendored patches.
+| `source/quickbite/backends/ir.d` | IR executor |
+| `source/quickbite/backends/tree_walking.d` | Tree-walking backend |
+| `source/quickbite/backends/dmd_ctfe.d` | DMD CTFE backend |
+| `source/quickbite/frontend/lowering.d` | IR lowering |
