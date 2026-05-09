@@ -32,6 +32,10 @@ public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
+public ParsedModule parseFile(in string filePath, in string[] importPaths) {
+    return compiler.parseFile(filePath, importPaths);
+}
+
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }
@@ -140,6 +144,34 @@ final class Compiler {
 
         return parsed;
     }
+
+    ParsedModule parseFile(in string filePath, in string[] importPaths) {
+        import dmd.errors: diagnostics;
+        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
+        import dmd.globals: global;
+        import std.file: readText;
+
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        foreach (importPath; importPaths)
+            addImport(importPath);
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const content = readText(filePath);
+        ParsedModule parsed = dmdParseModule(filePath, content);
+        if (parsed.diagnostics.hasErrors)
+            throw new Exception(diagnosticMessage);
+
+        parsed.module_.fullSemantic;
+        if (global.errors != 0)
+            throw new Exception(diagnosticMessage);
+
+        return parsed;
+    }
 }
 
 string diagnosticMessage() {
@@ -197,14 +229,14 @@ string dmdDruntimeSrcPath() {
 // path, `std/array.d` can resolve `_d_newarrayU` from the patched `object.d`
 // while still getting `_d_arraysetlengthTImpl` from the bundled druntime.
 //
-// The directory is created once per process in `/tmp/quickbite-druntime-<PID>`
-// and is intentionally leaked (never deleted): the OS cleans it on process
+// The directory is created once per process in a temporary location and is
+// intentionally leaked (never deleted): the OS cleans it on process
 // exit, and creating/deleting it for every compiler initialisation would be
 // racy.
 string patchedDruntimePath() {
     import core.sys.posix.unistd: getpid;
     import std.conv: text;
-    import std.file: mkdirRecurse, readText, write;
+    import std.file: mkdirRecurse, readText, tempDir, write;
     import std.path: buildPath;
     import std.string: indexOf;
 
@@ -227,7 +259,7 @@ string patchedDruntimePath() {
 
     // Write the patched object.d into a per-process temp directory so
     // concurrent dub test runs don't trample each other.
-    const patchDir = buildPath("/tmp", text("quickbite-druntime-", getpid));
+    const patchDir = buildPath(tempDir, text("quickbite-druntime-", getpid));
     mkdirRecurse(patchDir);
     write(buildPath(patchDir, "object.d"), patched);
     return patchDir;

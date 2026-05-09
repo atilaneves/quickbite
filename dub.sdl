@@ -11,7 +11,7 @@ configuration "unittest" {
     sourcePaths "tests"
     includePaths "tests"
 
-    dependency "dmd:frontend" version="~>2.112.1"
+    dependency "dmd:frontend" version="~>2.111.0"
     dependency "unit-threaded" version="*"
 }
 
@@ -28,7 +28,7 @@ configuration "unittest-cov" {
     // here directly.
     lflags "--allow-multiple-definition" platform="linux"
 
-    dependency "dmd:frontend" version="~>2.112.1"
+    dependency "dmd:frontend" version="~>2.111.0"
     dependency "unit-threaded" version="*"
 }
 
@@ -40,5 +40,5 @@ configuration "benchmark" {
     sourcePaths "benchmarks"
     includePaths "benchmarks"
 
-    dependency "dmd:frontend" version="~>2.112.1"
+    dependency "dmd:frontend" version="~>2.111.0"
 }
