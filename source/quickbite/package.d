@@ -27,3 +27,24 @@ public void runTests(
             return;
     }
 }
+
+public void runTests(
+    in string filePath,
+    in string[] importPaths,
+    in ExecutorBackend backend = ExecutorBackend.ir,
+) {
+    final switch (backend) {
+        case ExecutorBackend.ir:
+            import quickbite.backends.ir: IrExecutor;
+            (new IrExecutor).runTests(filePath, importPaths);
+            return;
+        case ExecutorBackend.treeWalking:
+            import quickbite.backends.tree_walking: TreeWalkingExecutor;
+            (new TreeWalkingExecutor).runTests(filePath, importPaths);
+            return;
+        case ExecutorBackend.dmdCtfe:
+            import quickbite.backends.dmd_ctfe: DmdCtfe;
+            (new DmdCtfe).runTests(filePath, importPaths);
+            return;
+    }
+}

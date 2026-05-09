@@ -31,6 +31,13 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         runParsedTests(parsed.module_);
     }
 
+    public void runTests(in string filePath, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseFile;
+
+        auto parsed = parseFile(filePath, importPaths);
+        runParsedTests(parsed.module_);
+    }
+
     public override void runParsedTests(
         imported!"dmd.dmodule".Module module_,
     ) {
