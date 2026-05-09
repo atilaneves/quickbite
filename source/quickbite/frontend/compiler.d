@@ -32,6 +32,11 @@ public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source);
 }
 
+public void addImportPath(in string path) {
+    import dmd.frontend: addImport;
+    addImport(path);
+}
+
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }
