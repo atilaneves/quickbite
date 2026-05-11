@@ -2,10 +2,9 @@
 
 ## Status: DONE
 
-All 19 cerealed test files run through the IR, tree-walking, and dmdCtfe
-backends.  Three dmdCtfe tests are `@ShouldFail` due to unit_threaded stub
-limitations.  36/57 backend×file combinations pass outright; the 3 that
-remain `@ShouldFail` are documented below.
+All cerealed test files run through the IR, tree-walking, and dmdCtfe
+backends.  Some dmdCtfe tests are `@ShouldFail` due to unit_threaded stub
+limitations; see Known failures below.
 
 ## Goal
 
@@ -21,8 +20,9 @@ fix the backend.
 
 ## Approach (as implemented)
 
-cerealed is a proper dub dependency (not vendored).  Its source path is
-resolved at test runtime from `dub describe --data=import-paths --data-list`.
+cerealed is a proper dub dependency (not vendored), pinned to a git commit
+hash.  Its source path is resolved at test runtime from
+`dub describe --config=unittest --data=import-paths --data-list`.
 The `concepts` transitive dependency is resolved from the same DUB import
 path list.
 `unit_threaded` is still satisfied by the stub in `vendor/ut_stubs/` to
@@ -39,7 +39,7 @@ harness and `tests/ut/compiler_api.d`.
 The `ir-cerealed` and `tw-cerealed` branches (reference only) established:
 
 - All 19 cerealed tests pass on the IR backend once the import-path
-  API is in place and the `ParsedModule` source cache prevents
+  API is in place and the `Module` source cache prevents
   double-parsing.
 - Passing `["vendor/cerealed/src", "vendor/ut_stubs"]` as import paths
   is sufficient for all IR tests.
@@ -57,7 +57,7 @@ The `ir-cerealed` and `tw-cerealed` branches (reference only) established:
 - Added `parseModule(in string source, in string[] importPaths)` overload.
   It calls `addImport` for each path, then parses and runs full
   semantic analysis.
-- Added a `ParsedModule[string]` source-content cache inside `Compiler`
+- Added a `Module[string]` source-content cache inside `Compiler`
   (keyed by source string).  On a cache hit return immediately without
   re-registering the module in DMD's global table.  Cache on parse,
   before semantic, so a semantic failure does not leave the module
@@ -87,7 +87,7 @@ Renamed `vendor/ut_stubs/unit_threaded.d` →
 
 ### 5. `dub.sdl`
 
-Added `dependency "cerealed" version="~>0.6.11"` to the `unittest`
+Added a git-hash-pinned `dependency "cerealed"` to the `unittest`
 and `unittest-cov` configurations.  This makes dub resolve cerealed
 as a proper dependency; its source path is then used as an explicit
 import path when calling `parseModule`.
@@ -113,14 +113,12 @@ TDD entry point: a focused test that calls
 
 ### 9. `tests/ut/cerealed.d`
 
-Complete rewrite.  57 tests (19 files × 3 backends).
-- All 19 IR tests pass.
-- All 19 tree-walking tests pass.
-- 16/19 dmdCtfe tests pass; 3 are `@ShouldFail` (see below).
+Complete rewrite.  All cerealed test files × all backends, with dmdCtfe
+`@ShouldFail` annotations for known stub limitations (see below).
 
 ## Known failures (keep @ShouldFail)
 
-All three are dmdCtfe only; the unit_threaded stub lacks the APIs that
+All are dmdCtfe only; the unit_threaded stub lacks the APIs that
 dmdCtfe's CTFE-based execution exposes.
 
 | File | Backend | Reason |
@@ -141,7 +139,7 @@ correctness issues.
 | `source/quickbite/backends/ir.d` | importPaths runTests |
 | `source/quickbite/backends/tree_walking.d` | importPaths runTests |
 | `source/quickbite/backends/dmd_ctfe.d` | importPaths runTests |
-| `tests/ut/cerealed.d` | Harness (57 tests) |
+| `tests/ut/cerealed.d` | Harness |
 | `tests/ut/dub_paths.d` | Dub path helpers |
 | `tests/ut/compiler_api.d` | TDD parseModule test |
 | `vendor/ut_stubs/unit_threaded/package.d` | Renamed stub |
