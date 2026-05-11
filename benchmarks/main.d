@@ -10,9 +10,9 @@ import quickbite.frontend.compiler: parseModule;
 private:
 
 // Defaults; overridable with --warmup / --iterations.
-enum size_t defaultWarmup = 3;
+enum size_t defaultWarmup = 1;
 // Odd, so the median is a single sample without averaging two values.
-enum size_t defaultIterations = 31;
+enum size_t defaultIterations = 9;
 
 int main(string[] args) {
     import std.file: readText;
@@ -91,7 +91,12 @@ int main(string[] args) {
                 () => executor.runTests(source, importPaths),
             );
         }
-        printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
+        try {
+            printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
+        } catch (Exception) {
+            import std.stdio: writefln;
+            writefln("%-32s %-14s  compile/link error", path, "dmd");
+        }
     }
 
     return 0;
@@ -189,7 +194,7 @@ void runDmd(in string path, in string[] importPaths = []) {
     import std.process: execute;
 
     const iFlags = importPaths.map!(p => "-I" ~ p).array;
-    const args   = ["dmd", "-unittest", "-main", "-run"] ~ iFlags ~ [path];
+    const args   = ["dmd", "-unittest", "-main"] ~ iFlags ~ ["-run", path];
     const result = execute(args);
     if (result.status != 0)
         throw new Exception(text(
