@@ -80,21 +80,22 @@ int main(string[] args) {
         }
     }
 
-    writeln;
-    writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
-    printHeader;
-    foreach (path; fixtures) {
-        const source = readText(path);
+    if (!noDmd) {
+        writeln;
+        writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
+        printHeader;
+        foreach (path; fixtures) {
+            const source = readText(path);
 
-        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
-            printRow(
-                path, name, warmup, iterations,
-                () => executor.runTests(source, importPaths),
-            );
-        }
-        if (!noDmd)
+            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+                auto executor = backends[name];
+                printRow(
+                    path, name, warmup, iterations,
+                    () => executor.runTests(source, importPaths),
+                );
+            }
             printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
+        }
     }
 
     return 0;
