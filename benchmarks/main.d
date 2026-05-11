@@ -94,7 +94,6 @@ int main(string[] args) {
         try {
             printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
         } catch (Exception) {
-            import std.stdio: writefln;
             writefln("%-32s %-14s  compile/link error", path, "dmd");
         }
     }
