@@ -29,11 +29,11 @@ shared static ~this() {
 }
 
 public ParsedModule parseModule(in string source) {
-    return compiler.parseModule(source);
+    return compiler.parseModule(source, []);
 }
 
-public ParsedModule parseFile(in string filePath, in string[] importPaths) {
-    return compiler.parseFile(filePath, importPaths);
+public ParsedModule parseModule(in string source, in string[] importPaths) {
+    return compiler.parseModule(source, importPaths);
 }
 
 public void withCompilerLock(scope void delegate() action) {
@@ -51,17 +51,17 @@ public imported!"quickbite.ir.module_".Module lowerModule(
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
-    // Cache parsed modules by file path so the same real file is not parsed
-    // twice.  Running three backends against the same cerealed test file must
-    // call dmdParseModule exactly once; subsequent calls return the cached
-    // result immediately.  The DMD module registry is process-global and does
-    // not allow the same file path to be registered twice.
+    // Cache parsed modules keyed by source content.  Running three backends
+    // against the same cerealed test file must call dmdParseModule exactly
+    // once; subsequent calls with the same source return the cached module.
+    // The cache is populated only after dmdParseModule + fullSemantic both
+    // succeed, so callers never receive a partially-semantic'd module.
     //
     // ParsedModule contains an immutable Diagnostics field, so it cannot be
     // stored directly in an AA (D AAs require assignability).  We store the
-    // DMD Module class (a reference type) keyed by file path and reconstruct
+    // DMD Module class (a reference type) keyed by source and reconstruct
     // a ParsedModule on every cache hit.
-    private imported!"dmd.dmodule".Module[string] fileCache;
+    private imported!"dmd.dmodule".Module[string] sourceCache;
 
     private this() {
         import core.sync.mutex: Mutex;
@@ -116,15 +116,26 @@ final class Compiler {
         action();
     }
 
-    ParsedModule parseModule(in string source) {
+    ParsedModule parseModule(in string source, in string[] importPaths) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
-        import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
+        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
 
         mutex.lock;
         scope(exit) mutex.unlock;
+
+        // Return cached result if this source was already parsed and
+        // semantically analysed successfully.
+        if (auto cached = source in sourceCache) {
+            ParsedModule result;
+            result.module_ = *cached;
+            return result;
+        }
+
+        foreach (importPath; importPaths)
+            addImport(importPath);
 
         global.errors = 0;
         global.warnings = 0;
@@ -144,51 +155,9 @@ final class Compiler {
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
 
-        return parsed;
-    }
-
-    ParsedModule parseFile(in string filePath, in string[] importPaths) {
-        import dmd.errors: diagnostics;
-        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
-        import dmd.globals: global;
-        import std.file: readText;
-
-        mutex.lock;
-        scope(exit) mutex.unlock;
-
-        // Return cached result if this file was already parsed.
-        // DMD's module registry is process-global and does not allow the same
-        // file to be registered twice; the cache prevents "specified twice" errors
-        // when multiple backends run the same test file.
-        if (auto cached = filePath in fileCache) {
-            ParsedModule result;
-            result.module_ = *cached;
-            return result;
-        }
-
-        foreach (importPath; importPaths)
-            addImport(importPath);
-
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
-
-        const content = readText(filePath);
-        ParsedModule parsed = dmdParseModule(filePath, content);
-        // Cache the module immediately after parsing so that subsequent calls
-        // with the same file path return the cached module even if semantic
-        // analysis fails.  DMD registers modules in its internal table during
-        // parsing; not caching here would cause "specified twice" errors when
-        // another backend tries to parse the same file after a semantic failure.
-        if (parsed.module_ !is null)
-            fileCache[filePath] = parsed.module_;
-
-        if (parsed.diagnostics.hasErrors)
-            throw new Exception(diagnosticMessage);
-
-        parsed.module_.fullSemantic;
-        if (global.errors != 0)
-            throw new Exception(diagnosticMessage);
+        // Cache only after both parsing and full semantic analysis succeed,
+        // so callers always receive a fully-verified module.
+        sourceCache[source] = parsed.module_;
 
         return parsed;
     }

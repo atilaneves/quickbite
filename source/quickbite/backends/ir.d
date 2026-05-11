@@ -10,10 +10,10 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
         runParsedTests(parsed.module_);
     }
 
-    public override void runTests(in string filePath, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseFile;
+    public override void runTests(in string source, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseModule;
 
-        auto parsed = parseFile(filePath, importPaths);
+        auto parsed = parseModule(source, importPaths);
         runParsedTests(parsed.module_);
     }
 

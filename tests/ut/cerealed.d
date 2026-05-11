@@ -4,6 +4,7 @@ private:
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
+import std.file: readText;
 import std.traits: EnumMembers;
 import unit_threaded;
 
@@ -69,21 +70,21 @@ shared static this() {
     cerealImportPaths = ["vendor/cerealed/src"] ~ unitThreadedImportPaths;
 }
 
-// Tests that are expected to fail because they expose current limitations.
-// The dmdCtfe backend cannot compile all cerealed files:
+// Tests that are expected to fail because they expose current frontend
+// limitations on unmodified source.  Four files fail during fullSemantic:
 //   - cerealiser_impl.d: type-mismatch in unit_threaded.assertions template
-//   - encode.d: pure function cannot call impure cerealise template
+//     (const(ubyte)[] vs void[] in shouldEqual instantiation)
+//   - encode.d: `pure` unittest calls impure cerealize template
 //   - property.d: `Types!(...)` template from unit_threaded.property not found
-//   - reset.d: some runtime assertion or compilation error
-// All ir and treeWalking cerealed tests pass because they use the cached DMD
-// module from the first (ir) run and execute correctly.
+//   - reset.d: same type-mismatch as cerealiser_impl.d
+// Because fullSemantic fails, the source-content cache is never populated for
+// these files.  All three backends encounter the same frontend error, so all
+// three are marked @ShouldFail.
 private enum shouldFail(ExecutorBackend backend, string testFile) =
-    backend == ExecutorBackend.dmdCtfe && (
-        testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
-        testFile == "vendor/cerealed/tests/encode.d" ||
-        testFile == "vendor/cerealed/tests/property.d" ||
-        testFile == "vendor/cerealed/tests/reset.d"
-    );
+    testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
+    testFile == "vendor/cerealed/tests/encode.d" ||
+    testFile == "vendor/cerealed/tests/property.d" ||
+    testFile == "vendor/cerealed/tests/reset.d";
 
 // One test per (backend, test-file) pair.  Each test exercises only
 // the unittest blocks in that file, so failures are localised.
@@ -93,12 +94,12 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             @ShouldFail
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
-                runTests(testFile, cerealImportPaths, backend);
+                runTests(readText(testFile), cerealImportPaths, backend);
             }
         } else {
             @(backend.text ~ ".cerealed." ~ testFile)
             unittest {
-                runTests(testFile, cerealImportPaths, backend);
+                runTests(readText(testFile), cerealImportPaths, backend);
             }
         }
     }
