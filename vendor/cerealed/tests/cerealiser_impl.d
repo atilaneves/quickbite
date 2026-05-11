@@ -9,16 +9,18 @@ struct WhateverStruct {
     string s;
 }
 
-void testOldCerealiser() {
+@("old.cerealiser")
+unittest {
     auto enc = DynamicArrayCerealiser();
     enc ~= WhateverStruct(5, "blargh");
     enc.bytes.shouldEqual([ 0, 5, 0, 6, 'b', 'l', 'a', 'r', 'g', 'h' ]);
     enc.reset();
-    enc.bytes.shouldEqual([]);
+    enc.bytes.length.shouldEqual(0);
     (enc ~= 4).shouldNotThrow!RangeError;
 }
 
-void testScopeBufferCerealiser() {
+@("scope.buffer.cerealiser")
+unittest {
     ubyte[32] buf = void;
 
     writelnUt("Creating the range");
@@ -34,6 +36,7 @@ void testScopeBufferCerealiser() {
 }
 
 
-void testCerealise() {
+@("cerealise")
+unittest {
    WhateverStruct(5, "blargh").cerealise!(bytes => bytes.shouldEqual([0, 5, 0, 6, 'b', 'l', 'a', 'r', 'g', 'h']));
 }

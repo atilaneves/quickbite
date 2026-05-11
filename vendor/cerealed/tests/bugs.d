@@ -10,7 +10,8 @@ private struct Pair {
 }
 
 
-void testAssocArrayWithPair() {
+@("assoc.array.with.pair")
+unittest {
     auto p = Pair("foo", 5);
     auto map = [p: 105];
     auto enc = Cerealiser();
@@ -25,7 +26,8 @@ void testAssocArrayWithPair() {
     map.values.shouldEqual(map2.values);
 }
 
-void testByteArray() {
+@("byte.array")
+unittest {
     ubyte[] arr = [1,2,3,4];
 
     auto enc = Cerealiser();
@@ -47,4 +49,20 @@ unittest {
 
     auto dec = Decerealiser(enc.bytes);
     dec.value!(bool[]).shouldEqual(arr);
+}
+
+@("19")
+unittest {
+    static struct Foo { string value; }
+
+    auto data = Foo("bar").cerealise;
+    auto f1 = data.decerealise!Foo;
+    f1.value.should == "bar";
+
+    auto data2 = Foo("baz").cerealise;
+    data[] = data2[];
+    auto f2 = data.decerealise!Foo;
+
+    f1.value.should == "bar";
+    f2.value.should == "baz";
 }
