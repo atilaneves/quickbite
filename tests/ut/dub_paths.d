@@ -13,9 +13,11 @@ private struct DubDescription {
 private DubDescription cachedDubDescription;
 private bool cachedDubDescriptionInitialized;
 
-public string[] cerealImportPaths() @safe {
-    import std.path: buildPath;
-    return [cerealSrcDir, conceptsSrcDir, buildPath(projectRoot, "vendor", "ut_stubs")];
+public string[] dubImportPaths() @safe {
+    string[] ret;
+    foreach (paths; dubDescription.packageImportPaths)
+        ret ~= paths;
+    return ret;
 }
 
 public string cerealSrcDir() @safe {

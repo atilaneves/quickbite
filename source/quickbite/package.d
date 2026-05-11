@@ -28,6 +28,15 @@ public void runTests(
     }
 }
 
+public void runTestsFromFile(
+    in string filePath,
+    in string[] importPaths,
+    in ExecutorBackend backend = ExecutorBackend.ir,
+) {
+    import std.file: readText;
+    runTests(filePath.readText, importPaths, backend);
+}
+
 public void runTests(
     in string source,
     in string[] importPaths,

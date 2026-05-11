@@ -2,9 +2,8 @@
 
 ## Status: DONE
 
-All cerealed test files run through the IR, tree-walking, and dmdCtfe
-backends.  Some dmdCtfe tests are `@ShouldFail` due to unit_threaded stub
-limitations; see Known failures below.
+All cerealed tests pass.  The `vendor/ut_stubs/` stub has been
+deleted; `unit_threaded` is now the real dub package.
 
 ## Goal
 
@@ -20,26 +19,27 @@ fix the backend.
 
 ## Approach (as implemented)
 
-cerealed is a proper dub dependency (not vendored), pinned to a git commit
-hash.  Its source path is resolved at test runtime from
+cerealed is a proper dub dependency (not vendored).  Its source path is
+resolved at test runtime from
 `dub describe --config=unittest --data=import-paths --data-list`.
-The `concepts` transitive dependency is resolved from the same DUB import
-path list.
-`unit_threaded` is still satisfied by the stub in `vendor/ut_stubs/` to
-avoid the VM having to execute the real unit-threaded library.
+The `concepts` transitive dependency is resolved from the same DUB
+import path list.  `unit_threaded` is satisfied by the real dub package
+(already a test dependency); `vendor/ut_stubs/` has been deleted.
 
-Helper module `tests/ut/dub_paths.d` provides `cerealImportPaths()`,
-`cerealSrcDir()`, and `cerealTestsDir()` for use by both the cerealed
-harness and `tests/ut/compiler_api.d`.
+Helper module `tests/ut/dub_paths.d` provides `cerealImportPaths()`
+(all paths from `dub describe`), `cerealSrcDir()`, and
+`cerealTestsDir()` for use by both the cerealed harness and
+`tests/ut/compiler_api.d`.
 
 `vendor/cerealed/` has been removed entirely from the repository.
 
 ## What the branches showed
 
-The `ir-cerealed` and `tw-cerealed` branches (reference only) established:
+The `ir-cerealed` and `tw-cerealed` branches (reference only)
+established:
 
-- All 19 cerealed tests pass on the IR backend once the import-path
-  API is in place and the `Module` source cache prevents
+- All cerealed tests pass on the IR backend once the import-path API
+  is in place and the `ParsedModule` source cache prevents
   double-parsing.
 - Passing `["vendor/cerealed/src", "vendor/ut_stubs"]` as import paths
   is sufficient for all IR tests.
@@ -54,10 +54,10 @@ The `ir-cerealed` and `tw-cerealed` branches (reference only) established:
 
 ### 1. `source/quickbite/frontend/compiler.d`
 
-- Added `parseModule(in string source, in string[] importPaths)` overload.
-  It calls `addImport` for each path, then parses and runs full
-  semantic analysis.
-- Added a `Module[string]` source-content cache inside `Compiler`
+- Added `parseModule(in string source, in string[] importPaths)`
+  overload.  It calls `addImport` for each path, then parses and runs
+  full semantic analysis.
+- Added a `ParsedModule[string]` source-content cache inside `Compiler`
   (keyed by source string).  On a cache hit return immediately without
   re-registering the module in DMD's global table.  Cache on parse,
   before semantic, so a semantic failure does not leave the module
@@ -82,8 +82,8 @@ calls `parseModule(source, importPaths)` then executes.
 
 ### 4. `vendor/ut_stubs/unit_threaded/package.d`
 
-Renamed `vendor/ut_stubs/unit_threaded.d` →
-`vendor/ut_stubs/unit_threaded/package.d`.  Content unchanged.
+Deleted.  The hand-rolled stub has been removed; `unit_threaded` is
+now the real dub package.
 
 ### 5. `dub.sdl`
 
@@ -95,16 +95,17 @@ import path when calling `parseModule`.
 ### 6. `vendor/cerealed/` removed
 
 Both `vendor/cerealed/src/` and `vendor/cerealed/tests/` were removed
-from the repository.  Test files are now read from the dub package cache
-at runtime.
+from the repository.  Test files are now read from the dub package
+cache at runtime.
 
 ### 7. `tests/ut/dub_paths.d` (new)
 
-Provides `cerealImportPaths()` (cerealed src + concepts src +
-vendor/ut_stubs), `cerealSrcDir()`, and `cerealTestsDir()`.
-Reads import paths once per test process from `dub describe
---config=unittest --data=import-paths --data-list` and derives the
-cerealed package root from the reported `cerealed/src` path.
+Provides `cerealImportPaths()` (all paths from `dub describe`),
+`cerealSrcDir()`, and `cerealTestsDir()`.  Reads import paths once
+per test process from
+`dub describe --config=unittest --data=import-paths --data-list`
+and derives the cerealed package root from the reported
+`cerealed/src` path.
 
 ### 8. `tests/ut/compiler_api.d` (new)
 
@@ -113,22 +114,8 @@ TDD entry point: a focused test that calls
 
 ### 9. `tests/ut/cerealed.d`
 
-Complete rewrite.  All cerealed test files × all backends, with dmdCtfe
-`@ShouldFail` annotations for known stub limitations (see below).
-
-## Known failures (keep @ShouldFail)
-
-All are dmdCtfe only; the unit_threaded stub lacks the APIs that
-dmdCtfe's CTFE-based execution exposes.
-
-| File | Backend | Reason |
-|------|---------|--------|
-| `bugs.d` | dmdCtfe | Uses `.should` fluent property, not in stub |
-| `cerealiser_impl.d` | dmdCtfe | `shouldNotThrow` can't handle template type |
-| `encode.d` | dmdCtfe | `shouldNotThrow`/`shouldThrow` on void |
-
-The stub can be extended to fix these when needed; these are not VM
-correctness issues.
+All tests pass; `@ShouldFail` annotations and the `dmdCtfeShouldFail`
+helper removed.
 
 ## Critical files
 
@@ -142,4 +129,3 @@ correctness issues.
 | `tests/ut/cerealed.d` | Harness |
 | `tests/ut/dub_paths.d` | Dub path helpers |
 | `tests/ut/compiler_api.d` | TDD parseModule test |
-| `vendor/ut_stubs/unit_threaded/package.d` | Renamed stub |
