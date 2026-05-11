@@ -4,25 +4,21 @@ private:
 
 import unit_threaded;
 
-// parseModule(source, importPaths): parse a cerealed test file whose imports
-// require explicit paths.  The cerealed src path comes from dub describe;
-// unit_threaded is satisfied by the real dub package.
 @("parseModule.withImportPaths")
 unittest {
     import quickbite.frontend.compiler: parseModule;
-    import ut.dub_paths: cerealImportPaths, cerealTestsDir;
+    import ut.dub_paths: dubImportPaths, cerealTestsDir;
     import std.file: readText;
 
-    parseModule(readText(cerealTestsDir ~ "/utils.d"), cerealImportPaths);
+    parseModule(readText(cerealTestsDir ~ "/utils.d"), dubImportPaths);
 }
 
 @("runTests.withImportPaths.dmdCtfe")
 unittest {
-    import quickbite: ExecutorBackend, runTests;
-    import ut.dub_paths: cerealImportPaths, cerealTestsDir;
-    import std.file: readText;
+    import quickbite: ExecutorBackend, runTestsFromFile;
+    import ut.dub_paths: dubImportPaths, cerealTestsDir;
 
-    runTests(readText(cerealTestsDir ~ "/utils.d"), cerealImportPaths, ExecutorBackend.dmdCtfe);
+    runTestsFromFile(cerealTestsDir ~ "/utils.d", dubImportPaths, ExecutorBackend.dmdCtfe);
 }
 
 @("runTests.importPathsRetryAfterFailure")

@@ -13,8 +13,11 @@ private struct DubDescription {
 private DubDescription cachedDubDescription;
 private bool cachedDubDescriptionInitialized;
 
-public string[] cerealImportPaths() @safe {
-    return dubImportPaths;
+public string[] dubImportPaths() @safe {
+    string[] ret;
+    foreach (paths; dubDescription.packageImportPaths)
+        ret ~= paths;
+    return ret;
 }
 
 public string cerealSrcDir() @safe {

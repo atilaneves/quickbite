@@ -2,7 +2,7 @@ module ut.cerealed;
 
 private:
 
-import quickbite: ExecutorBackend, runTests;
+import quickbite: ExecutorBackend, runTestsFromFile;
 import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
@@ -33,13 +33,12 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (fileName; testFileNames) {
         @(backend.text ~ ".cerealed." ~ fileName)
         unittest {
-            import ut.dub_paths: cerealImportPaths, cerealTestsDir;
-            import std.file: readText;
+            import ut.dub_paths: dubImportPaths, cerealTestsDir;
             import std.path: buildPath;
 
-            runTests(
-                readText(buildPath(cerealTestsDir, fileName)),
-                cerealImportPaths,
+            runTestsFromFile(
+                buildPath(cerealTestsDir, fileName),
+                dubImportPaths,
                 backend,
             );
         }
