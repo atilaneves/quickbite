@@ -6,7 +6,7 @@ import unit_threaded;
 
 // parseModule(source, importPaths): parse a cerealed test file whose imports
 // require explicit paths.  The cerealed src path comes from dub describe;
-// unit_threaded is satisfied by the stub in vendor/ut_stubs.
+// unit_threaded is satisfied by the real dub package.
 @("parseModule.withImportPaths")
 unittest {
     import quickbite.frontend.compiler: parseModule;
