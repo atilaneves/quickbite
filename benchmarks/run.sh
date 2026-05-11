@@ -34,6 +34,7 @@ if $use_cerealed; then
     cerealed_src=
     concepts_src=
     for p in "${dub_import_paths[@]}"; do
+        p="${p%/}"
         case "$p" in
             */cerealed/src)    cerealed_src="$p" ;;
             */concepts/source) concepts_src="$p" ;;
@@ -49,7 +50,9 @@ if $use_cerealed; then
         "--import-path=$(pwd)/vendor/ut_stubs"
     )
     [[ -n "$concepts_src" ]] && flags+=("--import-path=$concepts_src")
-    mapfile -t cerealed_fixtures < <(ls "$cerealed_tests"/*.d)
+    mapfile -t cerealed_fixtures < <(
+        find "$cerealed_tests" -maxdepth 1 -type f -name '*.d' | sort
+    )
     fixtures+=("${cerealed_fixtures[@]}")
 fi
 

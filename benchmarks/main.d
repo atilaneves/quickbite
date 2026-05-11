@@ -67,11 +67,13 @@ int main(string[] args) {
     printHeader;
     foreach (path; fixtures) {
         const source = readText(path);
+        // auto: the parsed DMD module is mutable frontend-owned state.
         auto parsed = parseModule(source, paths);
-        auto module_ = parsed.module_;
+        import dmd.dmodule: Module;
+        Module module_ = parsed.module_;
 
         foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
+            Executor executor = backends[name];
             printRow(
                 path, name, warmup, iterations,
                 () => executor.runParsedTests(module_),
@@ -86,7 +88,7 @@ int main(string[] args) {
         const source = readText(path);
 
         foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
+            Executor executor = backends[name];
             printRow(
                 path, name, warmup, iterations,
                 () => executor.runTests(source, paths),

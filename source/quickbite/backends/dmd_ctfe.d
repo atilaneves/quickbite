@@ -8,7 +8,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         runParsedTests(parseModule(source).module_);
     }
 
-    public void runTests(in string source, in string[] importPaths) {
+    public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
         runParsedTests(parseModule(source, importPaths).module_);
     }
