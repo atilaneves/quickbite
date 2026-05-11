@@ -10,6 +10,13 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
         runParsedTests(parsed.module_);
     }
 
+    public void runTests(in string source, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseModule;
+
+        auto parsed = parseModule(source, importPaths);
+        runParsedTests(parsed.module_);
+    }
+
     public void runParsedTests(imported!"dmd.dmodule".Module module_) {
         import quickbite.frontend.compiler: lowerModule;
 
