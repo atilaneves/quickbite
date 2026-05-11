@@ -32,7 +32,10 @@ public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source, []);
 }
 
-public ParsedModule parseModule(in string source, in string[] importPaths) {
+public ParsedModule parseModule(
+    in string source,
+    in string[] importPaths,
+) {
     return compiler.parseModule(source, importPaths);
 }
 

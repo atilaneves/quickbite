@@ -133,3 +133,7 @@
 
 - Do not put expensive work such as process spawning in test helpers that
   are called per generated unittest. Cache it or move it out of the hot path.
+
+- Do not add `@trusted` to functions just to satisfy an attribute habit.
+  `@trusted` is a deliberate safety boundary and needs a specific
+  justification.
