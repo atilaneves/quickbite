@@ -32,44 +32,6 @@ private immutable testFiles = [
     "vendor/cerealed/tests/utils.d",
 ];
 
-// All unit_threaded import directories, initialized at runtime because
-// discovering subpackage directories requires OS calls that cannot run at
-// compile time.
-private string[] unitThreadedImportPaths;
-private string[] cerealImportPaths;
-
-// Derive all unit_threaded import directories from the location of a known
-// symbol so we don't hardcode a dub cache path.
-//
-// unit_threaded 2.2.3 splits its source across a main directory and several
-// subpackages under `subpackages/*/source/`.  All of them must appear on the
-// import path for `import unit_threaded;` to resolve fully.
-//
-// ShouldFail lives in the runner subpackage at:
-//   unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
-// The package root is 6 directories up from attrs.d.
-shared static this() {
-    import std.path: buildPath, dirName;
-    import std.file: dirEntries, SpanMode, exists;
-    import unit_threaded.runner.attrs: ShouldFail;
-    const attrsFile = __traits(getLocation, ShouldFail)[0];
-    // 6 dirNames up: attrs.d → runner → unit_threaded → source → runner → subpackages → root
-    const packageRoot = attrsFile
-        .dirName  // runner
-        .dirName  // unit_threaded
-        .dirName  // source (subpackage source)
-        .dirName  // runner (subpackage dir)
-        .dirName  // subpackages
-        .dirName; // unit-threaded (package root)
-    unitThreadedImportPaths = [buildPath(packageRoot, "source")];
-    foreach (entry; dirEntries(buildPath(packageRoot, "subpackages"), SpanMode.shallow)) {
-        const subSrc = buildPath(entry.name, "source");
-        if (exists(subSrc))
-            unitThreadedImportPaths ~= subSrc;
-    }
-    cerealImportPaths = ["vendor/cerealed/src"] ~ unitThreadedImportPaths;
-}
-
 // Tests that are expected to fail because they expose current frontend
 // limitations on unmodified source.  Four files fail during fullSemantic:
 //   - cerealiser_impl.d: type-mismatch in unit_threaded.assertions template
@@ -103,4 +65,33 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }
         }
     }
+}
+
+// Use the real unit-threaded package that dub compiled the test runner with.
+// ShouldFail lives under:
+// unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
+private string[] cerealImportPaths() {
+    import std.path: buildPath, dirName;
+    import unit_threaded.runner.attrs: ShouldFail;
+
+    const attrsFile = __traits(getLocation, ShouldFail)[0];
+    const packageRoot = attrsFile
+        .dirName
+        .dirName
+        .dirName
+        .dirName
+        .dirName
+        .dirName;
+    return [
+        "vendor/cerealed/src",
+        buildPath(packageRoot, "source"),
+        buildPath(packageRoot, "subpackages", "assertions", "source"),
+        buildPath(packageRoot, "subpackages", "behave", "source"),
+        buildPath(packageRoot, "subpackages", "exception", "source"),
+        buildPath(packageRoot, "subpackages", "from", "source"),
+        buildPath(packageRoot, "subpackages", "integration", "source"),
+        buildPath(packageRoot, "subpackages", "mocks", "source"),
+        buildPath(packageRoot, "subpackages", "property", "source"),
+        buildPath(packageRoot, "subpackages", "runner", "source"),
+    ];
 }

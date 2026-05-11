@@ -1,7 +1,8 @@
 // Stub for dmd.iasm required by dmd:frontend 2.112.x.
-// The real iasm package is excluded from the dmd:frontend dub sub-package;
-// this stub satisfies the linker references from dsymbolsem.d and
-// statementsem.d with no-op bodies (same as version(NoBackend) behaviour).
+// dmd:frontend does not build the real iasm package because it belongs to the
+// compiler backend, but frontend modules still contain references to
+// asmSemantic.  quickbite never executes inline asm, so no-op definitions are
+// enough to satisfy those linker references.
 //
 // Also provides _D3dmd8astenums7Edition6__initZ (Edition.init = 2023) which
 // is referenced by the lexer TypeInfo but not emitted by the library build —

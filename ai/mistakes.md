@@ -123,3 +123,7 @@
   verify what CI already reports or what is clear from the diff. Use the
   diff and CI signal for the review unless the user asks for local
   verification.
+
+- Do not initialize thread-local test state from `shared static this`.
+  Unit-threaded can run tests on worker threads that see uninitialized TLS;
+  use per-thread `static this`, `__gshared`, or a local builder function.
