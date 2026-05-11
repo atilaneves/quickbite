@@ -21,21 +21,27 @@ int main(string[] args) {
 
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
+    string[] importPaths;
 
     auto info = getopt(
         args,
-        "warmup",     "untimed iterations before sampling", &warmup,
-        "iterations", "timed iterations per measurement",   &iterations,
+        "warmup",       "untimed iterations before sampling",      &warmup,
+        "iterations",   "timed iterations per measurement",        &iterations,
+        "import-path",  "add an import search path (repeatable)",  &importPaths,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
-            "usage: bench [--warmup=N] [--iterations=N] <module.d> [<module.d> ...]",
+            "usage: bench [--warmup=N] [--iterations=N]"
+            ~ " [--import-path=P ...] <module.d> [<module.d> ...]",
             info.options,
         );
         return 0;
     }
     if (args.length < 2) {
-        stderr.writefln("usage: %s <module.d> [<module.d> ...]", args[0]);
+        stderr.writefln(
+            "usage: %s [--import-path=P ...] <module.d> [<module.d> ...]",
+            args[0],
+        );
         return 1;
     }
 
@@ -48,6 +54,7 @@ int main(string[] args) {
     }
 
     const fixtures = args[1 .. $].idup;
+    const paths    = importPaths.idup;
 
     printRunHeader(warmup, iterations);
 
@@ -60,7 +67,7 @@ int main(string[] args) {
     printHeader;
     foreach (path; fixtures) {
         const source = readText(path);
-        auto parsed = parseModule(source);
+        auto parsed = parseModule(source, paths);
         auto module_ = parsed.module_;
 
         foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
@@ -82,10 +89,10 @@ int main(string[] args) {
             auto executor = backends[name];
             printRow(
                 path, name, warmup, iterations,
-                () => executor.runTests(source),
+                () => executor.runTests(source, paths),
             );
         }
-        printRow(path, "dmd", warmup, iterations, () => runDmd(path));
+        printRow(path, "dmd", warmup, iterations, () => runDmd(path, paths));
     }
 
     return 0;
@@ -176,12 +183,14 @@ string buildFlagsSummary() {
     return flags.join(" ");
 }
 
-void runDmd(in string path) {
-    import std.array: join;
+void runDmd(in string path, in string[] importPaths = []) {
+    import std.algorithm.iteration: map;
+    import std.array: array, join;
     import std.conv: text;
     import std.process: execute;
 
-    const args = ["dmd", "-unittest", "-main", "-run", path];
+    const iFlags = importPaths.map!(p => "-I" ~ p).array;
+    const args   = ["dmd", "-unittest", "-main", "-run"] ~ iFlags ~ [path];
     const result = execute(args);
     if (result.status != 0)
         throw new Exception(text(
