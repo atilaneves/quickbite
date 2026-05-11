@@ -137,3 +137,8 @@
 - Do not add `@trusted` to functions just to satisfy an attribute habit.
   `@trusted` is a deliberate safety boundary and needs a specific
   justification.
+
+- When embedding dub as a library, verify path and compiler-registry
+  behaviour in the actual linked code. `PackageManager` appends `packages/`
+  to the user cache root, compiler handlers may need explicit registration,
+  and described source file paths may be relative.

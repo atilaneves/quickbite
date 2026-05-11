@@ -81,51 +81,22 @@ private DubDescription dubDescription() @safe {
 }
 
 private DubDescription loadDubDescription() @safe {
-    import std.exception: enforce;
-    import std.process: Config, execute;
-
-    const result = execute(
-        [
-            "dub",
-            "describe",
-            "--vquiet",
-            "--config=unittest",
-        ],
-        null,
-        Config.none,
-        size_t.max,
-        projectRoot,
-    );
-    enforce(result.status == 0, result.output);
-
-    return parseDubDescription(result.output);
-}
-
-private DubDescription parseDubDescription(in string json) @trusted {
-    import std.json: parseJSON;
-    import std.path: buildNormalizedPath;
-
-    const root = parseJSON(json);
+    import quickbite_dub_library.package_resolver: describeProject;
+    import std.path: buildPath;
+    import std.process: environment;
 
     DubDescription ret;
-    foreach (package_; root["packages"].array) {
-        const name = package_["name"].str;
-        const packageDir = package_["path"].str;
-        ret.packageDirs[name] = packageDir;
-
-        string[] importPaths;
-        foreach (importPath; package_["importPaths"].array)
-            importPaths ~= buildNormalizedPath(packageDir, importPath.str);
-        ret.packageImportPaths[name] = importPaths;
-
-        string[] unusedSources;
-        foreach (file; package_["files"].array) {
-            if (file["role"].str != "unusedSource")
-                continue;
-
-            unusedSources ~= buildNormalizedPath(packageDir, file["path"].str);
-        }
-        ret.packageUnusedSources[name] = unusedSources;
+    // The returned associative array owns mutable arrays copied below.
+    auto packages = describeProject(
+        projectRoot,
+        buildPath(environment["HOME"], ".dub"),
+        "unittest",
+    );
+    foreach (name, package_; packages) {
+        ret.packageDirs[name] = package_.dir;
+        ret.packageImportPaths[name] = package_.importPaths;
+        ret.packageUnusedSources[name] = package_.unusedSources;
     }
+
     return ret;
 }
