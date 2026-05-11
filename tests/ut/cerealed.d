@@ -29,46 +29,19 @@ private immutable string[] testFileNames = [
     "utils.d",
 ];
 
-// dmdCtfe: three files use unit_threaded APIs that the stub does not provide
-// (.should property, shouldNotThrow on complex template types, void expressions).
-private bool dmdCtfeShouldFail(in string fileName) {
-    return fileName == "bugs.d" ||
-        fileName == "cerealiser_impl.d" ||
-        fileName == "encode.d";
-}
-
 static foreach (backend; EnumMembers!ExecutorBackend) {
     static foreach (fileName; testFileNames) {
-        static if (
-            backend == ExecutorBackend.dmdCtfe && dmdCtfeShouldFail(fileName)
-        ) {
-            @ShouldFail
-            @(backend.text ~ ".cerealed." ~ fileName)
-            unittest {
-                import ut.dub_paths: cerealImportPaths, cerealTestsDir;
-                import std.file: readText;
-                import std.path: buildPath;
+        @(backend.text ~ ".cerealed." ~ fileName)
+        unittest {
+            import ut.dub_paths: cerealImportPaths, cerealTestsDir;
+            import std.file: readText;
+            import std.path: buildPath;
 
-                runTests(
-                    readText(buildPath(cerealTestsDir, fileName)),
-                    cerealImportPaths,
-                    backend,
-                );
-            }
-        }
-        else {
-            @(backend.text ~ ".cerealed." ~ fileName)
-            unittest {
-                import ut.dub_paths: cerealImportPaths, cerealTestsDir;
-                import std.file: readText;
-                import std.path: buildPath;
-
-                runTests(
-                    readText(buildPath(cerealTestsDir, fileName)),
-                    cerealImportPaths,
-                    backend,
-                );
-            }
+            runTests(
+                readText(buildPath(cerealTestsDir, fileName)),
+                cerealImportPaths,
+                backend,
+            );
         }
     }
 }
