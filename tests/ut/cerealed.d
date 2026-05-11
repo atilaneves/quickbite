@@ -3,7 +3,6 @@ module ut.cerealed;
 private:
 
 import quickbite: ExecutorBackend, runTests;
-import quickbite.frontend.compiler: addImportPath;
 import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
@@ -77,7 +76,7 @@ shared static this() {
 //   - property.d: `Types!(...)` template from unit_threaded.property not found
 //   - reset.d: some runtime assertion or compilation error
 // All ir and treeWalking cerealed tests pass because they use the cached DMD
-// module from the first (dmdCtfe) run and execute correctly.
+// module from the first (ir) run and execute correctly.
 private enum shouldFail(ExecutorBackend backend, string testFile) =
     backend == ExecutorBackend.dmdCtfe && (
         testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
