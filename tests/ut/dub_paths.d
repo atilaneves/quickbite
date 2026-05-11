@@ -5,8 +5,13 @@ private:
 // __FILE_FULL_PATH__ is tests/ut/dub_paths.d; project root is 3 levels up.
 // Anchoring here makes all paths work regardless of the test runner's cwd.
 private enum projectRoot = __FILE_FULL_PATH__[0 .. $ - "/tests/ut/dub_paths.d".length];
-private string[] cachedDubImportPaths;
-private bool cachedDubImportPathsInitialized;
+private struct DubDescription {
+    string[string] packageDirs;
+    string[][string] packageImportPaths;
+    string[][string] packageUnusedSources;
+}
+private DubDescription cachedDubDescription;
+private bool cachedDubDescriptionInitialized;
 
 public string[] cerealImportPaths() @safe {
     import std.path: buildPath;
@@ -14,61 +19,75 @@ public string[] cerealImportPaths() @safe {
 }
 
 public string cerealSrcDir() @safe {
-    return cerealPackageDir ~ "/src";
+    return packageImportPath("cerealed");
 }
 
 public string cerealTestsDir() @safe {
-    return cerealPackageDir ~ "/tests";
+    import std.path: dirName;
+
+    return packageUnusedSource("cerealed", "tests/utils.d").dirName;
 }
 
 private string cerealPackageDir() @safe {
-    return dubPackageDir("cerealed");
+    return packageDir("cerealed");
 }
 
 private string conceptsSrcDir() @safe {
-    return dubImportPath("concepts/source");
+    return packageImportPath("concepts");
 }
 
-private string dubPackageDir(in string name) @safe {
-    import std.path: dirName;
+private string packageDir(in string name) @safe {
+    import std.exception: enforce;
+    import std.conv: text;
 
-    return dubImportPath(name ~ "/src").dirName;
+    const found = name in dubDescription.packageDirs;
+    enforce(found !is null, text("dub describe did not return package: ", name));
+    return *found;
 }
 
-private string dubImportPath(in string suffix) @safe {
+private string packageImportPath(in string name) @safe {
+    import std.exception: enforce;
+    import std.conv: text;
+
+    const found = name in dubDescription.packageImportPaths;
+    enforce(found !is null, text("dub describe did not return package: ", name));
+    enforce(found.length == 1, text("dub describe returned multiple import paths for ", name));
+    return (*found)[0];
+}
+
+private string packageUnusedSource(in string name, in string path) @safe {
     import std.algorithm.searching: endsWith;
     import std.exception: enforce;
-    import std.path: dirSeparator;
+    import std.conv: text;
 
-    const wanted = dirSeparator ~ suffix ~ dirSeparator;
-    foreach (path; dubImportPaths)
-        if (path.endsWith(wanted))
-            return path;
+    const found = name in dubDescription.packageUnusedSources;
+    enforce(found !is null, text("dub describe did not return package: ", name));
+    foreach (source; *found)
+        if (source.endsWith(path))
+            return source;
 
-    throw new Exception("dub describe did not return import path: " ~ suffix);
+    throw new Exception(text("dub describe did not return ", path, " for ", name));
 }
 
-private string[] dubImportPaths() @safe {
-    if (!cachedDubImportPathsInitialized) {
-        cachedDubImportPaths = loadDubImportPaths;
-        cachedDubImportPathsInitialized = true;
+private DubDescription dubDescription() @safe {
+    if (!cachedDubDescriptionInitialized) {
+        cachedDubDescription = loadDubDescription;
+        cachedDubDescriptionInitialized = true;
     }
 
-    return cachedDubImportPaths;
+    return cachedDubDescription;
 }
 
-private string[] loadDubImportPaths() @safe {
+private DubDescription loadDubDescription() @safe {
     import std.exception: enforce;
     import std.process: Config, execute;
-    import std.string: splitLines, strip;
 
     const result = execute(
         [
             "dub",
             "describe",
+            "--vquiet",
             "--config=unittest",
-            "--data=import-paths",
-            "--data-list",
         ],
         null,
         Config.none,
@@ -77,13 +96,34 @@ private string[] loadDubImportPaths() @safe {
     );
     enforce(result.status == 0, result.output);
 
-    string[] ret;
-    foreach (line; result.output.splitLines) {
-        const path = line.strip;
-        if (path.length == 0)
-            continue;
+    return parseDubDescription(result.output);
+}
 
-        ret ~= path;
+private DubDescription parseDubDescription(in string json) @trusted {
+    import std.json: parseJSON;
+    import std.path: buildNormalizedPath;
+
+    const root = parseJSON(json);
+
+    DubDescription ret;
+    foreach (package_; root["packages"].array) {
+        const name = package_["name"].str;
+        const packageDir = package_["path"].str;
+        ret.packageDirs[name] = packageDir;
+
+        string[] importPaths;
+        foreach (importPath; package_["importPaths"].array)
+            importPaths ~= buildNormalizedPath(packageDir, importPath.str);
+        ret.packageImportPaths[name] = importPaths;
+
+        string[] unusedSources;
+        foreach (file; package_["files"].array) {
+            if (file["role"].str != "unusedSource")
+                continue;
+
+            unusedSources ~= buildNormalizedPath(packageDir, file["path"].str);
+        }
+        ret.packageUnusedSources[name] = unusedSources;
     }
     return ret;
 }

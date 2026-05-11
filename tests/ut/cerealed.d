@@ -31,7 +31,7 @@ private immutable string[] testFileNames = [
 
 // dmdCtfe: three files use unit_threaded APIs that the stub does not provide
 // (.should property, shouldNotThrow on complex template types, void expressions).
-private enum bool dmdCtfeShouldFail(in string fileName) {
+private bool dmdCtfeShouldFail(in string fileName) {
     return fileName == "bugs.d" ||
         fileName == "cerealiser_impl.d" ||
         fileName == "encode.d";

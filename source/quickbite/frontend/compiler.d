@@ -51,8 +51,9 @@ public imported!"quickbite.ir.module_".Module lowerModule(
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
-    // Keyed by source content; prevents re-registering the same module in
-    // DMD's process-global table when multiple backends parse the same file.
+    // Keyed by source content and import paths; prevents re-registering the
+    // same module in DMD's process-global table when multiple backends parse
+    // the same file with the same import context.
     private imported!"dmd.dmodule".Module[string] sourceCache;
 
     private this() {
@@ -118,12 +119,15 @@ final class Compiler {
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        if (auto cached = source in sourceCache) {
+        const key = cacheKey(source, importPaths);
+        if (auto cached = key in sourceCache) {
             ParsedModule result;
             result.module_ = *cached;
             return result;
         }
 
+        const originalPathLength = global.path.length;
+        scope(exit) global.path.setDim(originalPathLength);
         foreach (importPath; importPaths)
             addImport(importPath);
 
@@ -138,10 +142,8 @@ final class Compiler {
         );
 
         ParsedModule parsed = dmdParseModule(fileName, source);
-        // Cache before semantic so a semantic failure does not leave the
-        // module unregistered on a second call.
         if (parsed.module_ !is null)
-            sourceCache[source] = parsed.module_;
+            sourceCache[key] = parsed.module_;
 
         if (parsed.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
@@ -151,6 +153,13 @@ final class Compiler {
             throw new Exception(diagnosticMessage);
 
         return parsed;
+    }
+
+    private string cacheKey(in string source, in string[] importPaths) const {
+        import std.array: join;
+        import std.conv: text;
+
+        return text(source, "\0", importPaths.join("\0"));
     }
 }
 
