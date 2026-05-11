@@ -10,9 +10,9 @@ import quickbite.frontend.compiler: parseModule;
 private:
 
 // Defaults; overridable with --warmup / --iterations.
-enum size_t defaultWarmup = 3;
+enum size_t defaultWarmup = 1;
 // Odd, so the median is a single sample without averaging two values.
-enum size_t defaultIterations = 31;
+enum size_t defaultIterations = 9;
 
 int main(string[] args) {
     import std.file: readText;
@@ -22,17 +22,19 @@ int main(string[] args) {
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
     string[] importPaths;
+    bool noDmd;
 
     auto info = getopt(
         args,
         "warmup",       "untimed iterations before sampling",      &warmup,
         "iterations",   "timed iterations per measurement",        &iterations,
         "import-path",  "add an import search path (repeatable)",  &importPaths,
+        "no-dmd",       "omit the dmd subprocess row",             &noDmd,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] <module.d> [<module.d> ...]",
+            ~ " [--import-path=P ...] [--no-dmd] <module.d> [<module.d> ...]",
             info.options,
         );
         return 0;
@@ -78,20 +80,22 @@ int main(string[] args) {
         }
     }
 
-    writeln;
-    writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
-    printHeader;
-    foreach (path; fixtures) {
-        const source = readText(path);
+    if (!noDmd) {
+        writeln;
+        writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
+        printHeader;
+        foreach (path; fixtures) {
+            const source = readText(path);
 
-        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
-            printRow(
-                path, name, warmup, iterations,
-                () => executor.runTests(source, importPaths),
-            );
+            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+                auto executor = backends[name];
+                printRow(
+                    path, name, warmup, iterations,
+                    () => executor.runTests(source, importPaths),
+                );
+            }
+            printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
         }
-        printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
     }
 
     return 0;
@@ -189,7 +193,7 @@ void runDmd(in string path, in string[] importPaths = []) {
     import std.process: execute;
 
     const iFlags = importPaths.map!(p => "-I" ~ p).array;
-    const args   = ["dmd", "-unittest", "-main", "-run"] ~ iFlags ~ [path];
+    const args   = ["dmd", "-unittest", "-main"] ~ iFlags ~ ["-run", path];
     const result = execute(args);
     if (result.status != 0)
         throw new Exception(text(

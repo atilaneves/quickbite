@@ -32,24 +32,20 @@ if $use_cerealed; then
         dub describe --config=unittest --data=import-paths --data-list 2>/dev/null
     )
     cerealed_src=
-    concepts_src=
     for p in "${dub_import_paths[@]}"; do
-        p="${p%/}"
-        case "$p" in
-            */cerealed/src)    cerealed_src="$p" ;;
-            */concepts/source) concepts_src="$p" ;;
-        esac
+        [[ "${p%/}" == */cerealed/src ]] && cerealed_src="${p%/}"
     done
     if [[ -z "$cerealed_src" ]]; then
         echo "error: cerealed/src not found in dub import paths" >&2
         exit 1
     fi
     cerealed_tests="${cerealed_src%/src}/tests"
-    flags+=(
-        "--import-path=$cerealed_src"
-        "--import-path=$(pwd)/vendor/ut_stubs"
-    )
-    [[ -n "$concepts_src" ]] && flags+=("--import-path=$concepts_src")
+    for p in "${dub_import_paths[@]}"; do
+        flags+=("--import-path=${p%/}")
+    done
+    # cerealed's tests need the full unit-threaded library; dmd -run cannot
+    # link it, so exclude the dmd row from the cerealed benchmark.
+    flags+=("--no-dmd")
     mapfile -t cerealed_fixtures < <(
         find "$cerealed_tests" -maxdepth 1 -type f -name '*.d' | sort
     )
