@@ -43,6 +43,9 @@ if $use_cerealed; then
     for p in "${dub_import_paths[@]}"; do
         flags+=("--import-path=${p%/}")
     done
+    # cerealed's tests need the full unit-threaded library, which dmd -run
+    # cannot link; skip those rows rather than failing the whole run.
+    flags+=("--dmd-skip-on-error")
     mapfile -t cerealed_fixtures < <(
         find "$cerealed_tests" -maxdepth 1 -type f -name '*.d' | sort
     )
