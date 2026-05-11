@@ -28,18 +28,18 @@ shared static ~this() {
     compiler.shutdown;
 }
 
-public ParsedModule parseModule(in string source) @trusted {
+public ParsedModule parseModule(in string source) {
     return compiler.parseModule(source, []);
 }
 
 public ParsedModule parseModule(
     in string source,
     in string[] importPaths,
-) @trusted {
+) {
     return compiler.parseModule(source, importPaths);
 }
 
-public void withCompilerLock(scope void delegate() action) @trusted {
+public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }
 
