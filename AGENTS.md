@@ -96,6 +96,11 @@ Use `text` instead of `.to!string`.
 Run `dub test` after every editing "session" to assess the current
 status.
 
+Do not significantly slow down tests. This project optimises for low
+latency from edit to unittest result; avoid per-test process spawning,
+network access, repeated dependency resolution, or other expensive work
+in test helpers unless explicitly approved.
+
 Never delete test code to cause the tests to pass.
 
 # Do nots

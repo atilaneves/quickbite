@@ -29,12 +29,11 @@ shared static ~this() {
 }
 
 public ParsedModule parseModule(in string source) {
-    return compiler.parseModule(source);
+    return compiler.parseModule(source, []);
 }
 
-public void addImportPath(in string path) {
-    import dmd.frontend: addImport;
-    addImport(path);
+public ParsedModule parseModule(in string source, in string[] importPaths) {
+    return compiler.parseModule(source, importPaths);
 }
 
 public void withCompilerLock(scope void delegate() action) {
@@ -52,6 +51,9 @@ public imported!"quickbite.ir.module_".Module lowerModule(
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
+    // Keyed by source content; prevents re-registering the same module in
+    // DMD's process-global table when multiple backends parse the same file.
+    private imported!"dmd.dmodule".Module[string] sourceCache;
 
     private this() {
         import core.sync.mutex: Mutex;
@@ -106,15 +108,24 @@ final class Compiler {
         action();
     }
 
-    ParsedModule parseModule(in string source) {
+    ParsedModule parseModule(in string source, in string[] importPaths) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
-        import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
+        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
 
         mutex.lock;
         scope(exit) mutex.unlock;
+
+        if (auto cached = source in sourceCache) {
+            ParsedModule result;
+            result.module_ = *cached;
+            return result;
+        }
+
+        foreach (importPath; importPaths)
+            addImport(importPath);
 
         global.errors = 0;
         global.warnings = 0;
@@ -127,6 +138,11 @@ final class Compiler {
         );
 
         ParsedModule parsed = dmdParseModule(fileName, source);
+        // Cache before semantic so a semantic failure does not leave the
+        // module unregistered on a second call.
+        if (parsed.module_ !is null)
+            sourceCache[source] = parsed.module_;
+
         if (parsed.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
 

@@ -260,6 +260,12 @@ struct BodyLowerer {
         if (auto equal = expression.isEqualExp) {
             import dmd.tokens: EXP;
 
+            if (equal.lowering !is null)
+                return lowerExpression(equal.lowering, lowerer);
+
+            if (typeIsDynamicArray(equal.e1.type) && typeIsDynamicArray(equal.e2.type))
+                return lowerArrayEqualityExpression(equal, lowerer);
+
             if (equal.op == EXP.notEqual)
                 return lowerBinaryExpression(equal, Operation.notEqual, lowerer);
 
@@ -538,6 +544,35 @@ struct BodyLowerer {
             destination,
             left,
             right,
+        ));
+        return destination;
+    }
+
+    uint lowerArrayEqualityExpression(
+        imported!"dmd.expression".EqualExp equal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import dmd.tokens: EXP;
+        import quickbite.ir.instruction:
+            ArrayEqual, Instruction, UnaryOp, UnaryOperation;
+
+        const left = lowerExpression(equal.e1, lowerer);
+        const right = lowerExpression(equal.e2, lowerer);
+        const equalResult = allocateTemporary;
+        instructions ~= Instruction(ArrayEqual(
+            equalResult,
+            left,
+            right,
+        ));
+
+        if (equal.op == EXP.equal)
+            return equalResult;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(
+            destination,
+            equalResult,
+            UnaryOperation.not,
         ));
         return destination;
     }

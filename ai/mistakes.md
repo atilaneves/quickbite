@@ -123,3 +123,13 @@
   verify what CI already reports or what is clear from the diff. Use the
   diff and CI signal for the review unless the user asks for local
   verification.
+
+- In DMD 2.112.1 array equality can remain an `EqualExp` without
+  `EqualExp.lowering` when the compiler backend can use memcmp-style
+  comparison. Do not assume all array equality reaches `object.__equals`.
+
+- When adding D helpers, apply the repo's attribute guideline immediately;
+  do not wait for review to point out obvious `@safe` opportunities.
+
+- Do not put expensive work such as process spawning in test helpers that
+  are called per generated unittest. Cache it or move it out of the hot path.

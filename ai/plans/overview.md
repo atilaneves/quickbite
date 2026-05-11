@@ -211,9 +211,11 @@ For every new language feature, add focused test fixtures and keep
 7. Add explicit IR test-body termination (`ReturnVoid`; see
    ai/plans/ir.md), implement BytecodeExecutor, and run the three-way
    benchmark.
-8. Graduate to real cerealed: identify gaps between minicereal and
-   cerealed's test suite; fill them incrementally (each gap is its
-   own sub-phase: ranges, UDAs, classes, exceptions, …).
+8. Run real cerealed tests: add import-path API, source-content cache,
+   and rewrite the cerealed harness (see ai/plans/cerealed-coverage.md).
+   All 19 tests pass on IR; encode.d and nested.d are frontend failures
+   on all backends.  Fill remaining backend gaps incrementally as each
+   @ShouldFail is removed (ranges, UDAs, classes, exceptions, …).
 9. Spike native call bridging (libffi vs JIT stubs) when the first
    test that calls a dependency needs to run.
 10. Decide on JitExecutor based on benchmark results.
