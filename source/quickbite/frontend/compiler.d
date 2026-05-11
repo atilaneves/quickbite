@@ -62,6 +62,10 @@ final class Compiler {
     // DMD Module class (a reference type) keyed by source and reconstruct
     // a ParsedModule on every cache hit.
     private imported!"dmd.dmodule".Module[string] sourceCache;
+    // DMD registers modules before fullSemantic can fail.  Cache failures by
+    // source too, so later backends rethrow the same frontend error instead of
+    // reparsing into a duplicate module-name conflict.
+    private string[string] sourceErrorCache;
 
     private this() {
         import core.sync.mutex: Mutex;
@@ -126,6 +130,9 @@ final class Compiler {
         mutex.lock;
         scope(exit) mutex.unlock;
 
+        foreach (importPath; importPaths)
+            addImport(importPath);
+
         // Return cached result if this source was already parsed and
         // semantically analysed successfully.
         if (auto cached = source in sourceCache) {
@@ -134,8 +141,8 @@ final class Compiler {
             return result;
         }
 
-        foreach (importPath; importPaths)
-            addImport(importPath);
+        if (auto cachedError = source in sourceErrorCache)
+            throw new Exception(*cachedError);
 
         global.errors = 0;
         global.warnings = 0;
@@ -148,12 +155,18 @@ final class Compiler {
         );
 
         ParsedModule parsed = dmdParseModule(fileName, source);
-        if (parsed.diagnostics.hasErrors)
-            throw new Exception(diagnosticMessage);
+        if (parsed.diagnostics.hasErrors) {
+            const message = diagnosticMessage;
+            sourceErrorCache[source] = message;
+            throw new Exception(message);
+        }
 
         parsed.module_.fullSemantic;
-        if (global.errors != 0)
-            throw new Exception(diagnosticMessage);
+        if (global.errors != 0) {
+            const message = diagnosticMessage;
+            sourceErrorCache[source] = message;
+            throw new Exception(message);
+        }
 
         // Cache only after both parsing and full semantic analysis succeed,
         // so callers always receive a fully-verified module.

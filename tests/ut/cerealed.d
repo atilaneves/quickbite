@@ -33,20 +33,15 @@ private immutable testFiles = [
 ];
 
 // Tests that are expected to fail because they expose current frontend
-// limitations on unmodified source.  Four files fail during fullSemantic:
-//   - cerealiser_impl.d: type-mismatch in unit_threaded.assertions template
-//     (const(ubyte)[] vs void[] in shouldEqual instantiation)
+// limitations on unmodified source.  Two files fail during fullSemantic:
 //   - encode.d: `pure` unittest calls impure cerealize template
-//   - property.d: `Types!(...)` template from unit_threaded.property not found
-//   - reset.d: same type-mismatch as cerealiser_impl.d
+//   - nested.d: `dup` cannot copy `const(SomeStruct)[]`
 // Because fullSemantic fails, the source-content cache is never populated for
 // these files.  All three backends encounter the same frontend error, so all
 // three are marked @ShouldFail.
 private enum shouldFail(ExecutorBackend backend, string testFile) =
-    testFile == "vendor/cerealed/tests/cerealiser_impl.d" ||
     testFile == "vendor/cerealed/tests/encode.d" ||
-    testFile == "vendor/cerealed/tests/property.d" ||
-    testFile == "vendor/cerealed/tests/reset.d";
+    testFile == "vendor/cerealed/tests/nested.d";
 
 // One test per (backend, test-file) pair.  Each test exercises only
 // the unittest blocks in that file, so failures are localised.
@@ -67,9 +62,9 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     }
 }
 
-// Use the real unit-threaded package that dub compiled the test runner with.
-// ShouldFail lives under:
-// unit-threaded/subpackages/runner/source/unit_threaded/runner/attrs.d
+// Cerealed imports the real unit-threaded dependency instead of the vendored
+// stub.  The test runner already depends on unit-threaded, so use the location
+// of a runner symbol to find the package root selected by dub for this run.
 private string[] cerealImportPaths() {
     import std.path: buildPath, dirName;
     import unit_threaded.runner.attrs: ShouldFail;

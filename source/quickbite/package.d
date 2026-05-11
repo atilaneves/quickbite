@@ -29,14 +29,13 @@ private imported!"quickbite.executor".Executor backendExecutor(
     import quickbite.backends.dmd_ctfe: DmdCtfe;
     import quickbite.backends.ir: IrExecutor;
     import quickbite.backends.tree_walking: TreeWalkingExecutor;
-    import quickbite.executor: Executor;
 
-    // Explicit type: the AA values must be widened to the Executor interface.
-    Executor[ExecutorBackend] executors = [
-        ExecutorBackend.ir: cast(Executor) new IrExecutor,
-        ExecutorBackend.treeWalking: cast(Executor) new TreeWalkingExecutor,
-        ExecutorBackend.dmdCtfe: cast(Executor) new DmdCtfe,
-    ];
-
-    return executors[backend];
+    final switch (backend) {
+        case ExecutorBackend.ir:
+            return new IrExecutor;
+        case ExecutorBackend.treeWalking:
+            return new TreeWalkingExecutor;
+        case ExecutorBackend.dmdCtfe:
+            return new DmdCtfe;
+    }
 }
