@@ -22,22 +22,19 @@ int main(string[] args) {
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
     string[] importPaths;
-    bool dmdSkipOnError;
+    bool noDmd;
 
     auto info = getopt(
         args,
-        "warmup",             "untimed iterations before sampling",             &warmup,
-        "iterations",         "timed iterations per measurement",               &iterations,
-        "import-path",        "add an import search path (repeatable)",         &importPaths,
-        "dmd-skip-on-error",  "print a placeholder row instead of failing on "
-                              ~ "dmd subprocess errors (for unsupported cases "
-                              ~ "like link-heavy test libraries)",              &dmdSkipOnError,
+        "warmup",       "untimed iterations before sampling",      &warmup,
+        "iterations",   "timed iterations per measurement",        &iterations,
+        "import-path",  "add an import search path (repeatable)",  &importPaths,
+        "no-dmd",       "omit the dmd subprocess row",             &noDmd,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--dmd-skip-on-error]"
-            ~ " <module.d> [<module.d> ...]",
+            ~ " [--import-path=P ...] [--no-dmd] <module.d> [<module.d> ...]",
             info.options,
         );
         return 0;
@@ -96,14 +93,8 @@ int main(string[] args) {
                 () => executor.runTests(source, importPaths),
             );
         }
-        try {
+        if (!noDmd)
             printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
-        } catch (Exception e) {
-            if (dmdSkipOnError)
-                writefln("%-32s %-14s  compile/link error", path, "dmd");
-            else
-                throw e;
-        }
     }
 
     return 0;
