@@ -138,6 +138,9 @@
   `@trusted` is a deliberate safety boundary and needs a specific
   justification.
 
+- Do not vendor a dependency when dub can declare and resolve that
+  dependency directly in `dub.sdl`.
+
 - When embedding dub as a library, verify path and compiler-registry
   behaviour in the actual linked code. `PackageManager` appends `packages/`
   to the user cache root, compiler handlers may need explicit registration,

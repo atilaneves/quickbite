@@ -13,32 +13,32 @@ private struct DubDescription {
 private DubDescription cachedDubDescription;
 private bool cachedDubDescriptionInitialized;
 
-public string[] dubImportPaths() @safe {
+public string[] dubImportPaths() {
     string[] ret;
     foreach (paths; dubDescription.packageImportPaths)
         ret ~= paths;
     return ret;
 }
 
-public string cerealSrcDir() @safe {
+public string cerealSrcDir() {
     return packageImportPath("cerealed");
 }
 
-public string cerealTestsDir() @safe {
+public string cerealTestsDir() {
     import std.path: dirName;
 
     return packageUnusedSource("cerealed", "tests/utils.d").dirName;
 }
 
-private string cerealPackageDir() @safe {
+private string cerealPackageDir() {
     return packageDir("cerealed");
 }
 
-private string conceptsSrcDir() @safe {
+private string conceptsSrcDir() {
     return packageImportPath("concepts");
 }
 
-private string packageDir(in string name) @safe {
+private string packageDir(in string name) {
     import std.exception: enforce;
     import std.conv: text;
 
@@ -47,7 +47,7 @@ private string packageDir(in string name) @safe {
     return *found;
 }
 
-private string packageImportPath(in string name) @safe {
+private string packageImportPath(in string name) {
     import std.exception: enforce;
     import std.conv: text;
 
@@ -57,7 +57,7 @@ private string packageImportPath(in string name) @safe {
     return (*found)[0];
 }
 
-private string packageUnusedSource(in string name, in string path) @safe {
+private string packageUnusedSource(in string name, in string path) {
     import std.algorithm.searching: endsWith;
     import std.exception: enforce;
     import std.conv: text;
@@ -71,7 +71,7 @@ private string packageUnusedSource(in string name, in string path) @safe {
     throw new Exception(text("dub describe did not return ", path, " for ", name));
 }
 
-private DubDescription dubDescription() @safe {
+private DubDescription dubDescription() {
     if (!cachedDubDescriptionInitialized) {
         cachedDubDescription = loadDubDescription;
         cachedDubDescriptionInitialized = true;
@@ -80,8 +80,8 @@ private DubDescription dubDescription() @safe {
     return cachedDubDescription;
 }
 
-private DubDescription loadDubDescription() @safe {
-    import quickbite_dub_library.package_resolver: describeProject;
+private DubDescription loadDubDescription() {
+    import dub.dependencies: describeProject;
     import std.path: buildPath;
     import std.process: environment;
 

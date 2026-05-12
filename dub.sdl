@@ -12,10 +12,10 @@ configuration "unittest" {
     includePaths "tests"
     versions "unitUnthreaded"
 
+    dependency "dub" version="1.40.0" optional=true default=false
     dependency "dmd:frontend" version="~>2.112.1"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
-    dependency "quickbite-dub-library" path="vendor/dub_library"
 }
 
 configuration "unittest-cov" {
@@ -35,7 +35,6 @@ configuration "unittest-cov" {
     dependency "dmd:frontend" version="~>2.112.1"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
-    dependency "quickbite-dub-library" path="vendor/dub_library"
 }
 
 configuration "benchmark" {
