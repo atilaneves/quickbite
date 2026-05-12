@@ -55,6 +55,7 @@ calling convention and symbol resolution (native code calls native code).
 
     interface Executor {
         void runTests(in string source);
+        void runTests(in string source, in string[] importPaths);
     }
 
 The public API accepts source text; the DMD frontend (parse + semantic
@@ -68,30 +69,34 @@ that coupling must not cross the public module boundary.
 
 ## Backends
 
-### 1. IrInterpreterExecutor (exists today)
+### 1. IrInterpreterExecutor
 
 Pipeline: DMD → lower to IR → execute IR with long[] temporaries.
 
-The current implementation. Wrap behind Executor. No other changes yet.
+Wrapped behind Executor as `ExecutorBackend.ir`.
 
 ### 2. TreeWalkingExecutor
 
 Pipeline: DMD → walk the semantically-analysed AST → execute directly.
 
-No lowering step, no IR. Eliminates one pipeline stage. Simplest to
-implement; likely the winner for small test bodies. When it encounters
-a call to native code it will need ABI bridging (see above), but that
-is not needed for the initial self-contained slice.
+No lowering step, no IR. Wrapped as `ExecutorBackend.treeWalking`.
 
-### 3. BytecodeExecutor
+### 3. DmdCtfe
+
+Pipeline: delegate execution directly to DMD's built-in CTFE interpreter.
+
+Wrapped as `ExecutorBackend.dmdCtfe`. Serves as a correctness reference
+and a ceiling on what the DMD frontend alone can do.
+
+### 4. BytecodeExecutor (not yet implemented)
 
 Pipeline: DMD → lower to IR → encode to compact byte[] → switch-dispatch VM.
 
 Shares the lowering pass with IrInterpreterExecutor. Adds one encoding
 step. Potential advantage: better cache locality in the dispatch loop.
-Requires explicit Return in the IR (see ai/plans/ir.md).
+Requires explicit ReturnVoid terminator in unittest bodies (see ai/plans/ir.md).
 
-### 4. JitExecutor (deferred)
+### 5. JitExecutor (deferred)
 
 Pipeline: DMD → lower to IR → JIT compile to native code → execute.
 
@@ -107,118 +112,40 @@ meaningful headroom.
 blocks serve as the concrete language-coverage target. It is D source
 but is NOT a dub test target — quickbite compiles and executes it.
 
-The library encodes and decodes all eight integral types little-endian.
-`static foreach` and `T.sizeof` are resolved by DMD before the lowerer
-sees the AST, so the lowerer handles only flat, concrete statements —
-no template machinery is needed in quickbite.
+The library encodes and decodes all eight integral types little-endian
+using `static foreach` and `T.sizeof`, which DMD resolves before the
+lowerer sees the AST.
 
-### Free-function interface
+A `Minicereal` struct wrapper with `put`/`get` methods is also covered.
+All minicereal unittest blocks pass on all three current backends.
 
-    void encode(T)(T val, ref ubyte[] output) {
-        static foreach(i; 0 .. T.sizeof)
-            output ~= cast(ubyte)(val >> (i * 8));
-    }
+## Real Cerealed Tests
 
-    T decode(T)(in ubyte[] input, ref size_t pos) {
-        T result = 0;
-        static foreach(i; 0 .. T.sizeof)
-            result |= cast(T)(input[pos++]) << (i * 8);
-        return result;
-    }
-
-### Required unittests
-
-Each integral type must have at minimum:
-
-- an encode test: fixed value → expected byte sequence
-- a decode test: known byte sequence → expected value
-- a round-trip test: encode then decode yields the original value
-
-Example for `int`:
-
-    unittest {
-        ubyte[] buf;
-        encode(0x01020304, buf);
-        assert(buf.length == 4);
-        assert(buf[0] == 0x04);  // little-endian
-        assert(buf[1] == 0x03);
-        assert(buf[2] == 0x02);
-        assert(buf[3] == 0x01);
-    }
-
-    unittest {
-        ubyte[] buf;
-        int x = 0x01020304;
-        encode(x, buf);
-        size_t pos = 0;
-        assert(decode!int(buf, pos) == x);
-    }
-
-Cover at minimum: ubyte (1 byte), ushort (2 bytes), uint (4 bytes),
-ulong (8 bytes), and their signed counterparts. Include at least one
-negative signed value to verify sign-bit handling.
-
-### Struct-based wrapper (added once structs are supported)
-
-    struct Minicereal {
-        ubyte[] bytes;
-
-        void put(T)(T val) { encode(val, bytes); }
-        T get(T)(ref size_t pos) { return decode!T(bytes, pos); }
-    }
-
-    unittest {
-        Minicereal c;
-        c.put(42);
-        size_t pos = 0;
-        assert(c.get!int(pos) == 42);
-    }
-
-## Language Coverage Required
-
-The IR interpreter already covers the first scalar slices: void
-functions, value/ref/in parameters, all eight integral types, arithmetic,
-integer casts, comparisons, boolean operators, if/else, and early
-returns.
-
-Remaining IR lowerer work for `tests/minicereal.d`, in dependency order:
-
-1. Bit operations — `>>`, `<<`, `|`, `&`, `^`, `~`.
-2. Compound assignment — `|=`, `+=`, `-=`, `~=` as statements.
-3. Dynamic arrays — `ubyte[]` type; `~=` append; `[i]` index;
-   `.length` property; post-increment on `size_t` index.
-4. Structs — definitions, field access and assignment; required for the
-   `Minicereal` wrapper and as the first step toward cerealed.
-
-For every new language feature, add focused test fixtures and keep
-`dub test` green after each sub-slice.
+`tests/ut/cerealed.d` runs all 19 cerealed test files against every
+`ExecutorBackend` member. The benchmarking harness lives in `benchmarks/`
+and accepts `--import-path` flags so cerealed tests can be timed.
 
 ## Implementation Phases
 
 1. Add Executor interface; wrap current code as IrInterpreterExecutor.
    (Done.)
-2. Implement TreeWalkingExecutor. (Done; it is ahead of IR for arrays,
-   foreach, while, and scalar structs.)
-3. Finish the remaining IR language coverage above, one sub-slice at a
-   time. Keep `dub test` green after each.
-4. Add `tests/minicereal.d` unittest blocks. They must pass on
-   IrInterpreterExecutor, then on TreeWalkingExecutor.
-5. Add backend-parity tests for shared supported behavior. The same
-   source should produce the same pass/fail result and user-facing
-   diagnostic category across backends.
+2. Implement TreeWalkingExecutor. (Done.)
+3. Finish IR language coverage: bit ops, compound assignment, dynamic
+   arrays, structs. (Done.)
+4. Add `tests/minicereal.d` unittest blocks. (Done; all pass on all
+   backends.)
+5. Add backend-parity tests for shared supported behaviour. (Done.)
 6. Build benchmarking harness; run tree-walker vs IR interpreter on the
-   full minicereal test suite.
-7. Add explicit IR test-body termination (`ReturnVoid`; see
+   full minicereal test suite. (Done; harness in `benchmarks/`.)
+7. Add DmdCtfe backend. (Done.)
+8. Run real cerealed tests: all 19 files exercised on all three backends.
+   (Done.)
+9. Add explicit IR test-body termination (`ReturnVoid`; see
    ai/plans/ir.md), implement BytecodeExecutor, and run the three-way
    benchmark.
-8. Run real cerealed tests: add import-path API, source-content cache,
-   and rewrite the cerealed harness (see ai/plans/cerealed-coverage.md).
-   All 19 tests pass on IR; encode.d and nested.d are frontend failures
-   on all backends.  Fill remaining backend gaps incrementally as each
-   @ShouldFail is removed (ranges, UDAs, classes, exceptions, …).
-9. Spike native call bridging (libffi vs JIT stubs) when the first
-   test that calls a dependency needs to run.
-10. Decide on JitExecutor based on benchmark results.
+10. Spike native call bridging (libffi vs JIT stubs) when the first
+    test that calls a dependency needs to run.
+11. Decide on JitExecutor based on benchmark results.
 
 ## Test Plan
 
@@ -239,7 +166,6 @@ category across all backends.
 - Measure DMD frontend alone separately to expose the irreducible floor.
 - Inputs: current tiny test suite; larger suites as language coverage grows.
 - Metric: min / p50 / p95 / max over ≥200 runs per executor per input.
-- Lives in tests/bench/; excluded from dub test.
-- Once multiple backends exist, add parity tests: same selected unittest
-  must produce the same pass/fail result and the same user-facing
-  diagnostic category across all backends.
+- Lives in `benchmarks/`; excluded from dub test.
+- Backend parity: same selected unittest must produce the same pass/fail
+  result and the same user-facing diagnostic category across all backends.

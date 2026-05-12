@@ -137,3 +137,7 @@
 - Do not add `@trusted` to functions just to satisfy an attribute habit.
   `@trusted` is a deliberate safety boundary and needs a specific
   justification.
+
+- When a PR's purpose is to replace a process-spawning CLI call with a
+  library call, do not satisfy dependency or vendoring review comments by
+  hiding the same CLI call behind a new library-shaped wrapper.
