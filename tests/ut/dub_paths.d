@@ -81,7 +81,7 @@ private DubDescription dubDescription() @safe {
 }
 
 private DubDescription loadDubDescription() @safe {
-    import quickbite_dub_library.package_resolver: describeProject;
+    import dub.dependencies: describeProject;
     import std.path: buildPath;
     import std.process: environment;
 

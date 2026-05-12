@@ -7,7 +7,6 @@ quickbite.so
 quickbite.dylib
 quickbite.dll
 libquickbite.a
-vendor/dub_library/libquickbite-dub-library.a
 quickbite.a
 quickbite.lib
 quickbite-test-*

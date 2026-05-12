@@ -9,13 +9,24 @@ configuration "unittest" {
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
-    includePaths "tests"
-    versions "unitUnthreaded"
+    importPaths "tests" "$HOME/.dub/packages/dub/1.41.0/dub/source"
+    excludedSourceFiles "tests/dub/dependencies.d"
+    // `dependency "dub"` cannot be used here: dub 1.41.0 has a bug where
+    // ${DUB_PACKAGE_DIR} in dmd:lexer's preGenerateCommands resolves to the
+    // "dub" package path instead of dmd:lexer's own path, breaking config.d
+    // pre-generation. Pre-build dub's own "library" config and link the
+    // archive directly; this keeps "dub" out of the named dependency graph
+    // entirely. Linux-only; requires dub 1.41.0 in $HOME/.dub/packages
+    // (run `dub fetch dub@1.41.0` if absent).
+    // dependencies.d is compiled separately (without -preview=dip1000) so
+    // that dub's SumType template instantiations match libdub.a's ABI.
+    preGenerateCommands "mkdir -p $DUB_PACKAGE_DIR/.dub && dmd -c -of$DUB_PACKAGE_DIR/.dub/dub_dependencies.o -I$HOME/.dub/packages/dub/1.41.0/dub/source -version=DubUseCurl $DUB_PACKAGE_DIR/tests/dub/dependencies.d && $DUB_EXE build --root=$HOME/.dub/packages/dub/1.41.0/dub --config=library" platform="linux"
+    lflags "$PACKAGE_DIR/.dub/dub_dependencies.o" "$HOME/.dub/packages/dub/1.41.0/dub/bin/libdub.a" "--allow-multiple-definition" platform="linux"
+    versions "unitUnthreaded" "DubUseCurl"
 
     dependency "dmd:frontend" version="~>2.112.1"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
-    dependency "quickbite-dub-library" path="vendor/dub_library"
 }
 
 configuration "unittest-cov" {
@@ -24,18 +35,23 @@ configuration "unittest-cov" {
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
-    includePaths "tests"
-    versions "unitUnthreaded"
+    importPaths "tests" "$HOME/.dub/packages/dub/1.41.0/dub/source"
+    excludedSourceFiles "tests/dub/dependencies.d"
+    // Same workaround as "unittest": pre-build dub's library config and link
+    // the archive directly to avoid the DUB_PACKAGE_DIR collision bug.
+    // dependencies.d is compiled separately (without -preview=dip1000) so
+    // that dub's SumType template instantiations match libdub.a's ABI.
+    preGenerateCommands "mkdir -p $DUB_PACKAGE_DIR/.dub && dmd -c -of$DUB_PACKAGE_DIR/.dub/dub_dependencies.o -I$HOME/.dub/packages/dub/1.41.0/dub/source -version=DubUseCurl $DUB_PACKAGE_DIR/tests/dub/dependencies.d && $DUB_EXE build --root=$HOME/.dub/packages/dub/1.41.0/dub --config=library" platform="linux"
 
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
     // here directly.
-    lflags "--allow-multiple-definition" platform="linux"
+    lflags "$PACKAGE_DIR/.dub/dub_dependencies.o" "$HOME/.dub/packages/dub/1.41.0/dub/bin/libdub.a" "--allow-multiple-definition" platform="linux"
+    versions "unitUnthreaded" "DubUseCurl"
 
     dependency "dmd:frontend" version="~>2.112.1"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
-    dependency "quickbite-dub-library" path="vendor/dub_library"
 }
 
 configuration "benchmark" {

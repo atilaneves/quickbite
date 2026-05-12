@@ -1,4 +1,4 @@
-module quickbite_dub_library.package_resolver;
+module dub.dependencies;
 
 private:
 
@@ -19,10 +19,8 @@ public PackageInfo[string] describeProject(
     import dub.project: Project;
     import std.path: buildNormalizedPath;
 
-    // dub's project construction API mutates/cache-fills these handles.
     auto packageManager = packageManagerInstance(projectRoot, packageCacheRoot);
     auto pack = packageManager.getOrLoadPackage(projectRoot.nativePath);
-    pack.removeHelperDependency;
     auto project = new Project(packageManager, pack);
     auto buildPlatform = determineBuildPlatform;
     buildPlatform.compilerBinary = buildPlatform.compiler;
@@ -68,33 +66,6 @@ private void registerDefaultCompilers() @trusted {
     registerCompiler(new GDCCompiler);
     registerCompiler(new LDCCompiler);
     registered = true;
-}
-
-private void removeHelperDependency(
-    imported!"dub.package_".Package pack,
-) @trusted {
-    enum helperPackage = "quickbite-dub-library";
-
-    pack.recipe.buildSettings.dependencies.remove(helperPackage);
-    foreach (ref configuration; pack.recipe.configurations)
-        configuration.buildSettings.dependencies.remove(helperPackage);
-}
-
-public string resolvePackagePath(
-    in string projectRoot,
-    in string packageCacheRoot,
-    in string name,
-    in string ver,
-) @trusted {
-    import dub.dependency: PackageName, Version;
-    import std.exception: enforce;
-
-    auto pkg = packageManagerInstance(projectRoot, packageCacheRoot)
-        .getPackage(PackageName(name), Version(ver));
-    enforce(pkg !is null, "dub package not found: " ~ name ~ "@" ~ ver);
-
-    const path = pkg.path.toNativeString;
-    return path.length > 0 && path[$ - 1] == '/' ? path[0 .. $ - 1] : path;
 }
 
 private imported!"dub.internal.vibecompat.inet.path".NativePath nativePath(

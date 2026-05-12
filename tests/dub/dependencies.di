@@ -1,4 +1,6 @@
-module quickbite_dub_library.package_resolver;
+module dub.dependencies;
+
+private:
 
 public struct PackageInfo {
     string dir;
@@ -10,11 +12,4 @@ public PackageInfo[string] describeProject(
     in string projectRoot,
     in string packageCacheRoot,
     in string config,
-) @trusted;
-
-public string resolvePackagePath(
-    in string projectRoot,
-    in string packageCacheRoot,
-    in string name,
-    in string ver,
 ) @trusted;
