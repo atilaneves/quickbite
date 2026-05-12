@@ -66,7 +66,8 @@ Use `private:` at the top of every module. Be explicit with `public`
 and `private` anyway.
 
 Use as many attributes as can be used: `@safe @nogc nothrow pure const
-scope`, for instance.
+scope`, for instance. Do not abuse `@trusted` to make functions
+`@safe`.
 
 Private functions should be placed directly below where they used if
 possible.
