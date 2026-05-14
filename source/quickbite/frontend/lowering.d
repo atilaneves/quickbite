@@ -3910,6 +3910,9 @@ struct BodyLowerer {
         if (typeIsAssociativeArray(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
+        if (typeIsFloating(cast_.to))
+            return lowerExpression(cast_.e1, lowerer);
+
         if (typeIsBool(cast_.to))
             return lowerTruthValue(lowerExpression(cast_.e1, lowerer));
 
@@ -4778,6 +4781,18 @@ private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsAssociativeArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.toBasetype.isTypeAArray !is null;
+}
+
+private bool typeIsFloating(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    const basetype = type.toBasetype;
+    return basetype.ty == TY.Tfloat32 ||
+        basetype.ty == TY.Tfloat64 ||
+        basetype.ty == TY.Tfloat80;
 }
 
 private bool varIsParameter(
