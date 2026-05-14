@@ -625,6 +625,13 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto leftShiftAssign = expression.isShlAssignExp)
+            return lowerCompoundAssignment(
+                leftShiftAssign,
+                Operation.leftShift,
+                lowerer,
+            );
+
         if (auto append = expression.isCatElemAssignExp)
             return lowerArrayAppendAssignment(append, lowerer);
 
