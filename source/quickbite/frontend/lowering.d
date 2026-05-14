@@ -1688,6 +1688,15 @@ struct BodyLowerer {
             return true;
         }
 
+        if (lowerer.functionName(call.f) == "gc_qalloc") {
+            if (call.arguments !is null)
+                foreach (argument; callArguments(call))
+                    lowerExpression(argument, lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 1));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
