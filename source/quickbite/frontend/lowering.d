@@ -1184,9 +1184,21 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction:
             Assert_, BinaryOp, CastInt, ConstInt, Instruction, Operation,
-            StructNew, StructSet;
+            StructNew, StructSet, UnaryOp, UnaryOperation;
 
         const name = expressionChars(call.e1);
+
+        if (name == "bsr") {
+            enforceCallArgumentCount(call, 1);
+            const value = lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(UnaryOp(
+                result,
+                value,
+                UnaryOperation.bitScanReverse,
+            ));
+            return true;
+        }
 
         if (name == "Split64") {
             enforceCallArgumentCount(call, 1);

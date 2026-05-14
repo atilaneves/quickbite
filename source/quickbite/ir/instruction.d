@@ -56,6 +56,7 @@ public enum UnaryOperation {
     negate,
     not,
     complement,
+    bitScanReverse,
 }
 
 public struct Select {

@@ -624,7 +624,22 @@ void executeUnaryInstruction(
         case imported!"quickbite.ir.instruction".UnaryOperation.complement:
             writeTemporaryValue(temporaries, destination) = ~sourceValue;
             break;
+        case imported!"quickbite.ir.instruction".UnaryOperation.bitScanReverse:
+            writeTemporaryValue(temporaries, destination) =
+                bitScanReverse(sourceValue);
+            break;
     }
+}
+
+long bitScanReverse(in long sourceValue) @safe pure nothrow @nogc {
+    const bits = cast(ulong) sourceValue;
+    foreach_reverse (index; 0 .. 64) {
+        const mask = 1UL << index;
+        if ((bits & mask) != 0)
+            return cast(long) index;
+    }
+
+    return -1;
 }
 
 void enforceNonZeroDivisor(in long value, in string message) @safe pure {
