@@ -62,7 +62,13 @@ private enum bool shouldFailCerealedTest(
             fileName != "utils.d"
         )
     ) &&
-    (backend != ExecutorBackend.ir || fileName != "bugs.d");
+    (
+        backend != ExecutorBackend.ir ||
+        (
+            fileName != "bugs.d" &&
+            fileName != "utils.d"
+        )
+    );
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {
     import ut.dub_paths: dubImportPaths, cerealTestsDir;
