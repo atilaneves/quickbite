@@ -3392,11 +3392,7 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: ConstInt, Instruction, StructGet;
 
-        if (
-            expressionChars(dot.e1) == "F" &&
-            (identifierName(dot.ident) == "infinity" ||
-                identifierName(dot.ident) == "nan")
-        ) {
+        if (expressionChars(dot.e1) == "F") {
             const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(destination, 0));
             return destination;
