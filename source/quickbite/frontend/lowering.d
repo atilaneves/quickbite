@@ -277,6 +277,7 @@ struct BodyLowerer {
             instructions ~= Instruction(JumpIfFalse(condition, 0));
         }
 
+        pendingUnlabelledBreakInstructionIndices ~= cast(size_t[]) [];
         pendingUnlabelledContinueInstructionIndices ~= cast(size_t[]) [];
         if (statement._body !is null)
             lowerStatement(statement._body, lowerer);
@@ -304,6 +305,15 @@ struct BodyLowerer {
                 cast(uint) exitJumpIndex,
                 cast(int) (instructions.length - exitJumpIndex - 1),
             );
+
+        foreach (jumpIndex; pendingUnlabelledBreakInstructionIndices[$ - 1])
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (instructions.length - jumpIndex),
+            );
+        pendingUnlabelledBreakInstructionIndices.length =
+            pendingUnlabelledBreakInstructionIndices.length - 1;
     }
 
     void lowerDoStatement(
@@ -313,6 +323,7 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Instruction, JumpIfTrue;
 
         const loopStart = instructions.length;
+        pendingUnlabelledBreakInstructionIndices ~= cast(size_t[]) [];
         pendingUnlabelledContinueInstructionIndices ~= cast(size_t[]) [];
         if (statement._body !is null)
             lowerStatement(statement._body, lowerer);
@@ -332,6 +343,15 @@ struct BodyLowerer {
             condition,
             cast(int) loopStart - cast(int) instructions.length - 1,
         ));
+
+        foreach (jumpIndex; pendingUnlabelledBreakInstructionIndices[$ - 1])
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (instructions.length - jumpIndex),
+            );
+        pendingUnlabelledBreakInstructionIndices.length =
+            pendingUnlabelledBreakInstructionIndices.length - 1;
     }
 
     void lowerSwitchStatement(
