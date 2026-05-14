@@ -103,6 +103,7 @@ private bool functionReturnsVoid(
 
 struct BodyLowerer {
     import dmd.declaration: VarDeclaration;
+    import dmd.statement: CaseStatement, DefaultStatement;
 
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
@@ -111,6 +112,9 @@ struct BodyLowerer {
     private size_t[string] labelInstructionIndices;
     private size_t[][string] pendingGotoInstructionIndices;
     private size_t[][string] pendingBreakInstructionIndices;
+    private size_t[][CaseStatement] pendingCaseInstructionIndices;
+    private size_t[][DefaultStatement] pendingDefaultInstructionIndices;
+    private size_t[][] pendingUnlabelledBreakInstructionIndices;
     private uint[] dollarArrays;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
@@ -166,6 +170,11 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto switchStatement = statement.isSwitchStatement) {
+            lowerSwitchStatement(switchStatement, lowerer);
+            return;
+        }
+
         if (auto gotoStatement = statement.isGotoStatement) {
             lowerGotoStatement(gotoStatement);
             return;
@@ -178,6 +187,16 @@ struct BodyLowerer {
 
         if (auto labelStatement = statement.isLabelStatement) {
             lowerLabelStatement(labelStatement, lowerer);
+            return;
+        }
+
+        if (auto caseStatement = statement.isCaseStatement) {
+            lowerCaseStatement(caseStatement, lowerer);
+            return;
+        }
+
+        if (auto defaultStatement = statement.isDefaultStatement) {
+            lowerDefaultStatement(defaultStatement, lowerer);
             return;
         }
 
@@ -272,6 +291,64 @@ struct BodyLowerer {
         ));
     }
 
+    void lowerSwitchStatement(
+        imported!"dmd.statement".SwitchStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Instruction, Jump,
+            JumpIfTrue, Operation;
+        import std.conv: text;
+
+        if (statement.cases is null)
+            throw new Exception("Unsupported switch without cases");
+
+        const condition = lowerExpression(statement.condition, lowerer);
+
+        foreach (caseStatement; *statement.cases) {
+            const caseValue = lowerExpression(caseStatement.exp, lowerer);
+            const matched = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                matched,
+                condition,
+                caseValue,
+                Operation.equal,
+            ));
+
+            const jumpIndex = instructions.length;
+            instructions ~= Instruction(JumpIfTrue(matched, 0));
+            pendingCaseInstructionIndices[caseStatement] = [jumpIndex];
+        }
+
+        size_t skipBodyJumpIndex = size_t.max;
+        if (statement.sdefault is null) {
+            skipBodyJumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+        } else {
+            const jumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+            pendingDefaultInstructionIndices[statement.sdefault] = [jumpIndex];
+        }
+
+        pendingUnlabelledBreakInstructionIndices ~= [];
+        lowerStatement(statement._body, lowerer);
+
+        foreach (jumpIndex; pendingUnlabelledBreakInstructionIndices[$ - 1])
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (instructions.length - jumpIndex),
+            );
+        pendingUnlabelledBreakInstructionIndices.length =
+            pendingUnlabelledBreakInstructionIndices.length - 1;
+
+        if (skipBodyJumpIndex != size_t.max)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) skipBodyJumpIndex,
+                cast(int) (instructions.length - skipBodyJumpIndex),
+            );
+    }
+
     void lowerGotoStatement(
         imported!"dmd.statement".GotoStatement statement,
     ) @safe {
@@ -301,8 +378,15 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Instruction, Jump;
         import std.conv: text;
 
-        if (statement.ident is null)
-            throw new Exception("Unsupported unlabelled break");
+        if (statement.ident is null) {
+            if (pendingUnlabelledBreakInstructionIndices.length == 0)
+                throw new Exception("Unsupported unlabelled break");
+
+            const jumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+            pendingUnlabelledBreakInstructionIndices[$ - 1] ~= jumpIndex;
+            return;
+        }
 
         const label = breakLabel(statement);
         const jumpIndex = instructions.length;
@@ -346,6 +430,49 @@ struct BodyLowerer {
 
             pendingBreakInstructionIndices.remove(label);
         }
+    }
+
+    void lowerCaseStatement(
+        imported!"dmd.statement".CaseStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        import std.conv: text;
+
+        auto pending = statement in pendingCaseInstructionIndices;
+        if (pending is null)
+            throw new Exception(text(
+                "Unsupported case: ",
+                expressionChars(statement.exp),
+            ));
+
+        foreach (jumpIndex; *pending)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (instructions.length - jumpIndex - 1),
+            );
+
+        pendingCaseInstructionIndices.remove(statement);
+        lowerStatement(statement.statement, lowerer);
+    }
+
+    void lowerDefaultStatement(
+        imported!"dmd.statement".DefaultStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        auto pending = statement in pendingDefaultInstructionIndices;
+        if (pending !is null) {
+            foreach (jumpIndex; *pending)
+                replaceJumpOffset(
+                    instructions,
+                    cast(uint) jumpIndex,
+                    cast(int) (instructions.length - jumpIndex),
+                );
+
+            pendingDefaultInstructionIndices.remove(statement);
+        }
+
+        lowerStatement(statement.statement, lowerer);
     }
 
     void assertNoPendingGotos() @safe {
