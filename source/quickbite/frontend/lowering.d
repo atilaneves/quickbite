@@ -1273,6 +1273,14 @@ struct BodyLowerer {
                 return thisTemporary;
         }
 
+        if (auto super_ = expression.isSuperExp) {
+            auto temporary = super_.var in localTemporaries;
+            if (temporary !is null)
+                return *temporary;
+            if (hasThisTemporary)
+                return thisTemporary;
+        }
+
         if (auto identifier = expression.isIdentifierExp) {
             const name = identifierName(identifier);
             if (auto temporary = name in identifierTemporaries)
