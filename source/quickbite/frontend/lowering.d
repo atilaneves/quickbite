@@ -551,6 +551,10 @@ struct BodyLowerer {
                 if (tryLowerUnresolvedBuiltinCall(call, lowerer, builtinResult))
                     return builtinResult;
 
+                uint indirectResult;
+                if (tryLowerFunctionPointerTableCall(call, lowerer, indirectResult))
+                    return indirectResult;
+
                 import std.conv: text;
 
                 throw new Exception(text(
@@ -1097,6 +1101,93 @@ struct BodyLowerer {
         enforceCallArgumentCount(call, 1);
         result = lowerTruthValue(lowerExpression(callArguments(call)[0], lowerer));
         instructions ~= Instruction(Assert_(result));
+        return true;
+    }
+
+    bool tryLowerFunctionPointerTableCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Call, ConstInt, Copy,
+            Instruction, Jump, JumpIfFalse, Operation;
+
+        auto pointer = call.e1.isPtrExp;
+        if (pointer is null)
+            return false;
+
+        auto index = pointer.e1.isIndexExp;
+        if (index is null)
+            return false;
+
+        auto table = index.e1.isVarExp;
+        if (table is null)
+            return false;
+
+        auto variable = table.var.isVarDeclaration;
+        if (variable is null)
+            return false;
+
+        // DMD lowering APIs need mutable function declarations.
+        auto functions = functionPointerTableFunctions(variable);
+        if (functions.length == 0)
+            return false;
+
+        const tableIndex = lowerExpression(index.e2, lowerer);
+        // `auto` because the IR call owns a mutable arguments array.
+        auto arguments = lowerCallArgumentsForFunction(
+            call,
+            functions[0],
+            lowerer,
+        );
+
+        result = allocateTemporary;
+        size_t[] endJumpIndices;
+        foreach (functionIndex, function_; functions) {
+            lowerer.ensureFunctionLowered(function_);
+
+            const caseValue = allocateTemporary;
+            instructions ~= Instruction(ConstInt(
+                caseValue,
+                cast(long) functionIndex,
+            ));
+            const matched = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                matched,
+                tableIndex,
+                caseValue,
+                Operation.equal,
+            ));
+
+            const nextCaseJumpIndex = instructions.length;
+            instructions ~= Instruction(JumpIfFalse(matched, 0));
+
+            const callResult = allocateTemporary;
+            instructions ~= Instruction(Call(
+                callResult,
+                lowerer.functionName(function_),
+                arguments,
+            ));
+            instructions ~= Instruction(Copy(result, callResult));
+
+            const endJumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+            endJumpIndices ~= endJumpIndex;
+
+            replaceJumpOffset(
+                instructions,
+                cast(uint) nextCaseJumpIndex,
+                cast(int) (instructions.length - nextCaseJumpIndex - 1),
+            );
+        }
+
+        foreach (jumpIndex; endJumpIndices)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (instructions.length - jumpIndex),
+            );
+
         return true;
     }
 
@@ -2380,8 +2471,16 @@ struct BodyLowerer {
         imported!"dmd.expression".CallExp call,
         ref Lowerer lowerer,
     ) @safe {
+        return lowerCallArgumentsForFunction(call, call.f, lowerer);
+    }
+
+    uint[] lowerCallArgumentsForFunction(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Lowerer lowerer,
+    ) @safe {
         uint[] arguments;
-        if (call.f.vthis !is null)
+        if (function_.vthis !is null)
             arguments ~= lowerCallReceiver(call, lowerer);
 
         if (call.arguments is null)
@@ -2390,8 +2489,8 @@ struct BodyLowerer {
         // Pulled in parallel so we can detect non-ref struct parameters and
         // copy by value at the call site, matching D semantics. `auto`
         // because `parameterIsRef` takes a mutable `VarDeclaration`.
-        auto parameters = call.f.parameters !is null
-            ? functionParameterSlice(call.f)
+        auto parameters = function_.parameters !is null
+            ? functionParameterSlice(function_)
             : null;
         foreach (i, argument; callArguments(call)) {
             VarDeclaration parameter;
@@ -2572,6 +2671,79 @@ private string expressionChars(
     import std.string: fromStringz;
 
     return fromStringz(expression.toChars()).idup;
+}
+
+private imported!"dmd.func".FuncDeclaration[] functionPointerTableFunctions(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @safe {
+    if (variable._init is null)
+        return null;
+
+    if (auto initializer = variable._init.isExpInitializer)
+        return functionPointerTableFunctions(initializer.exp);
+
+    if (auto initializer = variable._init.isArrayInitializer)
+        return functionPointerTableFunctions(initializer);
+
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration[] functionPointerTableFunctions(
+    imported!"dmd.expression".Expression expression,
+) @safe {
+    if (auto literal = expression.isArrayLiteralExp) {
+        imported!"dmd.func".FuncDeclaration[] functions;
+        if (literal.elements is null)
+            return functions;
+
+        foreach (element; arrayLiteralElements(literal)) {
+            // DMD lowering APIs need mutable function declarations.
+            auto function_ = functionPointerExpressionFunction(element);
+            if (function_ is null)
+                return null;
+            functions ~= function_;
+        }
+        return functions;
+    }
+
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration[] functionPointerTableFunctions(
+    imported!"dmd.init".ArrayInitializer initializer,
+) @safe {
+    imported!"dmd.func".FuncDeclaration[] functions;
+    foreach (element; arrayInitializerValues(initializer)) {
+        if (element is null)
+            return null;
+
+        // DMD initializers expose mutable expression nodes.
+        auto exp = element.isExpInitializer;
+        if (exp is null)
+            return null;
+
+        // DMD lowering APIs need mutable function declarations.
+        auto function_ = functionPointerExpressionFunction(exp.exp);
+        if (function_ is null)
+            return null;
+        functions ~= function_;
+    }
+    return functions;
+}
+
+private imported!"dmd.func".FuncDeclaration functionPointerExpressionFunction(
+    imported!"dmd.expression".Expression expression,
+) @safe {
+    if (auto function_ = expression.isFuncExp)
+        return function_.fd;
+
+    if (auto address = expression.isAddrExp)
+        return functionPointerExpressionFunction(address.e1);
+
+    if (auto symbol = expression.isSymOffExp)
+        return symbol.var.isFuncDeclaration;
+
+    return null;
 }
 
 private string declarationKind(imported!"dmd.dsymbol".Dsymbol symbol) @trusted {
@@ -2848,6 +3020,12 @@ private ref auto arrayLiteralElements(
 ) @trusted {
     // Caller checked `elements` for null; DMD owns the array.
     return *literal.elements;
+}
+
+private ref auto arrayInitializerValues(
+    imported!"dmd.init".ArrayInitializer initializer,
+) @trusted {
+    return initializer.value[];
 }
 
 private imported!"dmd.expression".Expression[] assocArrayLiteralKeys(
