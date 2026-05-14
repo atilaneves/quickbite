@@ -2759,6 +2759,9 @@ struct BodyLowerer {
         if (arrayExpressionArguments(array).length != 1)
             throw new Exception(text("Unsupported expression: ", array.op));
 
+        if (auto interval = arrayExpressionArguments(array)[0].isIntervalExp)
+            return lowerArrayIntervalExpression(array.e1, interval, lowerer);
+
         const arrayValue = lowerExpression(array.e1, lowerer);
         const indexValue = lowerExpression(arrayExpressionArguments(array)[0], lowerer);
         const destination = allocateTemporary;
@@ -2777,6 +2780,33 @@ struct BodyLowerer {
             indexValue,
         ));
         return destination;
+    }
+
+    uint lowerArrayIntervalExpression(
+        imported!"dmd.expression".Expression arrayExpression,
+        imported!"dmd.expression".IntervalExp interval,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySlice, Instruction;
+        import std.conv: text;
+
+        if (interval.lwr !is null && interval.upr !is null) {
+            const array = lowerExpression(arrayExpression, lowerer);
+            dollarArrays ~= array;
+            const lower = lowerExpression(interval.lwr, lowerer);
+            const upper = lowerExpression(interval.upr, lowerer);
+            dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ArraySlice(
+                destination,
+                array,
+                lower,
+                upper,
+            ));
+            return destination;
+        }
+
+        throw new Exception(text("Unsupported expression: ", interval.op));
     }
 
     uint lowerCast(
