@@ -4357,6 +4357,9 @@ struct BodyLowerer {
         if (typeIsAssociativeArray(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
+        if (typeIsClass(cast_.to))
+            return lowerExpression(cast_.e1, lowerer);
+
         if (typeIsFloating(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
