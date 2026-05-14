@@ -829,6 +829,9 @@ struct BodyLowerer {
         if (auto dot = expression.isDotVarExp)
             return lowerStructFieldRead(dot, lowerer);
 
+        if (auto dot = expression.isDotIdExp)
+            return lowerDotIdentifierRead(dot, lowerer);
+
         if (auto literal = expression.isStructLiteralExp)
             return lowerStructLiteral(literal, lowerer);
 
@@ -2232,6 +2235,22 @@ struct BodyLowerer {
         return destination;
     }
 
+    uint lowerDotIdentifierRead(
+        imported!"dmd.expression".DotIdExp dot,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+
+        const struct_ = lowerExpression(dot.e1, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            destination,
+            struct_,
+            identifierName(dot.ident),
+        ));
+        return destination;
+    }
+
     uint lowerStructOwner(
         imported!"dmd.expression".DotVarExp dot,
         ref Lowerer lowerer,
@@ -3045,6 +3064,12 @@ private string identifierName(
     imported!"dmd.expression".IdentifierExp identifier,
 ) @trusted {
     return identifier.ident.toString.idup;
+}
+
+private string identifierName(
+    imported!"dmd.identifier".Identifier identifier,
+) @trusted {
+    return identifier.toString.idup;
 }
 
 private string locationChars(imported!"dmd.location".Loc location) @trusted {
