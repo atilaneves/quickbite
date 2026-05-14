@@ -879,6 +879,9 @@ struct BodyLowerer {
                 if (tryLowerFunctionPointerTableCall(call, lowerer, indirectResult))
                     return indirectResult;
 
+                if (tryLowerIndirectFunctionPointerCall(call, lowerer, indirectResult))
+                    return indirectResult;
+
                 if (callHasNoArguments(call) && expressionChars(call.e1) == "expr") {
                     const destination = allocateTemporary;
                     instructions ~= Instruction(ConstInt(destination, 0));
@@ -1230,6 +1233,9 @@ struct BodyLowerer {
         if (auto pre = expression.isPreExp)
             return lowerPreIncrement(pre);
 
+        if (auto function_ = functionPointerExpressionFunction(expression))
+            return lowerFunctionPointer(function_, lowerer);
+
         if (auto addr = expression.isAddrExp) {
             if (auto var = addr.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
@@ -1551,6 +1557,21 @@ struct BodyLowerer {
         return destination;
     }
 
+    uint lowerFunctionPointer(
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        lowerer.ensureFunctionLowered(function_);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ConstInt(
+            destination,
+            stableIdentifierValue(lowerer.functionName(function_)),
+        ));
+        return destination;
+    }
+
     uint lowerAssocArrayLiteral(
         imported!"dmd.expression".AssocArrayLiteralExp literal,
         ref Lowerer lowerer,
@@ -1790,6 +1811,29 @@ struct BodyLowerer {
                 cast(int) (instructions.length - jumpIndex),
             );
 
+        return true;
+    }
+
+    bool tryLowerIndirectFunctionPointerCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: IndirectCall, Instruction;
+
+        auto pointer = call.e1.isPtrExp;
+        if (pointer is null)
+            return false;
+
+        const callee = lowerExpression(pointer.e1, lowerer);
+        // `auto` because the IR call owns a mutable arguments array.
+        auto arguments = lowerIndirectCallArguments(call, lowerer);
+        result = allocateTemporary;
+        instructions ~= Instruction(IndirectCall(
+            result,
+            callee,
+            arguments,
+        ));
         return true;
     }
 
@@ -4564,6 +4608,20 @@ struct BodyLowerer {
             }
             arguments ~= source;
         }
+
+        return arguments;
+    }
+
+    uint[] lowerIndirectCallArguments(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        uint[] arguments;
+        if (call.arguments is null)
+            return arguments;
+
+        foreach (argument; callArguments(call))
+            arguments ~= lowerCallArgument(argument, null, lowerer);
 
         return arguments;
     }

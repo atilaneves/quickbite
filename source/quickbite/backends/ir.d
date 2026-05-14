@@ -118,6 +118,40 @@ long executeFunction(
     throw new Exception("Unsupported callee.");
 }
 
+long executeFunctionPointer(
+    in imported!"quickbite.ir.module_".Module module_,
+    in long callee,
+    ref long[] callerTemporaries,
+    in uint[] argumentIndices,
+    ref long[][] arrays,
+    ref long[string][] structs,
+    ref AssocArray[] assocArrays,
+    ref long[string] staticAssocArrays,
+    ref ArrayAlias[] arrayAliases,
+) @safe pure {
+    // Current lowered modules are tiny; add an index when benchmarks show this.
+    foreach (function_; module_.functions) {
+        if (functionPointerValue(function_.name) == callee)
+            return executeFunctionBody(
+                module_,
+                function_.instructions,
+                function_.hasReturnValue,
+                function_.numParameters,
+                function_.refParameters,
+                function_.numTemporaries,
+                callerTemporaries,
+                argumentIndices,
+                arrays,
+                structs,
+                assocArrays,
+                staticAssocArrays,
+                arrayAliases,
+            );
+    }
+
+    throw new Exception("Unsupported function pointer callee.");
+}
+
 long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
@@ -244,8 +278,9 @@ InstructionEffect executeInstruction(
         ArrayLiteral, ArrayReferenceCopy, ArraySet, ArraySetLength, ArraySlice,
         AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
         AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
-        BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
-        ReturnValue, ReturnVoid, Select, StaticAssocArray, StructGet,
+        BinaryOp, Call, CastInt, ConstInt, Copy, IndirectCall, Jump,
+        JumpIfFalse, JumpIfTrue, ReturnValue, ReturnVoid, Select, StaticAssocArray,
+        StructGet,
         StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
@@ -260,6 +295,21 @@ InstructionEffect executeInstruction(
                 executeFunction(
                     module_,
                     instruction.calleeName,
+                    temporaries,
+                    instruction.arguments,
+                    arrays,
+                    structs,
+                    assocArrays,
+                    staticAssocArrays,
+                    arrayAliases,
+                );
+            return nextInstruction;
+        },
+        (const IndirectCall instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                executeFunctionPointer(
+                    module_,
+                    readTemporaryValue(temporaries, instruction.callee),
                     temporaries,
                     instruction.arguments,
                     arrays,
@@ -840,6 +890,14 @@ void writeAssocArrayValue(
 
     array.keys ~= key;
     array.values ~= value;
+}
+
+long functionPointerValue(in string name) @safe pure nothrow @nogc {
+    long result = 17;
+    foreach (immutable char character; name)
+        result = result * 31 + cast(long) character;
+
+    return result == 0 ? 1 : result;
 }
 
 void updateArrayAlias(

@@ -16,6 +16,12 @@ public struct Call {
     uint[] arguments;
 }
 
+public struct IndirectCall {
+    uint destination;
+    uint callee;
+    uint[] arguments;
+}
+
 public struct BinaryOp {
     uint destination;
     uint left;
@@ -248,6 +254,7 @@ public struct ReturnVoid {
 public alias Instruction = SumType!(
     ConstInt,
     Call,
+    IndirectCall,
     BinaryOp,
     UnaryOp,
     Select,
