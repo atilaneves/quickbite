@@ -2644,15 +2644,29 @@ struct BodyLowerer {
         imported!"dmd.expression".CatExp expression,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArrayConcat, Instruction;
+        import quickbite.ir.instruction: ArrayConcat, ArrayLiteral, Instruction;
 
         const left = lowerExpression(expression.e1, lowerer);
         const right = lowerExpression(expression.e2, lowerer);
         const destination = allocateTemporary;
+        uint leftArray;
+        if (expressionAppendsArray(expression.e1))
+            leftArray = left;
+        else {
+            leftArray = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(leftArray, [left]));
+        }
+        uint rightArray;
+        if (expressionAppendsArray(expression.e2))
+            rightArray = right;
+        else {
+            rightArray = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(rightArray, [right]));
+        }
         instructions ~= Instruction(ArrayConcat(
             destination,
-            left,
-            right,
+            leftArray,
+            rightArray,
         ));
         return destination;
     }
