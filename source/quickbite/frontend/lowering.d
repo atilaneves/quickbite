@@ -3381,7 +3381,17 @@ struct BodyLowerer {
         imported!"dmd.expression".DotIdExp dot,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, StructGet;
+        import quickbite.ir.instruction: ConstInt, Instruction, StructGet;
+
+        if (
+            expressionChars(dot.e1) == "F" &&
+            (identifierName(dot.ident) == "infinity" ||
+                identifierName(dot.ident) == "nan")
+        ) {
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ConstInt(destination, 0));
+            return destination;
+        }
 
         const struct_ = lowerExpression(dot.e1, lowerer);
         const destination = allocateTemporary;
