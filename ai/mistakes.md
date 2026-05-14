@@ -158,3 +158,7 @@
 - Do not use `throw new Exception` as a stand-in for a normal failing
   unittest fixture unless exception handling itself is under test. Prefer
   ordinary `assert` when the fixture is meant to represent user tests.
+
+- DMD declaration helpers are type-specific. Do not call a
+  `VarDeclaration` helper such as `declarationName` with a
+  `FuncDeclaration`; use the existing function helper instead.

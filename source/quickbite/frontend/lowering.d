@@ -2294,15 +2294,31 @@ struct BodyLowerer {
         if (auto dot = call.e1.isDotTemplateInstanceExp)
             return lowerExpression(dot.e1, lowerer);
 
-        if (auto variable = call.e1.isVarExp)
-            if (variable.var == call.f && call.f.vthis !is null) {
+        if (call.e1.isVarExp !is null)
+            if (call.f.vthis !is null) {
                 const receiverName = declarationName(call.f.vthis);
                 auto receiver = receiverName in identifierTemporaries;
                 if (receiver !is null)
                     return *receiver;
+                if (receiverName == "__capture") {
+                    import quickbite.ir.instruction: Instruction, StructNew;
+
+                    const emptyCapture = allocateTemporary;
+                    instructions ~= Instruction(StructNew(emptyCapture));
+                    return emptyCapture;
+                }
             }
 
-        throw new Exception(text("Unsupported expression: ", call.e1.op));
+        throw new Exception(text(
+            "Unsupported expression: ",
+            call.e1.op,
+            " ",
+            expressionChars(call.e1),
+            " for receiver of ",
+            lowerer.functionName(call.f),
+            " vthis ",
+            call.f.vthis is null ? "<null>" : declarationName(call.f.vthis),
+        ));
     }
 
     uint allocateTemporary() @safe pure nothrow @nogc {
