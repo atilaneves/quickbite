@@ -114,6 +114,7 @@ struct BodyLowerer {
     private size_t[string] labelInstructionIndices;
     private size_t[][string] pendingGotoInstructionIndices;
     private size_t[][string] pendingBreakInstructionIndices;
+    private size_t[][string] pendingContinueInstructionIndices;
     private size_t[][CaseStatement] pendingCaseInstructionIndices;
     private size_t[][DefaultStatement] pendingDefaultInstructionIndices;
     private size_t[][] pendingUnlabelledBreakInstructionIndices;
@@ -267,6 +268,7 @@ struct BodyLowerer {
     void lowerForStatement(
         imported!"dmd.statement".ForStatement statement,
         ref Lowerer lowerer,
+        string label = null,
     ) @safe {
         import quickbite.ir.instruction: Instruction, Jump, JumpIfFalse;
 
@@ -299,6 +301,8 @@ struct BodyLowerer {
             );
         pendingUnlabelledContinueInstructionIndices.length =
             pendingUnlabelledContinueInstructionIndices.length - 1;
+        if (label !is null)
+            resolveLabelledContinues(label, continueTarget);
 
         if (statement.increment !is null)
             lowerExpression(statement.increment, lowerer);
@@ -327,6 +331,7 @@ struct BodyLowerer {
     void lowerDoStatement(
         imported!"dmd.statement".DoStatement statement,
         ref Lowerer lowerer,
+        string label = null,
     ) @safe {
         import quickbite.ir.instruction: Instruction, JumpIfTrue;
 
@@ -345,6 +350,8 @@ struct BodyLowerer {
             );
         pendingUnlabelledContinueInstructionIndices.length =
             pendingUnlabelledContinueInstructionIndices.length - 1;
+        if (label !is null)
+            resolveLabelledContinues(label, continueTarget);
 
         const condition = lowerTruthValue(lowerExpression(statement.condition, lowerer));
         instructions ~= Instruction(JumpIfTrue(
@@ -478,8 +485,17 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: Instruction, Jump;
 
-        if (statement.ident !is null)
-            throw new Exception("Unsupported labelled continue");
+        if (statement.ident !is null) {
+            const label = continueLabel(statement);
+            const jumpIndex = instructions.length;
+            instructions ~= Instruction(Jump(0));
+
+            if (auto pending = label in pendingContinueInstructionIndices)
+                *pending ~= jumpIndex;
+            else
+                pendingContinueInstructionIndices[label] = [jumpIndex];
+            return;
+        }
 
         if (pendingUnlabelledContinueInstructionIndices.length == 0)
             throw new Exception("Unsupported unlabelled continue");
@@ -509,7 +525,12 @@ struct BodyLowerer {
             pendingGotoInstructionIndices.remove(label);
         }
 
-        lowerStatement(statement.statement, lowerer);
+        if (auto for_ = statement.statement.isForStatement)
+            lowerForStatement(for_, lowerer, label);
+        else if (auto do_ = statement.statement.isDoStatement)
+            lowerDoStatement(do_, lowerer, label);
+        else
+            lowerStatement(statement.statement, lowerer);
 
         if (auto pending = label in pendingBreakInstructionIndices) {
             foreach (jumpIndex; *pending)
@@ -520,6 +541,19 @@ struct BodyLowerer {
                 );
 
             pendingBreakInstructionIndices.remove(label);
+        }
+    }
+
+    void resolveLabelledContinues(string label, in size_t continueTarget) @safe {
+        if (auto pending = label in pendingContinueInstructionIndices) {
+            foreach (jumpIndex; *pending)
+                replaceJumpOffset(
+                    instructions,
+                    cast(uint) jumpIndex,
+                    cast(int) (continueTarget - jumpIndex),
+                );
+
+            pendingContinueInstructionIndices.remove(label);
         }
     }
 
@@ -568,7 +602,8 @@ struct BodyLowerer {
 
     void assertNoPendingGotos() @safe {
         if (pendingGotoInstructionIndices.length == 0
-            && pendingBreakInstructionIndices.length == 0)
+            && pendingBreakInstructionIndices.length == 0
+            && pendingContinueInstructionIndices.length == 0)
             return;
 
         import std.conv: text;
@@ -585,6 +620,15 @@ struct BodyLowerer {
         foreach (label, jumpIndices; pendingBreakInstructionIndices)
             throw new Exception(text(
                 "Unsupported unresolved break: ",
+                label,
+                " (",
+                jumpIndices.length,
+                ")",
+            ));
+
+        foreach (label, jumpIndices; pendingContinueInstructionIndices)
+            throw new Exception(text(
+                "Unsupported unresolved continue: ",
                 label,
                 " (",
                 jumpIndices.length,
@@ -3029,6 +3073,12 @@ private string gotoLabel(imported!"dmd.statement".GotoStatement statement) @safe
 }
 
 private string breakLabel(imported!"dmd.statement".BreakStatement statement) @safe {
+    return statement.ident.toString.idup;
+}
+
+private string continueLabel(
+    imported!"dmd.statement".ContinueStatement statement,
+) @safe {
     return statement.ident.toString.idup;
 }
 
