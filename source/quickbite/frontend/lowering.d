@@ -875,6 +875,9 @@ struct BodyLowerer {
         if (auto length = expression.isArrayLengthExp)
             return lowerArrayLength(length, lowerer);
 
+        if (auto array = expression.isArrayExp)
+            return lowerArrayExpression(array, lowerer);
+
         if (auto index = expression.isIndexExp)
             return lowerArrayIndex(index, lowerer);
 
@@ -2745,6 +2748,37 @@ struct BodyLowerer {
         return destination;
     }
 
+    uint lowerArrayExpression(
+        imported!"dmd.expression".ArrayExp array,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayIndex, AssocArrayIndex,
+            Instruction;
+        import std.conv: text;
+
+        if (arrayExpressionArguments(array).length != 1)
+            throw new Exception(text("Unsupported expression: ", array.op));
+
+        const arrayValue = lowerExpression(array.e1, lowerer);
+        const indexValue = lowerExpression(arrayExpressionArguments(array)[0], lowerer);
+        const destination = allocateTemporary;
+        if (typeIsAssociativeArray(array.e1.type)) {
+            instructions ~= Instruction(AssocArrayIndex(
+                destination,
+                arrayValue,
+                indexValue,
+            ));
+            return destination;
+        }
+
+        instructions ~= Instruction(ArrayIndex(
+            destination,
+            arrayValue,
+            indexValue,
+        ));
+        return destination;
+    }
+
     uint lowerCast(
         imported!"dmd.expression".CastExp cast_,
         ref Lowerer lowerer,
@@ -3090,6 +3124,12 @@ struct BodyLowerer {
 
 private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted {
     return integer.getInteger();
+}
+
+private imported!"dmd.expression".Expression[] arrayExpressionArguments(
+    imported!"dmd.expression".ArrayExp expression,
+) @trusted {
+    return (*expression.arguments)[];
 }
 
 private size_t stringLiteralLength(
