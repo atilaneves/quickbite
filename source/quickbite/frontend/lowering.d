@@ -2004,31 +2004,68 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Copy, Instruction;
         import std.conv: text;
 
-        if (auto index = assignment.e1.isIndexExp)
+        auto target = assignment.e1;
+        while (true) {
+            if (auto cast_ = target.isCastExp) {
+                target = cast_.e1;
+                continue;
+            }
+
+            if (auto comma = target.isCommaExp) {
+                lowerExpression(comma.e1, lowerer);
+                target = comma.e2;
+                continue;
+            }
+
+            if (auto pointer = target.isPtrExp) {
+                if (auto call = pointer.e1.isCallExp)
+                    if (isAssocArrayGetCall(call))
+                        return lowerAssocArrayIndexAssignment(
+                            call,
+                            assignment.e2,
+                            lowerer,
+                        );
+
+                target = pointer.e1;
+                continue;
+            }
+
+            if (auto address = target.isAddrExp) {
+                target = address.e1;
+                continue;
+            }
+
+            break;
+        }
+
+        if (auto index = target.isIndexExp)
             return lowerArrayIndexAssignment(index, assignment.e2, lowerer);
 
-        if (auto dot = assignment.e1.isDotVarExp)
+        if (auto dot = target.isDotVarExp)
             return lowerStructFieldAssignment(dot, assignment.e2, lowerer);
 
-        if (auto length = assignment.e1.isArrayLengthExp)
+        if (auto length = target.isArrayLengthExp)
             return lowerArrayLengthAssignment(length, assignment.e2, lowerer);
 
-        if (auto pointer = assignment.e1.isPtrExp)
-            if (auto call = pointer.e1.isCallExp)
-                if (isAssocArrayGetCall(call))
-                    return lowerAssocArrayIndexAssignment(
-                        call,
-                        assignment.e2,
-                        lowerer,
-                    );
+        if (auto identifier = target.isIdentifierExp)
+            if (auto destination = identifierName(identifier) in identifierTemporaries) {
+                const source = lowerExpression(assignment.e2, lowerer);
+                instructions ~= Instruction(Copy(
+                    *destination,
+                    source,
+                ));
+                return *destination;
+            }
 
-        auto variable = assignment.e1.isVarExp;
+        auto variable = target.isVarExp;
         if (variable is null)
             throw new Exception(text(
                 "Unsupported expression: ",
                 assignment.op,
                 " ",
-                expressionChars(assignment.e1),
+                expressionChars(target),
+                " targetOp=",
+                target.op,
             ));
 
         auto declaration = variable.var.isVarDeclaration;
@@ -2037,7 +2074,7 @@ struct BodyLowerer {
 
         auto destination = declaration in localTemporaries;
         if (destination is null)
-            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+            throw new Exception(text("Unsupported expression: ", expressionChars(target)));
 
         const source = lowerExpression(assignment.e2, lowerer);
         instructions ~= Instruction(Copy(
