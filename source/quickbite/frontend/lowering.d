@@ -1125,6 +1125,14 @@ struct BodyLowerer {
             throw new Exception(text("Unsupported address-of: ", expressionChars(addr.e1)));
         }
 
+        if (auto symbol = expression.isSymOffExp) {
+            if (auto varDecl = symbol.var.isVarDeclaration)
+                if (auto target = varDecl in localTemporaries)
+                    return *target;
+            import std.conv: text;
+            throw new Exception(text("Unsupported symbol offset: ", expressionChars(symbol)));
+        }
+
         // Pointer dereference: *ptr. Peel off the * — the temp that ptr
         // holds already IS the temp index of the pointed-to variable, so
         // reading/passing it is the same as reading/passing the inner expr.
