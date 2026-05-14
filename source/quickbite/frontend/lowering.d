@@ -3649,6 +3649,15 @@ struct BodyLowerer {
                 if (dotVarFieldName(classInfo) == "classinfo")
                     return lowerClassInfoName(classInfo, lowerer);
 
+        if (declarationName(field) == "name")
+            if (auto typeid_ = dot.e1.isTypeidExp)
+                return lowerTypeInfoName(typeidObjectType(typeid_));
+
+        if (declarationName(field) == "name")
+            if (auto symbol = dot.e1.isSymOffExp)
+                if (auto type = symbolOffsetTypeInfoType(symbol))
+                    return lowerTypeInfoName(type);
+
         if (declarationName(field) == "name" && dot.e1.isPtrExp !is null)
             return lowerClassInfoNameOwner(dot.e1, lowerer);
 
@@ -3687,6 +3696,17 @@ struct BodyLowerer {
             destination,
             owner,
             "__classinfo_name",
+        ));
+        return destination;
+    }
+
+    uint lowerTypeInfoName(imported!"dmd.mtype".Type type) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ConstInt(
+            destination,
+            classInfoNameValue(type),
         ));
         return destination;
     }
@@ -5330,6 +5350,25 @@ private string dotVarFieldName(
 
 private long classInfoNameValue(imported!"dmd.mtype".Type type) @trusted {
     return stableIdentifierValue(type is null ? "<null>" : typeChars(type));
+}
+
+private imported!"dmd.mtype".Type typeidObjectType(
+    imported!"dmd.expression".TypeidExp typeid_,
+) @trusted {
+    if (auto type = cast(imported!"dmd.mtype".Type) typeid_.obj)
+        return type;
+
+    if (auto expression = cast(imported!"dmd.expression".Expression) typeid_.obj)
+        return expression.type;
+
+    return null;
+}
+
+private imported!"dmd.mtype".Type symbolOffsetTypeInfoType(
+    imported!"dmd.expression".SymOffExp symbol,
+) @trusted {
+    auto typeInfo = symbol.var.isTypeInfoDeclaration;
+    return typeInfo is null ? null : typeInfo.tinfo;
 }
 
 private long stableIdentifierValue(in string value) @safe pure nothrow @nogc {
