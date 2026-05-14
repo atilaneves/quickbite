@@ -789,7 +789,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
-            Operation, StructGet, UnaryOp, UnaryOperation;
+            Operation, StaticAssocArray, StructGet, UnaryOp, UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
             const destination = allocateTemporary;
@@ -1328,6 +1328,14 @@ struct BodyLowerer {
                     return *temporary;
                 if (varIsParameter(var))
                     return lowerUnmappedParameter(var);
+                if (varIsStatic(var) && typeIsAssociativeArray(var.type)) {
+                    const destination = allocateTemporary;
+                    instructions ~= Instruction(StaticAssocArray(
+                        destination,
+                        staticVariableName(var),
+                    ));
+                    return destination;
+                }
             }
 
             if (expressionChars(expression) == "$")
@@ -5155,6 +5163,22 @@ private bool varIsParameter(
     import dmd.astenums: STC;
 
     return (declaration.storage_class & STC.parameter) != STC.none;
+}
+
+private bool varIsStatic(
+    imported!"dmd.declaration".VarDeclaration declaration,
+) @safe {
+    import dmd.astenums: STC;
+
+    return (declaration.storage_class & STC.static_) != STC.none;
+}
+
+private string staticVariableName(
+    imported!"dmd.declaration".VarDeclaration declaration,
+) @trusted {
+    import std.conv: text;
+
+    return text(declarationName(declaration), ":", typeChars(declaration.type));
 }
 
 private ref auto structFields(

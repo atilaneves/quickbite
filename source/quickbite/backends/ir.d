@@ -68,6 +68,7 @@ private void executeUnitTest(
     long[][] arrays;
     long[string][] structs;
     AssocArray[] assocArrays;
+    long[string] staticAssocArrays;
     ArrayAlias[] arrayAliases;
     executeInstructions(
         module_,
@@ -78,6 +79,7 @@ private void executeUnitTest(
         arrays,
         structs,
         assocArrays,
+        staticAssocArrays,
         arrayAliases,
     );
 }
@@ -90,6 +92,7 @@ long executeFunction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
@@ -107,6 +110,7 @@ long executeFunction(
                 arrays,
                 structs,
                 assocArrays,
+                staticAssocArrays,
                 arrayAliases,
             );
     }
@@ -126,6 +130,7 @@ long executeFunctionBody(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
@@ -138,6 +143,7 @@ long executeFunctionBody(
         arrays,
         structs,
         assocArrays,
+        staticAssocArrays,
         arrayAliases,
     );
     writeRefArguments(
@@ -183,6 +189,7 @@ ExecutionResult executeInstructions(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
@@ -200,6 +207,7 @@ ExecutionResult executeInstructions(
             arrays,
             structs,
             assocArrays,
+            staticAssocArrays,
             arrayAliases,
         );
         if (effect.hasReturn) {
@@ -228,6 +236,7 @@ InstructionEffect executeInstruction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray, ArrayConcat,
@@ -236,8 +245,8 @@ InstructionEffect executeInstruction(
         AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
         AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
         BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
-        ReturnValue, ReturnVoid, Select, StructGet, StructNew, StructSet,
-        UnaryOp;
+        ReturnValue, ReturnVoid, Select, StaticAssocArray, StructGet,
+        StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -256,6 +265,7 @@ InstructionEffect executeInstruction(
                     arrays,
                     structs,
                     assocArrays,
+                    staticAssocArrays,
                     arrayAliases,
                 );
             return nextInstruction;
@@ -389,6 +399,19 @@ InstructionEffect executeInstruction(
             arrayAliases ~= ArrayAlias(pointer, 0, array, key, true);
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) pointer;
+            return nextInstruction;
+        },
+        (const StaticAssocArray instruction) {
+            if (auto array = instruction.name in staticAssocArrays) {
+                writeTemporaryValue(temporaries, instruction.destination) =
+                    *array;
+                return nextInstruction;
+            }
+
+            assocArrays ~= AssocArray.init;
+            const array = cast(long) (assocArrays.length - 1);
+            staticAssocArrays[instruction.name] = array;
+            writeTemporaryValue(temporaries, instruction.destination) = array;
             return nextInstruction;
         },
         (AssocArraySet instruction) {
