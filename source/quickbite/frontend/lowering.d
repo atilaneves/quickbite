@@ -220,6 +220,15 @@ struct BodyLowerer {
             return;
         }
 
+        if (statement.isSwitchErrorStatement !is null) {
+            import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
+            const zero = allocateTemporary;
+            instructions ~= Instruction(ConstInt(zero, 0));
+            instructions ~= Instruction(Assert_(zero));
+            hasReturn = true;
+            return;
+        }
+
         if (statement.isImportStatement !is null)
             return;
 
