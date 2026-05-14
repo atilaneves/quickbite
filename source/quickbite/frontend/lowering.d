@@ -1509,6 +1509,12 @@ struct BodyLowerer {
             return true;
         }
 
+        if (name == "fabs") {
+            enforceCallArgumentCount(call, 1);
+            result = lowerExpression(callArguments(call)[0], lowerer);
+            return true;
+        }
+
         if (name == "bsr") {
             enforceCallArgumentCount(call, 1);
             const value = lowerExpression(callArguments(call)[0], lowerer);
