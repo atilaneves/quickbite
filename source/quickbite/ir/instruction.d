@@ -110,6 +110,39 @@ public struct ArrayLiteral {
     uint[] elements;
 }
 
+public struct AssocArrayLiteral {
+    uint destination;
+    uint[] keys;
+    uint[] values;
+}
+
+public struct AssocArrayLength {
+    uint destination;
+    uint array;
+}
+
+public struct AssocArrayKeys {
+    uint destination;
+    uint array;
+}
+
+public struct AssocArrayValues {
+    uint destination;
+    uint array;
+}
+
+public struct AssocArrayIndex {
+    uint destination;
+    uint array;
+    uint key;
+}
+
+public struct AssocArraySet {
+    uint array;
+    uint key;
+    uint value;
+}
+
 public struct ArrayCopy {
     uint destination;
     uint source;
@@ -123,6 +156,17 @@ public struct ArrayAppend {
 public struct ArrayLength {
     uint destination;
     uint array;
+}
+
+public struct ArraySetLength {
+    uint array;
+    uint length;
+}
+
+public struct ArrayConcat {
+    uint destination;
+    uint left;
+    uint right;
 }
 
 public struct ArrayIndex {
@@ -186,9 +230,17 @@ public alias Instruction = SumType!(
     CastInt,
     Assert_,
     ArrayLiteral,
+    AssocArrayLiteral,
+    AssocArrayLength,
+    AssocArrayKeys,
+    AssocArrayValues,
+    AssocArrayIndex,
+    AssocArraySet,
     ArrayCopy,
     ArrayAppend,
     ArrayLength,
+    ArraySetLength,
+    ArrayConcat,
     ArrayIndex,
     ArraySet,
     ArrayEqual,
