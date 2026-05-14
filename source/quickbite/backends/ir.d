@@ -168,8 +168,10 @@ struct AssocArray {
 
 struct ArrayAlias {
     size_t array;
+    size_t sourceArray;
     size_t assocArray;
     long key;
+    bool isAssociative;
 }
 
 ExecutionResult executeInstructions(
@@ -229,8 +231,8 @@ InstructionEffect executeInstruction(
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray, ArrayConcat,
-        ArrayCopy, ArrayEqual, ArrayIndex, ArrayLength, ArrayLiteral,
-        ArrayReferenceCopy, ArraySet, ArraySetLength, ArraySlice,
+        ArrayCopy, ArrayElementPointer, ArrayEqual, ArrayIndex, ArrayLength,
+        ArrayLiteral, ArrayReferenceCopy, ArraySet, ArraySetLength, ArraySlice,
         AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
         AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
         BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
@@ -384,7 +386,7 @@ InstructionEffect executeInstruction(
                 ),
             ];
             const pointer = arrays.length - 1;
-            arrayAliases ~= ArrayAlias(pointer, array, key);
+            arrayAliases ~= ArrayAlias(pointer, 0, array, key, true);
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) pointer;
             return nextInstruction;
@@ -477,6 +479,22 @@ InstructionEffect executeInstruction(
                 arrays[array][index];
             return nextInstruction;
         },
+        (ArrayElementPointer instruction) {
+            const array = arrayIndex(temporaries, instruction.array);
+            const index = arrayIndex(temporaries, instruction.index);
+            arrays ~= [arrays[array][index]];
+            const pointer = arrays.length - 1;
+            arrayAliases ~= ArrayAlias(
+                pointer,
+                array,
+                0,
+                cast(long) index,
+                false,
+            );
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) pointer;
+            return nextInstruction;
+        },
         (ArraySet instruction) {
             arrays[arrayIndex(temporaries, instruction.array)][
                 arrayIndex(temporaries, instruction.index)
@@ -485,6 +503,7 @@ InstructionEffect executeInstruction(
                 temporaries,
                 instruction,
                 arrayAliases,
+                arrays,
                 assocArrays,
             );
             return nextInstruction;
@@ -804,6 +823,7 @@ void updateArrayAlias(
     in long[] temporaries,
     in imported!"quickbite.ir.instruction".ArraySet instruction,
     in ArrayAlias[] arrayAliases,
+    ref long[][] arrays,
     ref AssocArray[] assocArrays,
 ) @safe pure {
     const array = arrayIndex(temporaries, instruction.array);
@@ -815,11 +835,15 @@ void updateArrayAlias(
         if (alias_.array != array)
             continue;
 
-        writeAssocArrayValue(
-            assocArrays[alias_.assocArray],
-            alias_.key,
-            readTemporaryValue(temporaries, instruction.value),
-        );
+        const value = readTemporaryValue(temporaries, instruction.value);
+        if (alias_.isAssociative)
+            writeAssocArrayValue(
+                assocArrays[alias_.assocArray],
+                alias_.key,
+                value,
+            );
+        else
+            arrays[alias_.sourceArray][cast(size_t) alias_.key] = value;
         return;
     }
 }

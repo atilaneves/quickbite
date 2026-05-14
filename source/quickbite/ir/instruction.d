@@ -192,6 +192,12 @@ public struct ArrayIndex {
     uint index;
 }
 
+public struct ArrayElementPointer {
+    uint destination;
+    uint array;
+    uint index;
+}
+
 public struct ArraySet {
     uint array;
     uint index;
@@ -262,6 +268,7 @@ public alias Instruction = SumType!(
     ArraySetLength,
     ArrayConcat,
     ArrayIndex,
+    ArrayElementPointer,
     ArraySet,
     ArrayEqual,
     ArraySlice,

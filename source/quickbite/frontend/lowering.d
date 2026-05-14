@@ -1138,6 +1138,9 @@ struct BodyLowerer {
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (auto target = varDecl in localTemporaries)
                         return *target;
+            if (auto index = addr.e1.isIndexExp)
+                if (!typeIsAssociativeArray(index.e1.type))
+                    return lowerArrayElementPointer(index, lowerer);
             import std.conv: text;
             throw new Exception(text("Unsupported address-of: ", expressionChars(addr.e1)));
         }
@@ -2526,6 +2529,25 @@ struct BodyLowerer {
             }
 
         return lowerExpression(expression, lowerer);
+    }
+
+    uint lowerArrayElementPointer(
+        imported!"dmd.expression".IndexExp index,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayElementPointer, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        dollarArrays ~= array;
+        const indexValue = lowerExpression(index.e2, lowerer);
+        dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayElementPointer(
+            destination,
+            array,
+            indexValue,
+        ));
+        return destination;
     }
 
     uint lowerArrayConcatenation(
