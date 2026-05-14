@@ -2459,8 +2459,8 @@ struct BodyLowerer {
         imported!"dmd.expression".NewExp new_,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
-            StructSet;
+        import quickbite.ir.instruction: ArrayLiteral, ConstInt, Instruction,
+            StructNew, StructSet;
         import std.conv: text;
 
         if (typeIsClass(new_.newtype)) {
@@ -2470,6 +2470,16 @@ struct BodyLowerer {
 
             const destination = allocateTemporary;
             instructions ~= Instruction(StructNew(destination));
+            const className = allocateTemporary;
+            instructions ~= Instruction(ConstInt(
+                className,
+                classInfoNameValue(new_.newtype),
+            ));
+            instructions ~= Instruction(StructSet(
+                destination,
+                "__classinfo_name",
+                className,
+            ));
             return destination;
         }
 
@@ -3583,11 +3593,22 @@ struct BodyLowerer {
         import quickbite.ir.instruction: ArrayLength, Instruction, StructGet;
         import std.conv: text;
 
-        const struct_ = lowerStructOwner(dot, lowerer);
-
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
+
+        if (declarationName(field) == "classinfo")
+            return lowerClassInfoName(dot, lowerer);
+
+        if (declarationName(field) == "name")
+            if (auto classInfo = dot.e1.isDotVarExp)
+                if (dotVarFieldName(classInfo) == "classinfo")
+                    return lowerClassInfoName(classInfo, lowerer);
+
+        if (declarationName(field) == "name" && dot.e1.isPtrExp !is null)
+            return lowerClassInfoNameOwner(dot.e1, lowerer);
+
+        const struct_ = lowerStructOwner(dot, lowerer);
 
         if (
             declarationName(field) == "length" &&
@@ -3606,6 +3627,22 @@ struct BodyLowerer {
             destination,
             struct_,
             declarationName(field),
+        ));
+        return destination;
+    }
+
+    uint lowerClassInfoNameOwner(
+        imported!"dmd.expression".Expression ownerExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+
+        const owner = lowerExpression(ownerExpression, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            destination,
+            owner,
+            "__classinfo_name",
         ));
         return destination;
     }
@@ -3666,7 +3703,41 @@ struct BodyLowerer {
         if (typeIsStruct(dot.e1.type) || typePointsToStruct(dot.e1.type))
             return lowerExpression(dot.e1, lowerer);
 
-        throw new Exception(text("Unsupported expression: ", dot.op));
+        throw new Exception(text(
+            "Unsupported expression: ",
+            dot.op,
+            " ",
+            expressionChars(dot),
+            " owner=",
+            expressionChars(dot.e1),
+            " field=",
+            dotVarFieldName(dot),
+        ));
+    }
+
+    uint lowerClassInfoName(
+        imported!"dmd.expression".DotVarExp classInfo,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction, StructGet;
+
+        if (typeIsClass(classInfo.e1.type)) {
+            const owner = lowerExpression(classInfo.e1, lowerer);
+            const destination = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                destination,
+                owner,
+                "__classinfo_name",
+            ));
+            return destination;
+        }
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ConstInt(
+            destination,
+            classInfoNameValue(classInfo.e1.type),
+        ));
+        return destination;
     }
 
     uint lowerCompoundAssignment(
@@ -5191,6 +5262,24 @@ private string declarationName(
     imported!"dmd.declaration".VarDeclaration declaration,
 ) @trusted {
     return declaration.ident.toString.idup;
+}
+
+private string dotVarFieldName(
+    imported!"dmd.expression".DotVarExp dot,
+) @trusted {
+    return dot.var.ident.toString.idup;
+}
+
+private long classInfoNameValue(imported!"dmd.mtype".Type type) @trusted {
+    return stableIdentifierValue(type is null ? "<null>" : typeChars(type));
+}
+
+private long stableIdentifierValue(in string value) @safe pure nothrow @nogc {
+    long result = 17;
+    foreach (immutable char character; value)
+        result = result * 31 + cast(long) character;
+
+    return result == 0 ? 1 : result;
 }
 
 private string parameterName(imported!"dmd.mtype".Parameter parameter) @trusted {
