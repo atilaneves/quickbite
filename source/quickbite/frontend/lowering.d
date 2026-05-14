@@ -125,6 +125,7 @@ struct BodyLowerer {
     private ArrayElementAlias[] pendingRefArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
+    private bool[string] arrayValueNames;
     private bool[VarDeclaration] lazyParameters;
     private bool[string] lazyParameterNames;
     private size_t[string] labelInstructionIndices;
@@ -800,12 +801,14 @@ struct BodyLowerer {
             if (tryLowerAppenderBuiltinCall(call, lowerer, builtinResult))
                 return builtinResult;
 
+            if (tryLowerDynamicArrayRangeCall(call, lowerer, builtinResult))
+                return builtinResult;
+
             if (tryLowerRuntimeBuiltinCall(call, lowerer, builtinResult))
                 return builtinResult;
 
-            if (call.f.isFuncLiteralDeclaration !is null
-                && callHasNoArguments(call))
-                return lowerImmediateFunctionLiteralCall(call.f, lowerer);
+            if (call.f.isFuncLiteralDeclaration !is null)
+                return lowerImmediateFunctionLiteralCall(call.f, call, lowerer);
 
             uint scopeBufferRangeResult;
             if (
@@ -816,6 +819,10 @@ struct BodyLowerer {
                 )
             )
                 return scopeBufferRangeResult;
+
+            uint cerealiserResult;
+            if (tryLowerCerealiserImplConstructor(call, lowerer, cerealiserResult))
+                return cerealiserResult;
 
             uint scopeBufferResult;
             if (tryLowerScopeBufferCall(call, lowerer, scopeBufferResult))
@@ -1182,6 +1189,8 @@ struct BodyLowerer {
                     return destination;
                 }
                 if (auto temporary = var in localTemporaries)
+                    return *temporary;
+                if (auto temporary = declarationName(var) in identifierTemporaries)
                     return *temporary;
             }
 
@@ -1889,7 +1898,7 @@ struct BodyLowerer {
         // DMD expression helpers return mutable AST nodes.
         auto argument = callArguments(call)[0];
         const value = lowerExpression(argument, lowerer);
-        if (typeIsDynamicArray(argument.type)) {
+        if (expressionAppendsArray(argument)) {
             instructions ~= Instruction(ArrayAppendArray(
                 array,
                 value,
@@ -1909,6 +1918,39 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         return lowerAppenderArray(call, lowerer);
+    }
+
+    bool tryLowerDynamicArrayRangeCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        if (!callHasDynamicArrayRangeReceiver(call))
+            return false;
+
+        if (functionIdentifier(call.f) == "clear") {
+            result = lowerDynamicArrayRangeClearCall(call, lowerer);
+            return true;
+        }
+
+        return false;
+    }
+
+    uint lowerDynamicArrayRangeClearCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySetLength, ConstInt, Instruction,
+            StructGet;
+
+        enforceCallArgumentCount(call, 0);
+        const receiver = lowerCallReceiver(call, lowerer);
+        const array = allocateTemporary;
+        instructions ~= Instruction(StructGet(array, receiver, "_bytes"));
+        const zero = allocateTemporary;
+        instructions ~= Instruction(ConstInt(zero, 0));
+        instructions ~= Instruction(ArraySetLength(array, zero));
+        return array;
     }
 
     bool tryLowerScopeBufferRangeConstructor(
@@ -1941,6 +1983,32 @@ struct BodyLowerer {
         instructions ~= Instruction(StructNew(result));
         lowerDefaultStructFields(result, thisType);
         instructions ~= Instruction(StructSet(result, "sbuf", scopeBuffer));
+        return true;
+    }
+
+    bool tryLowerCerealiserImplConstructor(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructNew, StructSet;
+        import std.string: startsWith;
+
+        // auto: DMD Type helpers below require the mutable frontend object.
+        auto thisType = functionThisStructType(call.f);
+        if (thisType is null)
+            thisType = call.type;
+        if (thisType is null || !typeChars(thisType).startsWith("CerealiserImpl!("))
+            return false;
+        if (call.arguments is null || callArguments(call).length != 1)
+            return false;
+
+        const output = lowerExpression(callArguments(call)[0], lowerer);
+
+        result = allocateTemporary;
+        instructions ~= Instruction(StructNew(result));
+        lowerDefaultStructFields(result, thisType);
+        instructions ~= Instruction(StructSet(result, "_output", output));
         return true;
     }
 
@@ -1988,13 +2056,36 @@ struct BodyLowerer {
         // DMD expression helpers return mutable AST nodes.
         auto argument = callArguments(call)[0];
         const value = lowerExpression(argument, lowerer);
-        if (typeIsDynamicArray(argument.type)) {
+        if (scopeBufferPutAppendsArray(call, argument)) {
             instructions ~= Instruction(ArrayAppendArray(array, value));
             return array;
         }
 
         instructions ~= Instruction(ArrayAppend(array, value));
         return array;
+    }
+
+    bool scopeBufferPutAppendsArray(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.expression".Expression argument,
+    ) @safe {
+        if (expressionAppendsArray(argument))
+            return true;
+
+        if (call.f.parameters is null) {
+            // auto: DMD Type helpers below require mutable frontend types.
+            auto parameters = functionTypeParameters(call.f);
+            if (parameters.length == 0)
+                return false;
+
+            return typeIsDynamicArray(parameters[0].type);
+        }
+
+        auto parameters = functionParameterSlice(call.f);
+        if (parameters.length == 0)
+            return false;
+
+        return typeIsDynamicArray(parameters[0].type);
     }
 
     uint lowerScopeBufferSliceCall(
@@ -2353,8 +2444,24 @@ struct BodyLowerer {
         imported!"dmd.func".FuncDeclaration function_,
         ref Lowerer lowerer,
     ) @safe {
+        return lowerImmediateFunctionLiteralCall(function_, null, lowerer);
+    }
+
+    uint lowerImmediateFunctionLiteralCall(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
         import quickbite.ir.instruction: ConstInt, Instruction;
         import std.conv: text;
+
+        // auto: associative array snapshots must be restored after inlining.
+        auto savedLocalTemporaries = localTemporaries.dup;
+        // auto: associative array snapshots must be restored after inlining.
+        auto savedIdentifierTemporaries = identifierTemporaries.dup;
+        // auto: associative array snapshots must be restored after inlining.
+        auto savedArrayValueNames = arrayValueNames.dup;
+        withImmediateFunctionLiteralParameters(function_, call, lowerer);
 
         // DMD expression lowering APIs expect mutable AST node pointers.
         auto expression = immediateFunctionLiteralReturnExpression(function_.fbody);
@@ -2362,10 +2469,108 @@ struct BodyLowerer {
             lowerStatement(function_.fbody, lowerer);
             const result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
+            localTemporaries = savedLocalTemporaries;
+            identifierTemporaries = savedIdentifierTemporaries;
+            arrayValueNames = savedArrayValueNames;
             return result;
         }
 
-        return lowerExpression(expression, lowerer);
+        const result = lowerExpression(expression, lowerer);
+        localTemporaries = savedLocalTemporaries;
+        identifierTemporaries = savedIdentifierTemporaries;
+        arrayValueNames = savedArrayValueNames;
+        return result;
+    }
+
+    void withImmediateFunctionLiteralParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (call is null || call.arguments is null)
+            return;
+
+        if (function_.parameters is null) {
+            bindImmediateFunctionLiteralTypeParameters(function_, call, lowerer);
+            return;
+        }
+
+        bindImmediateFunctionLiteralParameters(function_, call, lowerer);
+    }
+
+    void bindImmediateFunctionLiteralParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (function_.parameters is null) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "Unsupported function literal parameters: ",
+                functionIdentifier(function_),
+            ));
+        }
+
+        auto parameters = functionParameterSlice(function_);
+        if (parameters.length != callArguments(call).length) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "Unsupported function literal argument count: ",
+                functionIdentifier(function_),
+            ));
+        }
+
+        foreach (i, parameter; parameters) {
+            const temporary = lowerCallArgument(
+                callArguments(call)[i],
+                parameter,
+                lowerer,
+            );
+            localTemporaries[parameter] = temporary;
+            const name = declarationName(parameter);
+            identifierTemporaries[name] = temporary;
+            if (typeIsDynamicArray(parameter.type))
+                arrayValueNames[name] = true;
+        }
+    }
+
+    void bindImmediateFunctionLiteralTypeParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        auto parameters = functionTypeParameters(function_);
+        if (parameters.length != callArguments(call).length) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "Unsupported function literal argument count: ",
+                functionIdentifier(function_),
+            ));
+        }
+
+        foreach (i, parameter; parameters) {
+            if (typeParameterHasUnsupportedStorage(parameter)) {
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "Unsupported function literal parameter: ",
+                    functionIdentifier(function_),
+                    ".",
+                    parameterName(parameter),
+                    " storage=",
+                    parameter.storageClass,
+                ));
+            }
+
+            const temporary = lowerExpression(callArguments(call)[i], lowerer);
+            const name = parameterName(parameter);
+            identifierTemporaries[name] = temporary;
+            if (typeIsDynamicArray(parameter.type))
+                arrayValueNames[name] = true;
+        }
     }
 
     uint lowerTupleExpression(
@@ -3365,7 +3570,7 @@ struct BodyLowerer {
         if (auto dot = target.isDotVarExp) {
             const destination = lowerStructFieldRead(dot, lowerer);
             const value = lowerExpression(assignment.e2, lowerer);
-            if (typeIsDynamicArray(assignment.e2.type)) {
+            if (assignmentAppendsArray(assignment)) {
                 instructions ~= Instruction(ArrayAppendArray(
                     destination,
                     value,
@@ -3399,7 +3604,7 @@ struct BodyLowerer {
                 ));
 
             const value = lowerExpression(assignment.e2, lowerer);
-            if (typeIsDynamicArray(assignment.e2.type)) {
+            if (assignmentAppendsArray(assignment)) {
                 instructions ~= Instruction(ArrayAppendArray(
                     destination,
                     value,
@@ -3432,7 +3637,7 @@ struct BodyLowerer {
             throw new Exception(text("Unsupported expression: ", expressionChars(target)));
 
         const value = lowerExpression(assignment.e2, lowerer);
-        if (typeIsDynamicArray(assignment.e2.type)) {
+        if (assignmentAppendsArray(assignment)) {
             instructions ~= Instruction(ArrayAppendArray(
                 *destination,
                 value,
@@ -3445,6 +3650,33 @@ struct BodyLowerer {
             value,
         ));
         return *destination;
+    }
+
+    bool assignmentAppendsArray(
+        imported!"dmd.expression".BinAssignExp assignment,
+    ) @safe {
+        return expressionAppendsArray(assignment.e2);
+    }
+
+    bool expressionAppendsArray(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto cast_ = expression.isCastExp)
+            return typeIsDynamicArray(cast_.to) ||
+                expressionAppendsArray(cast_.e1);
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return typeIsDynamicArray(declaration.type);
+
+        if (auto identifier = expression.isIdentifierExp)
+            if ((identifierName(identifier) in arrayValueNames) !is null)
+                return true;
+
+        return typeIsDynamicArray(expression.type) ||
+            expression.isArrayExp !is null ||
+            expression.isSliceExp !is null ||
+            expression.isStringExp !is null;
     }
 
     uint lowerArrayLength(
@@ -3516,6 +3748,13 @@ struct BodyLowerer {
         import std.conv: text;
 
         if (arrayExpressionArguments(array).length == 0)
+            if (
+                typeIsScopeBuffer(array.e1.type) ||
+                typeIsScopeBufferRange(array.e1.type)
+            )
+                return lowerScopeBufferArrayExpression(array.e1, lowerer);
+
+        if (arrayExpressionArguments(array).length == 0)
             return lowerExpression(array.e1, lowerer);
 
         if (arrayExpressionArguments(array).length != 1)
@@ -3577,6 +3816,26 @@ struct BodyLowerer {
             indexValue,
         ));
         return destination;
+    }
+
+    uint lowerScopeBufferArrayExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+
+        const receiver = lowerExpression(expression, lowerer);
+        if (typeIsScopeBufferRange(expression.type)) {
+            const scopeBuffer = allocateTemporary;
+            instructions ~= Instruction(StructGet(scopeBuffer, receiver, "sbuf"));
+            const array = allocateTemporary;
+            instructions ~= Instruction(StructGet(array, scopeBuffer, "arr"));
+            return array;
+        }
+
+        const array = allocateTemporary;
+        instructions ~= Instruction(StructGet(array, receiver, "arr"));
+        return array;
     }
 
     uint lowerArrayIntervalExpression(
@@ -3742,6 +4001,8 @@ struct BodyLowerer {
             localTemporaries[parameter] = temporary;
             const name = declarationName(parameter);
             identifierTemporaries[name] = temporary;
+            if (typeIsDynamicArray(parameter.type))
+                arrayValueNames[name] = true;
             if (name == "this")
                 rememberThisTemporary(temporary, structReceiverType(parameter.type));
             if (parameterIsLazy(parameter)) {
@@ -3772,7 +4033,10 @@ struct BodyLowerer {
             }
 
             const temporary = allocateTemporary;
-            identifierTemporaries[parameterName(parameter)] = temporary;
+            const name = parameterName(parameter);
+            identifierTemporaries[name] = temporary;
+            if (typeIsDynamicArray(parameter.type))
+                arrayValueNames[name] = true;
             refParameters ~= typeParameterIsRef(parameter);
             ++numParameters;
         }
@@ -4365,6 +4629,26 @@ private bool callHasAppenderReceiver(
 
     if (auto dot = call.e1.isDotTemplateInstanceExp)
         return typeIsAppender(dot.e1.type);
+
+    return false;
+}
+
+private bool callHasDynamicArrayRangeReceiver(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    import std.algorithm.searching: canFind;
+
+    auto thisType = functionThisStructType(call.f);
+    if (thisType !is null && typeChars(thisType).canFind("DynamicArrayRange"))
+        return true;
+
+    if (auto dot = call.e1.isDotVarExp)
+        return dot.e1.type !is null &&
+            typeChars(dot.e1.type).canFind("DynamicArrayRange");
+
+    if (auto dot = call.e1.isDotTemplateInstanceExp)
+        return dot.e1.type !is null &&
+            typeChars(dot.e1.type).canFind("DynamicArrayRange");
 
     return false;
 }
