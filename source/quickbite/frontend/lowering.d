@@ -797,6 +797,16 @@ struct BodyLowerer {
                 && callHasNoArguments(call))
                 return lowerImmediateFunctionLiteralCall(call.f, lowerer);
 
+            uint scopeBufferRangeResult;
+            if (
+                tryLowerScopeBufferRangeConstructor(
+                    call,
+                    lowerer,
+                    scopeBufferRangeResult,
+                )
+            )
+                return scopeBufferRangeResult;
+
             lowerer.ensureFunctionLowered(call.f);
             // `const` would make the array incompatible with Call.arguments.
             // auto: keep the mutable array type for restoring the field below.
@@ -1876,6 +1886,39 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         return lowerAppenderArray(call, lowerer);
+    }
+
+    bool tryLowerScopeBufferRangeConstructor(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
+            StructSet;
+
+        if (functionIdentifier(call.f) != "__ctor")
+            return false;
+
+        // auto: DMD Type helpers below require the mutable frontend object.
+        auto thisType = functionThisStructType(call.f);
+        if (thisType is null || typeChars(thisType) != "ScopeBufferRange")
+            return false;
+
+        enforceCallArgumentCount(call, 1);
+        lowerExpression(callArguments(call)[0], lowerer);
+
+        const array = allocateTemporary;
+        instructions ~= Instruction(ArrayLiteral(array, []));
+
+        const scopeBuffer = allocateTemporary;
+        instructions ~= Instruction(StructNew(scopeBuffer));
+        instructions ~= Instruction(StructSet(scopeBuffer, "arr", array));
+
+        result = allocateTemporary;
+        instructions ~= Instruction(StructNew(result));
+        lowerDefaultStructFields(result, thisType);
+        instructions ~= Instruction(StructSet(result, "sbuf", scopeBuffer));
+        return true;
     }
 
     uint lowerAppenderArray(
