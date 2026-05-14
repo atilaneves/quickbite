@@ -2059,6 +2059,9 @@ struct BodyLowerer {
             break;
         }
 
+        if (auto slice = target.isSliceExp)
+            return lowerArraySliceAssignment(slice, assignment.e2, lowerer);
+
         if (auto index = target.isIndexExp)
             return lowerArrayIndexAssignment(index, assignment.e2, lowerer);
 
@@ -2341,6 +2344,66 @@ struct BodyLowerer {
             indexValue,
             source,
         ));
+        return source;
+    }
+
+    uint lowerArraySliceAssignment(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayIndex, ArrayLength, ArraySet,
+            BinaryOp, ConstInt, Copy, Instruction, Jump, JumpIfFalse, Operation;
+        import std.conv: text;
+
+        if (slice.lwr !is null || slice.upr !is null)
+            throw new Exception(text("Unsupported expression: ", slice.op));
+
+        const array = lowerExpression(slice.e1, lowerer);
+        const source = lowerExpression(sourceExpression, lowerer);
+        const length = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(length, source));
+        const index = allocateTemporary;
+        instructions ~= Instruction(ConstInt(index, 0));
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+
+        const loopStart = instructions.length;
+        const inRange = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            inRange,
+            index,
+            length,
+            Operation.lessThan,
+        ));
+        const endJumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(inRange, 0));
+        const value = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(value, source, index));
+        instructions ~= Instruction(ArraySet(
+            array,
+            index,
+            value,
+        ));
+        const nextIndex = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            nextIndex,
+            index,
+            one,
+            Operation.add,
+        ));
+        instructions ~= Instruction(Copy(
+            index,
+            nextIndex,
+        ));
+        instructions ~= Instruction(Jump(
+            cast(int) loopStart - cast(int) instructions.length,
+        ));
+        replaceJumpOffset(
+            instructions,
+            cast(uint) endJumpIndex,
+            cast(int) (instructions.length - endJumpIndex),
+        );
         return source;
     }
 
