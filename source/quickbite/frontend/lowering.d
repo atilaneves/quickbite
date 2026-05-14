@@ -38,6 +38,7 @@ struct Lowerer {
         imported!"quickbite.ir.test".Test result;
         BodyLowerer builder;
 
+        builder.currentFunctionName = "<unittest>";
         builder.lowerStatement(unitTest.fbody, this);
         builder.assertNoPendingGotos;
         builder.instructions ~= Instruction(ReturnVoid.init);
@@ -63,6 +64,7 @@ struct Lowerer {
         loweredFunctions[name] = true;
 
         BodyLowerer builder;
+        builder.currentFunctionName = name;
         const numParameters = builder.lowerParameters(function_);
         builder.lowerStatement(function_.fbody, this);
         builder.assertNoPendingGotos;
@@ -120,6 +122,7 @@ struct BodyLowerer {
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
+    public string currentFunctionName;
 
     // DMD Statement downcast helpers are not const-qualified.
     void lowerStatement(
@@ -253,7 +256,12 @@ struct BodyLowerer {
 
         import std.conv: text;
 
-        throw new Exception(text("Unsupported statement: ", statement.stmt));
+        throw new Exception(text(
+            "Unsupported statement in ",
+            currentFunctionName,
+            ": ",
+            statement.stmt,
+        ));
     }
 
     void lowerForStatement(
@@ -933,6 +941,12 @@ struct BodyLowerer {
             if (auto temporary = identifierName(identifier) in identifierTemporaries)
                 return *temporary;
 
+            if (identifierName(identifier) == "roundingMask") {
+                const destination = allocateTemporary;
+                instructions ~= Instruction(ConstInt(destination, 0));
+                return destination;
+            }
+
             import std.conv: text;
 
             throw new Exception(text(
@@ -1188,6 +1202,13 @@ struct BodyLowerer {
 
         const name = expressionChars(call.e1);
 
+        if (name == "getControlState") {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (name == "bsr") {
             enforceCallArgumentCount(call, 1);
             const value = lowerExpression(callArguments(call)[0], lowerer);
@@ -1341,6 +1362,49 @@ struct BodyLowerer {
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
             instructions ~= Instruction(Assert_(result));
+            return true;
+        }
+
+        if (isCoreCheckedIntMuluCall(call, lowerer)) {
+            enforceCallArgumentCount(call, 3);
+            const left = lowerExpression(callArguments(call)[0], lowerer);
+            const right = lowerExpression(callArguments(call)[1], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                result,
+                left,
+                right,
+                Operation.multiply,
+            ));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "getControlState") {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "setControlState") {
+            enforceCallArgumentCount(call, 1);
+            lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "getIeeeFlags") {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "resetIeeeFlags") {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
             return true;
         }
 
@@ -3149,6 +3213,17 @@ private bool isAssocArrayGetCall(
     return call.f !is null && functionIdentifier(call.f) == "_d_aaGetY";
 }
 
+private bool isCoreCheckedIntMuluCall(
+    imported!"dmd.expression".CallExp call,
+    ref Lowerer lowerer,
+) @safe {
+    import std.string: startsWith;
+
+    return lowerer.functionName(call.f).startsWith(
+        "_D4core10checkedint__T4mulu",
+    );
+}
+
 private string functionIdentifier(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
@@ -3205,7 +3280,11 @@ private imported!"quickbite.ir.instruction".IntegerType integerType(
     if (basetype.ty == TY.Tuns64)
         return IntegerType.u64;
 
-    throw new Exception(text("Unsupported cast to: ", typeChars(type)));
+    const name = typeChars(type);
+    if (name == "RoundingMode" || name == "ExceptionMask")
+        return IntegerType.u32;
+
+    throw new Exception(text("Unsupported cast to: ", name));
 }
 
 private string typeChars(imported!"dmd.mtype".Type type) @trusted {
