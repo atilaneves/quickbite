@@ -1954,9 +1954,18 @@ struct BodyLowerer {
             return result;
         }
 
+        if (auto index = post.e1.isIndexExp)
+            if (!typeIsAssociativeArray(index.e1.type))
+                return lowerArrayIndexPostIncrement(index, post, lowerer);
+
         auto variable = post.e1.isVarExp;
         if (variable is null)
-            throw new Exception(text("Unsupported expression: ", post.op));
+            throw new Exception(text(
+                "Unsupported expression: ",
+                post.op,
+                " ",
+                expressionChars(post.e1),
+            ));
 
         auto declaration = variable.var.isVarDeclaration;
         if (declaration is null)
@@ -1986,6 +1995,48 @@ struct BodyLowerer {
         instructions ~= Instruction(Copy(
             *destination,
             incremented,
+        ));
+        return result;
+    }
+
+    uint lowerArrayIndexPostIncrement(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".PostExp post,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction:
+            ArrayIndex, ArraySet, BinaryOp, CastInt, ConstInt, Instruction;
+
+        const array = lowerExpression(index.e1, lowerer);
+        const indexValue = lowerExpression(index.e2, lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(
+            result,
+            array,
+            indexValue,
+        ));
+
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+        const incremented = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            incremented,
+            result,
+            one,
+            post.op == imported!"dmd.tokens".EXP.plusPlus
+                ? imported!"quickbite.ir.instruction".Operation.add
+                : imported!"quickbite.ir.instruction".Operation.subtract,
+        ));
+        const stored = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            stored,
+            incremented,
+            integerType(index.type),
+        ));
+        instructions ~= Instruction(ArraySet(
+            array,
+            indexValue,
+            stored,
         ));
         return result;
     }
