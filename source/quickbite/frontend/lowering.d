@@ -656,7 +656,7 @@ struct BodyLowerer {
             if (tryLowerAppenderBuiltinCall(call, lowerer, builtinResult))
                 return builtinResult;
 
-            if (tryLowerRuntimeBuiltinCall(call, builtinResult))
+            if (tryLowerRuntimeBuiltinCall(call, lowerer, builtinResult))
                 return builtinResult;
 
             if (call.f.isFuncLiteralDeclaration !is null
@@ -1331,17 +1331,34 @@ struct BodyLowerer {
 
     bool tryLowerRuntimeBuiltinCall(
         imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
         ref uint result,
     ) @safe {
-        if (functionIdentifier(call.f) != "_d_arraybounds")
-            return false;
+        import quickbite.ir.instruction:
+            Assert_, BinaryOp, ConstInt, Instruction, Operation;
 
-        import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
+        if (functionIdentifier(call.f) == "_d_arraybounds") {
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            instructions ~= Instruction(Assert_(result));
+            return true;
+        }
 
-        result = allocateTemporary;
-        instructions ~= Instruction(ConstInt(result, 0));
-        instructions ~= Instruction(Assert_(result));
-        return true;
+        if (lowerer.functionName(call.f) == "gc_extend") {
+            enforceCallArgumentCount(call, 3);
+            const minimum = lowerExpression(callArguments(call)[1], lowerer);
+            const desired = lowerExpression(callArguments(call)[2], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                result,
+                minimum,
+                desired,
+                Operation.add,
+            ));
+            return true;
+        }
+
+        return false;
     }
 
     bool tryLowerAssocArrayBuiltinCall(
