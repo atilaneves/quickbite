@@ -1501,7 +1501,7 @@ struct BodyLowerer {
             return true;
         }
 
-        if (name == "isNaN") {
+        if (name == "isNaN" || name == "isInfinity") {
             enforceCallArgumentCount(call, 1);
             lowerExpression(callArguments(call)[0], lowerer);
             result = allocateTemporary;
