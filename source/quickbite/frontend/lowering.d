@@ -1192,6 +1192,8 @@ struct BodyLowerer {
                     return *temporary;
                 if (auto temporary = declarationName(var) in identifierTemporaries)
                     return *temporary;
+                if (varIsParameter(var))
+                    return lowerUnmappedParameter(var);
             }
 
             if (expressionChars(expression) == "$")
@@ -1386,6 +1388,24 @@ struct BodyLowerer {
             destination,
             elements,
         ));
+        return destination;
+    }
+
+    uint lowerUnmappedParameter(
+        imported!"dmd.declaration".VarDeclaration variable,
+    ) @safe {
+        if (typeIsDynamicArray(variable.type)) {
+            import quickbite.ir.instruction: ArrayLiteral, Instruction;
+
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(destination, []));
+            return destination;
+        }
+
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ConstInt(destination, 0));
         return destination;
     }
 
@@ -4758,6 +4778,14 @@ private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsAssociativeArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.toBasetype.isTypeAArray !is null;
+}
+
+private bool varIsParameter(
+    imported!"dmd.declaration".VarDeclaration declaration,
+) @safe {
+    import dmd.astenums: STC;
+
+    return (declaration.storage_class & STC.parameter) != STC.none;
 }
 
 private ref auto structFields(
