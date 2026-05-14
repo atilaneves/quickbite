@@ -8,9 +8,13 @@ private struct LocalPtr {
     imported!"dmd.declaration".VarDeclaration decl;
 }
 
+private struct ClassRef {
+    long id;
+}
+
 // SumType.opAssign is @system in this version of std.sumtype, so all code
 // that stores a Value is @system by transitivity.
-alias Value = imported!"std.sumtype".SumType!(long, long[], LocalPtr);
+alias Value = imported!"std.sumtype".SumType!(long, long[], LocalPtr, ClassRef);
 
 private struct FunctionResult {
     private bool hasValue;
@@ -99,6 +103,8 @@ private imported!"quickbite.executor".TestSummary testSummary(
 
 private struct Interpreter {
     private long[][string] scopeBufferBytes;
+    private long nextClassRef = 1;
+    private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
 
     private FunctionResult executeFunction(
         imported!"dmd.func".FuncDeclaration func,
@@ -380,6 +386,9 @@ private struct BodyWalker {
         if (auto call = expression.isCallExp)
             return runCallExpression(call, interpreter, resultIgnored);
 
+        if (auto new_ = expression.isNewExp)
+            return runNewExpression(new_, interpreter);
+
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal, interpreter);
 
@@ -402,6 +411,12 @@ private struct BodyWalker {
                     if (auto fields = ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
                             return structFieldValue(*fields, fieldDecl, Value(0L));
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (auto local = ownerDecl in locals)
+                        if (auto fields = classInstanceFields(*local, interpreter))
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                                return structFieldValue(*fields, fieldDecl, Value(0L));
             if (auto thisExp = dotVar.e1.isThisExp)
                 if (auto thisDecl = thisExp.var.isVarDeclaration)
                     if (auto fields = thisDecl in structFields)
@@ -767,6 +782,7 @@ private struct BodyWalker {
                 (LocalPtr p) => p.decl,
                 (long _) => cast(VarDeclaration) null,
                 (long[] _) => cast(VarDeclaration) null,
+                (ClassRef _) => cast(VarDeclaration) null,
             );
             if (target !is null && target in locals)
                 return locals[target];
@@ -792,6 +808,10 @@ private struct BodyWalker {
                 throw new Exception("Expected concatenation value, got pointer.");
                 return (long[]).init;
             },
+            (ClassRef _) {
+                throw new Exception("Expected concatenation value, got class.");
+                return (long[]).init;
+            },
         );
         right.match!(
             (long[] array) {
@@ -803,8 +823,82 @@ private struct BodyWalker {
             (LocalPtr _) {
                 throw new Exception("Expected concatenation value, got pointer.");
             },
+            (ClassRef _) {
+                throw new Exception("Expected concatenation value, got class.");
+            },
         );
         return Value(elements);
+    }
+
+    private Value runNewExpression(
+        imported!"dmd.expression".NewExp new_,
+        ref Interpreter interpreter,
+    ) {
+        import std.conv: text;
+
+        if (new_.placement !is null || new_.thisexp !is null)
+            throw new Exception(text("Unsupported expression: ", expressionChars(new_)));
+        if (!isClassType(new_.newtype))
+            throw new Exception(text("Unsupported expression: ", expressionChars(new_)));
+
+        const classRef = ClassRef(interpreter.nextClassRef);
+        ++interpreter.nextClassRef;
+        interpreter.classFields[classRef.id] = defaultClassFields(new_.newtype);
+
+        if (new_.member !is null) {
+            imported!"dmd.expression".Expression[] arguments;
+            if (new_.arguments !is null)
+                arguments = newArguments(new_);
+            // `auto` is intentional: constructor execution mutates field maps.
+            auto result = interpreter.executeFunction(
+                new_.member,
+                callArgumentsFor(new_.member, arguments, interpreter),
+                interpreter.classFields[classRef.id],
+            );
+            interpreter.classFields[classRef.id] = result.thisFields;
+        }
+
+        return Value(classRef);
+    }
+
+    private CallArgument[] callArgumentsFor(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] arguments,
+        ref Interpreter interpreter,
+    ) {
+        CallArgument[] args;
+
+        foreach (i, arg; arguments) {
+            if (function_.parameters is null || i >= function_.parameters.length)
+                throw new Exception("Unsupported call.");
+            const param = functionParameters(function_)[i];
+            import dmd.astenums: STC;
+
+            if ((param.storage_class & STC.ref_) != STC.none)
+                throw new Exception("Unsupported ref argument.");
+
+            if (auto literal = arg.isStructLiteralExp) {
+                CallArgument structArg;
+                structArg.structFields = runStructLiteralExpression(
+                    literal,
+                    interpreter,
+                );
+                structArg.structFieldMaps =
+                    nestedStructFieldMaps(structArg.structFields);
+                structArg.isStruct = true;
+                args ~= structArg;
+                continue;
+            }
+
+            args ~= CallArgument(
+                runExpression(arg, interpreter),
+                null,
+                null,
+                null,
+            );
+        }
+
+        return args;
     }
 
     private Value runArrayAppendExpression(
@@ -1033,6 +1127,7 @@ private struct BodyWalker {
                             (LocalPtr p) => p.decl,
                             (long _) => cast(VarDeclaration) null,
                             (long[] _) => cast(VarDeclaration) null,
+                            (ClassRef _) => cast(VarDeclaration) null,
                         );
                         if (target !is null && target in locals) {
                             args ~= CallArgument(locals[target], target, null, null);
@@ -1334,6 +1429,9 @@ private struct BodyWalker {
             },
             (LocalPtr _) {
                 throw new Exception("Expected range put value, got pointer.");
+            },
+            (ClassRef _) {
+                throw new Exception("Expected range put value, got class.");
             },
         );
     }
@@ -1838,6 +1936,21 @@ private struct BodyWalker {
         return fields;
     }
 
+    private Value[VarDeclaration] defaultClassFields(
+        imported!"dmd.mtype".Type type,
+    ) {
+        Value[VarDeclaration] fields;
+        foreach (field; classFields(type))
+            if (field.type !is null && field.type.isTypeDArray !is null)
+                fields[field] = Value((long[]).init);
+            else if (isStructType(field.type)) {
+                fields[field] = Value(0L);
+                structFields[field] = (Value[VarDeclaration]).init;
+            } else
+                fields[field] = Value(0L);
+        return fields;
+    }
+
     private VarDeclaration structFieldsOwner(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -1998,6 +2111,27 @@ private struct BodyWalker {
         return type !is null && type.toBasetype.isTypeStruct !is null;
     }
 
+    private bool isClassType(imported!"dmd.mtype".Type type) {
+        return type !is null && type.toBasetype.isTypeClass !is null;
+    }
+
+    private Value[VarDeclaration]* classInstanceFields(
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        const classRef = value.match!(
+            (ClassRef ref_) => ref_.id,
+            (long _) => 0L,
+            (long[] _) => 0L,
+            (LocalPtr _) => 0L,
+        );
+        if (classRef == 0)
+            return null;
+        return classRef in interpreter.classFields;
+    }
+
     private VarDeclaration structFieldNamed(
         imported!"dmd.mtype".Type type,
         in string name,
@@ -2045,6 +2179,10 @@ private long asLong(Value value) @safe pure {
             throw new Exception("Expected scalar, got pointer.");
             return 0L;
         },
+        (ClassRef _) {
+            throw new Exception("Expected scalar, got class.");
+            return 0L;
+        },
     );
 }
 
@@ -2058,6 +2196,10 @@ private long[] asArray(Value value) @safe pure {
         },
         (LocalPtr _) {
             throw new Exception("Expected array, got pointer.");
+            return (long[]).init;
+        },
+        (ClassRef _) {
+            throw new Exception("Expected array, got class.");
             return (long[]).init;
         },
     );
@@ -2076,6 +2218,7 @@ private Value coerceValueToType(
         (long l) => Value(coerceIntegerToType(l, type)),
         (long[] a) => Value(a),
         (LocalPtr p) => Value(p),
+        (ClassRef ref_) => Value(ref_),
     );
 }
 
@@ -2206,4 +2349,32 @@ private imported!"dmd.declaration".VarDeclaration structLiteralField(
     if (literal.sd is null || index >= literal.sd.fields.length)
         return null;
     return literal.sd.fields[index];
+}
+
+private imported!"dmd.declaration".VarDeclaration[] classFields(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.dclass: ClassDeclaration;
+
+    imported!"dmd.declaration".VarDeclaration[] fields;
+    if (type is null)
+        return fields;
+
+    ClassDeclaration[] classes;
+    for (auto class_ = type.toBasetype.isTypeClass.sym;
+        class_ !is null;
+        class_ = class_.baseClass)
+        classes ~= class_;
+
+    foreach_reverse (class_; classes)
+        foreach (field; class_.fields)
+            fields ~= field;
+
+    return fields;
+}
+
+private imported!"dmd.expression".Expression[] newArguments(
+    imported!"dmd.expression".NewExp new_,
+) @trusted {
+    return (*new_.arguments)[];
 }
