@@ -3405,6 +3405,12 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (dot.e1.isTypeExp !is null) {
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ConstInt(destination, 0));
+            return destination;
+        }
+
         const struct_ = lowerExpression(dot.e1, lowerer);
         const destination = allocateTemporary;
         instructions ~= Instruction(StructGet(
