@@ -3512,6 +3512,9 @@ struct BodyLowerer {
             AssocArrayValuePointer, Instruction;
         import std.conv: text;
 
+        if (arrayExpressionArguments(array).length == 0)
+            return lowerExpression(array.e1, lowerer);
+
         if (arrayExpressionArguments(array).length != 1)
             throw new Exception(text("Unsupported expression: ", array.op));
 
