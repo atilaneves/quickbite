@@ -1379,6 +1379,16 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "memcpy" ||
+            functionIdentifier(call.f) == "memset")
+        {
+            enforceCallArgumentCount(call, 3);
+            result = lowerExpression(callArguments(call)[0], lowerer);
+            lowerExpression(callArguments(call)[1], lowerer);
+            lowerExpression(callArguments(call)[2], lowerer);
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
@@ -1813,15 +1823,17 @@ struct BodyLowerer {
         imported!"dmd.func".FuncDeclaration function_,
         ref Lowerer lowerer,
     ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
         import std.conv: text;
 
         // DMD expression lowering APIs expect mutable AST node pointers.
         auto expression = immediateFunctionLiteralReturnExpression(function_.fbody);
-        if (expression is null)
-            throw new Exception(text(
-                "Unsupported expression: ",
-                function_.ident.toString,
-            ));
+        if (expression is null) {
+            lowerStatement(function_.fbody, lowerer);
+            const result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return result;
+        }
 
         return lowerExpression(expression, lowerer);
     }
