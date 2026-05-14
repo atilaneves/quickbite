@@ -1806,6 +1806,12 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "shouldThrow") {
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (
             (functionIdentifier(call.f) == "dup" ||
                 functionIdentifier(call.f) == "idup") &&
