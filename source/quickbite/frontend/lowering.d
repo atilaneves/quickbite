@@ -940,6 +940,9 @@ struct BodyLowerer {
             return lowerExpression(comma.e2, lowerer);
         }
 
+        if (auto tuple = expression.isTupleExp)
+            return lowerTupleExpression(tuple, lowerer);
+
         if (auto length = expression.isArrayLengthExp)
             return lowerArrayLength(length, lowerer);
 
@@ -2116,6 +2119,27 @@ struct BodyLowerer {
         }
 
         return lowerExpression(expression, lowerer);
+    }
+
+    uint lowerTupleExpression(
+        imported!"dmd.expression".TupleExp tuple,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        if (tuple.e0 !is null)
+            lowerExpression(tuple.e0, lowerer);
+
+        if (tupleExpressions(tuple).length == 0) {
+            const result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return result;
+        }
+
+        uint result;
+        foreach (element; tupleExpressions(tuple))
+            result = lowerExpression(element, lowerer);
+        return result;
     }
 
     uint lowerShortCircuit(
@@ -4249,6 +4273,13 @@ private ref auto structLiteralElements(
 ) @trusted {
     // Caller checked `elements` for null; DMD owns the array.
     return *literal.elements;
+}
+
+private ref auto tupleExpressions(
+    imported!"dmd.expression".TupleExp tuple,
+) @trusted {
+    // Caller checked `exps` for null; DMD owns the array.
+    return *tuple.exps;
 }
 
 private imported!"dmd.declaration".VarDeclaration structLiteralField(
