@@ -155,6 +155,11 @@ public struct ArrayCopy {
     uint source;
 }
 
+public struct ArrayReferenceCopy {
+    uint destination;
+    uint source;
+}
+
 public struct ArrayAppend {
     uint array;
     uint value;
@@ -250,6 +255,7 @@ public alias Instruction = SumType!(
     AssocArrayValuePointer,
     AssocArraySet,
     ArrayCopy,
+    ArrayReferenceCopy,
     ArrayAppend,
     ArrayAppendArray,
     ArrayLength,

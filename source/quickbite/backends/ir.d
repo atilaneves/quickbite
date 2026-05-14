@@ -229,8 +229,8 @@ InstructionEffect executeInstruction(
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray, ArrayConcat,
-        ArrayCopy, ArrayEqual, ArrayIndex, ArrayLength, ArrayLiteral, ArraySet,
-        ArraySetLength, ArraySlice,
+        ArrayCopy, ArrayEqual, ArrayIndex, ArrayLength, ArrayLiteral,
+        ArrayReferenceCopy, ArraySet, ArraySetLength, ArraySlice,
         AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
         AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
         BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
@@ -398,6 +398,12 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArrayCopy instruction) {
+            arrays ~= arrays[arrayIndex(temporaries, instruction.source)].dup;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (ArrayReferenceCopy instruction) {
             arrays ~= arrays[arrayIndex(temporaries, instruction.source)];
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) (arrays.length - 1);
@@ -506,13 +512,14 @@ InstructionEffect executeInstruction(
         },
         (const StructGet instruction) {
             const index = structIndex(temporaries, instruction.struct_);
-            if (index >= structs.length) {
-                if (instruction.fieldName == "length" && index < arrays.length) {
+            if (instruction.fieldName == "length" && index < arrays.length) {
+                if (index >= structs.length || "length" !in structs[index]) {
                     writeTemporaryValue(temporaries, instruction.destination) =
                         cast(long) arrays[index].length;
                     return nextInstruction;
                 }
-
+            }
+            if (index >= structs.length) {
                 import std.conv: text;
 
                 throw new Exception(text(

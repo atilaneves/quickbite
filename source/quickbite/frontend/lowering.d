@@ -107,8 +107,23 @@ struct BodyLowerer {
     import dmd.declaration: VarDeclaration;
     import dmd.statement: CaseStatement, DefaultStatement;
 
+    private struct ArrayElementAlias {
+        uint array;
+        uint index;
+        uint value;
+    }
+
+    private struct StructFieldAlias {
+        uint struct_;
+        string fieldName;
+        uint value;
+    }
+
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
+    private ArrayElementAlias[VarDeclaration] arrayElementAliases;
+    private ArrayElementAlias[] pendingRefArrayWritebacks;
+    private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
     private bool[VarDeclaration] lazyParameters;
     private size_t[string] labelInstructionIndices;
@@ -748,7 +763,17 @@ struct BodyLowerer {
 
             lowerer.ensureFunctionLowered(call.f);
             // `const` would make the array incompatible with Call.arguments.
+            // auto: keep the mutable array type for restoring the field below.
+            auto savedArrayWritebacks = pendingRefArrayWritebacks;
+            auto savedStructWritebacks = pendingRefStructWritebacks;
+            pendingRefArrayWritebacks = [];
+            pendingRefStructWritebacks = [];
             auto arguments = lowerCallArguments(call, lowerer);
+            // auto: ArraySet emission needs mutable element values.
+            auto arrayWritebacks = pendingRefArrayWritebacks;
+            auto structWritebacks = pendingRefStructWritebacks;
+            pendingRefArrayWritebacks = savedArrayWritebacks;
+            pendingRefStructWritebacks = savedStructWritebacks;
 
             const destination = allocateTemporary;
             instructions ~= Instruction(Call(
@@ -756,6 +781,18 @@ struct BodyLowerer {
                 lowerer.functionName(call.f),
                 arguments,
             ));
+            foreach (writeback; arrayWritebacks)
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".ArraySet(
+                    writeback.array,
+                    writeback.index,
+                    writeback.value,
+                ));
+            foreach (writeback; structWritebacks)
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".StructSet(
+                    writeback.struct_,
+                    writeback.fieldName,
+                    writeback.value,
+                ));
             return destination;
         }
 
@@ -1480,7 +1517,8 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            ArrayLiteral, Assert_, BinaryOp, ConstInt, Instruction, Operation;
+            ArrayCopy, ArrayLiteral, Assert_, BinaryOp, ConstInt, Instruction,
+            Operation;
 
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
@@ -1553,6 +1591,18 @@ struct BodyLowerer {
         if (functionIdentifier(call.f) == "text") {
             result = allocateTemporary;
             instructions ~= Instruction(ArrayLiteral(result, []));
+            return true;
+        }
+
+        if (
+            (functionIdentifier(call.f) == "dup" ||
+                functionIdentifier(call.f) == "idup") &&
+            typeIsDynamicArray(call.type)
+        ) {
+            enforceCallArgumentCount(call, 1);
+            const source = lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ArrayCopy(result, source));
             return true;
         }
 
@@ -1840,6 +1890,7 @@ struct BodyLowerer {
 
         const destination = allocateTemporary;
         instructions ~= Instruction(StructNew(destination));
+        lowerDefaultStructFields(destination, literal.type);
 
         if (literal.elements is null)
             return destination;
@@ -1850,6 +1901,12 @@ struct BodyLowerer {
 
             auto field = structLiteralField(literal, index);
             if (field is null)
+                continue;
+            if (
+                typeIsAppender(literal.type) &&
+                typePointsToStruct(field.type) &&
+                element.isNullExp !is null
+            )
                 continue;
 
             const value = lowerExpression(element, lowerer);
@@ -2120,6 +2177,9 @@ struct BodyLowerer {
                 rememberLocalTemporary(variable, destination);
                 lowerDefaultStructFields(destination, variable.type);
 
+                if (isDefaultStructInitializer(initializer.exp))
+                    return destination;
+
                 const source = lowerInitializerExpression(initializer.exp, lowerer);
                 if (source != destination)
                     instructions ~= Instruction(Copy(destination, source));
@@ -2130,6 +2190,28 @@ struct BodyLowerer {
 
         if (variable._init !is null) {
             if (auto initializer = variable._init.isExpInitializer) {
+                if (parameterIsRef(variable)) {
+                    if (auto index = arrayElementAliasIndex(initializer.exp)) {
+                        import quickbite.ir.instruction: ArrayIndex, Instruction;
+
+                        const array = lowerExpression(index.e1, lowerer);
+                        const indexValue = lowerExpression(index.e2, lowerer);
+                        const value = allocateTemporary;
+                        instructions ~= Instruction(ArrayIndex(
+                            value,
+                            array,
+                            indexValue,
+                        ));
+                        rememberLocalTemporary(variable, value);
+                        arrayElementAliases[variable] = ArrayElementAlias(
+                            array,
+                            indexValue,
+                            value,
+                        );
+                        return value;
+                    }
+                }
+
                 if (auto blit = initializer.exp.isBlitExp) {
                     if (
                         typeIsDynamicArray(variable.type) &&
@@ -2179,6 +2261,15 @@ struct BodyLowerer {
         return value;
     }
 
+    imported!"dmd.expression".IndexExp arrayElementAliasIndex(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto construct = expression.isConstructExp)
+            return arrayElementAliasIndex(construct.e2);
+
+        return expression.isIndexExp;
+    }
+
     uint lowerInitializerExpression(
         imported!"dmd.expression".Expression expression,
         ref Lowerer lowerer,
@@ -2187,6 +2278,24 @@ struct BodyLowerer {
         return construct !is null
             ? lowerExpression(construct.e2, lowerer)
             : lowerExpression(expression, lowerer);
+    }
+
+    bool isDefaultStructInitializer(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto blit = expression.isBlitExp)
+            return isZeroInitializer(blit.e2);
+
+        return isZeroInitializer(expression);
+    }
+
+    bool isZeroInitializer(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto integer = expression.isIntegerExp)
+            return integerValue(integer) == 0;
+
+        return false;
     }
 
     uint lowerAssignment(
@@ -3380,6 +3489,14 @@ struct BodyLowerer {
                 parameter = parameters[i];
 
             const source = lowerCallArgument(argument, parameter, lowerer);
+            if (i < parameters.length && parameterIsRef(parameters[i])) {
+                if (auto variable = argument.isVarExp) {
+                    if (auto var = variable.var.isVarDeclaration) {
+                        if (auto alias_ = var in arrayElementAliases)
+                            pendingRefArrayWritebacks ~= *alias_;
+                    }
+                }
+            }
             if (i < parameters.length
                 && !parameterIsRef(parameters[i])
                 && typeIsStruct(argument.type))
@@ -3402,15 +3519,46 @@ struct BodyLowerer {
             if (auto literal = argument.isFuncExp)
                 return lowerImmediateFunctionLiteralCall(literal.fd, lowerer);
 
+        if (parameter !is null && parameterIsRef(parameter))
+            if (auto dot = argument.isDotVarExp)
+                return lowerStructFieldRefArgument(dot, lowerer);
+
         return lowerExpression(argument, lowerer);
+    }
+
+    uint lowerStructFieldRefArgument(
+        imported!"dmd.expression".DotVarExp dot,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+        import std.conv: text;
+
+        const struct_ = lowerStructOwner(dot, lowerer);
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const value = allocateTemporary;
+        const fieldName = declarationName(field);
+        instructions ~= Instruction(StructGet(
+            value,
+            struct_,
+            fieldName,
+        ));
+        pendingRefStructWritebacks ~= StructFieldAlias(
+            struct_,
+            fieldName,
+            value,
+        );
+        return value;
     }
 
     uint copyStructByValue(
         imported!"dmd.mtype".Type type,
         in uint source,
     ) @safe {
-        import quickbite.ir.instruction: ArrayCopy, Instruction, StructGet,
-            StructNew, StructSet;
+        import quickbite.ir.instruction: ArrayReferenceCopy, Instruction,
+            StructGet, StructNew, StructSet;
 
         const destination = allocateTemporary;
         instructions ~= Instruction(StructNew(destination));
@@ -3420,7 +3568,7 @@ struct BodyLowerer {
             instructions ~= Instruction(StructGet(fieldValue, source, name));
             if (typeIsDynamicArray(field.type)) {
                 const copied = allocateTemporary;
-                instructions ~= Instruction(ArrayCopy(copied, fieldValue));
+                instructions ~= Instruction(ArrayReferenceCopy(copied, fieldValue));
                 instructions ~= Instruction(StructSet(destination, name, copied));
                 continue;
             }
