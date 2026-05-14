@@ -110,6 +110,7 @@ struct BodyLowerer {
     private bool[VarDeclaration] lazyParameters;
     private size_t[string] labelInstructionIndices;
     private size_t[][string] pendingGotoInstructionIndices;
+    private size_t[][string] pendingBreakInstructionIndices;
     private uint[] dollarArrays;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
@@ -167,6 +168,11 @@ struct BodyLowerer {
 
         if (auto gotoStatement = statement.isGotoStatement) {
             lowerGotoStatement(gotoStatement);
+            return;
+        }
+
+        if (auto breakStatement = statement.isBreakStatement) {
+            lowerBreakStatement(breakStatement);
             return;
         }
 
@@ -273,8 +279,6 @@ struct BodyLowerer {
         import std.conv: text;
 
         const label = gotoLabel(statement);
-        if (label != "__returnLabel")
-            throw new Exception(text("Unsupported goto: ", label));
 
         if (statement.label is null || statement.label.statement is null)
             throw new Exception(text("Unsupported unresolved goto: ", label));
@@ -291,16 +295,31 @@ struct BodyLowerer {
             pendingGotoInstructionIndices[label] = [jumpIndex];
     }
 
+    void lowerBreakStatement(
+        imported!"dmd.statement".BreakStatement statement,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, Jump;
+        import std.conv: text;
+
+        if (statement.ident is null)
+            throw new Exception("Unsupported unlabelled break");
+
+        const label = breakLabel(statement);
+        const jumpIndex = instructions.length;
+        instructions ~= Instruction(Jump(0));
+
+        if (auto pending = label in pendingBreakInstructionIndices)
+            *pending ~= jumpIndex;
+        else
+            pendingBreakInstructionIndices[label] = [jumpIndex];
+    }
+
     void lowerLabelStatement(
         imported!"dmd.statement".LabelStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import std.conv: text;
-
         // AA.remove currently needs a mutable key.
         string label = statementLabel(statement);
-        if (label != "__returnLabel")
-            throw new Exception(text("Unsupported label: ", label));
 
         labelInstructionIndices[label] = instructions.length;
 
@@ -316,10 +335,22 @@ struct BodyLowerer {
         }
 
         lowerStatement(statement.statement, lowerer);
+
+        if (auto pending = label in pendingBreakInstructionIndices) {
+            foreach (jumpIndex; *pending)
+                replaceJumpOffset(
+                    instructions,
+                    cast(uint) jumpIndex,
+                    cast(int) (instructions.length - jumpIndex),
+                );
+
+            pendingBreakInstructionIndices.remove(label);
+        }
     }
 
     void assertNoPendingGotos() @safe {
-        if (pendingGotoInstructionIndices.length == 0)
+        if (pendingGotoInstructionIndices.length == 0
+            && pendingBreakInstructionIndices.length == 0)
             return;
 
         import std.conv: text;
@@ -327,6 +358,15 @@ struct BodyLowerer {
         foreach (label, jumpIndices; pendingGotoInstructionIndices)
             throw new Exception(text(
                 "Unsupported unresolved goto: ",
+                label,
+                " (",
+                jumpIndices.length,
+                ")",
+            ));
+
+        foreach (label, jumpIndices; pendingBreakInstructionIndices)
+            throw new Exception(text(
+                "Unsupported unresolved break: ",
                 label,
                 " (",
                 jumpIndices.length,
@@ -2354,6 +2394,10 @@ private long stringLiteralCodeUnit(
 }
 
 private string gotoLabel(imported!"dmd.statement".GotoStatement statement) @safe {
+    return statement.ident.toString.idup;
+}
+
+private string breakLabel(imported!"dmd.statement".BreakStatement statement) @safe {
     return statement.ident.toString.idup;
 }
 
