@@ -1518,6 +1518,13 @@ struct BodyLowerer {
             return true;
         }
 
+        if (name == "pow") {
+            enforceCallArgumentCount(call, 2);
+            result = lowerExpression(callArguments(call)[0], lowerer);
+            lowerExpression(callArguments(call)[1], lowerer);
+            return true;
+        }
+
         if (name == "bsr") {
             enforceCallArgumentCount(call, 1);
             const value = lowerExpression(callArguments(call)[0], lowerer);
