@@ -1703,6 +1703,12 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "fabs") {
+            enforceCallArgumentCount(call, 1);
+            result = lowerExpression(callArguments(call)[0], lowerer);
+            return true;
+        }
+
         if (lowerer.functionName(call.f) == "gc_qalloc") {
             if (call.arguments !is null)
                 foreach (argument; callArguments(call))
