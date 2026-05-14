@@ -12,9 +12,25 @@ private struct ClassRef {
     long id;
 }
 
+private struct AssocArrayRef {
+    long id;
+}
+
 // SumType.opAssign is @system in this version of std.sumtype, so all code
 // that stores a Value is @system by transitivity.
-alias Value = imported!"std.sumtype".SumType!(long, long[], LocalPtr, ClassRef);
+alias Value = imported!"std.sumtype".SumType!(
+    long,
+    long[],
+    LocalPtr,
+    ClassRef,
+    AssocArrayRef,
+);
+
+private struct AssocArray {
+    private imported!"dmd.declaration".VarDeclaration[] keyStructs;
+    private Value[] keys;
+    private Value[] values;
+}
 
 private struct FunctionResult {
     private bool hasValue;
@@ -105,9 +121,11 @@ private imported!"quickbite.executor".TestSummary testSummary(
 private struct Interpreter {
     private long[][string] scopeBufferBytes;
     private long nextClassRef = 1;
+    private long nextAssocArrayRef = 1;
     private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
     private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration][long] classStructFieldMaps;
     private imported!"dmd.mtype".Type[long] classTypes;
+    private AssocArray[long] assocArrays;
     private bool childClassRegistered;
 
     private FunctionResult executeFunction(
@@ -690,6 +708,9 @@ private struct BodyWalker {
             return Value(elements);
         }
 
+        if (auto literal = expression.isAssocArrayLiteralExp)
+            return runAssocArrayLiteralExpression(literal, interpreter);
+
         if (auto literal = expression.isStringExp)
             return Value(stringLiteralElements(literal));
 
@@ -847,6 +868,7 @@ private struct BodyWalker {
                 (long _) => cast(VarDeclaration) null,
                 (long[] _) => cast(VarDeclaration) null,
                 (ClassRef _) => cast(VarDeclaration) null,
+                (AssocArrayRef _) => cast(VarDeclaration) null,
             );
             if (target !is null && target in locals)
                 return locals[target];
@@ -876,6 +898,10 @@ private struct BodyWalker {
                 throw new Exception("Expected concatenation value, got class.");
                 return (long[]).init;
             },
+            (AssocArrayRef _) {
+                throw new Exception("Expected concatenation value, got AA.");
+                return (long[]).init;
+            },
         );
         right.match!(
             (long[] array) {
@@ -890,8 +916,41 @@ private struct BodyWalker {
             (ClassRef _) {
                 throw new Exception("Expected concatenation value, got class.");
             },
+            (AssocArrayRef _) {
+                throw new Exception("Expected concatenation value, got AA.");
+            },
         );
         return Value(elements);
+    }
+
+    private Value runAssocArrayLiteralExpression(
+        imported!"dmd.expression".AssocArrayLiteralExp literal,
+        ref Interpreter interpreter,
+    ) {
+        import dmd.declaration: VarDeclaration;
+
+        AssocArray array;
+        foreach (index, keyExpression; assocArrayLiteralKeys(literal)) {
+            VarDeclaration keyStruct;
+            if (auto var = keyExpression.isVarExp)
+                keyStruct = var.var.isVarDeclaration;
+            if (keyStruct !is null && keyStruct in structFields) {
+                array.keyStructs ~= keyStruct;
+                array.keys ~= Value(0L);
+            } else {
+                array.keyStructs ~= null;
+                array.keys ~= runExpression(keyExpression, interpreter);
+            }
+            array.values ~= runExpression(
+                assocArrayLiteralValues(literal)[index],
+                interpreter,
+            );
+        }
+
+        const assocArrayRef = AssocArrayRef(interpreter.nextAssocArrayRef);
+        ++interpreter.nextAssocArrayRef;
+        interpreter.assocArrays[assocArrayRef.id] = array;
+        return Value(assocArrayRef);
     }
 
     private Value runNewExpression(
@@ -1328,6 +1387,7 @@ private struct BodyWalker {
                             (long _) => cast(VarDeclaration) null,
                             (long[] _) => cast(VarDeclaration) null,
                             (ClassRef _) => cast(VarDeclaration) null,
+                            (AssocArrayRef _) => cast(VarDeclaration) null,
                         );
                         if (target !is null && target in locals) {
                             args ~= CallArgument(locals[target], target, null, null);
@@ -1998,6 +2058,7 @@ private struct BodyWalker {
             (long _) => (long[]).init,
             (LocalPtr _) => (long[]).init,
             (ClassRef _) => (long[]).init,
+            (AssocArrayRef _) => (long[]).init,
         );
     }
 
@@ -2021,6 +2082,9 @@ private struct BodyWalker {
             },
             (ClassRef _) {
                 throw new Exception("Expected range put value, got class.");
+            },
+            (AssocArrayRef _) {
+                throw new Exception("Expected range put value, got AA.");
             },
         );
     }
@@ -2240,6 +2304,7 @@ private struct BodyWalker {
             (long l) => l == 0,
             (long[] a) => a.length == 0,
             (LocalPtr _) => false,
+            (AssocArrayRef ref_) => ref_.id == 0,
         );
     }
 
@@ -2859,6 +2924,7 @@ private struct BodyWalker {
             (long _) => 0L,
             (long[] _) => 0L,
             (LocalPtr _) => 0L,
+            (AssocArrayRef _) => 0L,
         );
         if (classRef == 0)
             return null;
@@ -2916,6 +2982,10 @@ private long asLong(Value value) @safe pure {
             throw new Exception("Expected scalar, got class.");
             return 0L;
         },
+        (AssocArrayRef _) {
+            throw new Exception("Expected scalar, got AA.");
+            return 0L;
+        },
     );
 }
 
@@ -2935,6 +3005,10 @@ private long[] asArray(Value value) @safe pure {
             throw new Exception("Expected array, got class.");
             return (long[]).init;
         },
+        (AssocArrayRef _) {
+            throw new Exception("Expected array, got AA.");
+            return (long[]).init;
+        },
     );
 }
 
@@ -2946,6 +3020,7 @@ private long classId(Value value) @safe pure {
         (long _) => 0L,
         (long[] _) => 0L,
         (LocalPtr _) => 0L,
+        (AssocArrayRef _) => 0L,
     );
 }
 
@@ -2963,6 +3038,7 @@ private Value coerceValueToType(
         (long[] a) => Value(a),
         (LocalPtr p) => Value(p),
         (ClassRef ref_) => Value(ref_),
+        (AssocArrayRef ref_) => Value(ref_),
     );
 }
 
@@ -3069,6 +3145,18 @@ private ref auto arrayLiteralElements(
     imported!"dmd.expression".ArrayLiteralExp literal,
 ) @trusted pure {
     return *literal.elements;
+}
+
+private ref auto assocArrayLiteralKeys(
+    imported!"dmd.expression".AssocArrayLiteralExp literal,
+) @trusted pure {
+    return *literal.keys;
+}
+
+private ref auto assocArrayLiteralValues(
+    imported!"dmd.expression".AssocArrayLiteralExp literal,
+) @trusted pure {
+    return *literal.values;
 }
 
 private ref auto structLiteralElements(
