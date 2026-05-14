@@ -1974,8 +1974,18 @@ struct BodyLowerer {
             return true;
         }
 
+        if (name == "_d_aaIn") {
+            result = lowerAssocArrayIndexCall(call, lowerer);
+            return true;
+        }
+
         if (name == "_d_aaGetY") {
             result = lowerAssocArrayValuePointerCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "_aaGetX") {
+            result = lowerAssocArrayGetXCall(call, lowerer);
             return true;
         }
 
@@ -2041,6 +2051,24 @@ struct BodyLowerer {
         import quickbite.ir.instruction: AssocArrayValuePointer, Instruction;
 
         enforceCallArgumentCount(call, 2);
+        const array = lowerExpression(callArguments(call)[0], lowerer);
+        const key = lowerExpression(callArguments(call)[1], lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(AssocArrayValuePointer(
+            destination,
+            array,
+            key,
+        ));
+        return destination;
+    }
+
+    uint lowerAssocArrayGetXCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: AssocArrayValuePointer, Instruction;
+
+        enforceCallArgumentCount(call, 4);
         const array = lowerExpression(callArguments(call)[0], lowerer);
         const key = lowerExpression(callArguments(call)[1], lowerer);
         const destination = allocateTemporary;
