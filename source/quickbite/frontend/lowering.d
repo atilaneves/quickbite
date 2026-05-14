@@ -2503,17 +2503,14 @@ struct BodyLowerer {
         imported!"dmd.expression".NewExp new_,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArrayLiteral, ConstInt, Instruction,
-            StructNew, StructSet;
+        import quickbite.ir.instruction: ArrayLiteral, Call, ConstInt,
+            Instruction, StructNew, StructSet;
         import std.conv: text;
 
         if (typeIsClass(new_.newtype)) {
-            if (new_.arguments !is null)
-                foreach (argument; newArguments(new_))
-                    lowerExpression(argument, lowerer);
-
             const destination = allocateTemporary;
             instructions ~= Instruction(StructNew(destination));
+            lowerDefaultStructFields(destination, new_.newtype);
             const className = allocateTemporary;
             instructions ~= Instruction(ConstInt(
                 className,
@@ -2524,6 +2521,21 @@ struct BodyLowerer {
                 "__classinfo_name",
                 className,
             ));
+            if (new_.member !is null) {
+                lowerer.ensureFunctionLowered(new_.member);
+                // `auto` because the IR call owns a mutable arguments array.
+                auto arguments = lowerNewClassConstructorArguments(
+                    destination,
+                    new_,
+                    lowerer,
+                );
+                const ignored = allocateTemporary;
+                instructions ~= Instruction(Call(
+                    ignored,
+                    lowerer.functionName(new_.member),
+                    arguments,
+                ));
+            }
             return destination;
         }
 
@@ -2599,31 +2611,44 @@ struct BodyLowerer {
         in uint struct_,
         imported!"dmd.mtype".Type type,
     ) @safe {
+        if (typeIsClass(type)) {
+            foreach (field; classFields(type))
+                lowerDefaultStructField(struct_, type, field);
+            return;
+        }
+
+        foreach (field; structFields(type))
+            lowerDefaultStructField(struct_, type, field);
+    }
+
+    void lowerDefaultStructField(
+        in uint struct_,
+        imported!"dmd.mtype".Type aggregateType,
+        imported!"dmd.declaration".VarDeclaration field,
+    ) @safe {
         import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
             StructSet;
 
-        foreach (field; structFields(type)) {
-            uint value;
-            if (typeIsDynamicArray(field.type)) {
-                value = allocateTemporary;
-                instructions ~= Instruction(ArrayLiteral(value, []));
-            } else if (typeIsStruct(field.type)) {
-                value = allocateTemporary;
-                instructions ~= Instruction(StructNew(value));
-                lowerDefaultStructFields(value, field.type);
-            } else if (typeIsAppender(type) && typePointsToStruct(field.type)) {
-                value = allocateTemporary;
-                instructions ~= Instruction(StructNew(value));
-                lowerDefaultStructFields(value, pointerTarget(field.type));
-            } else
-                continue;
+        uint value;
+        if (typeIsDynamicArray(field.type)) {
+            value = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(value, []));
+        } else if (typeIsStruct(field.type)) {
+            value = allocateTemporary;
+            instructions ~= Instruction(StructNew(value));
+            lowerDefaultStructFields(value, field.type);
+        } else if (typeIsAppender(aggregateType) && typePointsToStruct(field.type)) {
+            value = allocateTemporary;
+            instructions ~= Instruction(StructNew(value));
+            lowerDefaultStructFields(value, pointerTarget(field.type));
+        } else
+            return;
 
-            instructions ~= Instruction(StructSet(
-                struct_,
-                declarationName(field),
-                value,
-            ));
-        }
+        instructions ~= Instruction(StructSet(
+            struct_,
+            declarationName(field),
+            value,
+        ));
     }
 
     uint lowerNewStructArgument(
@@ -2640,6 +2665,42 @@ struct BodyLowerer {
         }
 
         return lowerExpression(argument, lowerer);
+    }
+
+    uint[] lowerNewClassConstructorArguments(
+        in uint destination,
+        imported!"dmd.expression".NewExp new_,
+        ref Lowerer lowerer,
+    ) @safe {
+        uint[] arguments;
+        if (functionHasReceiver(new_.member))
+            arguments ~= destination;
+
+        if (new_.arguments is null)
+            return arguments;
+
+        // Pulled in parallel so non-ref struct constructor parameters get a
+        // value copy at the call site, matching direct calls.
+        auto parameters = new_.member.parameters !is null
+            ? functionParameterSlice(new_.member)
+            : null;
+        foreach (i, argument; newArguments(new_)) {
+            VarDeclaration parameter;
+            if (i < parameters.length)
+                parameter = parameters[i];
+
+            const source = lowerCallArgument(argument, parameter, lowerer);
+            if (i < parameters.length
+                && !parameterIsRef(parameters[i])
+                && typeIsStruct(argument.type))
+            {
+                arguments ~= copyStructByValue(argument.type, source);
+                continue;
+            }
+            arguments ~= source;
+        }
+
+        return arguments;
     }
 
     uint lowerLogicalAnd(
@@ -4464,7 +4525,7 @@ struct BodyLowerer {
             const temporary = allocateTemporary;
             localTemporaries[function_.vthis] = temporary;
             identifierTemporaries[declarationName(function_.vthis)] = temporary;
-            rememberThisTemporary(temporary, functionThisStructType(function_));
+            rememberThisTemporary(temporary, functionThisType(function_));
             refParameters ~= true;
             ++numParameters;
         } else if (functionThisStructType(function_) !is null) {
@@ -4770,8 +4831,15 @@ struct BodyLowerer {
         if (type is null)
             return;
 
-        foreach (field; structFields(type))
-            thisFieldNames[declarationName(field)] = true;
+        if (typeIsClass(type)) {
+            foreach (field; classFields(type))
+                thisFieldNames[declarationName(field)] = true;
+            return;
+        }
+
+        if (typeIsStruct(type))
+            foreach (field; structFields(type))
+                thisFieldNames[declarationName(field)] = true;
     }
 
     bool isThisFieldName(in string name) @safe {
@@ -5263,6 +5331,14 @@ private imported!"dmd.mtype".Type functionThisStructType(
     return aggregate.type;
 }
 
+private imported!"dmd.mtype".Type functionThisType(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    // Explicit type keeps DMD's mutable aggregate available.
+    imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
+    return aggregate is null ? null : aggregate.type;
+}
+
 private imported!"dmd.mtype".Type structReceiverType(
     imported!"dmd.mtype".Type type,
 ) @safe {
@@ -5337,6 +5413,26 @@ private ref auto structFields(
     imported!"dmd.mtype".Type type,
 ) @trusted {
     return type.toBasetype.isTypeStruct.sym.fields;
+}
+
+private imported!"dmd.declaration".VarDeclaration[] classFields(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    imported!"dmd.declaration".VarDeclaration[] fields;
+    if (type is null)
+        return fields;
+
+    imported!"dmd.dclass".ClassDeclaration[] classes;
+    for (auto class_ = type.toBasetype.isTypeClass.sym;
+        class_ !is null;
+        class_ = class_.baseClass)
+        classes ~= class_;
+
+    foreach_reverse (class_; classes)
+        foreach (field; class_.fields)
+            fields ~= field;
+
+    return fields;
 }
 
 private string declarationName(
