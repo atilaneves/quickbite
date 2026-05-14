@@ -2313,6 +2313,9 @@ struct BodyLowerer {
         if (typeIsAssociativeArray(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
+        if (typeIsBool(cast_.to))
+            return lowerTruthValue(lowerExpression(cast_.e1, lowerer));
+
         const source = lowerExpression(cast_.e1, lowerer);
         const destination = allocateTemporary;
         instructions ~= Instruction(CastInt(
@@ -2915,6 +2918,12 @@ private string typeChars(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsPointer(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.isTypePointer !is null;
+}
+
+private bool typeIsBool(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tbool;
 }
 
 private bool typeIsAppender(imported!"dmd.mtype".Type type) @trusted {
