@@ -204,6 +204,13 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto tryFinally = statement.isTryFinallyStatement) {
+            lowerStatement(tryFinally._body, lowerer);
+            if (!hasReturn)
+                lowerStatement(tryFinally.finalbody, lowerer);
+            return;
+        }
+
         if (auto switchStatement = statement.isSwitchStatement) {
             lowerSwitchStatement(switchStatement, lowerer);
             return;
