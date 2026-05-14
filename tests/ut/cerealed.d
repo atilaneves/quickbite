@@ -55,7 +55,11 @@ private enum bool shouldFailCerealedTest(
 ) = fileName != "compile_time.d" &&
     (
         backend != ExecutorBackend.treeWalking ||
-        (fileName != "cerealiser_impl.d" && fileName != "classes.d")
+        (
+            fileName != "cerealiser_impl.d" &&
+            fileName != "classes.d" &&
+            fileName != "utils.d"
+        )
     );
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {
