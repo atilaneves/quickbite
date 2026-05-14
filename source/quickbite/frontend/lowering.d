@@ -1354,6 +1354,17 @@ struct BodyLowerer {
 
         const name = expressionChars(call.e1);
 
+        {
+            import std.string: endsWith;
+
+            if (name.endsWith(".assumeSafeAppend")) {
+                enforceCallArgumentCount(call, 0);
+                result = allocateTemporary;
+                instructions ~= Instruction(ConstInt(result, 0));
+                return true;
+            }
+        }
+
         if (name == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
