@@ -40,3 +40,6 @@ jobs:
 
       - name: Build binary
         run: dub build -q
+
+      - name: Run benchmark (smoke test)
+        run: benchmarks/run.sh --warmup=1 --iterations=3

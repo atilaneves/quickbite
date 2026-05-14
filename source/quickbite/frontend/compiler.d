@@ -78,6 +78,14 @@ final class Compiler {
         // process abort that silently kills all subsequent tests.
         fatalErrorHandler = () => true;
 
+        // Silence DMD's direct stderr printing; diagnostics are still captured
+        // in the `diagnostics` array and surfaced via thrown exceptions.
+        import dmd.console: Color;
+        import dmd.errors: DiagnosticHandler, diagnosticHandler;
+        import dmd.location: SourceLoc;
+        import core.stdc.stdarg: va_list;
+        diagnosticHandler = (const ref SourceLoc, Color, const(char)*, const(char)*, va_list, const(char)*, const(char)*) => true;
+
         global.params.useUnitTests = true;
         global.errors = 0;
         global.warnings = 0;

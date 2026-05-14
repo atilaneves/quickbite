@@ -22,30 +22,39 @@ int main(string[] args) {
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
     string[] importPaths;
+    string dubPkg;
     bool noDmd;
 
     auto info = getopt(
         args,
-        "warmup",       "untimed iterations before sampling",      &warmup,
-        "iterations",   "timed iterations per measurement",        &iterations,
-        "import-path",  "add an import search path (repeatable)",  &importPaths,
-        "no-dmd",       "omit the dmd subprocess row",             &noDmd,
+        "warmup",       "untimed iterations before sampling",          &warmup,
+        "iterations",   "timed iterations per measurement",            &iterations,
+        "import-path",  "add an import search path (repeatable)",      &importPaths,
+        "dub",          "benchmark a dub package's tests by name",     &dubPkg,
+        "no-dmd",       "omit the dmd subprocess row",                 &noDmd,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--no-dmd] <module.d> [<module.d> ...]",
+            ~ " [--import-path=P ...] [--dub=NAME] [--no-dmd]"
+            ~ " [<module.d> ...]",
             info.options,
         );
         return 0;
     }
-    if (args.length < 2) {
-        stderr.writefln(
-            "usage: %s [--import-path=P ...] <module.d> [<module.d> ...]",
-            args[0],
-        );
-        return 1;
+
+    string[] fixtures = args[1 .. $].dup;
+
+    if (dubPkg.length > 0) {
+        const dubInfo = resolveDubPkg(dubPkg);
+        importPaths ~= dubInfo.importPaths;
+        fixtures    ~= dubInfo.fixtures;
+        // dmd -run cannot link against a package's precompiled deps.
+        noDmd = true;
     }
+
+    if (fixtures.length == 0)
+        fixtures = ["tests/minicereal.d"];
 
     if (!isOptimisedBuild) {
         stderr.writeln(
@@ -54,8 +63,6 @@ int main(string[] args) {
         );
         return 1;
     }
-
-    const fixtures = args[1 .. $].idup;
 
     printRunHeader(warmup, iterations);
 
@@ -67,17 +74,23 @@ int main(string[] args) {
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (path; fixtures) {
-        const source = readText(path);
-        auto parsed = parseModule(source, importPaths);
-        auto module_ = parsed.module_;
+        const source      = readText(path);
+        const displayName = moduleDisplayName(path, importPaths);
+        try {
+            auto parsed  = parseModule(source, importPaths);
+            auto module_ = parsed.module_;
 
-        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
-            printRow(
-                path, name, warmup, iterations,
-                () => executor.runParsedTests(module_),
-            );
+            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+                auto executor = backends[name];
+                printRow(
+                    displayName, name, warmup, iterations,
+                    () => executor.runParsedTests(module_),
+                );
+            }
+        } catch (Exception e) {
+            stderr.writefln("skipping %s: %s", displayName, e.msg);
         }
+        writeln;
     }
 
     if (!noDmd) {
@@ -85,28 +98,148 @@ int main(string[] args) {
         writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
         printHeader;
         foreach (path; fixtures) {
-            const source = readText(path);
+            const source      = readText(path);
+            const displayName = moduleDisplayName(path, importPaths);
 
-            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-                auto executor = backends[name];
-                printRow(
-                    path, name, warmup, iterations,
-                    () => executor.runTests(source, importPaths),
-                );
+            try {
+                foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+                    auto executor = backends[name];
+                    printRow(
+                        displayName, name, warmup, iterations,
+                        () => executor.runTests(source, importPaths),
+                    );
+                }
+                printRow(displayName, "dmd", warmup, iterations, () => runDmd(path, importPaths));
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", displayName, e.msg);
             }
-            printRow(path, "dmd", warmup, iterations, () => runDmd(path, importPaths));
+            writeln;
         }
     }
 
     return 0;
 }
 
+string moduleDisplayName(in string path, in string[] importPaths) {
+    import std.algorithm.searching: startsWith;
+    import std.path: absolutePath, baseName, buildNormalizedPath, relativePath, stripExtension;
+    import std.string: replace;
+
+    const absPath = path.absolutePath.buildNormalizedPath;
+    foreach (ip; importPaths) {
+        const rel = absPath.relativePath(ip.absolutePath.buildNormalizedPath);
+        if (!rel.startsWith(".."))
+            return rel.stripExtension.replace("/", ".").replace("\\", ".");
+    }
+    return absPath.baseName.stripExtension;
+}
+
+struct DubInfo {
+    string[] importPaths;
+    string[] fixtures;
+}
+
+DubInfo resolveDubPkg(in string name) {
+    import std.algorithm.iteration: filter, map;
+    import std.array: array;
+    import std.algorithm.sorting: sort;
+    import std.file: dirEntries, exists, SpanMode;
+    import std.path: buildPath;
+    import std.process: Config, execute;
+    import std.string: splitLines, strip;
+
+    const pkgDir = findPkgDir(name);
+    // Prefer the unittest config so test-only deps (e.g. unit-threaded) are included.
+    auto descResult = execute(
+        ["dub", "describe", "--config=unittest", "--data=import-paths", "--data-list"],
+        null, Config.none, size_t.max,
+        pkgDir,
+    );
+    if (descResult.status != 0)
+        descResult = execute(
+            ["dub", "describe", "--data=import-paths", "--data-list"],
+            null, Config.none, size_t.max,
+            pkgDir,
+        );
+    if (descResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ descResult.output);
+
+    auto importPaths = descResult.output
+        .splitLines
+        .map!(l => l.strip)
+        .filter!(l => l.length > 0)
+        .array;
+
+    const testsDir = buildPath(pkgDir, "tests");
+    if (!testsDir.exists)
+        throw new Exception("no tests/ directory found in " ~ pkgDir);
+
+    import std.path: baseName;
+    auto fixtures = dirEntries(testsDir, "*.d", SpanMode.depth)
+        .filter!(e => e.isFile && !e.name.baseName.isTestRunnerFile)
+        .map!(e => e.name)
+        .array;
+    fixtures.sort;
+
+    return DubInfo(importPaths, fixtures);
+}
+
+bool isTestRunnerFile(in string basename) {
+    import std.string: endsWith;
+    // Exclude non-standalone files: runner entry points and package modules.
+    return basename == "main.d"
+        || basename == "package.d"
+        || basename.endsWith("_main.d");
+}
+
+string findPkgDir(in string name) {
+    import std.algorithm.iteration: filter, map;
+    import std.algorithm.sorting: sort;
+    import std.array: array;
+    import std.file: dirEntries, exists, SpanMode;
+    import std.path: baseName, buildPath, expandTilde;
+    import std.process: execute;
+    import std.string: startsWith;
+
+    const cache = expandTilde("~/.dub/packages");
+
+    // Handles both cache layouts:
+    //   new: ~/.dub/packages/<name>/<version>/<name>/
+    //   old: ~/.dub/packages/<name>-<version>/<name>/
+    string[] scan() {
+        if (!cache.exists) return [];
+        const newStyle = buildPath(cache, name);
+        if (newStyle.exists)
+            return dirEntries(newStyle, SpanMode.shallow)
+                .filter!(e => e.isDir)
+                .map!(e => buildPath(e.name, name))
+                .filter!(p => p.exists)
+                .array;
+        return dirEntries(cache, SpanMode.shallow)
+            .filter!(e => e.isDir && e.name.baseName.startsWith(name ~ "-"))
+            .map!(e => buildPath(e.name, name))
+            .filter!(p => p.exists)
+            .array;
+    }
+
+    auto found = scan;  // auto: mutable for sort and re-fetch
+    if (found.length == 0) {
+        execute(["dub", "fetch", name]);
+        found = scan;
+    }
+    if (found.length == 0)
+        throw new Exception("could not find package '" ~ name ~ "' in dub cache");
+    found.sort;
+    return found[$ - 1];
+}
+
 void printHeader() {
-    import std.stdio: writefln;
+    import std.stdio: writefln, writeln;
     writefln(
         "%-32s %-14s %10s %10s %10s",
         "fixture", "backend", "min", "median", "stddev",
     );
+    writeln;
 }
 
 void printRow(

@@ -104,6 +104,10 @@ in test helpers unless explicitly approved.
 
 Never delete test code to cause the tests to pass.
 
+Changes to the benchmark binary (`benchmarks/`) must be manually
+tested by running `benchmarks/run.sh` and verifying the output looks
+correct. A compile check alone is not sufficient.
+
 # Do nots
 
 * When you make a new mistake, add it to `ai/mistakes.md`. Only *new*
