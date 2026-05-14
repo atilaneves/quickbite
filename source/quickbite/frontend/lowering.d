@@ -1075,6 +1075,13 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto xorAssign = expression.isXorAssignExp)
+            return lowerCompoundAssignment(
+                xorAssign,
+                Operation.bitwiseXor,
+                lowerer,
+            );
+
         if (auto addAssign = expression.isAddAssignExp)
             return lowerCompoundAssignment(
                 addAssign,
@@ -3513,6 +3520,24 @@ struct BodyLowerer {
             );
         if (auto nested = assignment.e1.isOrAssignExp)
             return lowerCompoundAssignment(nested, operation, lowerer);
+        if (auto identifier = assignment.e1.isIdentifierExp) {
+            const name = identifierName(identifier);
+            if (auto destination = name in identifierTemporaries) {
+                const source = lowerExpression(assignment.e2, lowerer);
+                const result = allocateTemporary;
+                instructions ~= Instruction(BinaryOp(
+                    result,
+                    *destination,
+                    source,
+                    operation,
+                ));
+                instructions ~= Instruction(Copy(
+                    *destination,
+                    result,
+                ));
+                return *destination;
+            }
+        }
         if (variable is null)
             throw new Exception(text(
                 "Unsupported expression: ",
