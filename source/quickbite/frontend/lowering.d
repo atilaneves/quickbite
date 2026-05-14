@@ -746,6 +746,9 @@ struct BodyLowerer {
         if (auto dot = expression.isDotVarExp)
             return lowerStructFieldRead(dot, lowerer);
 
+        if (auto literal = expression.isStructLiteralExp)
+            return lowerStructLiteral(literal, lowerer);
+
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
             instructions ~= Instruction(Assert_(condition));
@@ -1411,6 +1414,37 @@ struct BodyLowerer {
             } else
                 continue;
 
+            instructions ~= Instruction(StructSet(
+                destination,
+                declarationName(field),
+                value,
+            ));
+        }
+
+        return destination;
+    }
+
+    uint lowerStructLiteral(
+        imported!"dmd.expression".StructLiteralExp literal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructNew, StructSet;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructNew(destination));
+
+        if (literal.elements is null)
+            return destination;
+
+        foreach (index, element; structLiteralElements(literal)) {
+            if (element is null)
+                continue;
+
+            auto field = structLiteralField(literal, index);
+            if (field is null)
+                continue;
+
+            const value = lowerExpression(element, lowerer);
             instructions ~= Instruction(StructSet(
                 destination,
                 declarationName(field),
@@ -3026,6 +3060,22 @@ private ref auto arrayInitializerValues(
     imported!"dmd.init".ArrayInitializer initializer,
 ) @trusted {
     return initializer.value[];
+}
+
+private ref auto structLiteralElements(
+    imported!"dmd.expression".StructLiteralExp literal,
+) @trusted {
+    // Caller checked `elements` for null; DMD owns the array.
+    return *literal.elements;
+}
+
+private imported!"dmd.declaration".VarDeclaration structLiteralField(
+    imported!"dmd.expression".StructLiteralExp literal,
+    in size_t index,
+) @trusted {
+    if (literal.sd is null || index >= literal.sd.fields.length)
+        return null;
+    return literal.sd.fields[index];
 }
 
 private imported!"dmd.expression".Expression[] assocArrayLiteralKeys(
