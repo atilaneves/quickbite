@@ -986,6 +986,9 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto positive = expression.isUAddExp)
+            return lowerExpression(positive.e1, lowerer);
+
         if (auto not = expression.isNotExp) {
             const value = lowerExpression(not.e1, lowerer);
             const destination = allocateTemporary;
