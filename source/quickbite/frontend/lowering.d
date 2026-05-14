@@ -899,6 +899,9 @@ struct BodyLowerer {
         if (auto declaration = expression.isDeclarationExp)
             return lowerDeclaration(declaration, lowerer);
 
+        if (auto construct = expression.isConstructExp)
+            return lowerAssignment(construct, lowerer);
+
         if (auto blit = expression.isBlitExp)
             return lowerBlitAssignment(blit, lowerer);
 
