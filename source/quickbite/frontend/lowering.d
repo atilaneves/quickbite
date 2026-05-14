@@ -2974,6 +2974,15 @@ struct BodyLowerer {
             return value;
         }
 
+        if (typeIsAssociativeArray(variable.type)) {
+            import quickbite.ir.instruction: AssocArrayLiteral, Instruction;
+
+            const value = allocateTemporary;
+            instructions ~= Instruction(AssocArrayLiteral(value, [], []));
+            rememberLocalTemporary(variable, value);
+            return value;
+        }
+
         import quickbite.ir.instruction: ConstInt, Instruction;
 
         const value = allocateTemporary;
