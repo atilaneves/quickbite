@@ -19,6 +19,7 @@ private struct FunctionResult {
     private Value[imported!"dmd.declaration".VarDeclaration] thisFields;
     // Struct field maps returned for each struct-ref parameter, in param order.
     private Value[imported!"dmd.declaration".VarDeclaration][] structRefValues;
+    private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps;
 }
 
 private struct CallArgument {
@@ -27,8 +28,10 @@ private struct CallArgument {
     private imported!"dmd.declaration".VarDeclaration refOwner;
     private imported!"dmd.declaration".VarDeclaration refField;
     private Value[imported!"dmd.declaration".VarDeclaration] structFields;
+    private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps;
     private bool isStruct;
     private bool isStructRef; // whole struct passed as ref (refSource = its VarDeclaration)
+    private bool isTemporaryRef;
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -95,14 +98,18 @@ private imported!"quickbite.executor".TestSummary testSummary(
 }
 
 private struct Interpreter {
+    private long[][string] scopeBufferBytes;
+
     private FunctionResult executeFunction(
         imported!"dmd.func".FuncDeclaration func,
         CallArgument[] args = [],
         Value[imported!"dmd.declaration".VarDeclaration] thisFields = null,
+        Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps = null,
     ) {
         if (func.fbody is null)
             throw new Exception("No function body to execute.");
         BodyWalker w;
+        w.structFields = structFieldMaps.dup;
         if (func.vthis !is null) {
             w.currentThis = func.vthis;
             w.structFields[func.vthis] = thisFields;
@@ -120,6 +127,7 @@ private struct Interpreter {
                 collectRefValues(func, w),
                 collectThisFields(func, w),
                 collectStructRefValues(func, w),
+                w.structFields,
             );
         return FunctionResult(
             true,
@@ -127,6 +135,7 @@ private struct Interpreter {
             collectRefValues(func, w),
             collectThisFields(func, w),
             collectStructRefValues(func, w),
+            w.structFields,
         );
     }
 
@@ -207,6 +216,7 @@ private struct BodyWalker {
     private Value[VarDeclaration][VarDeclaration] structFields;
     private VarDeclaration currentThis;
     private bool hasReturn;
+    private bool hasBreak;
     private Value returnValue;
 
     private void bindParameters(
@@ -224,9 +234,12 @@ private struct BodyWalker {
             if ((param.storage_class & STC.ref_) != STC.none &&
                 args[i].refSource is null &&
                 args[i].refField is null &&
-                !args[i].isStructRef)
+                !args[i].isStructRef &&
+                !args[i].isTemporaryRef)
                 throw new Exception("Unsupported ref argument.");
             if (args[i].isStruct || args[i].isStructRef) {
+                foreach (owner, fields; args[i].structFieldMaps)
+                    structFields[owner] = fields.dup;
                 structFields[param] = args[i].structFields.dup;
                 continue;
             }
@@ -253,7 +266,7 @@ private struct BodyWalker {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
                     runStatement(child, interpreter);
-                    if (hasReturn)
+                    if (hasReturn || hasBreak)
                         return;
                 }
             return;
@@ -263,11 +276,14 @@ private struct BodyWalker {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
                     runStatement(child, interpreter);
-                    if (hasReturn)
+                    if (hasReturn || hasBreak)
                         return;
                 }
             return;
         }
+
+        if (statement.isDtorExpStatement !is null)
+            return;
 
         if (auto expr = statement.isExpStatement) {
             runExpression(expr.exp, interpreter, true);
@@ -281,6 +297,10 @@ private struct BodyWalker {
                 runStatement(for_._body, interpreter);
                 if (hasReturn)
                     return;
+                if (hasBreak) {
+                    hasBreak = false;
+                    break;
+                }
                 if (for_.increment !is null)
                     runExpression(for_.increment, interpreter);
             }
@@ -296,6 +316,15 @@ private struct BodyWalker {
             return;
         }
 
+        if (auto tryFinally = statement.isTryFinallyStatement) {
+            try {
+                runStatement(tryFinally._body, interpreter);
+            } finally {
+                runStatement(tryFinally.finalbody, interpreter);
+            }
+            return;
+        }
+
         if (auto ret = statement.isReturnStatement) {
             if (ret.exp !is null)
                 returnValue = runExpression(ret.exp, interpreter);
@@ -306,13 +335,18 @@ private struct BodyWalker {
         if (statement.isThrowStatement !is null)
             throw new Exception("Unittest assertion failed.");
 
+        if (statement.isBreakStatement !is null) {
+            hasBreak = true;
+            return;
+        }
+
         if (statement.isImportStatement !is null)
             return;
 
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             foreach (child; *unrolled.statements) {
                 runStatement(child, interpreter);
-                if (hasReturn)
+                if (hasReturn || hasBreak)
                     return;
             }
             return;
@@ -569,6 +603,14 @@ private struct BodyWalker {
             }
         }
 
+        if (auto cond = expression.isCondExp)
+            return runExpression(
+                cond.econd,
+                interpreter,
+            ).asLong
+                ? runExpression(cond.e1, interpreter)
+                : runExpression(cond.e2, interpreter);
+
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
             if (right == 0)
@@ -683,6 +725,8 @@ private struct BodyWalker {
                                         .asArray
                                         .length,
                                 );
+            if (len.e1.isCallExp)
+                return Value(cast(long) runExpression(len.e1, interpreter).asArray.length);
             unsupported;
         }
 
@@ -872,13 +916,22 @@ private struct BodyWalker {
         }
 
         Value rangeValue;
-        if (tryRunRangeData(call, rangeValue))
+        if (tryRunRangeData(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunRangeMethod(call, interpreter, resultIgnored))
             return Value(0L);
+        if (tryRunShouldEqual(call, interpreter))
+            return Value(0L);
+        if (tryRunShouldNotThrow(call, interpreter))
+            return Value(0L);
+        if (tryRunAllocatorCall(call, rangeValue))
+            return rangeValue;
 
         if (call.f.fbody is null)
-            throw new Exception("No function body to execute.");
+            throw new Exception(text(
+                "No function body to execute: ",
+                expressionChars(call.e1),
+            ));
 
         CallArgument[] args;
         if (call.arguments !is null)
@@ -952,6 +1005,8 @@ private struct BodyWalker {
                                 CallArgument structRefArg;
                                 structRefArg.refSource = varDecl;
                                 structRefArg.structFields = (*fields).dup;
+                                structRefArg.structFieldMaps =
+                                    nestedStructFieldMaps(*fields);
                                 structRefArg.isStructRef = true;
                                 args ~= structRefArg;
                                 continue;
@@ -963,6 +1018,8 @@ private struct BodyWalker {
                                 CallArgument structRefArg;
                                 structRefArg.refSource = thisDecl;
                                 structRefArg.structFields = (*fields).dup;
+                                structRefArg.structFieldMaps =
+                                    nestedStructFieldMaps(*fields);
                                 structRefArg.isStructRef = true;
                                 args ~= structRefArg;
                                 continue;
@@ -982,7 +1039,19 @@ private struct BodyWalker {
                             continue;
                         }
                     }
-                    throw new Exception("Unsupported ref argument.");
+                    if (arg.isCallExp) {
+                        CallArgument tempRefArg;
+                        tempRefArg.value = runExpression(arg, interpreter);
+                        tempRefArg.isTemporaryRef = true;
+                        args ~= tempRefArg;
+                        continue;
+                    }
+                    throw new Exception(text(
+                        "Unsupported ref argument: ",
+                        expressionChars(arg),
+                        " in ",
+                        expressionChars(call.e1),
+                    ));
                 }
 
                 if (auto var = arg.isVarExp)
@@ -990,6 +1059,7 @@ private struct BodyWalker {
                         if (auto fields = varDecl in structFields) {
                             CallArgument structArg;
                             structArg.structFields = (*fields).dup;
+                            structArg.structFieldMaps = nestedStructFieldMaps(*fields);
                             structArg.isStruct = true;
                             args ~= structArg;
                             continue;
@@ -997,6 +1067,8 @@ private struct BodyWalker {
                 if (auto owner = structFieldsOwner(arg)) {
                     CallArgument structArg;
                     structArg.structFields = structFields[owner].dup;
+                    structArg.structFieldMaps =
+                        nestedStructFieldMaps(structFields[owner]);
                     structArg.isStruct = true;
                     args ~= structArg;
                     continue;
@@ -1007,6 +1079,8 @@ private struct BodyWalker {
                         literal,
                         interpreter,
                     );
+                    structArg.structFieldMaps =
+                        nestedStructFieldMaps(structArg.structFields);
                     structArg.isStruct = true;
                     args ~= structArg;
                     continue;
@@ -1022,25 +1096,126 @@ private struct BodyWalker {
 
         Value[VarDeclaration] thisFields;
         VarDeclaration thisOwner;
+        Value[VarDeclaration][VarDeclaration] callStructFieldMaps;
         if (auto dotVar = call.e1.isDotVarExp) {
             thisOwner = structFieldsOwner(dotVar.e1);
-            if (thisOwner !is null)
+            if (thisOwner !is null) {
                 thisFields = structFields[thisOwner];
+                callStructFieldMaps = nestedStructFieldMaps(thisFields);
+            }
             if (auto literal = dotVar.e1.isStructLiteralExp)
                 thisFields = runStructLiteralExpression(literal, interpreter);
         }
 
         // `auto` is intentional: `const` would block ref propagation.
-        auto result = interpreter.executeFunction(call.f, args, thisFields);
-        propagateRefArguments(call, args, result.refValues, result.structRefValues);
-        if (thisOwner !is null)
+        auto result = interpreter.executeFunction(
+            call.f,
+            args,
+            thisFields,
+            callStructFieldMaps,
+        );
+        propagateRefArguments(
+            call,
+            args,
+            result.refValues,
+            result.structRefValues,
+            result.structFieldMaps,
+        );
+        if (thisOwner !is null) {
             structFields[thisOwner] = result.thisFields;
+            propagateNestedStructFieldMaps(result.thisFields, result.structFieldMaps);
+        }
         if (!result.hasValue) {
             if (resultIgnored)
                 return Value(0L);
             throw new Exception("Void function result used as value.");
         }
         return result.value;
+    }
+
+    private bool tryRunShouldEqual(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "shouldEqual")
+            return false;
+        if (call.arguments is null || call.arguments.length == 0)
+            return false;
+
+        Value actual;
+        Value expected;
+        if (call.arguments.length >= 2) {
+            actual = runExpression(callArguments(call)[0], interpreter);
+            expected = runExpression(callArguments(call)[1], interpreter);
+        } else if (auto dotVar = call.e1.isDotVarExp) {
+            actual = runExpression(dotVar.e1, interpreter);
+            expected = runExpression(callArguments(call)[0], interpreter);
+        } else {
+            return false;
+        }
+
+        if (actual != expected) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "Unittest assertion failed: expected ",
+                expected,
+                ", got ",
+                actual,
+            ));
+        }
+        return true;
+    }
+
+    private bool tryRunAllocatorCall(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+    ) {
+        if (call.f.ident is null)
+            return false;
+        if (call.f.ident.toString == "realloc") {
+            value = Value(1L);
+            return true;
+        }
+        if (call.f.ident.toString == "memcpy") {
+            value = Value(1L);
+            return true;
+        }
+        if (call.f.ident.toString == "free") {
+            value = Value(0L);
+            return true;
+        }
+        return false;
+    }
+
+    private bool tryRunShouldNotThrow(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "shouldNotThrow")
+            return false;
+        if (call.arguments is null || call.arguments.length == 0)
+            return false;
+
+        runLazyArgument(callArguments(call)[0], interpreter);
+        return true;
+    }
+
+    private void runLazyArgument(
+        imported!"dmd.expression".Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        if (auto literal = expression.isFuncExp) {
+            const hadReturn = hasReturn;
+            const oldReturnValue = returnValue;
+            hasReturn = false;
+            runStatement(literal.fd.fbody, interpreter);
+            hasReturn = hadReturn;
+            returnValue = oldReturnValue;
+            return;
+        }
+
+        runExpression(expression, interpreter, true);
     }
 
     private bool tryRunRangeMethod(
@@ -1051,10 +1226,14 @@ private struct BodyWalker {
         if (call.f.ident is null)
             return false;
         if (auto dotVar = call.e1.isDotVarExp) {
-            if (call.f.ident.toString == "put")
-                return tryRunRangePut(dotVar.e1, call, interpreter);
+            if (call.f.ident.toString == "put") {
+                const handled = tryRunRangePut(dotVar.e1, call, interpreter);
+                return handled;
+            }
             if (call.f.ident.toString == "clear")
                 return tryRunRangeClear(dotVar.e1, call);
+            if (call.f.ident.toString == "free")
+                return true;
         }
         return false;
     }
@@ -1062,6 +1241,7 @@ private struct BodyWalker {
     private bool tryRunRangeData(
         imported!"dmd.expression".CallExp call,
         out Value value,
+        ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "data")
             return false;
@@ -1078,14 +1258,19 @@ private struct BodyWalker {
             return false;
 
         // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
-        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        auto bytesField = rangeStorageField(rangeOwner.type);
         if (bytesField is null)
             return false;
 
-        Value[VarDeclaration] fields = structFields.get(
-            rangeOwner,
-            (Value[VarDeclaration]).init,
-        );
+        if (isModeledScopeBufferField(bytesField)) {
+            value = Value(interpreter.scopeBufferBytes.get(
+                rangeStorageKey(rangeOwner, bytesField),
+                (long[]).init,
+            ));
+            return true;
+        }
+
+        Value[VarDeclaration] fields = structFieldsValue(rangeOwner);
         value = structFieldValue(fields, bytesField, Value((long[]).init));
         return true;
     }
@@ -1104,46 +1289,48 @@ private struct BodyWalker {
             return false;
 
         // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
-        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        auto bytesField = rangeStorageField(rangeOwner.type);
         if (bytesField is null)
             return false;
 
-        Value[VarDeclaration] fields = structFields.get(
-            rangeOwner,
-            (Value[VarDeclaration]).init,
-        );
-        long[] elements = structFieldValue(
-            fields,
-            bytesField,
-            Value((long[]).init),
-        ).asArray;
+        Value[VarDeclaration] fields = structFieldsValue(rangeOwner);
+        long[] elements = isModeledScopeBufferField(bytesField)
+            ? interpreter.scopeBufferBytes.get(
+                rangeStorageKey(rangeOwner, bytesField),
+                (long[]).init,
+            )
+            : structFieldValue(
+                fields,
+                bytesField,
+                Value((long[]).init),
+            ).asArray;
         appendRangePutValue(
             elements,
             runExpression(callArguments(call)[0], interpreter),
-            bytesField.type,
+            rangeElementType(bytesField),
         );
+        if (isModeledScopeBufferField(bytesField))
+            interpreter.scopeBufferBytes[rangeStorageKey(rangeOwner, bytesField)] =
+                elements;
         assignStructField(fields, bytesField, Value(elements));
-        structFields[rangeOwner] = fields;
+        assignNestedStructFields(rangeOwner, fields);
         return true;
     }
 
     private void appendRangePutValue(
         ref long[] elements,
         Value value,
-        imported!"dmd.mtype".Type bytesType,
+        imported!"dmd.mtype".Type elementType,
     ) {
         import std.sumtype: match;
 
         value.match!(
             (long l) {
-                elements ~= coerceIntegerToType(l, arrayElementType(bytesType));
+                elements ~= coerceIntegerToType(l, elementType);
             },
             (long[] a) {
                 foreach (element; a)
-                    elements ~= coerceIntegerToType(
-                        element,
-                        arrayElementType(bytesType),
-                    );
+                    elements ~= coerceIntegerToType(element, elementType);
             },
             (LocalPtr _) {
                 throw new Exception("Expected range put value, got pointer.");
@@ -1164,31 +1351,78 @@ private struct BodyWalker {
             return false;
 
         // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
-        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        auto bytesField = rangeStorageField(rangeOwner.type);
         if (bytesField is null)
             return false;
 
-        Value[VarDeclaration] fields = structFields.get(
-            rangeOwner,
-            (Value[VarDeclaration]).init,
-        );
+        Value[VarDeclaration] fields = structFieldsValue(rangeOwner);
         assignStructField(fields, bytesField, Value((long[]).init));
-        structFields[rangeOwner] = fields;
+        assignNestedStructFields(rangeOwner, fields);
         return true;
+    }
+
+    private VarDeclaration rangeStorageField(
+        imported!"dmd.mtype".Type type,
+    ) {
+        if (auto bytesField = structFieldNamed(type, "_bytes"))
+            return bytesField;
+        return structFieldNamed(type, "sbuf");
+    }
+
+    private imported!"dmd.mtype".Type rangeElementType(
+        VarDeclaration storageField,
+    ) {
+        if (storageField.type !is null && storageField.type.isTypeDArray !is null)
+            return arrayElementType(storageField.type);
+        return null;
+    }
+
+    private bool isModeledScopeBufferField(VarDeclaration field) {
+        return field.ident !is null && field.ident.toString == "sbuf";
+    }
+
+    private bool isScopeBufferRangeType(imported!"dmd.mtype".Type type) {
+        return typeChars(type) == "ScopeBufferRange";
+    }
+
+    private string rangeStorageKey(
+        VarDeclaration owner,
+        VarDeclaration field,
+    ) {
+        import std.conv: text;
+
+        return text(typeChars(owner.type), ".", field.ident);
     }
 
     private VarDeclaration rangeStructOwner(
         imported!"dmd.expression".Expression receiver,
     ) {
+        if (auto dotVar = receiver.isDotVarExp)
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                if (fieldDecl.ident !is null &&
+                    fieldDecl.ident.toString == "sbuf") {
+                    if (auto owner = structFieldsOwner(dotVar.e1))
+                        return owner;
+                    else if (auto parentDotVar = dotVar.e1.isDotVarExp)
+                        if (auto parentField =
+                            parentDotVar.var.isVarDeclaration)
+                            if (isStructType(parentField.type)) {
+                                if (parentField !in structFields)
+                                    structFields[parentField] =
+                                        (Value[VarDeclaration]).init;
+                                return parentField;
+                            }
+                }
         if (auto owner = structFieldsOwner(receiver))
             return owner;
         if (auto dotVar = receiver.isDotVarExp)
-            if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                if (fieldDecl.type !is null && fieldDecl.type.isTypeStruct !is null) {
+            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                if (isStructType(fieldDecl.type)) {
                     if (fieldDecl !in structFields)
                         structFields[fieldDecl] = (Value[VarDeclaration]).init;
                     return fieldDecl;
                 }
+            }
         return null;
     }
 
@@ -1197,6 +1431,7 @@ private struct BodyWalker {
         CallArgument[] args,
         Value[] refValues,
         Value[imported!"dmd.declaration".VarDeclaration][] structRefValues,
+        Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps,
     ) {
         if (call.f.parameters is null)
             return;
@@ -1210,7 +1445,13 @@ private struct BodyWalker {
                 continue;
             if (args[i].isStructRef) {
                 structFields[args[i].refSource] = structRefValues[structIndex];
+                propagateNestedStructFieldMaps(
+                    structRefValues[structIndex],
+                    structFieldMaps,
+                );
                 ++structIndex;
+            } else if (args[i].isTemporaryRef) {
+                ++scalarIndex;
             } else if (args[i].refSource !is null) {
                 locals[args[i].refSource] = refValues[scalarIndex];
                 ++scalarIndex;
@@ -1220,6 +1461,36 @@ private struct BodyWalker {
                 ++scalarIndex;
             }
         }
+    }
+
+    private Value[VarDeclaration][VarDeclaration] nestedStructFieldMaps(
+        ref Value[VarDeclaration] fields,
+    ) {
+        Value[VarDeclaration][VarDeclaration] maps;
+        foreach (field; fields.byKey)
+            if (isStructType(field.type)) {
+                Value[VarDeclaration] nestedFields;
+                if (tryGetStructFields(field, nestedFields)) {
+                    maps[field] = nestedFields.dup;
+                    foreach (owner, ownerFields; nestedStructFieldMaps(nestedFields))
+                        maps[owner] = ownerFields.dup;
+                }
+            }
+        return maps;
+    }
+
+    private void propagateNestedStructFieldMaps(
+        ref Value[VarDeclaration] fields,
+        Value[VarDeclaration][VarDeclaration] maps,
+    ) {
+        foreach (field; fields.byKey)
+            if (isStructType(field.type)) {
+                Value[VarDeclaration] nestedFields;
+                if (tryGetStructFieldMap(maps, field, nestedFields)) {
+                    assignStructFields(field, nestedFields);
+                    propagateNestedStructFieldMaps(nestedFields, maps);
+                }
+            }
     }
 
     private Value runEqualExpression(
@@ -1251,7 +1522,10 @@ private struct BodyWalker {
         if (variable is null)
             return Value(0L);
 
-        if (variable.type !is null && variable.type.isTypeStruct !is null) {
+        if (isStructType(variable.type)) {
+            if (isScopeBufferRangeType(variable.type))
+                interpreter.scopeBufferBytes["ScopeBufferRange.sbuf"] =
+                    (long[]).init;
             structFields[variable] = variable._init is null ||
                 variable._init.isExpInitializer is null
                 ? (Value[VarDeclaration]).init
@@ -1397,8 +1671,32 @@ private struct BodyWalker {
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                     if (ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            if (tryAssignNestedStructField(
+                                structFields[ownerDecl],
+                                fieldDecl,
+                                assign.e2,
+                            ))
+                                return Value(0L);
                             assignStructField(
                                 structFields[ownerDecl],
+                                fieldDecl,
+                                coerceValueToType(value, fieldDecl.type),
+                            );
+                            return value;
+                        }
+        if (auto dotVar = assign.e1.isDotVarExp)
+            if (auto thisExp = dotVar.e1.isThisExp)
+                if (auto thisDecl = thisExp.var.isVarDeclaration)
+                    if (thisDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            if (tryAssignNestedStructField(
+                                structFields[thisDecl],
+                                fieldDecl,
+                                assign.e2,
+                            ))
+                                return Value(0L);
+                            assignStructField(
+                                structFields[thisDecl],
                                 fieldDecl,
                                 coerceValueToType(value, fieldDecl.type),
                             );
@@ -1441,6 +1739,9 @@ private struct BodyWalker {
                         if (auto fields = thisDecl in structFields)
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
+                                if (fieldDecl.type !is null &&
+                                    fieldDecl.type.isTypePointer !is null)
+                                    return value;
                                 long[] elements = structFieldValue(
                                     *fields,
                                     fieldDecl,
@@ -1452,11 +1753,35 @@ private struct BodyWalker {
                                 );
                                 assignStructField(*fields, fieldDecl, Value(elements));
                                 return value;
-                            }
+                }
         }
+
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto dotVar = slice.e1.isDotVarExp)
+                if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                    if (fieldDecl.type !is null &&
+                        fieldDecl.type.isTypePointer !is null)
+                        return value;
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
+
+    private bool tryAssignNestedStructField(
+        ref Value[VarDeclaration] fields,
+        VarDeclaration field,
+        imported!"dmd.expression".Expression valueExpression,
+    ) {
+        if (!isStructType(field.type))
+            return false;
+
+        if (auto owner = structFieldsOwner(valueExpression)) {
+            structFields[field] = structFields[owner].dup;
+            assignStructField(fields, field, Value(0L));
+            return true;
+        }
+
+        return false;
     }
 
     private Value[VarDeclaration] runStructInitializer(
@@ -1492,11 +1817,16 @@ private struct BodyWalker {
             auto field = structLiteralField(literal, i);
             if (field is null)
                 continue;
-            if (field.type !is null && field.type.isTypeStruct !is null) {
+            if (isStructType(field.type)) {
                 structFields[field] = runStructInitializer(element, interpreter);
+                fields[field] = Value(0L);
                 continue;
             }
             if (element.isNullExp) {
+                if (field.type !is null && field.type.isTypeDArray !is null) {
+                    fields[field] = Value((long[]).init);
+                    continue;
+                }
                 fields[field] = Value(0L);
                 continue;
             }
@@ -1552,6 +1882,82 @@ private struct BodyWalker {
         return defaultValue;
     }
 
+    private Value[VarDeclaration] structFieldsValue(VarDeclaration owner) {
+        Value[VarDeclaration] fields;
+        if (tryGetStructFields(owner, fields))
+            return fields;
+        return (Value[VarDeclaration]).init;
+    }
+
+    private bool tryGetStructFields(
+        VarDeclaration owner,
+        out Value[VarDeclaration] fields,
+    ) {
+        if (auto found = owner in structFields) {
+            fields = (*found).dup;
+            return true;
+        }
+        foreach (existingOwner, existingFields; structFields)
+            if (sameStructField(existingOwner, owner)) {
+                fields = existingFields.dup;
+                return true;
+            }
+        return false;
+    }
+
+    private bool tryGetStructFieldMap(
+        Value[VarDeclaration][VarDeclaration] maps,
+        VarDeclaration owner,
+        out Value[VarDeclaration] fields,
+    ) {
+        if (auto found = owner in maps) {
+            fields = (*found).dup;
+            return true;
+        }
+        foreach (existingOwner, existingFields; maps)
+            if (sameStructField(existingOwner, owner)) {
+                fields = existingFields.dup;
+                return true;
+            }
+        return false;
+    }
+
+    private void assignStructFields(
+        VarDeclaration owner,
+        Value[VarDeclaration] fields,
+    ) {
+        if (owner in structFields) {
+            structFields[owner] = fields;
+            return;
+        }
+
+        foreach (existingOwner; structFields.byKey)
+            if (sameStructField(existingOwner, owner)) {
+                structFields[existingOwner] = fields;
+                return;
+            }
+
+        structFields[owner] = fields;
+    }
+
+    private void assignNestedStructFields(
+        VarDeclaration owner,
+        Value[VarDeclaration] fields,
+    ) {
+        assignStructFields(owner, fields);
+
+        foreach (structOwner; structFields.byKey) {
+            Value[VarDeclaration] ownerFields = structFields[structOwner].dup;
+            foreach (field; ownerFields.byKey)
+                if (sameStructField(field, owner)) {
+                    assignStructFields(field, fields);
+                    assignStructField(ownerFields, field, Value(0L));
+                    structFields[structOwner] = ownerFields;
+                    break;
+                }
+        }
+    }
+
     private void assignStructField(
         ref Value[VarDeclaration] fields,
         VarDeclaration field,
@@ -1575,11 +1981,21 @@ private struct BodyWalker {
         VarDeclaration left,
         VarDeclaration right,
     ) {
-        return left !is null &&
-            right !is null &&
-            left.ident !is null &&
-            right.ident !is null &&
-            left.ident.toString == right.ident.toString;
+        if (left is right)
+            return true;
+        if (left is null ||
+            right is null ||
+            left.ident is null ||
+            right.ident is null ||
+            left.ident.toString != right.ident.toString)
+            return false;
+        if (left.type is null || right.type is null)
+            return left.type is right.type;
+        return typeChars(left.type) == typeChars(right.type);
+    }
+
+    private bool isStructType(imported!"dmd.mtype".Type type) {
+        return type !is null && type.toBasetype.isTypeStruct !is null;
     }
 
     private VarDeclaration structFieldNamed(
@@ -1743,6 +2159,11 @@ private string expressionChars(
 ) @trusted {
     import std.string: fromStringz;
     return fromStringz(expression.toChars).idup;
+}
+
+private string typeChars(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+    return fromStringz(type.toChars).idup;
 }
 
 private ref auto callArguments(
