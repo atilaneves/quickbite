@@ -711,6 +711,15 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto real_ = expression.isRealExp) {
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ConstInt(
+                destination,
+                realIntegerValue(real_),
+            ));
+            return destination;
+        }
+
         if (expression.isNullExp) {
             const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(destination, 0));
@@ -4318,6 +4327,10 @@ struct BodyLowerer {
 
 private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted {
     return integer.getInteger();
+}
+
+private long realIntegerValue(imported!"dmd.expression".RealExp real_) @trusted {
+    return real_.toInteger();
 }
 
 private imported!"dmd.expression".Expression[] arrayExpressionArguments(
