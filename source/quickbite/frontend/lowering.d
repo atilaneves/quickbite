@@ -3765,7 +3765,9 @@ struct BodyLowerer {
             AssocArrayValuePointer, Instruction;
 
         const array = lowerExpression(index.e1, lowerer);
+        dollarArrays ~= array;
         const indexValue = lowerExpression(index.e2, lowerer);
+        dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
         const destination = allocateTemporary;
         if (typeIsAssociativeArray(index.e1.type)) {
             if (typeIsPointer(index.type)) {
