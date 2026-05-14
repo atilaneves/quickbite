@@ -57,3 +57,20 @@ public void runTests(
             return;
     }
 }
+
+public imported!"quickbite.executor".TestSummary runTestSummary(
+    in string source,
+    in ExecutorBackend backend = ExecutorBackend.ir,
+) {
+    final switch (backend) {
+        case ExecutorBackend.ir:
+            import quickbite.backends.ir: IrExecutor;
+            return (new IrExecutor).runTestSummary(source);
+        case ExecutorBackend.treeWalking:
+            import quickbite.backends.tree_walking: TreeWalkingExecutor;
+            return (new TreeWalkingExecutor).runTestSummary(source);
+        case ExecutorBackend.dmdCtfe:
+            import quickbite.backends.dmd_ctfe: DmdCtfe;
+            return (new DmdCtfe).runTestSummary(source);
+    }
+}

@@ -2,6 +2,12 @@ module quickbite.executor;
 
 private:
 
+public struct TestSummary {
+    public size_t total;
+    public size_t passed;
+    public size_t failed;
+}
+
 public interface Executor {
     public void runTests(in string source);
     public void runTests(in string source, in string[] importPaths);

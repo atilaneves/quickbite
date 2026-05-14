@@ -23,22 +23,61 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
         const loweredModule = lowerModule(module_);
         executeUnitTests(loweredModule);
     }
+
+    public imported!"quickbite.executor".TestSummary runTestSummary(
+        in string source,
+    ) {
+        import quickbite.frontend.compiler: lowerModule, parseModule;
+
+        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
+        auto parsed = parseModule(source);
+        const loweredModule = lowerModule(parsed.module_);
+        return testSummary(loweredModule);
+    }
 }
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (test; module_.tests) {
-        long[][] arrays;
-        long[string][] structs;
-        executeInstructions(
-            module_,
-            test.instructions,
-            test.numTemporaries,
-            0,
-            [],
-            arrays,
-            structs,
-        );
+        executeUnitTest(module_, test);
     }
+}
+
+private imported!"quickbite.executor".TestSummary testSummary(
+    in imported!"quickbite.ir.module_".Module module_,
+) @safe {
+    import quickbite.executor: TestSummary;
+
+    TestSummary summary;
+    foreach (test; module_.tests) {
+        ++summary.total;
+        try {
+            executeUnitTest(module_, test);
+            ++summary.passed;
+        } catch (Exception) {
+            ++summary.failed;
+        }
+    }
+
+    return summary;
+}
+
+private void executeUnitTest(
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.test".Test test,
+) @safe pure {
+    long[][] arrays;
+    long[string][] structs;
+    AssocArray[] assocArrays;
+    executeInstructions(
+        module_,
+        test.instructions,
+        test.numTemporaries,
+        0,
+        [],
+        arrays,
+        structs,
+        assocArrays,
+    );
 }
 
 long executeFunction(
@@ -48,6 +87,7 @@ long executeFunction(
     in uint[] argumentIndices,
     ref long[][] arrays,
     ref long[string][] structs,
+    ref AssocArray[] assocArrays,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -63,6 +103,7 @@ long executeFunction(
                 argumentIndices,
                 arrays,
                 structs,
+                assocArrays,
             );
     }
 
@@ -80,6 +121,7 @@ long executeFunctionBody(
     in uint[] argumentIndices,
     ref long[][] arrays,
     ref long[string][] structs,
+    ref AssocArray[] assocArrays,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
     ExecutionResult result = executeInstructions(
@@ -90,6 +132,7 @@ long executeFunctionBody(
         arguments,
         arrays,
         structs,
+        assocArrays,
     );
     writeRefArguments(
         result.temporaries,
@@ -112,6 +155,11 @@ struct ExecutionResult {
     uint returnValue;
 }
 
+struct AssocArray {
+    long[] keys;
+    long[] values;
+}
+
 ExecutionResult executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
@@ -120,6 +168,7 @@ ExecutionResult executeInstructions(
     in long[] arguments = [],
     ref long[][] arrays,
     ref long[string][] structs,
+    ref AssocArray[] assocArrays,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
@@ -135,6 +184,7 @@ ExecutionResult executeInstructions(
             temporaries,
             arrays,
             structs,
+            assocArrays,
         );
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -161,12 +211,15 @@ InstructionEffect executeInstruction(
     ref long[] temporaries,
     ref long[][] arrays,
     ref long[string][] structs,
+    ref AssocArray[] assocArrays,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayCopy, ArrayEqual,
-        ArrayIndex, ArrayLength, ArrayLiteral, ArraySet, ArraySlice, Assert_,
-        BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
-        ReturnValue, ReturnVoid, Select, StructGet, StructNew, StructSet,
-        UnaryOp;
+    import quickbite.ir.instruction: ArrayAppend, ArrayConcat, ArrayCopy, ArrayEqual,
+        ArrayIndex, ArrayLength, ArrayLiteral, ArraySet, ArraySetLength,
+        ArraySlice,
+        AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
+        AssocArraySet, AssocArrayValues, Assert_, BinaryOp, Call, CastInt,
+        ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue, ReturnValue, ReturnVoid,
+        Select, StructGet, StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -184,6 +237,7 @@ InstructionEffect executeInstruction(
                     instruction.arguments,
                     arrays,
                     structs,
+                    assocArrays,
                 );
             return nextInstruction;
         },
@@ -260,6 +314,57 @@ InstructionEffect executeInstruction(
                 cast(long) (arrays.length - 1);
             return nextInstruction;
         },
+        (const AssocArrayLiteral instruction) {
+            AssocArray values;
+            foreach (key; instruction.keys)
+                values.keys ~= readTemporaryValue(temporaries, key);
+            foreach (value; instruction.values)
+                values.values ~= readTemporaryValue(temporaries, value);
+
+            assocArrays ~= values;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (assocArrays.length - 1);
+            return nextInstruction;
+        },
+        (AssocArrayLength instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) assocArrays[
+                    assocArrayIndex(temporaries, instruction.array)
+                ].keys.length;
+            return nextInstruction;
+        },
+        (AssocArrayKeys instruction) {
+            arrays ~= assocArrays[
+                assocArrayIndex(temporaries, instruction.array)
+            ].keys;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (AssocArrayValues instruction) {
+            arrays ~= assocArrays[
+                assocArrayIndex(temporaries, instruction.array)
+            ].values;
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
+            return nextInstruction;
+        },
+        (AssocArrayIndex instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                assocArrayValue(
+                    assocArrays[assocArrayIndex(temporaries, instruction.array)],
+                    readTemporaryValue(temporaries, instruction.key),
+                );
+            return nextInstruction;
+        },
+        (AssocArraySet instruction) {
+            writeAssocArrayValue(
+                assocArrays[assocArrayIndex(temporaries, instruction.array)],
+                readTemporaryValue(temporaries, instruction.key),
+                readTemporaryValue(temporaries, instruction.value),
+            );
+            return nextInstruction;
+        },
         (ArrayCopy instruction) {
             arrays ~= arrays[arrayIndex(temporaries, instruction.source)];
             writeTemporaryValue(temporaries, instruction.destination) =
@@ -274,6 +379,18 @@ InstructionEffect executeInstruction(
         (ArrayLength instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) arrays[arrayIndex(temporaries, instruction.array)].length;
+            return nextInstruction;
+        },
+        (ArraySetLength instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)].length =
+                arrayIndex(temporaries, instruction.length);
+            return nextInstruction;
+        },
+        (ArrayConcat instruction) {
+            arrays ~= arrays[arrayIndex(temporaries, instruction.left)] ~
+                arrays[arrayIndex(temporaries, instruction.right)];
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) (arrays.length - 1);
             return nextInstruction;
         },
         (ArrayIndex instruction) {
@@ -531,6 +648,39 @@ size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
         throw new Exception("IR: array index out of range");
 
     return cast(size_t) value;
+}
+
+size_t assocArrayIndex(in long[] temporaries, in uint temporary) @safe pure {
+    const value = readTemporaryValue(temporaries, temporary);
+    if (value < 0)
+        throw new Exception("IR: associative array index out of range");
+
+    return cast(size_t) value;
+}
+
+long assocArrayValue(in AssocArray array, in long key) @safe pure {
+    foreach (index, existingKey; array.keys)
+        if (existingKey == key)
+            return array.values[index];
+
+    return 0;
+}
+
+void writeAssocArrayValue(
+    ref AssocArray array,
+    in long key,
+    in long value,
+) @safe pure {
+    foreach (index, existingKey; array.keys) {
+        if (existingKey != key)
+            continue;
+
+        array.values[index] = value;
+        return;
+    }
+
+    array.keys ~= key;
+    array.values ~= value;
 }
 
 size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {

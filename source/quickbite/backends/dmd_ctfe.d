@@ -13,20 +13,47 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         runParsedTests(parseModule(source, importPaths).module_);
     }
 
+    public imported!"quickbite.executor".TestSummary runTestSummary(
+        in string source,
+    ) {
+        import quickbite.frontend.compiler: parseModule;
+
+        return testSummary(parseModule(source).module_);
+    }
+
     public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
-        import quickbite.dmd_util: moduleMembers;
+        import quickbite.dmd_util: foreachUnitTestDeclaration;
 
-        if (module_.members is null)
-            return;
-
-        foreach (member; moduleMembers(module_)) {
-            if (auto utd = member.isUnitTestDeclaration)
-                runCtfe(utd);
-        }
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            runCtfe(unitTest);
+        });
     }
 }
 
+private imported!"quickbite.executor".TestSummary testSummary(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.executor: TestSummary;
+
+    TestSummary summary;
+    foreachUnitTestDeclaration(module_, (unitTest) {
+        ++summary.total;
+        if (ctfeFailed(unitTest))
+            ++summary.failed;
+        else
+            ++summary.passed;
+    });
+
+    return summary;
+}
+
 private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
+    if (ctfeFailed(utd))
+        throw new Exception("Unittest assertion failed.");
+}
+
+private bool ctfeFailed(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
     import quickbite.frontend.compiler: withCompilerLock;
     import dmd.arraytypes: Expressions;
     import dmd.dinterpret: ctfeInterpret;
@@ -50,6 +77,5 @@ private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
         failed = ctfeInterpret(callExp).isErrorExp !is null;
     });
 
-    if (failed)
-        throw new Exception("Unittest assertion failed.");
+    return failed;
 }

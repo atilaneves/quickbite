@@ -30,17 +30,37 @@ private immutable string[] testFileNames = [
 ];
 
 static foreach (backend; EnumMembers!ExecutorBackend) {
-    static foreach (fileName; testFileNames) {
-        @(backend.text ~ ".cerealed." ~ fileName)
-        unittest {
-            import ut.dub_paths: dubImportPaths, cerealTestsDir;
-            import std.path: buildPath;
-
-            runTestsFromFile(
-                buildPath(cerealTestsDir, fileName),
-                dubImportPaths,
-                backend,
-            );
+    // dmdCtfe cannot run real-world tests that use GC, exceptions, and
+    // dynamic dispatch at runtime; exclude it from the cerealed matrix.
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        static foreach (fileName; testFileNames) {
+            static if (shouldFailCerealedTest!(backend, fileName)) {
+                @(backend.text ~ ".cerealed." ~ fileName, ShouldFail)
+                unittest {
+                    runCerealedTest!(backend, fileName);
+                }
+            } else {
+                @(backend.text ~ ".cerealed." ~ fileName)
+                unittest {
+                    runCerealedTest!(backend, fileName);
+                }
+            }
         }
     }
+}
+
+private enum bool shouldFailCerealedTest(
+    ExecutorBackend backend,
+    string fileName,
+) = fileName != "compile_time.d";
+
+private void runCerealedTest(ExecutorBackend backend, string fileName)() {
+    import ut.dub_paths: dubImportPaths, cerealTestsDir;
+    import std.path: buildPath;
+
+    runTestsFromFile(
+        buildPath(cerealTestsDir, fileName),
+        dubImportPaths,
+        backend,
+    );
 }

@@ -2,15 +2,23 @@ module quickbite.backends.tree_walking;
 
 private:
 
+// A "pointer" in the VM is just a handle to a named local (VarDeclaration).
+// Used to represent &varDecl so *ptr can dereference and ref-propagate back.
+private struct LocalPtr {
+    imported!"dmd.declaration".VarDeclaration decl;
+}
+
 // SumType.opAssign is @system in this version of std.sumtype, so all code
 // that stores a Value is @system by transitivity.
-alias Value = imported!"std.sumtype".SumType!(long, long[]);
+alias Value = imported!"std.sumtype".SumType!(long, long[], LocalPtr);
 
 private struct FunctionResult {
     private bool hasValue;
     private Value value;
     private Value[] refValues;
     private Value[imported!"dmd.declaration".VarDeclaration] thisFields;
+    // Struct field maps returned for each struct-ref parameter, in param order.
+    private Value[imported!"dmd.declaration".VarDeclaration][] structRefValues;
 }
 
 private struct CallArgument {
@@ -20,6 +28,7 @@ private struct CallArgument {
     private imported!"dmd.declaration".VarDeclaration refField;
     private Value[imported!"dmd.declaration".VarDeclaration] structFields;
     private bool isStruct;
+    private bool isStructRef; // whole struct passed as ref (refSource = its VarDeclaration)
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -43,17 +52,46 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     ) {
         walkModule(module_);
     }
+
+    public imported!"quickbite.executor".TestSummary runTestSummary(
+        in string source,
+    ) {
+        import quickbite.frontend.compiler: parseModule;
+
+        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
+        auto parsed = parseModule(source);
+        return testSummary(parsed.module_);
+    }
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {
-    if (module_.members is null)
-        return;
+    import quickbite.dmd_util: foreachUnitTestDeclaration;
 
     Interpreter interpreter;
-    foreach (member; moduleMembers(module_)) {
-        if (auto unitTest = member.isUnitTestDeclaration)
+    foreachUnitTestDeclaration(module_, (unitTest) {
+        interpreter.runTest(unitTest);
+    });
+}
+
+private imported!"quickbite.executor".TestSummary testSummary(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.executor: TestSummary;
+
+    TestSummary summary;
+    Interpreter interpreter;
+    foreachUnitTestDeclaration(module_, (unitTest) {
+        ++summary.total;
+        try {
             interpreter.runTest(unitTest);
-    }
+            ++summary.passed;
+        } catch (Exception) {
+            ++summary.failed;
+        }
+    });
+
+    return summary;
 }
 
 private struct Interpreter {
@@ -65,8 +103,10 @@ private struct Interpreter {
         if (func.fbody is null)
             throw new Exception("No function body to execute.");
         BodyWalker w;
-        if (func.vthis !is null)
+        if (func.vthis !is null) {
+            w.currentThis = func.vthis;
             w.structFields[func.vthis] = thisFields;
+        }
         w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
 
@@ -79,12 +119,14 @@ private struct Interpreter {
                 Value(0L),
                 collectRefValues(func, w),
                 collectThisFields(func, w),
+                collectStructRefValues(func, w),
             );
         return FunctionResult(
             true,
             w.returnValue,
             collectRefValues(func, w),
             collectThisFields(func, w),
+            collectStructRefValues(func, w),
         );
     }
 
@@ -108,10 +150,35 @@ private struct Interpreter {
         foreach (param; functionParameters(func)) {
             import dmd.astenums: STC;
 
-            if ((param.storage_class & STC.ref_) != STC.none)
-                refValues ~= walker.locals[param];
+            if ((param.storage_class & STC.ref_) == STC.none)
+                continue;
+            // Struct ref params are collected separately via collectStructRefValues.
+            if (param in walker.structFields)
+                continue;
+            refValues ~= walker.locals[param];
         }
         return refValues;
+    }
+
+    private Value[imported!"dmd.declaration".VarDeclaration][] collectStructRefValues(
+        imported!"dmd.func".FuncDeclaration func,
+        ref BodyWalker walker,
+    ) {
+        import dmd.declaration: VarDeclaration;
+
+        Value[VarDeclaration][] results;
+        if (func.parameters is null)
+            return results;
+
+        foreach (param; functionParameters(func)) {
+            import dmd.astenums: STC;
+
+            if ((param.storage_class & STC.ref_) == STC.none)
+                continue;
+            if (param in walker.structFields)
+                results ~= walker.structFields[param];
+        }
+        return results;
     }
 
     private bool isVoidReturn(
@@ -138,6 +205,7 @@ private struct BodyWalker {
     // those downcasts so the walker stays close to the frontend API.
     private Value[VarDeclaration] locals;
     private Value[VarDeclaration][VarDeclaration] structFields;
+    private VarDeclaration currentThis;
     private bool hasReturn;
     private Value returnValue;
 
@@ -155,9 +223,10 @@ private struct BodyWalker {
                 throw new Exception("Unsupported function parameters.");
             if ((param.storage_class & STC.ref_) != STC.none &&
                 args[i].refSource is null &&
-                args[i].refField is null)
+                args[i].refField is null &&
+                !args[i].isStructRef)
                 throw new Exception("Unsupported ref argument.");
-            if (args[i].isStruct) {
+            if (args[i].isStruct || args[i].isStructRef) {
                 structFields[param] = args[i].structFields.dup;
                 continue;
             }
@@ -240,6 +309,15 @@ private struct BodyWalker {
         if (statement.isImportStatement !is null)
             return;
 
+        if (auto unrolled = statement.isUnrolledLoopStatement) {
+            foreach (child; *unrolled.statements) {
+                runStatement(child, interpreter);
+                if (hasReturn)
+                    return;
+            }
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
     }
@@ -282,16 +360,19 @@ private struct BodyWalker {
             return runDeclarationExpression(decl, interpreter);
 
         if (auto dotVar = expression.isDotVarExp) {
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                if (fieldDecl in structFields)
+                    return Value(0L);
             if (auto ownerVar = dotVar.e1.isVarExp)
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                     if (auto fields = ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                            return (*fields).get(fieldDecl, Value(0L));
+                            return structFieldValue(*fields, fieldDecl, Value(0L));
             if (auto thisExp = dotVar.e1.isThisExp)
                 if (auto thisDecl = thisExp.var.isVarDeclaration)
                     if (auto fields = thisDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                            return (*fields).get(fieldDecl, Value(0L));
+                            return structFieldValue(*fields, fieldDecl, Value(0L));
             unsupported;
         }
 
@@ -374,13 +455,19 @@ private struct BodyWalker {
                         if (auto thisDecl = thisExp.var.isVarDeclaration)
                             if (auto fields = thisDecl in structFields)
                                 if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                                    const oldVal = (*fields)
-                                        .get(fieldDecl, Value(0L))
-                                        .asLong;
-                                    (*fields)[fieldDecl] = Value(
+                                    const oldVal = structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(0L),
+                                    ).asLong;
+                                    assignStructField(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(
                                         coerceIntegerToType(
                                             oldVal + 1,
                                             fieldDecl.type,
+                                        ),
                                         ),
                                     );
                                     return Value(oldVal);
@@ -407,11 +494,24 @@ private struct BodyWalker {
                 runExpression(multiply.e2, interpreter).asLong,
             );
 
-        if (auto rightShift = expression.isShrExp)
-            return Value(
-                runExpression(rightShift.e1, interpreter).asLong >>
-                runExpression(rightShift.e2, interpreter).asLong,
-            );
+        if (auto rightShift = expression.isShrExp) {
+            try {
+                return Value(
+                    runExpression(rightShift.e1, interpreter).asLong >>
+                    runExpression(rightShift.e2, interpreter).asLong,
+                );
+            } catch (Exception e) {
+                throw new Exception(text(
+                    e.msg,
+                    " while evaluating ",
+                    expressionChars(expression),
+                    " left ",
+                    expressionChars(rightShift.e1),
+                    " right ",
+                    expressionChars(rightShift.e2),
+                ));
+            }
+        }
 
         if (auto leftShift = expression.isShlExp)
             return Value(
@@ -491,6 +591,9 @@ private struct BodyWalker {
             return Value(elements);
         }
 
+        if (auto literal = expression.isStringExp)
+            return Value(stringLiteralElements(literal));
+
         if (auto slice = expression.isSliceExp) {
             if (slice.lwr !is null && slice.upr !is null) {
                 const array = runExpression(slice.e1, interpreter).asArray;
@@ -512,8 +615,11 @@ private struct BodyWalker {
                         if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                             if (auto fields = ownerDecl in structFields)
                                 if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                                    return (*fields)
-                                        .get(fieldDecl, Value((long[]).init));
+                                    return structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value((long[]).init),
+                                    );
             unsupported;
         }
 
@@ -531,7 +637,11 @@ private struct BodyWalker {
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
                                 return Value(
-                                    (*fields)[fieldDecl].asArray[cast(size_t) i],
+                                    structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value((long[]).init),
+                                    ).asArray[cast(size_t) i],
                                 );
                             }
             if (auto dotVar = index.e1.isDotVarExp)
@@ -541,7 +651,11 @@ private struct BodyWalker {
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
                                 return Value(
-                                    (*fields)[fieldDecl].asArray[cast(size_t) i],
+                                    structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value((long[]).init),
+                                    ).asArray[cast(size_t) i],
                                 );
                             }
             unsupported;
@@ -558,8 +672,11 @@ private struct BodyWalker {
                         if (auto fields = ownerDecl in structFields)
                             if (auto fieldDecl = dotVar.var.isVarDeclaration)
                                 return Value(
-                                    cast(long) (*fields)
-                                        .get(fieldDecl, Value((long[]).init))
+                                    cast(long) structFieldValue(
+                                            *fields,
+                                            fieldDecl,
+                                            Value((long[]).init),
+                                        )
                                         .asArray
                                         .length,
                                 );
@@ -567,9 +684,45 @@ private struct BodyWalker {
         }
 
         if (auto var = expression.isVarExp) {
-            if (auto varDecl = var.var.isVarDeclaration)
+            if (auto varDecl = var.var.isVarDeclaration) {
+                import dmd.id: Id;
+                // __ctfe is true in CTFE; at runtime it is false.
+                if (varDecl.ident == Id.ctfe)
+                    return Value(0L);
                 if (varDecl in locals)
                     return locals[varDecl];
+                if (currentThis !is null)
+                    if (auto fields = currentThis in structFields)
+                        return structFieldValue(*fields, varDecl, Value(0L));
+                foreach (fields; structFields.byValue)
+                    foreach (field, value; fields)
+                        if (sameStructField(field, varDecl))
+                            return value;
+            }
+        }
+
+        if (expression.isThisExp)
+            return Value(0L);
+
+        if (auto addr = expression.isAddrExp) {
+            if (auto var = addr.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals)
+                        return Value(LocalPtr(varDecl));
+        }
+
+        // Pointer dereference *ptr: if ptr holds a LocalPtr, read the target.
+        if (auto ptr = expression.isPtrExp) {
+            import std.sumtype: match;
+            import dmd.declaration: VarDeclaration;
+            auto ptrVal = runExpression(ptr.e1, interpreter);
+            VarDeclaration target = ptrVal.match!(
+                (LocalPtr p) => p.decl,
+                (long _) => cast(VarDeclaration) null,
+                (long[] _) => cast(VarDeclaration) null,
+            );
+            if (target !is null && target in locals)
+                return locals[target];
         }
 
         unsupported;
@@ -592,6 +745,23 @@ private struct BodyWalker {
                     locals[varDecl] = Value(elements);
                     return locals[varDecl];
                 }
+        if (auto var = append.e1.isVarExp)
+            if (auto fieldDecl = var.var.isVarDeclaration)
+                if (currentThis !is null)
+                    if (auto fields = currentThis in structFields) {
+                        // Explicit type: `elements` must be mutable for append.
+                        long[] elements = structFieldValue(
+                            *fields,
+                            fieldDecl,
+                            Value((long[]).init),
+                        ).asArray;
+                        elements ~= coerceIntegerToType(
+                            runExpression(append.e2, interpreter).asLong,
+                            arrayElementType(fieldDecl.type),
+                        );
+                        assignStructField(*fields, fieldDecl, Value(elements));
+                        return structFieldValue(*fields, fieldDecl, Value(elements));
+                    }
 
         if (auto dotVar = append.e1.isDotVarExp)
             if (auto ownerVar = dotVar.e1.isVarExp)
@@ -599,15 +769,18 @@ private struct BodyWalker {
                     if (auto fields = ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                             // Explicit type: `elements` must be mutable for append.
-                            long[] elements = (*fields)
-                                .get(fieldDecl, Value((long[]).init))
+                            long[] elements = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value((long[]).init),
+                                )
                                 .asArray;
                             elements ~= coerceIntegerToType(
                                 runExpression(append.e2, interpreter).asLong,
                                 arrayElementType(fieldDecl.type),
                             );
-                            structFields[ownerDecl][fieldDecl] = Value(elements);
-                            return structFields[ownerDecl][fieldDecl];
+                            assignStructField(*fields, fieldDecl, Value(elements));
+                            return structFieldValue(*fields, fieldDecl, Value(elements));
                         }
         if (auto dotVar = append.e1.isDotVarExp)
             if (auto thisExp = dotVar.e1.isThisExp)
@@ -615,15 +788,18 @@ private struct BodyWalker {
                     if (auto fields = thisDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                             // Explicit type: `elements` must be mutable for append.
-                            long[] elements = (*fields)
-                                .get(fieldDecl, Value((long[]).init))
+                            long[] elements = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value((long[]).init),
+                                )
                                 .asArray;
                             elements ~= coerceIntegerToType(
                                 runExpression(append.e2, interpreter).asLong,
                                 arrayElementType(fieldDecl.type),
                             );
-                            structFields[thisDecl][fieldDecl] = Value(elements);
-                            return structFields[thisDecl][fieldDecl];
+                            assignStructField(*fields, fieldDecl, Value(elements));
+                            return structFieldValue(*fields, fieldDecl, Value(elements));
                         }
 
         import std.conv: text;
@@ -661,12 +837,31 @@ private struct BodyWalker {
             return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
         }
 
+        Value rangeValue;
+        if (tryRunRangeData(call, rangeValue))
+            return rangeValue;
+        if (tryRunRangeMethod(call, interpreter, resultIgnored))
+            return Value(0L);
+
         if (call.f.fbody is null)
             throw new Exception("No function body to execute.");
 
         CallArgument[] args;
         if (call.arguments !is null)
             foreach (i, arg; callArguments(call)) {
+                if (call.f.parameters is null || i >= call.f.parameters.length)
+                    throw new Exception(text(
+                        "Unsupported call: ",
+                        expressionChars(call.e1),
+                        " parameters ",
+                        call.f.parameters is null
+                            ? "null"
+                            : text(call.f.parameters.length),
+                        " type parameters ",
+                        text(call.f.getParameterList.length),
+                        " arg ",
+                        expressionChars(arg),
+                    ));
                 const param = functionParameters(call.f)[i];
                 import dmd.astenums: STC;
 
@@ -688,8 +883,11 @@ private struct BodyWalker {
                                 if (auto fields = ownerDecl in structFields)
                                     if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                         args ~= CallArgument(
-                                            (*fields)
-                                                .get(fieldDecl, Value((long[]).init)),
+                                            structFieldValue(
+                                                *fields,
+                                                fieldDecl,
+                                                Value((long[]).init),
+                                            ),
                                             null,
                                             ownerDecl,
                                             fieldDecl,
@@ -702,14 +900,54 @@ private struct BodyWalker {
                                 if (auto fields = thisDecl in structFields)
                                     if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                         args ~= CallArgument(
-                                            (*fields)
-                                                .get(fieldDecl, Value((long[]).init)),
+                                            structFieldValue(
+                                                *fields,
+                                                fieldDecl,
+                                                Value((long[]).init),
+                                            ),
                                             null,
                                             thisDecl,
                                             fieldDecl,
                                         );
                                         continue;
                                     }
+                    // Whole struct variable passed as ref.
+                    if (auto var = arg.isVarExp)
+                        if (auto varDecl = var.var.isVarDeclaration)
+                            if (auto fields = varDecl in structFields) {
+                                CallArgument structRefArg;
+                                structRefArg.refSource = varDecl;
+                                structRefArg.structFields = (*fields).dup;
+                                structRefArg.isStructRef = true;
+                                args ~= structRefArg;
+                                continue;
+                            }
+                    // `this` struct passed as ref (e.g. auto-ref template param).
+                    if (auto thisExp = arg.isThisExp)
+                        if (auto thisDecl = thisExp.var.isVarDeclaration)
+                            if (auto fields = thisDecl in structFields) {
+                                CallArgument structRefArg;
+                                structRefArg.refSource = thisDecl;
+                                structRefArg.structFields = (*fields).dup;
+                                structRefArg.isStructRef = true;
+                                args ~= structRefArg;
+                                continue;
+                            }
+                    // *ptr where ptr holds a LocalPtr — dereference for ref.
+                    if (auto ptrExp = arg.isPtrExp) {
+                        import std.sumtype: match;
+                        import dmd.declaration: VarDeclaration;
+                        auto ptrVal = runExpression(ptrExp.e1, interpreter);
+                        VarDeclaration target = ptrVal.match!(
+                            (LocalPtr p) => p.decl,
+                            (long _) => cast(VarDeclaration) null,
+                            (long[] _) => cast(VarDeclaration) null,
+                        );
+                        if (target !is null && target in locals) {
+                            args ~= CallArgument(locals[target], target, null, null);
+                            continue;
+                        }
+                    }
                     throw new Exception("Unsupported ref argument.");
                 }
 
@@ -722,6 +960,23 @@ private struct BodyWalker {
                             args ~= structArg;
                             continue;
                         }
+                if (auto owner = structFieldsOwner(arg)) {
+                    CallArgument structArg;
+                    structArg.structFields = structFields[owner].dup;
+                    structArg.isStruct = true;
+                    args ~= structArg;
+                    continue;
+                }
+                if (auto literal = arg.isStructLiteralExp) {
+                    CallArgument structArg;
+                    structArg.structFields = runStructLiteralExpression(
+                        literal,
+                        interpreter,
+                    );
+                    structArg.isStruct = true;
+                    args ~= structArg;
+                    continue;
+                }
 
                 args ~= CallArgument(
                     runExpression(arg, interpreter),
@@ -733,17 +988,17 @@ private struct BodyWalker {
 
         Value[VarDeclaration] thisFields;
         VarDeclaration thisOwner;
-        if (auto dotVar = call.e1.isDotVarExp)
-            if (auto ownerVar = dotVar.e1.isVarExp)
-                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                    if (auto fields = ownerDecl in structFields) {
-                        thisFields = *fields;
-                        thisOwner = ownerDecl;
-                    }
+        if (auto dotVar = call.e1.isDotVarExp) {
+            thisOwner = structFieldsOwner(dotVar.e1);
+            if (thisOwner !is null)
+                thisFields = structFields[thisOwner];
+            if (auto literal = dotVar.e1.isStructLiteralExp)
+                thisFields = runStructLiteralExpression(literal, interpreter);
+        }
 
         // `auto` is intentional: `const` would block ref propagation.
         auto result = interpreter.executeFunction(call.f, args, thisFields);
-        propagateRefArguments(call, args, result.refValues);
+        propagateRefArguments(call, args, result.refValues, result.structRefValues);
         if (thisOwner !is null)
             structFields[thisOwner] = result.thisFields;
         if (!result.hasValue) {
@@ -754,26 +1009,182 @@ private struct BodyWalker {
         return result.value;
     }
 
+    private bool tryRunRangeMethod(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+        in bool resultIgnored,
+    ) {
+        if (call.f.ident is null)
+            return false;
+        if (auto dotVar = call.e1.isDotVarExp) {
+            if (call.f.ident.toString == "put")
+                return tryRunRangePut(dotVar.e1, call, interpreter);
+            if (call.f.ident.toString == "clear")
+                return tryRunRangeClear(dotVar.e1, call);
+        }
+        return false;
+    }
+
+    private bool tryRunRangeData(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "data")
+            return false;
+        if (call.arguments !is null && call.arguments.length != 0)
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto rangeOwner = rangeStructOwner(dotVar.e1);
+        if (rangeOwner is null)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFields.get(
+            rangeOwner,
+            (Value[VarDeclaration]).init,
+        );
+        value = structFieldValue(fields, bytesField, Value((long[]).init));
+        return true;
+    }
+
+    private bool tryRunRangePut(
+        imported!"dmd.expression".Expression receiver,
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto rangeOwner = rangeStructOwner(receiver);
+        if (rangeOwner is null)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFields.get(
+            rangeOwner,
+            (Value[VarDeclaration]).init,
+        );
+        long[] elements = structFieldValue(
+            fields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+        appendRangePutValue(
+            elements,
+            runExpression(callArguments(call)[0], interpreter),
+            bytesField.type,
+        );
+        assignStructField(fields, bytesField, Value(elements));
+        structFields[rangeOwner] = fields;
+        return true;
+    }
+
+    private void appendRangePutValue(
+        ref long[] elements,
+        Value value,
+        imported!"dmd.mtype".Type bytesType,
+    ) {
+        import std.sumtype: match;
+
+        value.match!(
+            (long l) {
+                elements ~= coerceIntegerToType(l, arrayElementType(bytesType));
+            },
+            (long[] a) {
+                foreach (element; a)
+                    elements ~= coerceIntegerToType(
+                        element,
+                        arrayElementType(bytesType),
+                    );
+            },
+            (LocalPtr _) {
+                throw new Exception("Expected range put value, got pointer.");
+            },
+        );
+    }
+
+    private bool tryRunRangeClear(
+        imported!"dmd.expression".Expression receiver,
+        imported!"dmd.expression".CallExp call,
+    ) {
+        if (call.arguments !is null && call.arguments.length != 0)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto rangeOwner = rangeStructOwner(receiver);
+        if (rangeOwner is null)
+            return false;
+
+        // auto: must keep the mutable DMD VarDeclaration reference for AA keys.
+        auto bytesField = structFieldNamed(rangeOwner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFields.get(
+            rangeOwner,
+            (Value[VarDeclaration]).init,
+        );
+        assignStructField(fields, bytesField, Value((long[]).init));
+        structFields[rangeOwner] = fields;
+        return true;
+    }
+
+    private VarDeclaration rangeStructOwner(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        if (auto owner = structFieldsOwner(receiver))
+            return owner;
+        if (auto dotVar = receiver.isDotVarExp)
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                if (fieldDecl.type !is null && fieldDecl.type.isTypeStruct !is null) {
+                    if (fieldDecl !in structFields)
+                        structFields[fieldDecl] = (Value[VarDeclaration]).init;
+                    return fieldDecl;
+                }
+        return null;
+    }
+
     private void propagateRefArguments(
         imported!"dmd.expression".CallExp call,
         CallArgument[] args,
         Value[] refValues,
+        Value[imported!"dmd.declaration".VarDeclaration][] structRefValues,
     ) {
         if (call.f.parameters is null)
             return;
 
-        size_t refIndex;
+        size_t scalarIndex;
+        size_t structIndex;
         foreach (i, param; functionParameters(call.f)) {
             import dmd.astenums: STC;
 
             if ((param.storage_class & STC.ref_) == STC.none)
                 continue;
-            if (args[i].refSource !is null)
-                locals[args[i].refSource] = refValues[refIndex];
-            else
+            if (args[i].isStructRef) {
+                structFields[args[i].refSource] = structRefValues[structIndex];
+                ++structIndex;
+            } else if (args[i].refSource !is null) {
+                locals[args[i].refSource] = refValues[scalarIndex];
+                ++scalarIndex;
+            } else {
                 structFields[args[i].refOwner][args[i].refField] =
-                    refValues[refIndex];
-            refIndex = refIndex + 1;
+                    refValues[scalarIndex];
+                ++scalarIndex;
+            }
         }
     }
 
@@ -807,7 +1218,10 @@ private struct BodyWalker {
             return Value(0L);
 
         if (variable.type !is null && variable.type.isTypeStruct !is null) {
-            structFields[variable] = (Value[VarDeclaration]).init;
+            structFields[variable] = variable._init is null ||
+                variable._init.isExpInitializer is null
+                ? (Value[VarDeclaration]).init
+                : runStructInitializer(variable._init.isExpInitializer.exp, interpreter);
             return Value(0L);
         }
 
@@ -818,12 +1232,15 @@ private struct BodyWalker {
             return Value(0L);
 
         auto initializer = variable._init.isExpInitializer;
-        if (initializer.exp.isAssignExp || initializer.exp.isBlitExp)
-            unsupportedDecl;
-        auto construct = initializer.exp.isConstructExp;
-        Value value = construct !is null
-            ? coerceValueToType(runExpression(construct.e2, interpreter), variable.type)
-            : coerceValueToType(runExpression(initializer.exp, interpreter), variable.type);
+        // Determine the expression to evaluate for the initial value.
+        imported!"dmd.expression".Expression initExpr = initializer.exp;
+        if (auto blit = initializer.exp.isBlitExp)
+            initExpr = blit.e2;
+        else if (auto assign = initializer.exp.isAssignExp)
+            initExpr = assign.e2;
+        else if (auto construct = initializer.exp.isConstructExp)
+            initExpr = construct.e2;
+        Value value = coerceValueToType(runExpression(initExpr, interpreter), variable.type);
         locals[variable] = value;
         return value;
     }
@@ -946,8 +1363,11 @@ private struct BodyWalker {
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                     if (ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                            structFields[ownerDecl][fieldDecl] =
-                                coerceValueToType(value, fieldDecl.type);
+                            assignStructField(
+                                structFields[ownerDecl],
+                                fieldDecl,
+                                coerceValueToType(value, fieldDecl.type),
+                            );
                             return value;
                         }
 
@@ -969,11 +1389,16 @@ private struct BodyWalker {
                         if (auto fields = ownerDecl in structFields)
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
-                                (*fields)[fieldDecl].asArray[cast(size_t) i] =
-                                    coerceIntegerToType(
-                                        value.asLong,
-                                        arrayElementType(fieldDecl.type),
-                                    );
+                                long[] elements = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value((long[]).init),
+                                ).asArray;
+                                elements[cast(size_t) i] = coerceIntegerToType(
+                                    value.asLong,
+                                    arrayElementType(fieldDecl.type),
+                                );
+                                assignStructField(*fields, fieldDecl, Value(elements));
                                 return value;
                             }
             if (auto dotVar = index.e1.isDotVarExp)
@@ -982,17 +1407,158 @@ private struct BodyWalker {
                         if (auto fields = thisDecl in structFields)
                             if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                                 const i = runExpression(index.e2, interpreter).asLong;
-                                (*fields)[fieldDecl].asArray[cast(size_t) i] =
-                                    coerceIntegerToType(
-                                        value.asLong,
-                                        arrayElementType(fieldDecl.type),
-                                    );
+                                long[] elements = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value((long[]).init),
+                                ).asArray;
+                                elements[cast(size_t) i] = coerceIntegerToType(
+                                    value.asLong,
+                                    arrayElementType(fieldDecl.type),
+                                );
+                                assignStructField(*fields, fieldDecl, Value(elements));
                                 return value;
                             }
         }
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
+
+    private Value[VarDeclaration] runStructInitializer(
+        imported!"dmd.expression".Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        if (auto construct = expression.isConstructExp)
+            return runStructInitializer(construct.e2, interpreter);
+        if (auto assign = expression.isAssignExp)
+            return runStructInitializer(assign.e2, interpreter);
+        if (auto blit = expression.isBlitExp)
+            return runStructInitializer(blit.e2, interpreter);
+        if (auto literal = expression.isStructLiteralExp)
+            return runStructLiteralExpression(literal, interpreter);
+        if (auto owner = structFieldsOwner(expression))
+            return structFields[owner].dup;
+
+        return (Value[VarDeclaration]).init;
+    }
+
+    private Value[VarDeclaration] runStructLiteralExpression(
+        imported!"dmd.expression".StructLiteralExp literal,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] fields;
+        if (literal.elements is null)
+            return fields;
+
+        foreach (i, element; structLiteralElements(literal)) {
+            if (element is null)
+                continue;
+            // auto: the AA key must remain a mutable DMD VarDeclaration.
+            auto field = structLiteralField(literal, i);
+            if (field is null)
+                continue;
+            if (field.type !is null && field.type.isTypeStruct !is null) {
+                structFields[field] = runStructInitializer(element, interpreter);
+                continue;
+            }
+            if (element.isNullExp) {
+                fields[field] = Value(0L);
+                continue;
+            }
+            fields[field] = coerceValueToType(
+                runExpression(element, interpreter),
+                field.type,
+            );
+        }
+        return fields;
+    }
+
+    private VarDeclaration structFieldsOwner(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (varDecl in structFields)
+                    return varDecl;
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                foreach (owner; structFields.byKey)
+                    if (sameStructField(owner, varDecl))
+                        return owner;
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (currentThis !is null)
+                    if (auto fields = currentThis in structFields)
+                        foreach (field; (*fields).byKey)
+                            if (sameStructField(field, varDecl) &&
+                                field in structFields)
+                                return field;
+        if (auto thisExp = expression.isThisExp)
+            if (auto thisDecl = thisExp.var.isVarDeclaration)
+                if (thisDecl in structFields)
+                    return thisDecl;
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                if (fieldDecl in structFields)
+                    return fieldDecl;
+        return null;
+    }
+
+    private Value structFieldValue(
+        ref Value[VarDeclaration] fields,
+        VarDeclaration field,
+        Value defaultValue,
+    ) {
+        if (auto value = field in fields)
+            return *value;
+        foreach (existingField, value; fields)
+            if (sameStructField(existingField, field))
+                return value;
+        return defaultValue;
+    }
+
+    private void assignStructField(
+        ref Value[VarDeclaration] fields,
+        VarDeclaration field,
+        Value value,
+    ) {
+        if (field in fields) {
+            fields[field] = value;
+            return;
+        }
+
+        foreach (existingField; fields.byKey)
+            if (sameStructField(existingField, field)) {
+                fields[existingField] = value;
+                return;
+            }
+
+        fields[field] = value;
+    }
+
+    private bool sameStructField(
+        VarDeclaration left,
+        VarDeclaration right,
+    ) {
+        return left !is null &&
+            right !is null &&
+            left.ident !is null &&
+            right.ident !is null &&
+            left.ident.toString == right.ident.toString;
+    }
+
+    private VarDeclaration structFieldNamed(
+        imported!"dmd.mtype".Type type,
+        in string name,
+    ) {
+        if (type is null)
+            return null;
+        if (auto structType = type.toBasetype.isTypeStruct)
+            foreach (field; structType.sym.fields)
+                if (field.ident !is null && field.ident.toString == name)
+                    return field;
+        return null;
     }
 
     private long runSliceBound(
@@ -1025,6 +1591,10 @@ private long asLong(Value value) @safe pure {
             throw new Exception("Expected scalar, got array.");
             return 0L;
         },
+        (LocalPtr _) {
+            throw new Exception("Expected scalar, got pointer.");
+            return 0L;
+        },
     );
 }
 
@@ -1036,13 +1606,17 @@ private long[] asArray(Value value) @safe pure {
             throw new Exception("Expected array, got scalar.");
             return (long[]).init;
         },
+        (LocalPtr _) {
+            throw new Exception("Expected array, got pointer.");
+            return (long[]).init;
+        },
     );
 }
 
 private Value coerceValueToType(
     Value value,
     imported!"dmd.mtype".Type type,
-) @safe {
+) {
     import std.sumtype: match;
 
     if (type is null)
@@ -1051,6 +1625,7 @@ private Value coerceValueToType(
     return value.match!(
         (long l) => Value(coerceIntegerToType(l, type)),
         (long[] a) => Value(a),
+        (LocalPtr p) => Value(p),
     );
 }
 
@@ -1094,8 +1669,6 @@ private imported!"dmd.mtype".Type arrayElementType(
 
     return type.toBasetype.nextOf;
 }
-
-private alias moduleMembers = imported!"quickbite.dmd_util".moduleMembers;
 
 private ref auto compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
@@ -1154,4 +1727,28 @@ private ref auto arrayLiteralElements(
     imported!"dmd.expression".ArrayLiteralExp literal,
 ) @trusted pure {
     return *literal.elements;
+}
+
+private ref auto structLiteralElements(
+    imported!"dmd.expression".StructLiteralExp literal,
+) pure {
+    return *literal.elements;
+}
+
+private long[] stringLiteralElements(
+    imported!"dmd.expression".StringExp literal,
+) pure {
+    long[] elements;
+    foreach (i; 0 .. literal.len)
+        elements ~= literal.getIndex(i);
+    return elements;
+}
+
+private imported!"dmd.declaration".VarDeclaration structLiteralField(
+    imported!"dmd.expression".StructLiteralExp literal,
+    in size_t index,
+) pure {
+    if (literal.sd is null || index >= literal.sd.fields.length)
+        return null;
+    return literal.sd.fields[index];
 }
