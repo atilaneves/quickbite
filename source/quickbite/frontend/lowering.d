@@ -1179,9 +1179,46 @@ struct BodyLowerer {
         ref Lowerer lowerer,
         ref uint result,
     ) @safe {
-        import quickbite.ir.instruction: Assert_, Instruction;
+        import quickbite.ir.instruction:
+            Assert_, BinaryOp, CastInt, ConstInt, Instruction, Operation,
+            StructNew, StructSet;
 
-        if (expressionChars(call.e1) != "enforceFmt")
+        const name = expressionChars(call.e1);
+
+        if (name == "Split64") {
+            enforceCallArgumentCount(call, 1);
+            const value = lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(StructNew(result));
+
+            const lo = allocateTemporary;
+            instructions ~= Instruction(CastInt(
+                lo,
+                value,
+                imported!"quickbite.ir.instruction".IntegerType.u32,
+            ));
+            instructions ~= Instruction(StructSet(result, "lo", lo));
+
+            const shift = allocateTemporary;
+            instructions ~= Instruction(ConstInt(shift, 32));
+            const shifted = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                shifted,
+                value,
+                shift,
+                Operation.rightShift,
+            ));
+            const hi = allocateTemporary;
+            instructions ~= Instruction(CastInt(
+                hi,
+                shifted,
+                imported!"quickbite.ir.instruction".IntegerType.u32,
+            ));
+            instructions ~= Instruction(StructSet(result, "hi", hi));
+            return true;
+        }
+
+        if (name != "enforceFmt")
             return false;
 
         enforceCallArgumentCount(call, 1);
