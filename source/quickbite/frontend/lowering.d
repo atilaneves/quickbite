@@ -1512,7 +1512,7 @@ struct BodyLowerer {
             return true;
         }
 
-        if (name == "fabs") {
+        if (name == "fabs" || name == "sqrt") {
             enforceCallArgumentCount(call, 1);
             result = lowerExpression(callArguments(call)[0], lowerer);
             return true;
