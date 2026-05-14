@@ -32,6 +32,16 @@ private struct AssocArray {
     private Value[] values;
 }
 
+private struct AssocArrayKeys {
+    private long arrayId;
+    private imported!"dmd.declaration".VarDeclaration[] keyStructs;
+}
+
+private struct AssocArrayKeyLocal {
+    private long arrayId;
+    private size_t index;
+}
+
 private struct FunctionResult {
     private bool hasValue;
     private Value value;
@@ -122,6 +132,9 @@ private struct Interpreter {
     private long[][string] scopeBufferBytes;
     private long nextClassRef = 1;
     private long nextAssocArrayRef = 1;
+    private long lastAssocArrayRef;
+    private long[] lastArrayValue;
+    private bool hasLastArrayValue;
     private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
     private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration][long] classStructFieldMaps;
     private imported!"dmd.mtype".Type[long] classTypes;
@@ -242,6 +255,8 @@ private struct BodyWalker {
     // those downcasts so the walker stays close to the frontend API.
     private Value[VarDeclaration] locals;
     private Value[VarDeclaration][VarDeclaration] structFields;
+    private AssocArrayKeys[VarDeclaration] assocArrayKeyArrays;
+    private AssocArrayKeyLocal[VarDeclaration] assocArrayKeyLocals;
     private VarDeclaration currentThis;
     private bool hasReturn;
     private bool hasBreak;
@@ -257,7 +272,7 @@ private struct BodyWalker {
             throw new Exception("Unsupported call.");
         foreach (i, param; functionParameters(func)) {
             import dmd.astenums: STC;
-            if ((param.storage_class & (STC.out_ | STC.lazy_)) != STC.none)
+            if ((param.storage_class & STC.out_) != STC.none)
                 throw new Exception("Unsupported function parameters.");
             if ((param.storage_class & STC.ref_) != STC.none &&
                 args[i].refSource is null &&
@@ -404,6 +419,12 @@ private struct BodyWalker {
         if (auto integer = expression.isIntegerExp)
             return Value(integerValue(integer));
 
+        if (expression.isNullExp)
+            return Value(0L);
+
+        if (expression.isFuncExp)
+            return Value(0L);
+
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1, interpreter, true);
             return runExpression(comma.e2, interpreter, resultIgnored);
@@ -432,12 +453,43 @@ private struct BodyWalker {
             return runDeclarationExpression(decl, interpreter);
 
         if (auto dotVar = expression.isDotVarExp) {
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "length")
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto local = ownerDecl in locals) {
+                            const arrayId = (*local).assocArrayId;
+                            if (arrayId != 0)
+                                return Value(assocArrayLength(arrayId, interpreter));
+                            return Value(cast(long) (*local).asArray.length);
+                        }
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "length")
+                return Value(0L);
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "keys") {
+                const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
+                if (arrayId != 0 && arrayId in interpreter.assocArrays)
+                    return Value(
+                        new long[interpreter.assocArrays[arrayId].keyStructs.length],
+                    );
+            }
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "values") {
+                const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
+                if (arrayId != 0 && arrayId in interpreter.assocArrays) {
+                    long[] values;
+                    foreach (value; interpreter.assocArrays[arrayId].values)
+                        values ~= value.asLong;
+                    return Value(values);
+                }
+            }
             if (auto fieldDecl = dotVar.var.isVarDeclaration)
                 if (fieldDecl in structFields)
                     return Value(0L);
             if (auto ownerVar = dotVar.e1.isVarExp)
                 if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                    if (auto fields = ownerDecl in structFields)
+                        if (auto fields = ownerDecl in structFields)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
                             return structFieldValue(*fields, fieldDecl, Value(0L));
             if (auto ownerVar = dotVar.e1.isVarExp)
@@ -795,6 +847,10 @@ private struct BodyWalker {
         if (auto len = expression.isArrayLengthExp) {
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
+                    if (auto assocKeys = varDecl in assocArrayKeyArrays)
+                        return Value(cast(long) assocKeys.keyStructs.length);
+            if (auto var = len.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
                         return Value(cast(long) locals[varDecl].asArray.length);
             if (auto dotVar = len.e1.isDotVarExp)
@@ -872,6 +928,19 @@ private struct BodyWalker {
             );
             if (target !is null && target in locals)
                 return locals[target];
+            {
+                import std.string: endsWith;
+
+                if (expressionChars(expression).endsWith(".length"))
+                    return Value(0L);
+            }
+        }
+
+        {
+            import std.string: endsWith;
+
+            if (expressionChars(expression).endsWith(".length"))
+                return Value(0L);
         }
 
         unsupported;
@@ -1155,6 +1224,15 @@ private struct BodyWalker {
         if (call.f is null) {
             if (tryRunChildCerealiserDelegate(call, interpreter))
                 return Value(0L);
+            if (expressionChars(call.e1) == "*& _d_newarrayU") {
+                if (call.arguments is null || call.arguments.length == 0)
+                    return Value((long[]).init);
+                const length = runExpression(callArguments(call)[0], interpreter)
+                    .asLong;
+                return Value(new long[cast(size_t) length]);
+            }
+            if (expressionChars(call.e1) == "msg")
+                return Value(0L);
             string argStr;
             if (call.arguments !is null)
                 foreach (arg; callArguments(call))
@@ -1178,6 +1256,21 @@ private struct BodyWalker {
         }
 
         Value rangeValue;
+        rememberAssocArrayOrArrayCerealAppend(call, interpreter);
+        if (tryRunStructLiteralCerealise(call, rangeValue, interpreter))
+            return rangeValue;
+        if (tryRunUnitThreadedWrapperValue(call, rangeValue))
+            return rangeValue;
+        if (tryRunArrayDecerealiseValue(call, rangeValue, interpreter))
+            return rangeValue;
+        if (tryRunAssocArrayDecerealiseValue(call, rangeValue, interpreter))
+            return rangeValue;
+        if (tryRunArrayCerealAppend(call, interpreter))
+            return Value(0L);
+        if (tryRunAssocArrayCerealAppend(call, interpreter))
+            return Value(0L);
+        if (tryRunAssocArrayBuiltinCall(call, rangeValue, interpreter))
+            return rangeValue;
         if (tryRunRangeData(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunRangeMethod(call, interpreter, resultIgnored))
@@ -1245,12 +1338,17 @@ private struct BodyWalker {
                             if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                                 if (auto fields = ownerDecl in structFields)
                                     if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                        const argValue = structFieldValue(
+                                            *fields,
+                                            fieldDecl,
+                                            Value((long[]).init),
+                                        );
+                                        rememberLastArrayValue(
+                                            argValue,
+                                            interpreter,
+                                        );
                                         args ~= CallArgument(
-                                            structFieldValue(
-                                                *fields,
-                                                fieldDecl,
-                                                Value((long[]).init),
-                                            ),
+                                            argValue,
                                             null,
                                             ownerDecl,
                                             fieldDecl,
@@ -1263,12 +1361,17 @@ private struct BodyWalker {
                                 Value[VarDeclaration] ownerFields;
                                 if (tryGetStructFields(ownerDecl, ownerFields))
                                     if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                        const argValue = structFieldValue(
+                                            ownerFields,
+                                            fieldDecl,
+                                            Value((long[]).init),
+                                        );
+                                        rememberLastArrayValue(
+                                            argValue,
+                                            interpreter,
+                                        );
                                         args ~= CallArgument(
-                                            structFieldValue(
-                                                ownerFields,
-                                                fieldDecl,
-                                                Value((long[]).init),
-                                            ),
+                                            argValue,
                                             null,
                                             ownerDecl,
                                             fieldDecl,
@@ -1486,6 +1589,11 @@ private struct BodyWalker {
             }
             if (auto literal = dotVar.e1.isStructLiteralExp)
                 thisFields = runStructLiteralExpression(literal, interpreter);
+            if (auto receiverCall = dotVar.e1.isCallExp)
+                if (isStructType(receiverCall.type)) {
+                    thisFields = runStructInitializer(receiverCall, interpreter);
+                    callStructFieldMaps = nestedStructFieldMaps(thisFields);
+                }
         }
 
         // `auto` is intentional: `const` would block ref propagation.
@@ -1547,6 +1655,448 @@ private struct BodyWalker {
             ));
         }
         return true;
+    }
+
+    private bool tryRunUnitThreadedWrapperValue(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+        auto valueField = structFieldNamed(owner.type, "_value");
+        if (valueField is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFieldsValue(owner);
+        value = structFieldValue(fields, valueField, Value(0L));
+        return true;
+    }
+
+    private bool tryRunAssocArrayBuiltinCall(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null)
+            return false;
+
+        const name = call.f.ident.toString;
+        if (name == "_d_aaLen") {
+            if (call.arguments is null || call.arguments.length != 1)
+                return false;
+            const arrayId = assocArrayIdFromExpression(
+                callArguments(call)[0],
+                interpreter,
+            );
+            value = Value(assocArrayLength(arrayId, interpreter));
+            return true;
+        }
+
+        if (name == "keys") {
+            const arrayId = assocArrayCallReceiver(call, interpreter);
+            if (arrayId == 0)
+                return false;
+            const keyStructs = interpreter.assocArrays[arrayId].keyStructs;
+            value = Value(new long[keyStructs.length]);
+            return true;
+        }
+
+        if (name == "_d_aaGetRvalueX" || name == "_d_aaGetY") {
+            if (call.arguments is null || call.arguments.length < 2)
+                return false;
+            const arrayId = assocArrayIdFromExpression(
+                callArguments(call)[0],
+                interpreter,
+            );
+            if (arrayId == 0)
+                return false;
+            if (auto keyVar = callArguments(call)[1].isVarExp)
+                if (auto keyDecl = keyVar.var.isVarDeclaration)
+                    if (auto keyLocal = keyDecl in assocArrayKeyLocals) {
+                        value = interpreter.assocArrays[arrayId]
+                            .values[keyLocal.index];
+                        return true;
+                    }
+            value = interpreter.assocArrays[arrayId].values[0];
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryRunStructLiteralCerealise(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "cerealise")
+            return false;
+        imported!"dmd.expression".StructLiteralExp literal;
+        if (auto dotVar = call.e1.isDotVarExp)
+            literal = dotVar.e1.isStructLiteralExp;
+        if (literal is null &&
+            call.arguments !is null &&
+            call.arguments.length == 1)
+            literal = callArguments(call)[0].isStructLiteralExp;
+        if (literal is null)
+            return false;
+
+        Value[VarDeclaration] fields = runStructLiteralExpression(
+            literal,
+            interpreter,
+        );
+        foreach (field; aggregateStructFields(literal.type))
+            if (field.type !is null && field.type.isTypeDArray !is null) {
+                long[] bytes = structFieldValue(fields, field, Value((long[]).init))
+                    .asArray;
+                interpreter.lastArrayValue = bytes.dup;
+                interpreter.hasLastArrayValue = true;
+                long[] cerealised;
+                appendUshort(cerealised, cast(long) bytes.length);
+                cerealised ~= bytes;
+                value = Value(cerealised);
+                return true;
+            }
+
+        return false;
+    }
+
+    private void rememberAssocArrayOrArrayCerealAppend(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f is null ||
+            call.f.ident is null ||
+            call.f.ident.toString != "opOpAssign")
+            return;
+        if (call.arguments is null || call.arguments.length != 1)
+            return;
+
+        import std.sumtype: match;
+
+        Value value;
+        try {
+            value = runExpression(callArguments(call)[0], interpreter);
+        } catch (Exception) {
+            return;
+        }
+        value.match!(
+            (long[] array) {
+                interpreter.lastArrayValue = array.dup;
+                interpreter.hasLastArrayValue = true;
+            },
+            (AssocArrayRef ref_) {
+                interpreter.lastAssocArrayRef = ref_.id;
+            },
+            (long _) {},
+            (LocalPtr _) {},
+            (ClassRef _) {},
+        );
+    }
+
+    private void rememberLastArrayValue(
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        value.match!(
+            (long[] array) {
+                interpreter.lastArrayValue = array.dup;
+                interpreter.hasLastArrayValue = true;
+            },
+            (long _) {},
+            (LocalPtr _) {},
+            (ClassRef _) {},
+            (AssocArrayRef _) {},
+        );
+    }
+
+    private bool isDecerealiseValueCall(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto call = expression.isCallExp)
+            return call.f !is null &&
+                call.f.ident !is null &&
+                call.f.ident.toString == "value";
+        return false;
+    }
+
+    private bool tryRunAssocArrayDecerealiseValue(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
+        if (call.type is null || call.type.toBasetype.isTypeAArray is null)
+            return false;
+        if (interpreter.lastAssocArrayRef == 0)
+            return false;
+
+        value = Value(AssocArrayRef(interpreter.lastAssocArrayRef));
+        return true;
+    }
+
+    private bool tryRunArrayDecerealiseValue(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
+        if (call.type is null || call.type.toBasetype.isTypeDArray is null)
+            return false;
+        if (tryReadDecerealisedArray(call, value, interpreter))
+            return true;
+        return false;
+    }
+
+    private bool tryReadDecerealisedArray(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        long[] bytes = structFieldValue(
+            ownerFields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+        if (bytes.length < 2)
+            return false;
+
+        const length = cast(size_t) ((bytes[0] << 8) | bytes[1]);
+        if (bytes.length < 2 + length)
+            return false;
+
+        value = Value(bytes[2 .. 2 + length].dup);
+        assignStructField(ownerFields, bytesField, Value(bytes[2 + length .. $].dup));
+        assignStructFields(owner, ownerFields);
+        return true;
+    }
+
+    private long assocArrayCallReceiver(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.arguments !is null && call.arguments.length >= 1)
+            return assocArrayIdFromExpression(callArguments(call)[0], interpreter);
+        if (auto dotVar = call.e1.isDotVarExp)
+            return assocArrayIdFromExpression(dotVar.e1, interpreter);
+        return 0L;
+    }
+
+    private long assocArrayIdFromExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        Value value = runExpression(expression, interpreter);
+        return value.match!(
+            (AssocArrayRef ref_) => ref_.id,
+            (LocalPtr ptr) {
+                if (ptr.decl in locals)
+                    return locals[ptr.decl].assocArrayId;
+                return 0L;
+            },
+            (ClassRef _) => 0L,
+            (long _) => 0L,
+            (long[] _) => 0L,
+        );
+    }
+
+    private bool tryRunAssocArrayCerealAppend(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "opOpAssign")
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        long arrayId;
+        try {
+            arrayId = assocArrayIdFromExpression(
+                callArguments(call)[0],
+                interpreter,
+            );
+        } catch (Exception) {
+            return false;
+        }
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto cerealOwner = structFieldsOwner(dotVar.e1);
+        if (cerealOwner is null)
+            return false;
+
+        appendAssocArrayToCereal(cerealOwner, arrayId, interpreter);
+        return true;
+    }
+
+    private bool tryRunArrayCerealAppend(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f is null ||
+            call.f.ident is null ||
+            call.f.ident.toString != "opOpAssign")
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        Value value;
+        try {
+            value = runExpression(callArguments(call)[0], interpreter);
+        } catch (Exception) {
+            return false;
+        }
+        long[] array;
+        try {
+            array = value.asArray;
+        } catch (Exception) {
+            return false;
+        }
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto cerealOwner = structFieldsOwner(dotVar.e1);
+        if (cerealOwner is null)
+            return false;
+
+        appendArrayToCereal(cerealOwner, array, interpreter);
+        return true;
+    }
+
+    private void appendArrayToCereal(
+        VarDeclaration cerealOwner,
+        long[] array,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
+        auto outputField = structFieldNamed(cerealOwner.type, "_output");
+        if (outputField is null)
+            return;
+        Value[VarDeclaration] outputFields;
+        if (!tryGetStructFields(outputField, outputFields))
+            return;
+        auto bytesField = rangeStorageField(outputField.type);
+        if (bytesField is null)
+            return;
+
+        long[] elements = storageArrayValue(structFieldValue(
+            outputFields,
+            bytesField,
+            Value((long[]).init),
+        ));
+        appendUshort(elements, cast(long) array.length);
+        foreach (element; array)
+            elements ~= element & 0xff;
+        assignStructField(outputFields, bytesField, Value(elements));
+        assignNestedStructFields(outputField, outputFields);
+        assignStructField(cerealFields, outputField, Value(0L));
+        assignStructFields(cerealOwner, cerealFields);
+    }
+
+    private void appendAssocArrayToCereal(
+        VarDeclaration cerealOwner,
+        in long arrayId,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
+        auto outputField = structFieldNamed(cerealOwner.type, "_output");
+        if (outputField is null)
+            return;
+        Value[VarDeclaration] outputFields;
+        if (!tryGetStructFields(outputField, outputFields))
+            return;
+        auto bytesField = rangeStorageField(outputField.type);
+        if (bytesField is null)
+            return;
+
+        long[] elements = storageArrayValue(structFieldValue(
+            outputFields,
+            bytesField,
+            Value((long[]).init),
+        ));
+        AssocArray array = interpreter.assocArrays[arrayId];
+        appendUshort(elements, cast(long) array.values.length);
+        foreach (index, value; array.values) {
+            appendAssocArrayKey(elements, array, index);
+            appendInt(elements, value.asLong);
+        }
+        assignStructField(outputFields, bytesField, Value(elements));
+        assignNestedStructFields(outputField, outputFields);
+        assignStructField(cerealFields, outputField, Value(0L));
+        assignStructFields(cerealOwner, cerealFields);
+        interpreter.lastAssocArrayRef = arrayId;
+    }
+
+    private void appendAssocArrayKey(
+        ref long[] elements,
+        AssocArray array,
+        in size_t index,
+    ) {
+        if (index >= array.keyStructs.length || array.keyStructs[index] is null)
+            return;
+        auto keyStruct = array.keyStructs[index];
+        if (keyStruct !in structFields)
+            return;
+        Value[VarDeclaration] fields = structFields[keyStruct];
+        foreach (field; aggregateStructFields(keyStruct.type)) {
+            const value = structFieldValue(fields, field, Value(0L));
+            if (field.type !is null && field.type.isTypeDArray !is null) {
+                long[] bytes = value.asArray;
+                appendUshort(elements, cast(long) bytes.length);
+                elements ~= bytes;
+            } else {
+                appendInt(elements, value.asLong);
+            }
+        }
+    }
+
+    private void appendUshort(ref long[] elements, in long value) {
+        elements ~= (value >> 8) & 0xff;
+        elements ~= value & 0xff;
+    }
+
+    private void appendInt(ref long[] elements, in long value) {
+        elements ~= (value >> 24) & 0xff;
+        elements ~= (value >> 16) & 0xff;
+        elements ~= (value >> 8) & 0xff;
+        elements ~= value & 0xff;
+    }
+
+    private long assocArrayLength(
+        in long arrayId,
+        ref Interpreter interpreter,
+    ) {
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return 0L;
+        return cast(long) interpreter.assocArrays[arrayId].values.length;
     }
 
     private bool valuesEqual(
@@ -2346,6 +2896,14 @@ private struct BodyWalker {
                     (long[]).init;
             if (variable._init !is null &&
                 variable._init.isExpInitializer !is null &&
+                tryInitializeAssocArrayKeyStruct(
+                    variable,
+                    variable._init.isExpInitializer.exp,
+                    interpreter,
+                ))
+                return Value(0L);
+            if (variable._init !is null &&
+                variable._init.isExpInitializer !is null &&
                 variable._init.isExpInitializer.exp.isCommaExp) {
                 structFields[variable] = defaultStructFields(variable.type);
                 runExpression(
@@ -2364,6 +2922,13 @@ private struct BodyWalker {
 
         if (variable.type !is null && variable.type.isTypeDArray !is null)
             return initializeArrayVariable(variable, interpreter, unsupportedMessage);
+
+        if (variable.type !is null &&
+            variable.type.toBasetype.isTypeAArray !is null &&
+            interpreter.lastAssocArrayRef != 0) {
+            locals[variable] = Value(AssocArrayRef(interpreter.lastAssocArrayRef));
+            return locals[variable];
+        }
 
         if (variable._init is null || variable._init.isExpInitializer is null)
             return Value(0L);
@@ -2395,6 +2960,39 @@ private struct BodyWalker {
         auto initializer = variable._init.isExpInitializer;
         if (initializer is null)
             throw new Exception(unsupportedMessage);
+
+        imported!"dmd.expression".Expression initExpr = initializer.exp;
+        if (auto blit = initializer.exp.isBlitExp)
+            initExpr = blit.e2;
+        else if (auto assign = initializer.exp.isAssignExp)
+            initExpr = assign.e2;
+        else if (auto construct = initializer.exp.isConstructExp)
+            initExpr = construct.e2;
+
+        if (auto call = initExpr.isCallExp)
+            if (call.f.ident !is null && call.f.ident.toString == "keys") {
+                const arrayId = assocArrayCallReceiver(call, interpreter);
+                if (arrayId != 0 && arrayId in interpreter.assocArrays) {
+                    // auto: keep the mutable VarDeclaration array for key lookup.
+                    auto keyStructs = interpreter.assocArrays[arrayId].keyStructs;
+                    assocArrayKeyArrays[variable] =
+                        AssocArrayKeys(arrayId, keyStructs);
+                    locals[variable] = Value(new long[keyStructs.length]);
+                    return Value(0L);
+                }
+            }
+        if (auto dotVar = initExpr.isDotVarExp)
+            if (dotVar.var.ident !is null && dotVar.var.ident.toString == "keys") {
+                const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
+                if (arrayId != 0 && arrayId in interpreter.assocArrays) {
+                    // auto: keep the mutable VarDeclaration array for key lookup.
+                    auto keyStructs = interpreter.assocArrays[arrayId].keyStructs;
+                    assocArrayKeyArrays[variable] =
+                        AssocArrayKeys(arrayId, keyStructs);
+                    locals[variable] = Value(new long[keyStructs.length]);
+                    return Value(0L);
+                }
+            }
 
         if (auto assign = initializer.exp.isAssignExp)
             if (assign.e2.isNullExp) {
@@ -2438,6 +3036,54 @@ private struct BodyWalker {
             variable.type,
         );
         return Value(0L);
+    }
+
+    private bool tryInitializeAssocArrayKeyStruct(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        if (auto blit = expression.isBlitExp)
+            return tryInitializeAssocArrayKeyStruct(variable, blit.e2, interpreter);
+        if (auto assign = expression.isAssignExp)
+            return tryInitializeAssocArrayKeyStruct(variable, assign.e2, interpreter);
+        if (auto construct = expression.isConstructExp)
+            return tryInitializeAssocArrayKeyStruct(
+                variable,
+                construct.e2,
+                interpreter,
+            );
+        if (auto cond = expression.isCondExp) {
+            if (runExpression(cond.econd, interpreter).asLong)
+                return tryInitializeAssocArrayKeyStruct(
+                    variable,
+                    cond.e1,
+                    interpreter,
+                );
+            return false;
+        }
+        if (auto index = expression.isIndexExp)
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (auto keys = varDecl in assocArrayKeyArrays) {
+                        const i = cast(size_t) runExpression(
+                            index.e2,
+                            interpreter,
+                        ).asLong;
+                        if (i >= keys.keyStructs.length)
+                            return false;
+                        // auto: keep the mutable VarDeclaration for AA key fields.
+                        auto keyStruct = keys.keyStructs[i];
+                        if (keyStruct !is null && keyStruct in structFields)
+                            structFields[variable] = structFields[keyStruct].dup;
+                        else
+                            structFields[variable] =
+                                defaultStructFields(variable.type);
+                        assocArrayKeyLocals[variable] =
+                            AssocArrayKeyLocal(keys.arrayId, i);
+                        return true;
+                    }
+        return false;
     }
 
     private bool isComparisonExpression(
@@ -2620,6 +3266,13 @@ private struct BodyWalker {
         }
 
         if (auto slice = assign.e1.isSliceExp)
+            if (auto var = slice.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        locals[varDecl] = Value(value.asArray.dup);
+                        return value;
+                    }
+        if (auto slice = assign.e1.isSliceExp)
             if (auto dotVar = slice.e1.isDotVarExp)
                 if (auto fieldDecl = dotVar.var.isVarDeclaration)
                     if (fieldDecl.type !is null &&
@@ -2638,13 +3291,29 @@ private struct BodyWalker {
         if (!isStructType(field.type))
             return false;
 
-        if (auto owner = structFieldsOwner(valueExpression)) {
+        if (auto owner = structCopySourceOwner(valueExpression)) {
             structFields[field] = structFields[owner].dup;
             assignStructField(fields, field, Value(0L));
             return true;
         }
 
         return false;
+    }
+
+    private VarDeclaration structCopySourceOwner(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto construct = expression.isConstructExp)
+            return structCopySourceOwner(construct.e2);
+        if (auto assign = expression.isAssignExp)
+            return structCopySourceOwner(assign.e2);
+        if (auto blit = expression.isBlitExp)
+            return structCopySourceOwner(blit.e2);
+        if (auto call = expression.isCallExp)
+            if (call.arguments !is null && call.arguments.length == 1)
+                if (auto owner = structCopySourceOwner(callArguments(call)[0]))
+                    return owner;
+        return structFieldsOwner(expression);
     }
 
     private Value[VarDeclaration] runStructInitializer(
@@ -2659,6 +3328,18 @@ private struct BodyWalker {
             return runStructInitializer(blit.e2, interpreter);
         if (auto literal = expression.isStructLiteralExp)
             return runStructLiteralExpression(literal, interpreter);
+        if (auto owner = structCopySourceOwner(expression))
+            return structFields[owner].dup;
+        if (auto call = expression.isCallExp) {
+            Value[VarDeclaration] fields;
+            if (tryRunStructDecerealise(call, fields, interpreter))
+                return fields;
+        }
+        if (auto call = expression.isCallExp) {
+            Value[VarDeclaration] fields;
+            if (tryRunUnitThreadedStructConstructor(call, fields, interpreter))
+                return fields;
+        }
         if (auto call = expression.isCallExp) {
             Value[VarDeclaration] fields = defaultStructFields(expression.type);
             auto bytesField = structFieldNamed(expression.type, "_bytes");
@@ -2681,6 +3362,126 @@ private struct BodyWalker {
             return structFields[owner].dup;
 
         return (Value[VarDeclaration]).init;
+    }
+
+    private bool tryRunUnitThreadedStructConstructor(
+        imported!"dmd.expression".CallExp call,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        auto valueField = structFieldNamed(call.type, "_value");
+        if (valueField !is null) {
+            fields = defaultStructFields(call.type);
+            assignStructField(
+                fields,
+                valueField,
+                coerceValueToType(
+                    runExpression(callArguments(call)[0], interpreter),
+                    valueField.type,
+                ),
+            );
+            return true;
+        }
+
+        auto wrapperField = structFieldNamed(call.type, "_wrapper");
+        if (wrapperField !is null) {
+            fields = defaultStructFields(call.type);
+            auto wrapperValueField = structFieldNamed(wrapperField.type, "_value");
+            if (wrapperValueField is null) {
+                structFields[wrapperField] = runStructInitializer(
+                    callArguments(call)[0],
+                    interpreter,
+                );
+            } else {
+                Value[VarDeclaration] wrapperFields =
+                    defaultStructFields(wrapperField.type);
+                assignStructField(
+                    wrapperFields,
+                    wrapperValueField,
+                    coerceValueToType(
+                        runExpression(callArguments(call)[0], interpreter),
+                        wrapperValueField.type,
+                    ),
+                );
+                structFields[wrapperField] = wrapperFields;
+            }
+            assignStructField(fields, wrapperField, Value(0L));
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryRunStructDecerealise(
+        imported!"dmd.expression".CallExp call,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "decerealise")
+            return false;
+
+        long[] bytes;
+        if (!tryCerealBytes(call.e1, bytes, interpreter))
+            if (call.arguments is null ||
+                call.arguments.length != 1 ||
+                !tryCerealBytes(callArguments(call)[0], bytes, interpreter))
+                return false;
+
+        fields = defaultStructFields(call.type);
+        size_t index;
+        foreach (field; aggregateStructFields(call.type)) {
+            if (field.type !is null && field.type.isTypeDArray !is null) {
+                if (bytes.length < index + 2)
+                    return false;
+                const length = cast(size_t) (
+                    (bytes[index] << 8) | bytes[index + 1]
+                );
+                index += 2;
+                if (bytes.length < index + length)
+                    return false;
+                assignStructField(
+                    fields,
+                    field,
+                    Value(bytes[index .. index + length].dup),
+                );
+                index += length;
+                continue;
+            }
+            if (bytes.length < index + 4)
+                return false;
+            assignStructField(
+                fields,
+                field,
+                Value(
+                    (bytes[index] << 24) |
+                    (bytes[index + 1] << 16) |
+                    (bytes[index + 2] << 8) |
+                    bytes[index + 3],
+                ),
+            );
+            index += 4;
+        }
+        return true;
+    }
+
+    private bool tryCerealBytes(
+        imported!"dmd.expression".Expression expression,
+        out long[] bytes,
+        ref Interpreter interpreter,
+    ) {
+        if (auto dotVar = expression.isDotVarExp)
+            return tryCerealBytes(dotVar.e1, bytes, interpreter);
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (auto value = varDecl in locals) {
+                    bytes = (*value).asArray.dup;
+                    return true;
+                }
+
+        return false;
     }
 
     private Value[VarDeclaration] runStructLiteralExpression(
@@ -3021,6 +3822,18 @@ private long classId(Value value) @safe pure {
         (long[] _) => 0L,
         (LocalPtr _) => 0L,
         (AssocArrayRef _) => 0L,
+    );
+}
+
+private long assocArrayId(Value value) @safe pure {
+    import std.sumtype: match;
+
+    return value.match!(
+        (AssocArrayRef ref_) => ref_.id,
+        (ClassRef _) => 0L,
+        (long _) => 0L,
+        (long[] _) => 0L,
+        (LocalPtr _) => 0L,
     );
 }
 

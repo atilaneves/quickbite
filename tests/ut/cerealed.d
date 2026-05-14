@@ -57,6 +57,7 @@ private enum bool shouldFailCerealedTest(
         backend != ExecutorBackend.treeWalking ||
         (
             fileName != "cerealiser_impl.d" &&
+            fileName != "bugs.d" &&
             fileName != "classes.d" &&
             fileName != "utils.d"
         )
