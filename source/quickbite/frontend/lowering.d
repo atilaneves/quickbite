@@ -372,7 +372,7 @@ struct BodyLowerer {
             pendingDefaultInstructionIndices[statement.sdefault] = [jumpIndex];
         }
 
-        pendingUnlabelledBreakInstructionIndices ~= [];
+        pendingUnlabelledBreakInstructionIndices ~= cast(size_t[]) [];
         lowerStatement(statement._body, lowerer);
 
         foreach (jumpIndex; pendingUnlabelledBreakInstructionIndices[$ - 1])
