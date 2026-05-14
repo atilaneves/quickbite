@@ -168,6 +168,9 @@ struct BodyLowerer {
             return;
         }
 
+        if (statement.isDtorExpStatement !is null)
+            return;
+
         if (auto expressionStatement = statement.isExpStatement) {
             lowerExpression(expressionStatement.exp, lowerer);
             return;
