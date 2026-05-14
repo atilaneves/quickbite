@@ -1021,6 +1021,9 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto append = expression.isCatAssignExp)
+            return lowerArrayAppendAssignment(append, lowerer);
+
         if (auto append = expression.isCatElemAssignExp)
             return lowerArrayAppendAssignment(append, lowerer);
 
@@ -3052,12 +3055,42 @@ struct BodyLowerer {
         imported!"dmd.expression".BinAssignExp assignment,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArrayAppend, Instruction;
+        import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray,
+            Instruction;
         import std.conv: text;
 
-        if (auto dot = assignment.e1.isDotVarExp) {
+        auto target = assignment.e1;
+        while (true) {
+            if (auto cast_ = target.isCastExp) {
+                target = cast_.e1;
+                continue;
+            }
+
+            if (auto comma = target.isCommaExp) {
+                lowerExpression(comma.e1, lowerer);
+                target = comma.e2;
+                continue;
+            }
+
+            if (auto address = target.isAddrExp) {
+                target = address.e1;
+                continue;
+            }
+
+            break;
+        }
+
+        if (auto dot = target.isDotVarExp) {
             const destination = lowerStructFieldRead(dot, lowerer);
             const value = lowerExpression(assignment.e2, lowerer);
+            if (typeIsDynamicArray(assignment.e2.type)) {
+                instructions ~= Instruction(ArrayAppendArray(
+                    destination,
+                    value,
+                ));
+                return destination;
+            }
+
             instructions ~= Instruction(ArrayAppend(
                 destination,
                 value,
@@ -3065,9 +3098,48 @@ struct BodyLowerer {
             return destination;
         }
 
-        auto variable = assignment.e1.isVarExp;
+        if (auto identifier = target.isIdentifierExp) {
+            const name = identifierName(identifier);
+            uint destination;
+            if (auto temporary = name in identifierTemporaries)
+                destination = *temporary;
+            else if (
+                isThisFieldName(name) ||
+                isThisFieldName("_" ~ name)
+            )
+                destination = lowerExpression(target, lowerer);
+            else
+                throw new Exception(text(
+                    "Unsupported expression: ",
+                    assignment.op,
+                    " ",
+                    expressionChars(target),
+                ));
+
+            const value = lowerExpression(assignment.e2, lowerer);
+            if (typeIsDynamicArray(assignment.e2.type)) {
+                instructions ~= Instruction(ArrayAppendArray(
+                    destination,
+                    value,
+                ));
+                return destination;
+            }
+
+            instructions ~= Instruction(ArrayAppend(
+                destination,
+                value,
+            ));
+            return destination;
+        }
+
+        auto variable = target.isVarExp;
         if (variable is null)
-            throw new Exception(text("Unsupported expression: ", assignment.op));
+            throw new Exception(text(
+                "Unsupported expression: ",
+                assignment.op,
+                " ",
+                expressionChars(target),
+            ));
 
         auto declaration = variable.var.isVarDeclaration;
         if (declaration is null)
@@ -3075,9 +3147,17 @@ struct BodyLowerer {
 
         auto destination = declaration in localTemporaries;
         if (destination is null)
-            throw new Exception(text("Unsupported expression: ", expressionChars(assignment.e1)));
+            throw new Exception(text("Unsupported expression: ", expressionChars(target)));
 
         const value = lowerExpression(assignment.e2, lowerer);
+        if (typeIsDynamicArray(assignment.e2.type)) {
+            instructions ~= Instruction(ArrayAppendArray(
+                *destination,
+                value,
+            ));
+            return *destination;
+        }
+
         instructions ~= Instruction(ArrayAppend(
             *destination,
             value,
