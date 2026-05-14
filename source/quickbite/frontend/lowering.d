@@ -170,6 +170,11 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto withStatement = statement.isWithStatement) {
+            lowerStatement(withStatement._body, lowerer);
+            return;
+        }
+
         if (auto switchStatement = statement.isSwitchStatement) {
             lowerSwitchStatement(switchStatement, lowerer);
             return;
