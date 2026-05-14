@@ -1244,8 +1244,9 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            Assert_, BinaryOp, CastInt, ConstInt, Instruction, Operation,
-            StructNew, StructSet, UnaryOp, UnaryOperation;
+            ArrayLiteral, ArraySetLength, Assert_, BinaryOp, CastInt,
+            ConstInt, Instruction, Operation, StructNew, StructSet, UnaryOp,
+            UnaryOperation;
 
         const name = expressionChars(call.e1);
 
@@ -1298,6 +1299,18 @@ struct BodyLowerer {
                 imported!"quickbite.ir.instruction".IntegerType.u32,
             ));
             instructions ~= Instruction(StructSet(result, "hi", hi));
+            return true;
+        }
+
+        if (name == "*& _d_newarrayU") {
+            result = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(result, []));
+
+            if (call.arguments is null || call.arguments.length == 0)
+                return true;
+
+            const length = lowerExpression(callArguments(call)[0], lowerer);
+            instructions ~= Instruction(ArraySetLength(result, length));
             return true;
         }
 
