@@ -814,6 +814,10 @@ struct BodyLowerer {
             )
                 return scopeBufferRangeResult;
 
+            uint scopeBufferResult;
+            if (tryLowerScopeBufferCall(call, lowerer, scopeBufferResult))
+                return scopeBufferResult;
+
             lowerer.ensureFunctionLowered(call.f);
             // `const` would make the array incompatible with Call.arguments.
             // auto: keep the mutable array type for restoring the field below.
@@ -1935,6 +1939,138 @@ struct BodyLowerer {
         lowerDefaultStructFields(result, thisType);
         instructions ~= Instruction(StructSet(result, "sbuf", scopeBuffer));
         return true;
+    }
+
+    bool tryLowerScopeBufferCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        if (!callHasScopeBufferReceiver(call))
+            return false;
+
+        const name = functionIdentifier(call.f);
+        if (name == "put") {
+            result = lowerScopeBufferPutCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "opSlice") {
+            result = lowerScopeBufferSliceCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "length") {
+            result = lowerScopeBufferLengthCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "free") {
+            result = lowerScopeBufferFreeCall(call, lowerer);
+            return true;
+        }
+
+        return false;
+    }
+
+    uint lowerScopeBufferPutCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray,
+            Instruction;
+
+        enforceCallArgumentCount(call, 1);
+        const array = lowerScopeBufferArray(call, lowerer);
+        // DMD expression helpers return mutable AST nodes.
+        auto argument = callArguments(call)[0];
+        const value = lowerExpression(argument, lowerer);
+        if (typeIsDynamicArray(argument.type)) {
+            instructions ~= Instruction(ArrayAppendArray(array, value));
+            return array;
+        }
+
+        instructions ~= Instruction(ArrayAppend(array, value));
+        return array;
+    }
+
+    uint lowerScopeBufferSliceCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArraySlice, Instruction;
+
+        const array = lowerScopeBufferArray(call, lowerer);
+        if (call.arguments is null || callArguments(call).length == 0)
+            return array;
+
+        enforceCallArgumentCount(call, 2);
+        const lower = lowerExpression(callArguments(call)[0], lowerer);
+        const upper = lowerExpression(callArguments(call)[1], lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(ArraySlice(result, array, lower, upper));
+        return result;
+    }
+
+    uint lowerScopeBufferLengthCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLength, ArraySetLength,
+            Instruction;
+
+        const array = lowerScopeBufferArray(call, lowerer);
+        if (call.arguments is null || callArguments(call).length == 0) {
+            const result = allocateTemporary;
+            instructions ~= Instruction(ArrayLength(result, array));
+            return result;
+        }
+
+        enforceCallArgumentCount(call, 1);
+        const length = lowerExpression(callArguments(call)[0], lowerer);
+        instructions ~= Instruction(ArraySetLength(array, length));
+        return array;
+    }
+
+    uint lowerScopeBufferFreeCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        enforceCallArgumentCount(call, 0);
+        lowerScopeBufferArray(call, lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(ConstInt(result, 0));
+        return result;
+    }
+
+    uint lowerScopeBufferArray(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+
+        const scopeBuffer = lowerScopeBufferReceiver(call, lowerer);
+        const array = allocateTemporary;
+        instructions ~= Instruction(StructGet(array, scopeBuffer, "arr"));
+        return array;
+    }
+
+    uint lowerScopeBufferReceiver(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructGet;
+
+        const receiver = lowerCallReceiver(call, lowerer);
+        if (callHasScopeBufferRangeReceiver(call)) {
+            const scopeBuffer = allocateTemporary;
+            instructions ~= Instruction(StructGet(scopeBuffer, receiver, "sbuf"));
+            return scopeBuffer;
+        }
+
+        return receiver;
     }
 
     uint lowerAppenderArray(
@@ -4205,6 +4341,16 @@ private bool typeIsAppender(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && typeChars(type).canFind("Appender!");
 }
 
+private bool typeIsScopeBuffer(imported!"dmd.mtype".Type type) @trusted {
+    import std.algorithm.searching: canFind;
+
+    return type !is null && typeChars(type).canFind("ScopeBuffer!");
+}
+
+private bool typeIsScopeBufferRange(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && typeChars(type) == "ScopeBufferRange";
+}
+
 private bool callHasAppenderReceiver(
     imported!"dmd.expression".CallExp call,
 ) @trusted {
@@ -4213,6 +4359,37 @@ private bool callHasAppenderReceiver(
 
     if (auto dot = call.e1.isDotTemplateInstanceExp)
         return typeIsAppender(dot.e1.type);
+
+    return false;
+}
+
+private bool callHasScopeBufferReceiver(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    return callHasScopeBufferDirectReceiver(call) ||
+        callHasScopeBufferRangeReceiver(call);
+}
+
+private bool callHasScopeBufferDirectReceiver(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    if (auto dot = call.e1.isDotVarExp)
+        return typeIsScopeBuffer(dot.e1.type);
+
+    if (auto dot = call.e1.isDotTemplateInstanceExp)
+        return typeIsScopeBuffer(dot.e1.type);
+
+    return false;
+}
+
+private bool callHasScopeBufferRangeReceiver(
+    imported!"dmd.expression".CallExp call,
+) @trusted {
+    if (auto dot = call.e1.isDotVarExp)
+        return typeIsScopeBufferRange(dot.e1.type);
+
+    if (auto dot = call.e1.isDotTemplateInstanceExp)
+        return typeIsScopeBufferRange(dot.e1.type);
 
     return false;
 }
