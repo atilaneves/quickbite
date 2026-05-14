@@ -799,7 +799,7 @@ struct BodyLowerer {
             const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(
                 destination,
-                realIntegerValue(real_),
+                realLiteralValue(real_),
             ));
             return destination;
         }
@@ -4568,7 +4568,21 @@ private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted
     return integer.getInteger();
 }
 
-private long realIntegerValue(imported!"dmd.expression".RealExp real_) @trusted {
+private long realLiteralValue(imported!"dmd.expression".RealExp real_) @trusted {
+    import dmd.astenums: TY;
+
+    const basetype = real_.type.toBasetype;
+
+    if (basetype.ty == TY.Tfloat32) {
+        float value = cast(float) real_.toReal();
+        return *cast(uint*) &value;
+    }
+
+    if (basetype.ty == TY.Tfloat64) {
+        double value = cast(double) real_.toReal();
+        return cast(long) *cast(ulong*) &value;
+    }
+
     return real_.toInteger();
 }
 
