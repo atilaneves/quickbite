@@ -1791,8 +1791,8 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            ArrayCopy, ArrayLiteral, Assert_, BinaryOp, ConstInt, Instruction,
-            Operation;
+            ArrayCopy, ArrayLength, ArrayLiteral, Assert_, BinaryOp, ConstInt,
+            Instruction, Operation;
 
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
@@ -1811,6 +1811,25 @@ struct BodyLowerer {
                 left,
                 right,
                 Operation.multiply,
+            ));
+            return true;
+        }
+
+        if (
+            functionIdentifier(call.f) == "_bytesHashAligned" ||
+            functionIdentifier(call.f) == "_bytesHashUnaligned"
+        ) {
+            enforceCallArgumentCount(call, 2);
+            const bytes = lowerExpression(callArguments(call)[0], lowerer);
+            const seed = lowerExpression(callArguments(call)[1], lowerer);
+            const length = allocateTemporary;
+            instructions ~= Instruction(ArrayLength(length, bytes));
+            result = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                result,
+                seed,
+                length,
+                Operation.add,
             ));
             return true;
         }
