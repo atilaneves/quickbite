@@ -120,6 +120,9 @@ struct BodyLowerer {
     private size_t[][] pendingUnlabelledBreakInstructionIndices;
     private size_t[][] pendingUnlabelledContinueInstructionIndices;
     private uint[] dollarArrays;
+    private bool hasThisTemporary;
+    private uint thisTemporary;
+    private bool[string] thisFieldNames;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
@@ -142,7 +145,7 @@ struct BodyLowerer {
         if (auto compound = statement.isCompoundStatement) {
             foreach (child; compoundStatements(compound)) {
                 lowerStatement(child, lowerer);
-                if (hasReturn)
+                if (hasReturn && !hasPendingGotos)
                     return;
             }
 
@@ -180,6 +183,11 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto tryCatch = statement.isTryCatchStatement) {
+            lowerStatement(tryCatch._body, lowerer);
+            return;
+        }
+
         if (auto switchStatement = statement.isSwitchStatement) {
             lowerSwitchStatement(switchStatement, lowerer);
             return;
@@ -187,6 +195,11 @@ struct BodyLowerer {
 
         if (auto gotoStatement = statement.isGotoStatement) {
             lowerGotoStatement(gotoStatement);
+            return;
+        }
+
+        if (auto gotoDefault = statement.isGotoDefaultStatement) {
+            lowerGotoDefaultStatement(gotoDefault);
             return;
         }
 
@@ -454,6 +467,20 @@ struct BodyLowerer {
             pendingGotoInstructionIndices[label] = [jumpIndex];
     }
 
+    void lowerGotoDefaultStatement(
+        imported!"dmd.statement".GotoDefaultStatement statement,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, Jump;
+
+        const jumpIndex = instructions.length;
+        instructions ~= Instruction(Jump(0));
+
+        if (auto pending = statement.sw.sdefault in pendingDefaultInstructionIndices)
+            *pending ~= jumpIndex;
+        else
+            pendingDefaultInstructionIndices[statement.sw.sdefault] = [jumpIndex];
+    }
+
     void lowerBreakStatement(
         imported!"dmd.statement".BreakStatement statement,
     ) @safe {
@@ -636,13 +663,17 @@ struct BodyLowerer {
             ));
     }
 
+    bool hasPendingGotos() @safe pure nothrow @nogc {
+        return pendingGotoInstructionIndices.length != 0;
+    }
+
     // DMD Expression downcast/accessor helpers are not const-qualified.
     uint lowerExpression(
         imported!"dmd.expression".Expression expression,
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
-            Operation, UnaryOp, UnaryOperation;
+            Operation, StructGet, UnaryOp, UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
             const destination = allocateTemporary;
@@ -905,6 +936,9 @@ struct BodyLowerer {
         if (auto blit = expression.isBlitExp)
             return lowerBlitAssignment(blit, lowerer);
 
+        if (auto assignment = expression.isLoweredAssignExp)
+            return lowerAssignment(assignment, lowerer);
+
         if (auto assignment = expression.isAssignExp)
             return lowerAssignment(assignment, lowerer);
 
@@ -990,12 +1024,37 @@ struct BodyLowerer {
         }
 
         if (auto identifier = expression.isIdentifierExp) {
-            if (auto temporary = identifierName(identifier) in identifierTemporaries)
+            const name = identifierName(identifier);
+            if (auto temporary = name in identifierTemporaries)
                 return *temporary;
 
-            if (identifierName(identifier) == "roundingMask") {
+            if (name == "roundingMask") {
                 const destination = allocateTemporary;
                 instructions ~= Instruction(ConstInt(destination, 0));
+                return destination;
+            }
+
+            if (name == "__dollar" && dollarArrays.length != 0)
+                return lowerDollar;
+
+            if (isThisFieldName(name)) {
+                const destination = allocateTemporary;
+                instructions ~= Instruction(StructGet(
+                    destination,
+                    thisTemporary,
+                    name,
+                ));
+                return destination;
+            }
+
+            const backingFieldName = "_" ~ name;
+            if (isThisFieldName(backingFieldName)) {
+                const destination = allocateTemporary;
+                instructions ~= Instruction(StructGet(
+                    destination,
+                    thisTemporary,
+                    backingFieldName,
+                ));
                 return destination;
             }
 
@@ -1421,7 +1480,7 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            Assert_, BinaryOp, ConstInt, Instruction, Operation;
+            ArrayLiteral, Assert_, BinaryOp, ConstInt, Instruction, Operation;
 
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
@@ -1483,6 +1542,20 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "isGraphical") {
+            enforceCallArgumentCount(call, 1);
+            lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 1));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "text") {
+            result = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(result, []));
+            return true;
+        }
+
         if (lowerer.functionName(call.f) == "gc_extend") {
             enforceCallArgumentCount(call, 3);
             const minimum = lowerExpression(callArguments(call)[1], lowerer);
@@ -1516,8 +1589,13 @@ struct BodyLowerer {
             return true;
         }
 
-        if (name == "_d_aaGetRvalueX" || name == "_d_aaGetY") {
+        if (name == "_d_aaGetRvalueX") {
             result = lowerAssocArrayIndexCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "_d_aaGetY") {
+            result = lowerAssocArrayValuePointerCall(call, lowerer);
             return true;
         }
 
@@ -1569,6 +1647,24 @@ struct BodyLowerer {
         const key = lowerExpression(callArguments(call)[1], lowerer);
         const destination = allocateTemporary;
         instructions ~= Instruction(AssocArrayIndex(
+            destination,
+            array,
+            key,
+        ));
+        return destination;
+    }
+
+    uint lowerAssocArrayValuePointerCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: AssocArrayValuePointer, Instruction;
+
+        enforceCallArgumentCount(call, 2);
+        const array = lowerExpression(callArguments(call)[0], lowerer);
+        const key = lowerExpression(callArguments(call)[1], lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(AssocArrayValuePointer(
             destination,
             array,
             key,
@@ -1636,11 +1732,22 @@ struct BodyLowerer {
         imported!"dmd.expression".CallExp call,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArrayAppend, Instruction;
+        import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray,
+            Instruction;
 
         enforceCallArgumentCount(call, 1);
         const array = lowerAppenderArray(call, lowerer);
-        const value = lowerExpression(callArguments(call)[0], lowerer);
+        // DMD expression helpers return mutable AST nodes.
+        auto argument = callArguments(call)[0];
+        const value = lowerExpression(argument, lowerer);
+        if (typeIsDynamicArray(argument.type)) {
+            instructions ~= Instruction(ArrayAppendArray(
+                array,
+                value,
+            ));
+            return array;
+        }
+
         instructions ~= Instruction(ArrayAppend(
             array,
             value,
@@ -1684,6 +1791,16 @@ struct BodyLowerer {
         import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
             StructSet;
         import std.conv: text;
+
+        if (typeIsClass(new_.newtype)) {
+            if (new_.arguments !is null)
+                foreach (argument; newArguments(new_))
+                    lowerExpression(argument, lowerer);
+
+            const destination = allocateTemporary;
+            instructions ~= Instruction(StructNew(destination));
+            return destination;
+        }
 
         if (!typeIsPointer(new_.type) || !typeIsStruct(new_.newtype))
             throw new Exception(text("Unsupported expression: ", new_.op));
@@ -1846,7 +1963,9 @@ struct BodyLowerer {
         const ifFalseJumpIndex = instructions.length;
         instructions ~= Instruction(JumpIfFalse(condition, 0));
 
-        const ifTrue = lowerExpression(expression.e1, lowerer);
+        const ifTrue = typeIsPointer(expression.type)
+            ? lowerPointerExpression(expression.e1, lowerer)
+            : lowerExpression(expression.e1, lowerer);
         instructions ~= Instruction(Copy(destination, ifTrue));
         const skipFalseJumpIndex = instructions.length;
         instructions ~= Instruction(Jump(0));
@@ -1857,7 +1976,9 @@ struct BodyLowerer {
             cast(int) (instructions.length - ifFalseJumpIndex - 1),
         );
 
-        const ifFalse = lowerExpression(expression.e2, lowerer);
+        const ifFalse = typeIsPointer(expression.type)
+            ? lowerPointerExpression(expression.e2, lowerer)
+            : lowerExpression(expression.e2, lowerer);
         instructions ~= Instruction(Copy(destination, ifFalse));
         replaceJumpOffset(
             instructions,
@@ -1865,6 +1986,29 @@ struct BodyLowerer {
             cast(int) (instructions.length - skipFalseJumpIndex),
         );
         return destination;
+    }
+
+    uint lowerPointerExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (auto index = expression.isIndexExp)
+            if (typeIsAssociativeArray(index.e1.type)) {
+                import quickbite.ir.instruction: AssocArrayValuePointer,
+                    Instruction;
+
+                const array = lowerExpression(index.e1, lowerer);
+                const key = lowerExpression(index.e2, lowerer);
+                const destination = allocateTemporary;
+                instructions ~= Instruction(AssocArrayValuePointer(
+                    destination,
+                    array,
+                    key,
+                ));
+                return destination;
+            }
+
+        return lowerExpression(expression, lowerer);
     }
 
     uint lowerArrayConcatenation(
@@ -1967,6 +2111,47 @@ struct BodyLowerer {
             return value;
         }
 
+        if (typeIsStruct(variable.type) && variable._init !is null) {
+            if (auto initializer = variable._init.isExpInitializer) {
+                import quickbite.ir.instruction: Copy, Instruction, StructNew;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(StructNew(destination));
+                rememberLocalTemporary(variable, destination);
+                lowerDefaultStructFields(destination, variable.type);
+
+                const source = lowerInitializerExpression(initializer.exp, lowerer);
+                if (source != destination)
+                    instructions ~= Instruction(Copy(destination, source));
+
+                return destination;
+            }
+        }
+
+        if (variable._init !is null) {
+            if (auto initializer = variable._init.isExpInitializer) {
+                if (auto blit = initializer.exp.isBlitExp) {
+                    if (
+                        typeIsDynamicArray(variable.type) &&
+                        blit.e2.isNullExp !is null
+                    ) {
+                        import quickbite.ir.instruction: ArrayLiteral, Instruction;
+                        const value = allocateTemporary;
+                        instructions ~= Instruction(ArrayLiteral(value, []));
+                        rememberLocalTemporary(variable, value);
+                        return value;
+                    }
+                    const value = lowerExpression(blit.e2, lowerer);
+                    rememberLocalTemporary(variable, value);
+                    return value;
+                }
+
+                const value = lowerInitializerExpression(initializer.exp, lowerer);
+                rememberLocalTemporary(variable, value);
+                return value;
+            }
+        }
+
         if (typeIsStruct(variable.type)) {
             import quickbite.ir.instruction: Instruction, StructNew;
 
@@ -1977,7 +2162,7 @@ struct BodyLowerer {
             return value;
         }
 
-        if (typeIsDynamicArray(variable.type) && variable._init is null) {
+        if (typeIsDynamicArray(variable.type)) {
             import quickbite.ir.instruction: ArrayLiteral, Instruction;
 
             const value = allocateTemporary;
@@ -1986,43 +2171,29 @@ struct BodyLowerer {
             return value;
         }
 
-        if (variable._init is null || variable._init.isExpInitializer is null) {
-            import quickbite.ir.instruction: ConstInt, Instruction;
+        import quickbite.ir.instruction: ConstInt, Instruction;
 
-            const value = allocateTemporary;
-            instructions ~= Instruction(ConstInt(value, 0));
-            rememberLocalTemporary(variable, value);
-            return value;
-        }
-
-        auto initializer = variable._init.isExpInitializer;
-
-        if (auto blit = initializer.exp.isBlitExp) {
-            if (typeIsDynamicArray(variable.type) && blit.e2.isNullExp !is null) {
-                import quickbite.ir.instruction: ArrayLiteral, Instruction;
-                const value = allocateTemporary;
-                instructions ~= Instruction(ArrayLiteral(value, []));
-                rememberLocalTemporary(variable, value);
-                return value;
-            }
-            const value = lowerExpression(blit.e2, lowerer);
-            rememberLocalTemporary(variable, value);
-            return value;
-        }
-
-        auto construct = initializer.exp.isConstructExp;
-        const value = construct !is null
-            ? lowerExpression(construct.e2, lowerer)
-            : lowerExpression(initializer.exp, lowerer);
+        const value = allocateTemporary;
+        instructions ~= Instruction(ConstInt(value, 0));
         rememberLocalTemporary(variable, value);
         return value;
+    }
+
+    uint lowerInitializerExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        auto construct = expression.isConstructExp;
+        return construct !is null
+            ? lowerExpression(construct.e2, lowerer)
+            : lowerExpression(expression, lowerer);
     }
 
     uint lowerAssignment(
         imported!"dmd.expression".AssignExp assignment,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Copy, Instruction;
+        import quickbite.ir.instruction: Copy, Instruction, StructSet;
         import std.conv: text;
 
         auto target = assignment.e1;
@@ -2071,15 +2242,25 @@ struct BodyLowerer {
         if (auto length = target.isArrayLengthExp)
             return lowerArrayLengthAssignment(length, assignment.e2, lowerer);
 
-        if (auto identifier = target.isIdentifierExp)
-            if (auto destination = identifierName(identifier) in identifierTemporaries) {
+        if (auto identifier = target.isIdentifierExp) {
+            const name = identifierName(identifier);
+            if (auto destination = name in identifierTemporaries) {
                 const source = lowerExpression(assignment.e2, lowerer);
                 instructions ~= Instruction(Copy(
                     *destination,
                     source,
                 ));
                 return *destination;
+            } else if (isThisFieldName(name)) {
+                const source = lowerExpression(assignment.e2, lowerer);
+                instructions ~= Instruction(StructSet(
+                    thisTemporary,
+                    name,
+                    source,
+                ));
+                return source;
             }
+        }
 
         auto variable = target.isVarExp;
         if (variable is null)
@@ -2139,6 +2320,11 @@ struct BodyLowerer {
         }
         if (destination is null)
             throw new Exception(text("Unsupported expression: ", expressionChars(blit.e1)));
+
+        if (typeIsStruct(declaration.type))
+            if (auto source = blit.e2.isVarExp)
+                if (source.var.isVarDeclaration is null)
+                    return *destination;
 
         const source = lowerExpression(blit.e2, lowerer);
         instructions ~= Instruction(Copy(
@@ -2487,7 +2673,7 @@ struct BodyLowerer {
         imported!"dmd.expression".DotVarExp dot,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, StructGet;
+        import quickbite.ir.instruction: ArrayLength, Instruction, StructGet;
         import std.conv: text;
 
         const struct_ = lowerStructOwner(dot, lowerer);
@@ -2495,6 +2681,18 @@ struct BodyLowerer {
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception(text("Unsupported expression: ", dot.op));
+
+        if (
+            declarationName(field) == "length" &&
+            (typeIsDynamicArray(dot.e1.type) || !typeIsStruct(dot.e1.type))
+        ) {
+            const destination = allocateTemporary;
+            instructions ~= Instruction(ArrayLength(
+                destination,
+                struct_,
+            ));
+            return destination;
+        }
 
         const destination = allocateTemporary;
         instructions ~= Instruction(StructGet(
@@ -2807,12 +3005,21 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: ArrayIndex, AssocArrayIndex,
-            Instruction;
+            AssocArrayValuePointer, Instruction;
 
         const array = lowerExpression(index.e1, lowerer);
         const indexValue = lowerExpression(index.e2, lowerer);
         const destination = allocateTemporary;
         if (typeIsAssociativeArray(index.e1.type)) {
+            if (typeIsPointer(index.type)) {
+                instructions ~= Instruction(AssocArrayValuePointer(
+                    destination,
+                    array,
+                    indexValue,
+                ));
+                return destination;
+            }
+
             instructions ~= Instruction(AssocArrayIndex(
                 destination,
                 array,
@@ -2834,7 +3041,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: ArrayIndex, AssocArrayIndex,
-            Instruction;
+            AssocArrayValuePointer, Instruction;
         import std.conv: text;
 
         if (arrayExpressionArguments(array).length != 1)
@@ -2843,10 +3050,45 @@ struct BodyLowerer {
         if (auto interval = arrayExpressionArguments(array)[0].isIntervalExp)
             return lowerArrayIntervalExpression(array.e1, interval, lowerer);
 
+        if (auto index = array.e1.isIndexExp)
+            if (typeIsAssociativeArray(index.e1.type)) {
+                import quickbite.ir.instruction: AssocArrayValuePointer;
+
+                const assocArray = lowerExpression(index.e1, lowerer);
+                const key = lowerExpression(index.e2, lowerer);
+                const pointer = allocateTemporary;
+                instructions ~= Instruction(AssocArrayValuePointer(
+                    pointer,
+                    assocArray,
+                    key,
+                ));
+
+                const indexValue = lowerExpression(
+                    arrayExpressionArguments(array)[0],
+                    lowerer,
+                );
+                const destination = allocateTemporary;
+                instructions ~= Instruction(ArrayIndex(
+                    destination,
+                    pointer,
+                    indexValue,
+                ));
+                return destination;
+            }
+
         const arrayValue = lowerExpression(array.e1, lowerer);
         const indexValue = lowerExpression(arrayExpressionArguments(array)[0], lowerer);
         const destination = allocateTemporary;
         if (typeIsAssociativeArray(array.e1.type)) {
+            if (typeIsPointer(array.type)) {
+                instructions ~= Instruction(AssocArrayValuePointer(
+                    destination,
+                    arrayValue,
+                    indexValue,
+                ));
+                return destination;
+            }
+
             instructions ~= Instruction(AssocArrayIndex(
                 destination,
                 arrayValue,
@@ -2901,7 +3143,7 @@ struct BodyLowerer {
         if (typeIsPointer(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
-        if (typeIsDynamicArray(cast_.to) && typeIsDynamicArray(cast_.e1.type))
+        if (typeIsDynamicArray(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
         if (typeIsAssociativeArray(cast_.to))
@@ -2995,6 +3237,12 @@ struct BodyLowerer {
             const temporary = allocateTemporary;
             localTemporaries[function_.vthis] = temporary;
             identifierTemporaries[declarationName(function_.vthis)] = temporary;
+            rememberThisTemporary(temporary, functionThisStructType(function_));
+            refParameters ~= true;
+            ++numParameters;
+        } else if (functionThisStructType(function_) !is null) {
+            const temporary = allocateTemporary;
+            rememberThisTemporary(temporary, functionThisStructType(function_));
             refParameters ~= true;
             ++numParameters;
         }
@@ -3018,7 +3266,10 @@ struct BodyLowerer {
 
             const temporary = allocateTemporary;
             localTemporaries[parameter] = temporary;
-            identifierTemporaries[declarationName(parameter)] = temporary;
+            const name = declarationName(parameter);
+            identifierTemporaries[name] = temporary;
+            if (name == "this")
+                rememberThisTemporary(temporary, structReceiverType(parameter.type));
             if (parameterIsLazy(parameter))
                 lazyParameters[parameter] = true;
             refParameters ~= parameterIsRef(parameter);
@@ -3111,7 +3362,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         uint[] arguments;
-        if (function_.vthis !is null)
+        if (functionHasReceiver(function_))
             arguments ~= lowerCallReceiver(call, lowerer);
 
         if (call.arguments is null)
@@ -3206,6 +3457,10 @@ struct BodyLowerer {
                 }
             }
 
+        if (call.e1.isVarExp !is null && functionThisStructType(call.f) !is null)
+            if (hasThisTemporary)
+                return thisTemporary;
+
         throw new Exception(text(
             "Unsupported expression: ",
             call.e1.op,
@@ -3216,6 +3471,24 @@ struct BodyLowerer {
             " vthis ",
             call.f.vthis is null ? "<null>" : declarationName(call.f.vthis),
         ));
+    }
+
+    void rememberThisTemporary(
+        in uint temporary,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        hasThisTemporary = true;
+        thisTemporary = temporary;
+
+        if (type is null)
+            return;
+
+        foreach (field; structFields(type))
+            thisFieldNames[declarationName(field)] = true;
+    }
+
+    bool isThisFieldName(in string name) @safe {
+        return hasThisTemporary && (name in thisFieldNames) !is null;
     }
 
     uint allocateTemporary() @safe pure nothrow @nogc {
@@ -3577,6 +3850,36 @@ private bool typePointsToStruct(imported!"dmd.mtype".Type type) @trusted {
         type.nextOf.isTypeStruct !is null;
 }
 
+private bool functionHasReceiver(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    return function_.vthis !is null || functionThisStructType(function_) !is null;
+}
+
+private imported!"dmd.mtype".Type functionThisStructType(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    // Explicit type keeps DMD's mutable aggregate available for the
+    // declaration-kind query below.
+    imported!"dmd.aggregate".AggregateDeclaration aggregate = function_.isThis;
+    if (aggregate is null || aggregate.isStructDeclaration is null)
+        return null;
+
+    return aggregate.type;
+}
+
+private imported!"dmd.mtype".Type structReceiverType(
+    imported!"dmd.mtype".Type type,
+) @safe {
+    if (typeIsStruct(type))
+        return type;
+
+    if (typePointsToStruct(type))
+        return pointerTarget(type);
+
+    return null;
+}
+
 private imported!"dmd.mtype".Type pointerTarget(
     imported!"dmd.mtype".Type type,
 ) @trusted {
@@ -3585,6 +3888,10 @@ private imported!"dmd.mtype".Type pointerTarget(
 
 private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.isTypeStruct !is null;
+}
+
+private bool typeIsClass(imported!"dmd.mtype".Type type) @trusted {
+    return type !is null && type.toBasetype.isTypeClass !is null;
 }
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {

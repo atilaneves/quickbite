@@ -138,6 +138,12 @@ public struct AssocArrayIndex {
     uint key;
 }
 
+public struct AssocArrayValuePointer {
+    uint destination;
+    uint array;
+    uint key;
+}
+
 public struct AssocArraySet {
     uint array;
     uint key;
@@ -150,6 +156,11 @@ public struct ArrayCopy {
 }
 
 public struct ArrayAppend {
+    uint array;
+    uint value;
+}
+
+public struct ArrayAppendArray {
     uint array;
     uint value;
 }
@@ -236,9 +247,11 @@ public alias Instruction = SumType!(
     AssocArrayKeys,
     AssocArrayValues,
     AssocArrayIndex,
+    AssocArrayValuePointer,
     AssocArraySet,
     ArrayCopy,
     ArrayAppend,
+    ArrayAppendArray,
     ArrayLength,
     ArraySetLength,
     ArrayConcat,

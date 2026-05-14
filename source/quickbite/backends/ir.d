@@ -68,6 +68,7 @@ private void executeUnitTest(
     long[][] arrays;
     long[string][] structs;
     AssocArray[] assocArrays;
+    ArrayAlias[] arrayAliases;
     executeInstructions(
         module_,
         test.instructions,
@@ -77,6 +78,7 @@ private void executeUnitTest(
         arrays,
         structs,
         assocArrays,
+        arrayAliases,
     );
 }
 
@@ -88,6 +90,7 @@ long executeFunction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
@@ -104,6 +107,7 @@ long executeFunction(
                 arrays,
                 structs,
                 assocArrays,
+                arrayAliases,
             );
     }
 
@@ -122,6 +126,7 @@ long executeFunctionBody(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     const arguments = argumentValues(callerTemporaries, argumentIndices);
     ExecutionResult result = executeInstructions(
@@ -133,6 +138,7 @@ long executeFunctionBody(
         arrays,
         structs,
         assocArrays,
+        arrayAliases,
     );
     writeRefArguments(
         result.temporaries,
@@ -160,6 +166,12 @@ struct AssocArray {
     long[] values;
 }
 
+struct ArrayAlias {
+    size_t array;
+    size_t assocArray;
+    long key;
+}
+
 ExecutionResult executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
@@ -169,6 +181,7 @@ ExecutionResult executeInstructions(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
@@ -185,6 +198,7 @@ ExecutionResult executeInstructions(
             arrays,
             structs,
             assocArrays,
+            arrayAliases,
         );
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -212,14 +226,16 @@ InstructionEffect executeInstruction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref ArrayAlias[] arrayAliases,
 ) @safe pure {
-    import quickbite.ir.instruction: ArrayAppend, ArrayConcat, ArrayCopy, ArrayEqual,
-        ArrayIndex, ArrayLength, ArrayLiteral, ArraySet, ArraySetLength,
-        ArraySlice,
+    import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray, ArrayConcat,
+        ArrayCopy, ArrayEqual, ArrayIndex, ArrayLength, ArrayLiteral, ArraySet,
+        ArraySetLength, ArraySlice,
         AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
-        AssocArraySet, AssocArrayValues, Assert_, BinaryOp, Call, CastInt,
-        ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue, ReturnValue, ReturnVoid,
-        Select, StructGet, StructNew, StructSet, UnaryOp;
+        AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
+        BinaryOp, Call, CastInt, ConstInt, Copy, Jump, JumpIfFalse, JumpIfTrue,
+        ReturnValue, ReturnVoid, Select, StructGet, StructNew, StructSet,
+        UnaryOp;
     import std.sumtype: match;
 
     return instruction.match!(
@@ -238,6 +254,7 @@ InstructionEffect executeInstruction(
                     arrays,
                     structs,
                     assocArrays,
+                    arrayAliases,
                 );
             return nextInstruction;
         },
@@ -357,6 +374,21 @@ InstructionEffect executeInstruction(
                 );
             return nextInstruction;
         },
+        (AssocArrayValuePointer instruction) {
+            const array = assocArrayIndex(temporaries, instruction.array);
+            const key = readTemporaryValue(temporaries, instruction.key);
+            arrays ~= [
+                assocArrayValue(
+                    assocArrays[array],
+                    key,
+                ),
+            ];
+            const pointer = arrays.length - 1;
+            arrayAliases ~= ArrayAlias(pointer, array, key);
+            writeTemporaryValue(temporaries, instruction.destination) =
+                cast(long) pointer;
+            return nextInstruction;
+        },
         (AssocArraySet instruction) {
             writeAssocArrayValue(
                 assocArrays[assocArrayIndex(temporaries, instruction.array)],
@@ -374,6 +406,11 @@ InstructionEffect executeInstruction(
         (ArrayAppend instruction) {
             arrays[arrayIndex(temporaries, instruction.array)] ~=
                 readTemporaryValue(temporaries, instruction.value);
+            return nextInstruction;
+        },
+        (ArrayAppendArray instruction) {
+            arrays[arrayIndex(temporaries, instruction.array)] ~=
+                arrays[arrayIndex(temporaries, instruction.value)];
             return nextInstruction;
         },
         (ArrayLength instruction) {
@@ -394,16 +431,56 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArrayIndex instruction) {
+            const array = arrayIndex(temporaries, instruction.array);
+            const index = arrayIndex(temporaries, instruction.index);
+            if (array >= arrays.length) {
+                if (index == 0) {
+                    writeTemporaryValue(temporaries, instruction.destination) =
+                        readTemporaryValue(temporaries, instruction.array);
+                    return nextInstruction;
+                }
+
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "IR: array handle ",
+                    array,
+                    " out of range, arrays = ",
+                    arrays,
+                    ", temporaries = ",
+                    temporaries,
+                ));
+            }
+            if (index >= arrays[array].length) {
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "IR: array index ",
+                    index,
+                    " out of range for array ",
+                    array,
+                    " length ",
+                    arrays[array].length,
+                    ", arrays = ",
+                    arrays,
+                    ", temporaries = ",
+                    temporaries,
+                ));
+            }
             writeTemporaryValue(temporaries, instruction.destination) =
-                arrays[arrayIndex(temporaries, instruction.array)][
-                    arrayIndex(temporaries, instruction.index)
-                ];
+                arrays[array][index];
             return nextInstruction;
         },
         (ArraySet instruction) {
             arrays[arrayIndex(temporaries, instruction.array)][
                 arrayIndex(temporaries, instruction.index)
             ] = readTemporaryValue(temporaries, instruction.value);
+            updateArrayAlias(
+                temporaries,
+                instruction,
+                arrayAliases,
+                assocArrays,
+            );
             return nextInstruction;
         },
         (ArrayEqual instruction) {
@@ -429,6 +506,24 @@ InstructionEffect executeInstruction(
         },
         (const StructGet instruction) {
             const index = structIndex(temporaries, instruction.struct_);
+            if (index >= structs.length) {
+                if (instruction.fieldName == "length" && index < arrays.length) {
+                    writeTemporaryValue(temporaries, instruction.destination) =
+                        cast(long) arrays[index].length;
+                    return nextInstruction;
+                }
+
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "IR: struct handle ",
+                    index,
+                    " out of range, structs = ",
+                    structs,
+                    ", temporaries = ",
+                    temporaries,
+                ));
+            }
             long value;
             if (auto stored = instruction.fieldName in structs[index])
                 value = *stored;
@@ -696,6 +791,30 @@ void writeAssocArrayValue(
 
     array.keys ~= key;
     array.values ~= value;
+}
+
+void updateArrayAlias(
+    in long[] temporaries,
+    in imported!"quickbite.ir.instruction".ArraySet instruction,
+    in ArrayAlias[] arrayAliases,
+    ref AssocArray[] assocArrays,
+) @safe pure {
+    const array = arrayIndex(temporaries, instruction.array);
+    const index = arrayIndex(temporaries, instruction.index);
+    if (index != 0)
+        return;
+
+    foreach (alias_; arrayAliases) {
+        if (alias_.array != array)
+            continue;
+
+        writeAssocArrayValue(
+            assocArrays[alias_.assocArray],
+            alias_.key,
+            readTemporaryValue(temporaries, instruction.value),
+        );
+        return;
+    }
 }
 
 size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
