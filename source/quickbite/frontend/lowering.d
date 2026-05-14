@@ -293,6 +293,11 @@ struct BodyLowerer {
         if (statement.isImportStatement !is null)
             return;
 
+        if (auto pragmaStatement = statement.isPragmaStatement) {
+            lowerStatement(pragmaStatement._body, lowerer);
+            return;
+        }
+
         if (auto conditional = statement.isConditionalStatement) {
             lowerStatement(
                 conditionalStatementIncluded(conditional)
