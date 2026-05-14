@@ -1394,12 +1394,25 @@ struct BodyLowerer {
         const name = expressionChars(call.e1);
 
         {
-            import std.string: endsWith;
+            import std.string: endsWith, startsWith;
 
             if (name.endsWith(".assumeSafeAppend")) {
                 enforceCallArgumentCount(call, 0);
                 result = allocateTemporary;
                 instructions ~= Instruction(ConstInt(result, 0));
+                return true;
+            }
+
+            if (name.startsWith("ScopeBuffer!")) {
+                enforceCallArgumentCount(call, 1);
+                lowerExpression(callArguments(call)[0], lowerer);
+
+                const array = allocateTemporary;
+                instructions ~= Instruction(ArrayLiteral(array, []));
+
+                result = allocateTemporary;
+                instructions ~= Instruction(StructNew(result));
+                instructions ~= Instruction(StructSet(result, "arr", array));
                 return true;
             }
         }
