@@ -2245,6 +2245,21 @@ struct BodyLowerer {
                         operation,
                         lowerer,
                     );
+            if (auto dot = cast_.e1.isDotVarExp)
+                return lowerStructFieldCompoundAssignment(
+                    dot,
+                    assignment.e2,
+                    operation,
+                    lowerer,
+                );
+            if (auto nestedCast = cast_.e1.isCastExp)
+                if (auto dot = nestedCast.e1.isDotVarExp)
+                    return lowerStructFieldCompoundAssignment(
+                        dot,
+                        assignment.e2,
+                        operation,
+                        lowerer,
+                    );
             variable = cast_.e1.isVarExp;
         }
         if (auto index = assignment.e1.isIndexExp)
@@ -2256,10 +2271,22 @@ struct BodyLowerer {
                     operation,
                     lowerer,
                 );
+        if (auto dot = assignment.e1.isDotVarExp)
+            return lowerStructFieldCompoundAssignment(
+                dot,
+                assignment.e2,
+                operation,
+                lowerer,
+            );
         if (auto nested = assignment.e1.isOrAssignExp)
             return lowerCompoundAssignment(nested, operation, lowerer);
         if (variable is null)
-            throw new Exception(text("Unsupported expression: ", assignment.op));
+            throw new Exception(text(
+                "Unsupported expression: ",
+                assignment.op,
+                " ",
+                expressionChars(assignment.e1),
+            ));
 
         auto declaration = variable.var.isVarDeclaration;
         if (declaration is null)
@@ -2288,6 +2315,52 @@ struct BodyLowerer {
             stored,
         ));
         return *destination;
+    }
+
+    uint lowerStructFieldCompoundAssignment(
+        imported!"dmd.expression".DotVarExp dot,
+        imported!"dmd.expression".Expression sourceExpression,
+        in imported!"quickbite.ir.instruction".Operation operation,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction:
+            BinaryOp, CastInt, Instruction, StructGet, StructSet;
+        import std.conv: text;
+
+        const struct_ = lowerStructOwner(dot, lowerer);
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception(text("Unsupported expression: ", dot.op));
+
+        const current = allocateTemporary;
+        const fieldName = declarationName(field);
+        instructions ~= Instruction(StructGet(
+            current,
+            struct_,
+            fieldName,
+        ));
+
+        const source = lowerExpression(sourceExpression, lowerer);
+        const result = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            current,
+            source,
+            operation,
+        ));
+        const stored = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            stored,
+            result,
+            integerType(field.type),
+        ));
+        instructions ~= Instruction(StructSet(
+            struct_,
+            fieldName,
+            stored,
+        ));
+        return stored;
     }
 
     uint lowerArrayIndexCompoundAssignment(
