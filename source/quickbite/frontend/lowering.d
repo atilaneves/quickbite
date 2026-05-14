@@ -65,6 +65,7 @@ struct Lowerer {
 
         BodyLowerer builder;
         builder.currentFunctionName = name;
+        builder.currentReturnType = functionReturnType(function_);
         const numParameters = builder.lowerParameters(function_);
         builder.lowerStatement(function_.fbody, this);
         builder.assertNoPendingGotos;
@@ -100,7 +101,13 @@ private bool functionReturnsVoid(
 ) @trusted {
     import dmd.astenums: TY;
 
-    return function_.type.nextOf().ty == TY.Tvoid;
+    return functionReturnType(function_).ty == TY.Tvoid;
+}
+
+private imported!"dmd.mtype".Type functionReturnType(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    return function_.type.nextOf;
 }
 
 struct BodyLowerer {
@@ -144,6 +151,7 @@ struct BodyLowerer {
     public bool[] refParameters;
     public bool hasReturn;
     public string currentFunctionName;
+    public imported!"dmd.mtype".Type currentReturnType;
 
     // DMD Statement downcast helpers are not const-qualified.
     void lowerStatement(
@@ -4127,13 +4135,26 @@ struct BodyLowerer {
         imported!"dmd.statement".ReturnStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: Instruction, ReturnValue, ReturnVoid;
+        import quickbite.ir.instruction: CastInt, Instruction, ReturnValue,
+            ReturnVoid;
 
         if (statement.exp is null) {
             instructions ~= Instruction(ReturnVoid.init);
             return;
         }
-        instructions ~= Instruction(ReturnValue(lowerExpression(statement.exp, lowerer)));
+        const value = lowerExpression(statement.exp, lowerer);
+        if (typeIsInteger(currentReturnType)) {
+            const castValue = allocateTemporary;
+            instructions ~= Instruction(CastInt(
+                castValue,
+                value,
+                integerType(currentReturnType),
+            ));
+            instructions ~= Instruction(ReturnValue(castValue));
+            return;
+        }
+
+        instructions ~= Instruction(ReturnValue(value));
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {
@@ -4677,6 +4698,25 @@ private bool expressionHasUnsignedIntegerType(
         type.ty == TY.Tuns16 ||
         type.ty == TY.Tuns32 ||
         type.ty == TY.Tuns64;
+}
+
+private bool typeIsInteger(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    const basetype = type.toBasetype;
+    return basetype.ty == TY.Tint8 ||
+        basetype.ty == TY.Tuns8 ||
+        basetype.ty == TY.Tchar ||
+        basetype.ty == TY.Tint16 ||
+        basetype.ty == TY.Tuns16 ||
+        basetype.ty == TY.Tint32 ||
+        basetype.ty == TY.Tuns32 ||
+        basetype.ty == TY.Tdchar ||
+        basetype.ty == TY.Tint64 ||
+        basetype.ty == TY.Tuns64;
 }
 
 private bool isArrayEqualityCall(imported!"dmd.expression".CallExp call) @trusted {
