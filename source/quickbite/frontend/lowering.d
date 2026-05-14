@@ -358,6 +358,8 @@ struct BodyLowerer {
                 cast(int) (instructions.length - exitJumpIndex - 1),
             );
 
+        const hasUnlabelledBreaks =
+            pendingUnlabelledBreakInstructionIndices[$ - 1].length != 0;
         foreach (jumpIndex; pendingUnlabelledBreakInstructionIndices[$ - 1])
             replaceJumpOffset(
                 instructions,
@@ -366,6 +368,8 @@ struct BodyLowerer {
             );
         pendingUnlabelledBreakInstructionIndices.length =
             pendingUnlabelledBreakInstructionIndices.length - 1;
+        if (!hasCondition && !hasUnlabelledBreaks)
+            hasReturn = true;
     }
 
     void lowerDoStatement(
