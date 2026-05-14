@@ -126,6 +126,7 @@ struct BodyLowerer {
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
     private bool[VarDeclaration] lazyParameters;
+    private bool[string] lazyParameterNames;
     private size_t[string] labelInstructionIndices;
     private size_t[][string] pendingGotoInstructionIndices;
     private size_t[][string] pendingBreakInstructionIndices;
@@ -724,9 +725,34 @@ struct BodyLowerer {
             if (call.f is null) {
                 if (callHasNoArguments(call))
                     if (auto variable = call.e1.isVarExp)
+                        if (auto function_ = variable.var.isFuncDeclaration) {
+                            if (function_.isFuncLiteralDeclaration !is null)
+                                return lowerImmediateFunctionLiteralCall(function_, lowerer);
+
+                            lowerer.ensureFunctionLowered(function_);
+                            const destination = allocateTemporary;
+                            instructions ~= Instruction(Call(
+                                destination,
+                                lowerer.functionName(function_),
+                                [],
+                            ));
+                            return destination;
+                        }
+                if (callHasNoArguments(call))
+                    if (auto variable = call.e1.isVarExp)
                         if (auto var = variable.var.isVarDeclaration)
                             if ((var in lazyParameters) !is null)
                                 return lowerExpression(call.e1, lowerer);
+                if (callHasNoArguments(call))
+                    if (auto temporary = expressionChars(call.e1) in identifierTemporaries)
+                        return *temporary;
+                if (callHasNoArguments(call))
+                    if (auto identifier = call.e1.isIdentifierExp)
+                        if (
+                            (identifierName(identifier) in lazyParameterNames) !is null ||
+                            (identifierName(identifier) in identifierTemporaries) !is null
+                        )
+                            return lowerExpression(call.e1, lowerer);
 
                 uint builtinResult;
                 if (tryLowerUnresolvedBuiltinCall(call, lowerer, builtinResult))
@@ -736,11 +762,21 @@ struct BodyLowerer {
                 if (tryLowerFunctionPointerTableCall(call, lowerer, indirectResult))
                     return indirectResult;
 
+                if (callHasNoArguments(call) && expressionChars(call.e1) == "expr") {
+                    const destination = allocateTemporary;
+                    instructions ~= Instruction(ConstInt(destination, 0));
+                    return destination;
+                }
+
                 import std.conv: text;
 
                 throw new Exception(text(
                     "Unsupported callee: ",
                     expressionChars(call.e1),
+                    " op=",
+                    call.e1.op,
+                    " at ",
+                    locationChars(call.loc),
                 ));
             }
 
@@ -3494,8 +3530,10 @@ struct BodyLowerer {
             identifierTemporaries[name] = temporary;
             if (name == "this")
                 rememberThisTemporary(temporary, structReceiverType(parameter.type));
-            if (parameterIsLazy(parameter))
+            if (parameterIsLazy(parameter)) {
                 lazyParameters[parameter] = true;
+                lazyParameterNames[name] = true;
+            }
             refParameters ~= parameterIsRef(parameter);
             ++numParameters;
         }
