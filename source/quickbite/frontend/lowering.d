@@ -4669,7 +4669,7 @@ struct BodyLowerer {
             arguments ~= lowerCallReceiver(call, lowerer);
 
         if (call.arguments is null)
-            return arguments;
+            return appendMissingTypeFunctionArguments(arguments, function_);
 
         // Pulled in parallel so we can detect non-ref struct parameters and
         // copy by value at the call site, matching D semantics. `auto`
@@ -4699,6 +4699,26 @@ struct BodyLowerer {
                 continue;
             }
             arguments ~= source;
+        }
+
+        return appendMissingTypeFunctionArguments(arguments, function_);
+    }
+
+    uint[] appendMissingTypeFunctionArguments(
+        uint[] arguments,
+        imported!"dmd.func".FuncDeclaration function_,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        if (function_.parameters !is null)
+            return arguments;
+
+        const expectedArguments = (functionHasReceiver(function_) ? 1 : 0) +
+            functionTypeParameters(function_).length;
+        while (arguments.length < expectedArguments) {
+            const value = allocateTemporary;
+            instructions ~= Instruction(ConstInt(value, 0));
+            arguments ~= value;
         }
 
         return arguments;
