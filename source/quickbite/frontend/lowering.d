@@ -115,6 +115,7 @@ struct BodyLowerer {
     private size_t[][CaseStatement] pendingCaseInstructionIndices;
     private size_t[][DefaultStatement] pendingDefaultInstructionIndices;
     private size_t[][] pendingUnlabelledBreakInstructionIndices;
+    private size_t[][] pendingUnlabelledContinueInstructionIndices;
     private uint[] dollarArrays;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
@@ -190,6 +191,11 @@ struct BodyLowerer {
             return;
         }
 
+        if (auto continueStatement = statement.isContinueStatement) {
+            lowerContinueStatement(continueStatement);
+            return;
+        }
+
         if (auto labelStatement = statement.isLabelStatement) {
             lowerLabelStatement(labelStatement, lowerer);
             return;
@@ -262,8 +268,20 @@ struct BodyLowerer {
             instructions ~= Instruction(JumpIfFalse(condition, 0));
         }
 
+        pendingUnlabelledContinueInstructionIndices ~= cast(size_t[]) [];
         if (statement._body !is null)
             lowerStatement(statement._body, lowerer);
+
+        const continueTarget = instructions.length;
+        foreach (jumpIndex; pendingUnlabelledContinueInstructionIndices[$ - 1])
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (continueTarget - jumpIndex),
+            );
+        pendingUnlabelledContinueInstructionIndices.length =
+            pendingUnlabelledContinueInstructionIndices.length - 1;
+
         if (statement.increment !is null)
             lowerExpression(statement.increment, lowerer);
 
@@ -286,8 +304,19 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Instruction, JumpIfTrue;
 
         const loopStart = instructions.length;
+        pendingUnlabelledContinueInstructionIndices ~= cast(size_t[]) [];
         if (statement._body !is null)
             lowerStatement(statement._body, lowerer);
+
+        const continueTarget = instructions.length;
+        foreach (jumpIndex; pendingUnlabelledContinueInstructionIndices[$ - 1])
+            replaceJumpOffset(
+                instructions,
+                cast(uint) jumpIndex,
+                cast(int) (continueTarget - jumpIndex),
+            );
+        pendingUnlabelledContinueInstructionIndices.length =
+            pendingUnlabelledContinueInstructionIndices.length - 1;
 
         const condition = lowerTruthValue(lowerExpression(statement.condition, lowerer));
         instructions ~= Instruction(JumpIfTrue(
@@ -401,6 +430,22 @@ struct BodyLowerer {
             *pending ~= jumpIndex;
         else
             pendingBreakInstructionIndices[label] = [jumpIndex];
+    }
+
+    void lowerContinueStatement(
+        imported!"dmd.statement".ContinueStatement statement,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, Jump;
+
+        if (statement.ident !is null)
+            throw new Exception("Unsupported labelled continue");
+
+        if (pendingUnlabelledContinueInstructionIndices.length == 0)
+            throw new Exception("Unsupported unlabelled continue");
+
+        const jumpIndex = instructions.length;
+        instructions ~= Instruction(Jump(0));
+        pendingUnlabelledContinueInstructionIndices[$ - 1] ~= jumpIndex;
     }
 
     void lowerLabelStatement(
