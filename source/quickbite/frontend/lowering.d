@@ -112,7 +112,7 @@ private imported!"dmd.mtype".Type functionReturnType(
 
 struct BodyLowerer {
     import dmd.declaration: VarDeclaration;
-    import dmd.statement: CaseStatement, DefaultStatement;
+    import dmd.statement: CaseStatement, DefaultStatement, GotoCaseStatement;
 
     private struct ArrayElementAlias {
         uint array;
@@ -139,7 +139,9 @@ struct BodyLowerer {
     private size_t[][string] pendingGotoInstructionIndices;
     private size_t[][string] pendingBreakInstructionIndices;
     private size_t[][string] pendingContinueInstructionIndices;
+    private size_t[CaseStatement] caseInstructionIndices;
     private size_t[][CaseStatement] pendingCaseInstructionIndices;
+    private size_t[][CaseStatement] pendingGotoCaseInstructionIndices;
     private size_t[][DefaultStatement] pendingDefaultInstructionIndices;
     private size_t[][] pendingUnlabelledBreakInstructionIndices;
     private size_t[][] pendingUnlabelledContinueInstructionIndices;
@@ -231,6 +233,11 @@ struct BodyLowerer {
 
         if (auto gotoStatement = statement.isGotoStatement) {
             lowerGotoStatement(gotoStatement);
+            return;
+        }
+
+        if (auto gotoCase = statement.isGotoCaseStatement) {
+            lowerGotoCaseStatement(gotoCase);
             return;
         }
 
@@ -507,6 +514,28 @@ struct BodyLowerer {
             pendingGotoInstructionIndices[label] = [jumpIndex];
     }
 
+    void lowerGotoCaseStatement(GotoCaseStatement statement) @safe {
+        import quickbite.ir.instruction: Instruction, Jump;
+
+        if (statement.cs is null)
+            throw new Exception("Unsupported unresolved goto case");
+
+        const jumpIndex = instructions.length;
+        if (const caseInstructionIndex = statement.cs in caseInstructionIndices) {
+            instructions ~= Instruction(Jump(
+                cast(int) *caseInstructionIndex - cast(int) jumpIndex,
+            ));
+            return;
+        }
+
+        instructions ~= Instruction(Jump(0));
+
+        if (auto pending = statement.cs in pendingGotoCaseInstructionIndices)
+            *pending ~= jumpIndex;
+        else
+            pendingGotoCaseInstructionIndices[statement.cs] = [jumpIndex];
+    }
+
     void lowerGotoDefaultStatement(
         imported!"dmd.statement".GotoDefaultStatement statement,
     ) @safe {
@@ -645,6 +674,19 @@ struct BodyLowerer {
             );
 
         pendingCaseInstructionIndices.remove(statement);
+        caseInstructionIndices[statement] = instructions.length;
+
+        if (auto gotoCasePending = statement in pendingGotoCaseInstructionIndices) {
+            foreach (jumpIndex; *gotoCasePending)
+                replaceJumpOffset(
+                    instructions,
+                    cast(uint) jumpIndex,
+                    cast(int) (instructions.length - jumpIndex),
+                );
+
+            pendingGotoCaseInstructionIndices.remove(statement);
+        }
+
         lowerStatement(statement.statement, lowerer);
     }
 
@@ -711,6 +753,15 @@ struct BodyLowerer {
                 ")",
             ));
 
+        foreach (caseStatement, jumpIndices; pendingGotoCaseInstructionIndices)
+            throw new Exception(text(
+                "Unsupported unresolved goto case: ",
+                expressionChars(caseStatement.exp),
+                " (",
+                jumpIndices.length,
+                ")",
+            ));
+
         foreach (jumpIndices; pendingDefaultInstructionIndices)
             throw new Exception(text(
                 "Unsupported unresolved switch default (",
@@ -722,6 +773,7 @@ struct BodyLowerer {
     bool hasPendingGotos() @safe pure nothrow @nogc {
         return pendingGotoInstructionIndices.length != 0
             || pendingCaseInstructionIndices.length != 0
+            || pendingGotoCaseInstructionIndices.length != 0
             || pendingDefaultInstructionIndices.length != 0;
     }
 
