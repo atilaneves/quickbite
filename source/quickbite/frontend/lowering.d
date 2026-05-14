@@ -1634,6 +1634,15 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "realloc") {
+            enforceCallArgumentCount(call, 2);
+            lowerExpression(callArguments(call)[0], lowerer);
+            lowerExpression(callArguments(call)[1], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
