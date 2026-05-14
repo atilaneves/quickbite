@@ -1501,6 +1501,14 @@ struct BodyLowerer {
             return true;
         }
 
+        if (name == "isNaN") {
+            enforceCallArgumentCount(call, 1);
+            lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (name == "bsr") {
             enforceCallArgumentCount(call, 1);
             const value = lowerExpression(callArguments(call)[0], lowerer);
