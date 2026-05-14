@@ -985,6 +985,8 @@ struct BodyLowerer {
             auto temporary = this_.var in localTemporaries;
             if (temporary !is null)
                 return *temporary;
+            if (hasThisTemporary)
+                return thisTemporary;
         }
 
         if (auto identifier = expression.isIdentifierExp) {
