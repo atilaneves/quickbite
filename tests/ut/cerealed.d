@@ -65,6 +65,7 @@ private enum bool shouldFailCerealedTest(
     (
         backend != ExecutorBackend.ir ||
         (
+            fileName != "cerealiser_impl.d" &&
             fileName != "bugs.d" &&
             fileName != "utils.d"
         )

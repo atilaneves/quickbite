@@ -1994,6 +1994,9 @@ struct BodyLowerer {
         import quickbite.ir.instruction: Instruction, StructNew, StructSet;
         import std.string: startsWith;
 
+        if (functionIdentifier(call.f) != "__ctor")
+            return false;
+
         // auto: DMD Type helpers below require the mutable frontend object.
         auto thisType = functionThisStructType(call.f);
         if (thisType is null)
@@ -2027,6 +2030,11 @@ struct BodyLowerer {
         }
 
         if (name == "opSlice") {
+            result = lowerScopeBufferSliceCall(call, lowerer);
+            return true;
+        }
+
+        if (name == "data") {
             result = lowerScopeBufferSliceCall(call, lowerer);
             return true;
         }
@@ -4663,6 +4671,11 @@ private bool callHasScopeBufferReceiver(
 private bool callHasScopeBufferDirectReceiver(
     imported!"dmd.expression".CallExp call,
 ) @trusted {
+    // auto: DMD Type helpers below require the mutable frontend object.
+    auto thisType = functionThisStructType(call.f);
+    if (thisType !is null && typeIsScopeBuffer(thisType))
+        return true;
+
     if (auto dot = call.e1.isDotVarExp)
         return typeIsScopeBuffer(dot.e1.type);
 
@@ -4675,6 +4688,11 @@ private bool callHasScopeBufferDirectReceiver(
 private bool callHasScopeBufferRangeReceiver(
     imported!"dmd.expression".CallExp call,
 ) @trusted {
+    // auto: DMD Type helpers below require the mutable frontend object.
+    auto thisType = functionThisStructType(call.f);
+    if (thisType !is null && typeIsScopeBufferRange(thisType))
+        return true;
+
     if (auto dot = call.e1.isDotVarExp)
         return typeIsScopeBufferRange(dot.e1.type);
 
