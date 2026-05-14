@@ -52,7 +52,8 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
 private enum bool shouldFailCerealedTest(
     ExecutorBackend backend,
     string fileName,
-) = fileName != "compile_time.d";
+) = fileName != "compile_time.d" &&
+    (backend != ExecutorBackend.treeWalking || fileName != "cerealiser_impl.d");
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {
     import ut.dub_paths: dubImportPaths, cerealTestsDir;

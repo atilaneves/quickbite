@@ -382,6 +382,9 @@ private struct BodyWalker {
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign, interpreter);
 
+        if (auto concatenate = expression.isCatExp)
+            return runArrayConcatenateExpression(concatenate, interpreter);
+
         if (auto append = expression.isCatAssignExp)
             return runArrayAppendExpression(append, interpreter);
 
@@ -727,6 +730,37 @@ private struct BodyWalker {
 
         unsupported;
         assert(false);
+    }
+
+    private Value runArrayConcatenateExpression(
+        imported!"dmd.expression".CatExp concatenate,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        Value left = runExpression(concatenate.e1, interpreter);
+        Value right = runExpression(concatenate.e2, interpreter);
+        // Explicit type: `elements` must be mutable for append.
+        long[] elements = left.match!(
+            (long[] array) => array,
+            (long scalar) => [scalar],
+            (LocalPtr _) {
+                throw new Exception("Expected concatenation value, got pointer.");
+                return (long[]).init;
+            },
+        );
+        right.match!(
+            (long[] array) {
+                elements ~= array;
+            },
+            (long scalar) {
+                elements ~= scalar;
+            },
+            (LocalPtr _) {
+                throw new Exception("Expected concatenation value, got pointer.");
+            },
+        );
+        return Value(elements);
     }
 
     private Value runArrayAppendExpression(
