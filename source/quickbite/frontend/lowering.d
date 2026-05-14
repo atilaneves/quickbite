@@ -394,10 +394,14 @@ struct BodyLowerer {
         if (statement.label is null || statement.label.statement is null)
             throw new Exception(text("Unsupported unresolved goto: ", label));
 
-        if (label in labelInstructionIndices)
-            throw new Exception(text("Unsupported backward goto: ", label));
-
         const jumpIndex = instructions.length;
+        if (const labelInstructionIndex = label in labelInstructionIndices) {
+            instructions ~= Instruction(Jump(
+                cast(int) *labelInstructionIndex - cast(int) jumpIndex,
+            ));
+            return;
+        }
+
         instructions ~= Instruction(Jump(0));
 
         if (auto pending = label in pendingGotoInstructionIndices)
