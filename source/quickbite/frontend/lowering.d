@@ -805,6 +805,14 @@ struct BodyLowerer {
         }
 
         if (expression.isNullExp) {
+            if (typeIsAssociativeArray(expression.type)) {
+                import quickbite.ir.instruction: AssocArrayLiteral;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(AssocArrayLiteral(destination, [], []));
+                return destination;
+            }
+
             const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(destination, 0));
             return destination;
