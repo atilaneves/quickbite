@@ -1086,6 +1086,13 @@ struct BodyLowerer {
                 lowerer,
             );
 
+        if (auto multiplyAssign = expression.isMulAssignExp)
+            return lowerCompoundAssignment(
+                multiplyAssign,
+                Operation.multiply,
+                lowerer,
+            );
+
         if (auto divideAssign = expression.isDivAssignExp)
             return lowerCompoundAssignment(
                 divideAssign,
