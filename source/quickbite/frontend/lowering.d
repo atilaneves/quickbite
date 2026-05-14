@@ -168,9 +168,10 @@ struct BodyLowerer {
         }
 
         if (auto compound = statement.isCompoundStatement) {
+            const compoundEnteredWithReturn = hasReturn;
             foreach (child; compoundStatements(compound)) {
                 lowerStatement(child, lowerer);
-                if (hasReturn && !hasPendingGotos)
+                if (!compoundEnteredWithReturn && hasReturn && !hasPendingGotos)
                     return;
             }
 
@@ -700,10 +701,28 @@ struct BodyLowerer {
                 jumpIndices.length,
                 ")",
             ));
+
+        foreach (caseStatement, jumpIndices; pendingCaseInstructionIndices)
+            throw new Exception(text(
+                "Unsupported unresolved switch case: ",
+                expressionChars(caseStatement.exp),
+                " (",
+                jumpIndices.length,
+                ")",
+            ));
+
+        foreach (jumpIndices; pendingDefaultInstructionIndices)
+            throw new Exception(text(
+                "Unsupported unresolved switch default (",
+                jumpIndices.length,
+                ")",
+            ));
     }
 
     bool hasPendingGotos() @safe pure nothrow @nogc {
-        return pendingGotoInstructionIndices.length != 0;
+        return pendingGotoInstructionIndices.length != 0
+            || pendingCaseInstructionIndices.length != 0
+            || pendingDefaultInstructionIndices.length != 0;
     }
 
     // DMD Expression downcast/accessor helpers are not const-qualified.
