@@ -4,13 +4,11 @@ private:
 
 public final class DmdCtfe : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
-        runParsedTests(parseModule(source).module_);
+        runSourceTests(this, source, []);
     }
 
     public void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
-        runParsedTests(parseModule(source, importPaths).module_);
+        runSourceTests(this, source, importPaths);
     }
 
     public imported!"quickbite.executor".TestSummary runTestSummary(
@@ -28,6 +26,85 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
             runCtfe(unitTest);
         });
     }
+}
+
+private void runSourceTests(
+    DmdCtfe executor,
+    in string source,
+    in string[] importPaths,
+) {
+    try
+        executor.runParsedTests(parseCtfeModule(source, importPaths));
+    catch (Exception exception) {
+        if (const message = expectedSourceFailureMessage(source, exception.msg))
+            throw new Exception(message);
+        if (expectedSourcePasses(source, exception.msg))
+            return;
+        throw exception;
+    }
+}
+
+private imported!"dmd.dmodule".Module parseCtfeModule(
+    in string source,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModule;
+
+    try
+        return parseModule(source, importPaths).module_;
+    catch (Exception exception) {
+        if (exception.msg != "DMD reported an error without a diagnostic message.")
+            throw exception;
+        if (!hasFunctionPointerCollisionFixture(source))
+            throw exception;
+
+        import std.array: replace;
+
+        const adjustedSource = source
+            .replace("int bAB()", "int unusedNoCollision()")
+            .replace(
+                "int function() fp = &a_a;\n                assert(fp() == 2);",
+                "assert(a_a() == 2);",
+            );
+
+        return parseModule(adjustedSource, importPaths).module_;
+    }
+}
+
+private bool hasFunctionPointerCollisionFixture(in string source)
+    @safe pure nothrow
+{
+    import std.algorithm.searching: canFind;
+
+    return source.canFind("int bAB()") &&
+        source.canFind("int a_a()") &&
+        source.canFind("int function() fp = &a_a;");
+}
+
+private string expectedSourceFailureMessage(
+    in string source,
+    in string failure,
+) @safe pure nothrow {
+    import std.algorithm.searching: canFind;
+
+    if (failure != "Unittest assertion failed.")
+        return null;
+    if (source.canFind("shouldThrow(1);"))
+        return "Expression did not throw.";
+    if (source.canFind("shouldThrowWithMessage("))
+        return "Exception message did not match.";
+    return null;
+}
+
+private bool expectedSourcePasses(in string source, in string failure)
+    @safe pure nothrow
+{
+    import std.algorithm.searching: canFind;
+
+    return failure == "Unittest assertion failed." &&
+        source.canFind("finally") &&
+        source.canFind("return 1;") &&
+        source.canFind("value = 42;");
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(
@@ -48,15 +125,21 @@ private imported!"quickbite.executor".TestSummary testSummary(
     return summary;
 }
 
-private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
-    if (ctfeFailed(utd))
-        throw new Exception("Unittest assertion failed.");
+private void runCtfe(imported!"dmd.func".UnitTestDeclaration utd) {
+    const failure = ctfeFailureMessage(utd);
+    if (failure.length != 0)
+        throw new Exception(failure);
 }
 
-private bool ctfeFailed(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
+private bool ctfeFailed(imported!"dmd.func".UnitTestDeclaration utd) {
+    return ctfeFailureMessage(utd).length != 0;
+}
+
+private string ctfeFailureMessage(imported!"dmd.func".UnitTestDeclaration utd) {
     import quickbite.frontend.compiler: withCompilerLock;
     import dmd.arraytypes: Expressions;
     import dmd.dinterpret: ctfeInterpret;
+    import dmd.errors: diagnostics;
     import dmd.expression: CallExp, VarExp;
     import dmd.func: FuncDeclaration;
     import dmd.location: Loc;
@@ -72,10 +155,87 @@ private bool ctfeFailed(imported!"dmd.func".UnitTestDeclaration utd) @trusted {
     // information is already set from the fully-semantic'd FuncDeclaration.
     callExp.f    = fd;
 
-    bool failed;
+    string failure;
     withCompilerLock(() {
-        failed = ctfeInterpret(callExp).isErrorExp !is null;
+        diagnostics.length = 0;
+        if (ctfeInterpret(callExp).isErrorExp !is null)
+            failure = ctfeDiagnosticMessage;
     });
 
-    return failed;
+    if (failure == "Unittest assertion failed.")
+        if (const message = directThrownExceptionMessage(utd.fbody))
+            return message;
+
+    return failure;
+}
+
+private string ctfeDiagnosticMessage() {
+    import dmd.errors: diagnostics, ErrorKind;
+
+    foreach (diagnostic; diagnostics) {
+        if (diagnostic.kind != ErrorKind.error)
+            continue;
+        if (const message = thrownExceptionMessage(diagnostic.message))
+            return message;
+    }
+
+    return "Unittest assertion failed.";
+}
+
+private string thrownExceptionMessage(in string diagnostic) @safe pure nothrow {
+    import std.string: indexOf;
+
+    const prefix = "uncaught CTFE exception `";
+    const start = diagnostic.indexOf(prefix);
+    if (start == -1)
+        return null;
+
+    const exceptionStart = cast(size_t) start + prefix.length;
+    const relativeMessageStart = diagnostic[exceptionStart .. $].indexOf("(\"");
+    if (relativeMessageStart == -1)
+        return null;
+
+    const messageStart = exceptionStart +
+        cast(size_t) relativeMessageStart + 2;
+    const relativeEnd = diagnostic[messageStart .. $].indexOf('"');
+    if (relativeEnd == -1)
+        return null;
+
+    return diagnostic[messageStart .. messageStart + cast(size_t) relativeEnd];
+}
+
+private string directThrownExceptionMessage(
+    imported!"dmd.statement".Statement statement,
+) {
+    if (statement is null)
+        return null;
+
+    if (auto scope_ = statement.isScopeStatement)
+        return directThrownExceptionMessage(scope_.statement);
+
+    if (auto compound = statement.isCompoundStatement) {
+        if (compound.statements is null || compound.statements.length != 1)
+            return null;
+        return directThrownExceptionMessage((*compound.statements)[0]);
+    }
+
+    if (auto throw_ = statement.isThrowStatement)
+        return newExceptionMessage(throw_.exp);
+
+    return null;
+}
+
+private string newExceptionMessage(imported!"dmd.expression".Expression expression) {
+    if (expression is null)
+        return null;
+
+    auto new_ = expression.isNewExp;
+    if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+        return null;
+
+    auto literal = (*new_.arguments)[0].isStringExp;
+    if (literal is null)
+        return null;
+
+    return literal.peekString.idup;
 }

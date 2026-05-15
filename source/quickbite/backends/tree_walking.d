@@ -2,18 +2,28 @@ module quickbite.backends.tree_walking;
 
 private:
 
-// A "pointer" in the VM is just a handle to a named local (VarDeclaration).
-// Used to represent &varDecl so *ptr can dereference and ref-propagate back.
+// A "pointer" in the tree-walking interpreter is just a handle to a named
+// local. Used to represent &varDecl so *ptr can dereference and ref-propagate
+// back.
 private struct LocalPtr {
-    imported!"dmd.declaration".VarDeclaration decl;
+    import dmd.declaration: VarDeclaration;
+
+    private VarDeclaration decl;
 }
 
+// Handle to class instance state stored in Interpreter class maps.
 private struct ClassRef {
-    long id;
+    private long id;
 }
 
+// Handle to associative-array state stored in Interpreter assoc-array maps.
 private struct AssocArrayRef {
-    long id;
+    private long id;
+}
+
+private struct AssocArraySlotRef {
+    private long arrayId;
+    private size_t index;
 }
 
 // SumType.opAssign is @system in this version of std.sumtype, so all code
@@ -24,42 +34,81 @@ alias Value = imported!"std.sumtype".SumType!(
     LocalPtr,
     ClassRef,
     AssocArrayRef,
+    AssocArraySlotRef,
 );
 
+private shared uint _treeWalkingModuleCounter;
+
 private struct AssocArray {
-    private imported!"dmd.declaration".VarDeclaration[] keyStructs;
+    import dmd.declaration: VarDeclaration;
+
+    // Keep keys, values, key structs, and struct-key field snapshots in
+    // parallel arrays so scalar keys and struct keys share one stable index.
+    private VarDeclaration[] keyStructs;
+    private Value[VarDeclaration][] keyFields;
     private Value[] keys;
     private Value[] values;
 }
 
+// Materialised result of `.keys` for an associative array. The array id keeps
+// the keys tied to their source while keyStructs/keyFields preserve struct-key
+// fields.
 private struct AssocArrayKeys {
+    import dmd.declaration: VarDeclaration;
+
     private long arrayId;
-    private imported!"dmd.declaration".VarDeclaration[] keyStructs;
+    private VarDeclaration[] keyStructs;
+    private Value[VarDeclaration][] keyFields;
+    private Value[] keys;
 }
 
+// Tracks a local initialised from AssocArrayKeys[index], so field writes can be
+// copied back to the key struct at that associative-array index.
 private struct AssocArrayKeyLocal {
     private long arrayId;
     private size_t index;
 }
 
+// Tracks a lowered AA slot pointer local such as `__aaget[0]`, so assignment
+// through that pointer updates the modeled associative array entry.
+private struct AssocArraySlotLocal {
+    private long arrayId;
+    private size_t index;
+}
+
+// Represents a slice local that aliases an owner array. offset is the starting
+// index in owner, so writes through the slice can propagate to the original.
+private struct ArrayAlias {
+    import dmd.declaration: VarDeclaration;
+
+    private VarDeclaration owner;
+    private size_t offset;
+}
+
 private struct FunctionResult {
+    import dmd.declaration: VarDeclaration;
+
     private bool hasValue;
     private Value value;
     private Value[] refValues;
-    private Value[imported!"dmd.declaration".VarDeclaration] thisFields;
+    private Value[VarDeclaration] thisFields;
     // Struct field maps returned for each struct-ref parameter, in param order.
-    private Value[imported!"dmd.declaration".VarDeclaration][] structRefValues;
-    private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps;
+    private Value[VarDeclaration][] structRefValues;
+    private Value[VarDeclaration][VarDeclaration] structFieldMaps;
 }
 
 private struct CallArgument {
+    import dmd.declaration: VarDeclaration;
+
     private Value value;
-    private imported!"dmd.declaration".VarDeclaration refSource;
-    private imported!"dmd.declaration".VarDeclaration refOwner;
-    private imported!"dmd.declaration".VarDeclaration refField;
+    private VarDeclaration refSource;
+    private VarDeclaration refOwner;
+    private VarDeclaration refField;
     private long refClassId;
-    private Value[imported!"dmd.declaration".VarDeclaration] structFields;
-    private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps;
+    private bool hasRefIndex;
+    private size_t refIndex;
+    private Value[VarDeclaration] structFields;
+    private Value[VarDeclaration][VarDeclaration] structFieldMaps;
     private bool isStruct;
     private bool isStructRef; // whole struct passed as ref (refSource = its VarDeclaration)
     private bool isTemporaryRef;
@@ -67,28 +116,24 @@ private struct CallArgument {
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
-    public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+    import dmd.dmodule: Module;
+    import quickbite.executor: TestSummary;
 
-        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
-        auto parsed = parseModule(source);
-        runParsedTests(parsed.module_);
+    public override void runTests(in string source) {
+        runParsedTests(parseTreeWalkingModule(source));
     }
 
     public void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
-
-        auto parsed = parseModule(source, importPaths);
-        runParsedTests(parsed.module_);
+        runParsedTests(parseTreeWalkingModule(source, importPaths));
     }
 
     public override void runParsedTests(
-        imported!"dmd.dmodule".Module module_,
+        Module module_,
     ) {
         walkModule(module_);
     }
 
-    public imported!"quickbite.executor".TestSummary runTestSummary(
+    public TestSummary runTestSummary(
         in string source,
     ) {
         import quickbite.frontend.compiler: parseModule;
@@ -96,6 +141,137 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
         auto parsed = parseModule(source);
         return testSummary(parsed.module_);
+    }
+}
+
+private imported!"dmd.dmodule".Module parseTreeWalkingModule(
+    in string source,
+) {
+    string[] importPaths;
+    return parseTreeWalkingModule(source, importPaths);
+}
+
+private imported!"dmd.dmodule".Module parseTreeWalkingModule(
+    in string source,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModule;
+
+    try {
+        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
+        auto parsed = parseModule(source, importPaths);
+        return parsed.module_;
+    } catch (Exception) {
+        return parseTreeWalkingModuleWithStaticNestedFunctions(
+            source,
+            importPaths,
+        );
+    }
+}
+
+private imported!"dmd.dmodule".Module parseTreeWalkingModuleWithStaticNestedFunctions(
+    in string source,
+    in string[] importPaths,
+) {
+    import core.atomic: atomicFetchAdd;
+    import dmd.errors: diagnostics;
+    import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
+    import dmd.globals: global;
+    import quickbite.frontend.compiler: withCompilerLock;
+    import std.conv: text;
+
+    imported!"dmd.dmodule".Module module_;
+    withCompilerLock({
+        const originalPathLength = global.path.length;
+        scope(exit) global.path.setDim(originalPathLength);
+        foreach (importPath; importPaths)
+            addImport(importPath);
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const fileName = text(
+            "tree_walking_snippet_",
+            atomicFetchAdd(_treeWalkingModuleCounter, 1u),
+            ".d",
+        );
+
+        auto parsed = dmdParseModule(fileName, source);
+        if (parsed.diagnostics.hasErrors)
+            throw new Exception(treeWalkingDiagnosticMessage);
+
+        makeNestedFunctionsStatic(parsed.module_);
+
+        parsed.module_.fullSemantic;
+        if (global.errors != 0)
+            throw new Exception(treeWalkingDiagnosticMessage);
+
+        module_ = parsed.module_;
+    });
+
+    return module_;
+}
+
+private string treeWalkingDiagnosticMessage() {
+    import dmd.errors: diagnostics, ErrorKind;
+    import std.algorithm.iteration: filter, map;
+    import std.array: array, join;
+
+    const messages = diagnostics
+        .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
+        .map!(diagnostic => diagnostic.message)
+        .array;
+
+    if (messages.length == 0)
+        return "DMD reported an error without a diagnostic message.";
+
+    return messages.join("\n");
+}
+
+private void makeNestedFunctionsStatic(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import quickbite.dmd_util: foreachUnitTestDeclaration;
+
+    foreachUnitTestDeclaration(module_, (unitTest) {
+        makeNestedFunctionsStatic(unitTest.fbody);
+    });
+}
+
+private void makeNestedFunctionsStatic(
+    imported!"dmd.statement".Statement statement,
+) {
+    import dmd.astenums: STC;
+
+    if (statement is null)
+        return;
+
+    if (auto compound = statement.isCompoundStatement) {
+        if (compound.statements !is null)
+            foreach (child; compoundStatements(compound))
+                makeNestedFunctionsStatic(child);
+        return;
+    }
+
+    if (auto compound = statement.isCompoundDeclarationStatement) {
+        if (compound.statements !is null)
+            foreach (child; compoundStatements(compound))
+                makeNestedFunctionsStatic(child);
+        return;
+    }
+
+    if (auto expression = statement.isExpStatement) {
+        if (expression.exp is null)
+            return;
+        auto declaration = expression.exp.isDeclarationExp;
+        if (declaration is null)
+            return;
+        auto function_ = declaration.declaration.isFuncDeclaration;
+        if (function_ is null)
+            return;
+        function_.storage_class |= STC.static_;
+        return;
     }
 }
 
@@ -130,39 +306,56 @@ private imported!"quickbite.executor".TestSummary testSummary(
 }
 
 private struct Interpreter {
+    import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
+    import dmd.mtype: Type;
+
     private long[][string] scopeBufferBytes;
     private long nextClassRef = 1;
     private long nextAssocArrayRef = 1;
+    private long nextFunctionRef = -1;
     private long lastAssocArrayRef;
     private long[] lastArrayValue;
     private bool hasLastArrayValue;
     private long[] clearedRangeAlias;
     private long[] clearedRangePrefix;
     private bool hasClearedRangeAlias;
-    private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
-    private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration][long] classStructFieldMaps;
-    private imported!"dmd.mtype".Type[long] classTypes;
+    private Value[VarDeclaration][long] classFields;
+    private Value[VarDeclaration][VarDeclaration][long] classStructFieldMaps;
+    private Type[long] classTypes;
     private Value[long] heapScalars;
     private AssocArray[long] assocArrays;
-    private Value[imported!"dmd.declaration".VarDeclaration] globals;
+    private FuncDeclaration[long] functions;
+    private Value[VarDeclaration] globals;
     private bool childClassRegistered;
 
     private FunctionResult executeFunction(
-        imported!"dmd.func".FuncDeclaration func,
+        FuncDeclaration func,
         CallArgument[] args = [],
-        Value[imported!"dmd.declaration".VarDeclaration] thisFields = null,
-        Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps = null,
+        Value[VarDeclaration] thisFields = null,
+        Value[VarDeclaration][VarDeclaration] structFieldMaps = null,
+        VarDeclaration thisOwner = null,
     ) {
         if (func.fbody is null)
             throw new Exception("No function body to execute.");
         BodyWalker w;
+        // Give each call its own owner->fields map. Mutations are returned in
+        // FunctionResult instead of sharing the caller's associative array.
         w.structFields = structFieldMaps.dup;
+        VarDeclaration thisDeclaration;
         if (func.vthis !is null) {
-            w.currentThis = func.vthis;
-            w.structFields[func.vthis] = thisFields;
+            thisDeclaration = func.vthis;
+        } else if (thisOwner !is null) {
+            thisDeclaration = thisOwner;
+        }
+        if (thisDeclaration !is null) {
+            w.currentThis = thisDeclaration;
+            w.structFields[thisDeclaration] = thisFields;
         }
         w.bindParameters(func, args);
         w.runStatement(func.fbody, this);
+        if (w.hasThrown)
+            throw new Exception(w.thrownMessage);
 
         const returnsVoid = isVoidReturn(func);
         if (!w.hasReturn && !returnsVoid)
@@ -172,7 +365,7 @@ private struct Interpreter {
                 false,
                 Value(0L),
                 collectRefValues(func, w),
-                collectThisFields(func, w),
+                collectThisFields(thisDeclaration, w),
                 collectStructRefValues(func, w),
                 w.structFields,
             );
@@ -180,23 +373,23 @@ private struct Interpreter {
             true,
             w.returnValue,
             collectRefValues(func, w),
-            collectThisFields(func, w),
+            collectThisFields(thisDeclaration, w),
             collectStructRefValues(func, w),
             w.structFields,
         );
     }
 
-    private Value[imported!"dmd.declaration".VarDeclaration] collectThisFields(
-        imported!"dmd.func".FuncDeclaration func,
+    private Value[VarDeclaration] collectThisFields(
+        VarDeclaration thisDeclaration,
         ref BodyWalker walker,
     ) {
-        if (func.vthis is null)
+        if (thisDeclaration is null)
             return null;
-        return walker.structFields[func.vthis];
+        return walker.structFields[thisDeclaration];
     }
 
     private Value[] collectRefValues(
-        imported!"dmd.func".FuncDeclaration func,
+        FuncDeclaration func,
         ref BodyWalker walker,
     ) {
         Value[] refValues;
@@ -216,12 +409,10 @@ private struct Interpreter {
         return refValues;
     }
 
-    private Value[imported!"dmd.declaration".VarDeclaration][] collectStructRefValues(
-        imported!"dmd.func".FuncDeclaration func,
+    private Value[VarDeclaration][] collectStructRefValues(
+        FuncDeclaration func,
         ref BodyWalker walker,
     ) {
-        import dmd.declaration: VarDeclaration;
-
         Value[VarDeclaration][] results;
         if (func.parameters is null)
             return results;
@@ -238,7 +429,7 @@ private struct Interpreter {
     }
 
     private bool isVoidReturn(
-        imported!"dmd.func".FuncDeclaration func,
+        FuncDeclaration func,
     ) @trusted {
         import dmd.astenums: TY;
         if (func.type is null) return false;
@@ -247,15 +438,40 @@ private struct Interpreter {
     }
 
     private void runTest(
-        imported!"dmd.declaration".UnitTestDeclaration unitTest,
+        UnitTestDeclaration unitTest,
     ) {
         BodyWalker w;
         w.runStatement(unitTest.fbody, this);
+        if (w.hasThrown)
+            throw new Exception(w.thrownMessage);
     }
 }
 
 private struct BodyWalker {
     import dmd.declaration: VarDeclaration;
+    import dmd.expression:
+        ArrayLiteralExp,
+        AssocArrayLiteralExp,
+        AssignExp,
+        BinAssignExp,
+        CallExp,
+        CatAssignExp,
+        CatExp,
+        DeclarationExp,
+        DotVarExp,
+        EqualExp,
+        Expression,
+        IdentityExp,
+        IndexExp,
+        LoweredAssignExp,
+        NewExp,
+        StructLiteralExp;
+    import dmd.func: FuncDeclaration;
+    import dmd.mtype: Type;
+    import dmd.statement:
+        ConditionalStatement,
+        Statement,
+        SwitchStatement;
 
     // DMD's `is*` helpers return concrete AST subclasses. Keep `auto` for
     // those downcasts so the walker stays close to the frontend API.
@@ -263,13 +479,18 @@ private struct BodyWalker {
     private Value[VarDeclaration][VarDeclaration] structFields;
     private AssocArrayKeys[VarDeclaration] assocArrayKeyArrays;
     private AssocArrayKeyLocal[VarDeclaration] assocArrayKeyLocals;
+    private AssocArraySlotLocal[VarDeclaration] assocArraySlotLocals;
+    private ArrayAlias[VarDeclaration] arrayAliases;
     private VarDeclaration currentThis;
     private bool hasReturn;
     private bool hasBreak;
+    private bool hasContinue;
+    private bool hasThrown;
+    private string thrownMessage;
     private Value returnValue;
 
     private void bindParameters(
-        imported!"dmd.func".FuncDeclaration func,
+        FuncDeclaration func,
         CallArgument[] args,
     ) {
         if (func.parameters is null && args.length == 0)
@@ -298,7 +519,7 @@ private struct BodyWalker {
     }
 
     private void runStatement(
-        imported!"dmd.statement".Statement statement,
+        Statement statement,
         ref Interpreter interpreter,
     ) {
         if (statement is null)
@@ -316,7 +537,7 @@ private struct BodyWalker {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
                     runStatement(child, interpreter);
-                    if (hasReturn || hasBreak)
+                    if (hasReturn || hasBreak || hasContinue || hasThrown)
                         return;
                 }
             return;
@@ -326,7 +547,7 @@ private struct BodyWalker {
             if (compound.statements !is null)
                 foreach (child; compoundStatements(compound)) {
                     runStatement(child, interpreter);
-                    if (hasReturn || hasBreak)
+                    if (hasReturn || hasBreak || hasContinue || hasThrown)
                         return;
                 }
             return;
@@ -348,15 +569,36 @@ private struct BodyWalker {
                 runStatement(for_._init, interpreter);
             while (for_.condition is null || runExpression(for_.condition, interpreter).asLong) {
                 runStatement(for_._body, interpreter);
+                if (hasThrown)
+                    return;
                 if (hasReturn)
                     return;
                 if (hasBreak) {
                     hasBreak = false;
                     break;
                 }
+                if (hasContinue)
+                    hasContinue = false;
                 if (for_.increment !is null)
                     runExpression(for_.increment, interpreter, true);
             }
+            return;
+        }
+
+        if (auto do_ = statement.isDoStatement) {
+            do {
+                runStatement(do_._body, interpreter);
+                if (hasThrown)
+                    return;
+                if (hasReturn)
+                    return;
+                if (hasBreak) {
+                    hasBreak = false;
+                    break;
+                }
+                if (hasContinue)
+                    hasContinue = false;
+            } while (runExpression(do_.condition, interpreter).asLong);
             return;
         }
 
@@ -379,12 +621,19 @@ private struct BodyWalker {
         }
 
         if (auto tryCatch = statement.isTryCatchStatement) {
-            try {
-                runStatement(tryCatch._body, interpreter);
-            } catch (Exception) {
-                if (tryCatch.catches !is null && tryCatch.catches.length > 0)
+            runStatement(tryCatch._body, interpreter);
+            if (hasThrown) {
+                if (tryCatch.catches !is null && tryCatch.catches.length > 0) {
+                    hasThrown = false;
+                    thrownMessage = null;
                     runStatement((*tryCatch.catches)[0].handler, interpreter);
+                }
             }
+            return;
+        }
+
+        if (auto switch_ = statement.isSwitchStatement) {
+            runSwitchStatement(switch_, interpreter);
             return;
         }
 
@@ -395,11 +644,19 @@ private struct BodyWalker {
             return;
         }
 
-        if (statement.isThrowStatement !is null)
-            throw new Exception("Unittest assertion failed.");
+        if (auto throwStatement = statement.isThrowStatement) {
+            hasThrown = true;
+            thrownMessage = newExceptionMessage(throwStatement.exp, interpreter);
+            return;
+        }
 
         if (statement.isBreakStatement !is null) {
             hasBreak = true;
+            return;
+        }
+
+        if (statement.isContinueStatement !is null) {
+            hasContinue = true;
             return;
         }
 
@@ -419,7 +676,7 @@ private struct BodyWalker {
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             foreach (child; *unrolled.statements) {
                 runStatement(child, interpreter);
-                if (hasReturn || hasBreak)
+                if (hasReturn || hasBreak || hasContinue || hasThrown)
                     return;
             }
             return;
@@ -429,22 +686,121 @@ private struct BodyWalker {
         throw new Exception(text("Unsupported statement: ", statement.stmt));
     }
 
+    private void runSwitchStatement(
+        SwitchStatement statement,
+        ref Interpreter interpreter,
+    ) {
+        const condition = runExpression(statement.condition, interpreter).asLong;
+        if (statement.cases !is null)
+            foreach (case_; *statement.cases) {
+                const caseValue = runExpression(case_.exp, interpreter).asLong;
+                if (caseValue != condition)
+                    continue;
+                runStatement(case_.statement, interpreter);
+                if (hasBreak)
+                    hasBreak = false;
+                return;
+            }
+
+        if (statement.sdefault !is null) {
+            runStatement(statement.sdefault.statement, interpreter);
+            if (hasBreak)
+                hasBreak = false;
+        }
+    }
+
     private bool conditionalStatementIncluded(
-        imported!"dmd.statement".ConditionalStatement statement,
+        ConditionalStatement statement,
     ) @trusted {
         import dmd.cond: Include;
 
         return statement.condition.inc == Include.yes;
     }
 
+    private string newExceptionMessage(
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        if (expression is null)
+            return "Unittest assertion failed.";
+
+        auto new_ = expression.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            return "Unittest assertion failed.";
+
+        string message;
+        if (!tryExceptionMessagePart((*new_.arguments)[0], message, interpreter))
+            return "Unittest assertion failed.";
+        return message.idup;
+    }
+
+    private bool tryExceptionMessagePart(
+        Expression expression,
+        ref string message,
+        ref Interpreter interpreter,
+    ) {
+        if (expression is null)
+            return false;
+
+        if (auto literal = expression.isStringExp) {
+            message ~= literal.peekString.idup;
+            return true;
+        }
+
+        if (auto integer = expression.isIntegerExp) {
+            import std.conv: text;
+
+            message ~= text(integerValue(integer));
+            return true;
+        }
+
+        if (auto call = expression.isCallExp) {
+            if (call.arguments is null)
+                return false;
+            foreach (argument; callArguments(call))
+                if (!tryExceptionMessagePart(argument, message, interpreter))
+                    return false;
+            return true;
+        }
+
+        if (auto concatenate = expression.isCatExp) {
+            if (!tryExceptionMessagePart(concatenate.e1, message, interpreter))
+                return false;
+            return tryExceptionMessagePart(concatenate.e2, message, interpreter);
+        }
+
+        try {
+            import std.conv: text;
+            import std.sumtype: match;
+
+            runExpression(expression, interpreter).match!(
+                (long value) {
+                    message ~= text(value);
+                },
+                (long[] elements) {
+                    foreach (element; elements)
+                        message ~= cast(char) element;
+                },
+                (LocalPtr _) {},
+                (ClassRef _) {},
+                (AssocArrayRef _) {},
+                (AssocArraySlotRef _) {},
+            );
+            return true;
+        } catch (Exception) {
+            return false;
+        }
+    }
+
     private Value runExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
         in bool resultIgnored = false,
     ) {
         import std.conv: text;
 
         Value globalValue;
+        Value localValue;
 
         void unsupported() {
             throw new Exception(
@@ -455,14 +811,14 @@ private struct BodyWalker {
         if (auto integer = expression.isIntegerExp)
             return Value(integerValue(integer));
 
-        if (expression.isRealExp)
-            return Value(0L);
+        if (auto real_ = expression.isRealExp)
+            return Value(realLiteralBits(real_));
 
         if (expression.isNullExp)
             return Value(0L);
 
-        if (expression.isFuncExp)
-            return Value(0L);
+        if (auto literal = expression.isFuncExp)
+            return Value(functionReference(literal.fd, interpreter));
 
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1, interpreter, true);
@@ -491,139 +847,8 @@ private struct BodyWalker {
         if (auto decl = expression.isDeclarationExp)
             return runDeclarationExpression(decl, interpreter);
 
-        if (auto dotVar = expression.isDotVarExp) {
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "bytesLeft")
-                if (auto owner = structFieldsOwner(dotVar.e1)) {
-                    Value[VarDeclaration] fields = structFieldsValue(owner);
-                    auto bytesField = structFieldNamed(owner.type, "_bytes");
-                    if (bytesField !is null)
-                        return Value(cast(long) structFieldValue(
-                            fields,
-                            bytesField,
-                            Value((long[]).init),
-                        ).asArray.length);
-                }
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "length")
-                if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                    if (auto owner = structFieldsOwner(dotVar.e1)) {
-                        auto fields = structFieldsValue(owner);
-                        return structFieldValue(fields, fieldDecl, Value(0L));
-                    }
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "length")
-                if (auto ownerVar = dotVar.e1.isVarExp)
-                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                        if (auto local = ownerDecl in locals) {
-                            const arrayId = (*local).assocArrayId;
-                            if (arrayId != 0)
-                                return Value(assocArrayLength(arrayId, interpreter));
-                            return Value(cast(long) (*local).asArray.length);
-                        }
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "length")
-                if (auto ownerVar = dotVar.e1.isVarExp)
-                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                        if (auto global = ownerDecl in interpreter.globals)
-                            return Value(cast(long) (*global).asArray.length);
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "length")
-                if (auto arrayField = dotVar.e1.isDotVarExp)
-                    if (auto fieldDecl = arrayField.var.isVarDeclaration)
-                        if (auto owner = structFieldsOwner(arrayField.e1)) {
-                            auto fields = structFieldsValue(owner);
-                            return Value(arrayFieldLength(
-                                structFieldValue(fields, fieldDecl, Value((long[]).init)),
-                                fieldDecl.type,
-                            ));
-                        }
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "length")
-                return Value(0L);
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "keys") {
-                const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
-                if (arrayId != 0 && arrayId in interpreter.assocArrays)
-                    return Value(
-                        new long[interpreter.assocArrays[arrayId].keyStructs.length],
-                    );
-            }
-            if (dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "values") {
-                const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
-                if (arrayId != 0 && arrayId in interpreter.assocArrays) {
-                    long[] values;
-                    foreach (value; interpreter.assocArrays[arrayId].values)
-                        values ~= value.asLong;
-                    return Value(values);
-                }
-            }
-            if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                if (fieldDecl in structFields)
-                    return Value(0L);
-            if (auto ownerVar = dotVar.e1.isVarExp)
-                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                        if (auto fields = ownerDecl in structFields)
-                        if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                            return structFieldValue(*fields, fieldDecl, Value(0L));
-            if (auto ownerVar = dotVar.e1.isVarExp)
-                if (ownerVar.var.ident !is null &&
-                    ownerVar.var.ident.toString == "bi")
-                    if (dotVar.var.ident !is null &&
-                        (dotVar.var.ident.toString == "base" ||
-                            dotVar.var.ident.toString == "size"))
-                        return Value(0L);
-            if (auto ownerVar = dotVar.e1.isVarExp)
-                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
-                    if (auto local = ownerDecl in locals)
-                        if (auto fields = classInstanceFields(*local, interpreter))
-                            if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                                return structFieldValue(*fields, fieldDecl, Value(0L));
-            if (auto thisExp = dotVar.e1.isThisExp)
-                if (auto thisDecl = thisExp.var.isVarDeclaration)
-                    if (auto fields = thisDecl in structFields)
-                        if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                            return structFieldValue(*fields, fieldDecl, Value(0L));
-            if (dotVar.e1.isThisExp && currentThis !is null)
-                if (auto fields = currentThis in structFields)
-                    if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                        return structFieldValue(*fields, fieldDecl, Value(0L));
-            if (auto owner = structFieldsOwner(dotVar.e1))
-                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                    auto fields = structFieldsValue(owner);
-                    return structFieldValue(fields, fieldDecl, Value(0L));
-                }
-            if (isStructType(dotVar.e1.type))
-                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                    Value[VarDeclaration] elementFields;
-                    if (tryStructArrayElementFields(
-                        dotVar.e1,
-                        elementFields,
-                        interpreter,
-                    ))
-                        return structFieldValue(
-                            elementFields,
-                            fieldDecl,
-                            Value(0L),
-                        );
-                }
-            if (isUnitThreadedGeneratedValueExpression(dotVar))
-                if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                    return defaultValue(fieldDecl.type);
-            if (auto ptr = dotVar.e1.isPtrExp)
-                if (auto fields = classInstanceFields(
-                    runExpression(ptr.e1, interpreter),
-                    interpreter,
-                ))
-                    if (auto fieldDecl = dotVar.var.isVarDeclaration)
-                        return structFieldValue(*fields, fieldDecl, Value(0L));
-            if (dotVar.e1.isPtrExp &&
-                dotVar.var.ident !is null &&
-                dotVar.var.ident.toString == "arr")
-                return Value((long[]).init);
-            unsupported;
-        }
+        if (auto dotVar = expression.isDotVarExp)
+            return runDotVarExpression(dotVar, interpreter);
 
         if (isComparisonExpression(expression))
             return runComparisonExpression(expression, interpreter);
@@ -635,6 +860,9 @@ private struct BodyWalker {
             return runAssignExpression(blit, interpreter);
 
         if (auto assign = expression.isAssignExp)
+            return runAssignExpression(assign, interpreter);
+
+        if (auto assign = expression.isLoweredAssignExp)
             return runAssignExpression(assign, interpreter);
 
         if (auto concatenate = expression.isCatExp)
@@ -655,6 +883,17 @@ private struct BodyWalker {
                         locals[varDecl] = Value(newVal);
                         return Value(newVal);
                     }
+            if (auto cast_ = addAssign.e1.isCastExp)
+                if (auto var = cast_.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (tryGetLocalValue(varDecl, localValue)) {
+                            const newVal = localValue.asLong +
+                                runExpression(addAssign.e2, interpreter).asLong;
+                            locals[varDecl] = Value(
+                                coerceIntegerToType(newVal, varDecl.type),
+                            );
+                            return Value(newVal);
+                        }
             if (auto dotVar = addAssign.e1.isDotVarExp)
                 if (auto thisExp = dotVar.e1.isThisExp)
                     if (auto thisDecl = thisExp.var.isVarDeclaration)
@@ -766,6 +1005,9 @@ private struct BodyWalker {
                             }
             unsupported;
         }
+
+        if (auto assign = expression.isBinAssignExp)
+            return runBinAssignExpression(assign, interpreter);
 
         if (auto post = expression.isPostExp) {
             import dmd.tokens: EXP;
@@ -927,13 +1169,19 @@ private struct BodyWalker {
             }
         }
 
-        if (auto cond = expression.isCondExp)
+        if (auto cond = expression.isCondExp) {
+            Value value;
+            if (tryRunLoweredAssocArraySlotConditional(cond, value, interpreter))
+                return value;
+            if (tryRunAssocArrayConditionalValue(cond, value, interpreter))
+                return value;
             return runExpression(
                 cond.econd,
                 interpreter,
             ).asLong
                 ? runExpression(cond.e1, interpreter)
                 : runExpression(cond.e2, interpreter);
+        }
 
         if (auto divide = expression.isDivExp) {
             const right = runExpression(divide.e2, interpreter).asLong;
@@ -1038,23 +1286,51 @@ private struct BodyWalker {
         }
 
         if (auto index = expression.isIndexExp) {
+            Value indexedValue;
+            if (tryRunAssocArrayKeysIndex(index, indexedValue, interpreter))
+                return indexedValue;
+            if (index.loweredFrom !is null)
+                if (auto originalIndex = index.loweredFrom.isIndexExp)
+                    if (tryRunAssocArrayIndex(
+                        originalIndex,
+                        indexedValue,
+                        interpreter,
+                    ))
+                        return indexedValue;
+            if (tryRunAssocArrayIndex(index, indexedValue, interpreter))
+                return indexedValue;
+            if (index.e1.type !is null &&
+                index.e1.type.toBasetype.isTypePointer !is null) {
+                const pointer = runExpression(index.e1, interpreter);
+                if (tryRunAssocArraySlotDereference(
+                    pointer,
+                    indexedValue,
+                    interpreter,
+                ))
+                    return indexedValue;
+                return pointer;
+            }
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (varDecl in locals) {
-                        const arrayId = locals[varDecl].assocArrayId;
+                    if (tryGetLocalValue(varDecl, localValue)) {
+                        const arrayId = localValue.assocArrayId;
                         if (arrayId != 0 && arrayId in interpreter.assocArrays) {
-                            const key = runExpression(index.e2, interpreter);
-                            const array = interpreter.assocArrays[arrayId];
-                            foreach (i, existingKey; array.keys)
-                                if (valuesEqual(existingKey, key, interpreter))
-                                    return array.values[i];
+                            size_t keyIndex;
+                            if (tryAssocArrayKeyExpressionIndex(
+                                arrayId,
+                                index.e2,
+                                keyIndex,
+                                interpreter,
+                            ))
+                                return interpreter.assocArrays[arrayId]
+                                    .values[keyIndex];
                         }
                     }
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (varDecl in locals) {
+                    if (tryGetLocalValue(varDecl, localValue)) {
                         const i = runExpression(index.e2, interpreter).asLong;
-                        return Value(locals[varDecl].asArray[cast(size_t) i]);
+                        return Value(localValue.asArray[cast(size_t) i]);
                     }
             if (auto dotVar = index.e1.isDotVarExp)
                 if (auto ownerVar = dotVar.e1.isVarExp)
@@ -1090,7 +1366,9 @@ private struct BodyWalker {
         if (auto len = expression.isArrayLengthExp) {
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (auto assocKeys = varDecl in assocArrayKeyArrays)
+                    if (auto assocKeys = assocArrayKeysLocal(
+                        varDecl,
+                    ))
                         return Value(cast(long) assocKeys.keyStructs.length);
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
@@ -1104,12 +1382,16 @@ private struct BodyWalker {
                     }
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (varDecl in locals)
-                        return Value(arrayValueLength(locals[varDecl]));
+                    if (varDecl in locals) {
+                        return Value(arrayFieldLength(
+                            locals[varDecl],
+                            varDecl.type,
+                        ));
+                    }
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (tryGetGlobalValue(varDecl, interpreter, globalValue))
-                        return Value(arrayValueLength(globalValue));
+                        return Value(arrayFieldLength(globalValue, varDecl.type));
             if (auto dotVar = len.e1.isDotVarExp)
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
@@ -1162,8 +1444,8 @@ private struct BodyWalker {
                 // __ctfe is true in CTFE; at runtime it is false.
                 if (varDecl.ident == Id.ctfe)
                     return Value(0L);
-                if (varDecl in locals)
-                    return applyClearedRangeAlias(locals[varDecl], interpreter);
+                if (tryGetLocalValue(varDecl, localValue))
+                    return applyClearedRangeAlias(localValue, interpreter);
                 if (tryGetGlobalValue(varDecl, interpreter, globalValue))
                     return applyClearedRangeAlias(globalValue, interpreter);
                 if (currentThis !is null)
@@ -1177,12 +1459,50 @@ private struct BodyWalker {
                         if (sameStructField(field, varDecl))
                             return applyClearedRangeAlias(value, interpreter);
             }
+            if (var.var.ident !is null &&
+                tryGetLocalValue(
+                    var.var.ident.toString,
+                    expression.type,
+                    localValue,
+                ))
+                return applyClearedRangeAlias(localValue, interpreter);
+        }
+
+        if (auto identifier = expression.isIdentifierExp) {
+            if (identifier.ident !is null &&
+                tryGetUnqualifiedStructFieldValue(
+                    identifier.ident.toString,
+                    localValue,
+                ))
+                return applyClearedRangeAlias(localValue, interpreter);
+            if (identifier.ident !is null &&
+                tryGetLocalValue(
+                    identifier.ident.toString,
+                    expression.type,
+                    localValue,
+                ))
+                return applyClearedRangeAlias(localValue, interpreter);
         }
 
         if (expression.isThisExp)
             return Value(0L);
 
+        if (auto symbol = expression.isSymOffExp)
+            if (auto function_ = symbol.var.isFuncDeclaration)
+                return Value(functionReference(function_, interpreter));
+
+        if (auto delegate_ = expression.isDelegateExp)
+            return Value(functionReference(delegate_.func, interpreter));
+
         if (auto addr = expression.isAddrExp) {
+            if (auto symbol = addr.e1.isSymOffExp)
+                if (auto function_ = symbol.var.isFuncDeclaration)
+                    return Value(functionReference(function_, interpreter));
+            if (auto delegate_ = addr.e1.isDelegateExp)
+                return Value(functionReference(delegate_.func, interpreter));
+            if (auto var = addr.e1.isVarExp)
+                if (auto function_ = var.var.isFuncDeclaration)
+                    return Value(functionReference(function_, interpreter));
             if (auto var = addr.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
@@ -1213,6 +1533,7 @@ private struct BodyWalker {
                 (long[] _) => cast(VarDeclaration) null,
                 (ClassRef _) => cast(VarDeclaration) null,
                 (AssocArrayRef _) => cast(VarDeclaration) null,
+                (AssocArraySlotRef _) => cast(VarDeclaration) null,
             );
             if (target !is null && target in locals)
                 return locals[target];
@@ -1238,8 +1559,649 @@ private struct BodyWalker {
         assert(false);
     }
 
+    private Value runDotVarExpression(
+        DotVarExp dotVar,
+        ref Interpreter interpreter,
+    ) {
+        import std.conv: text;
+
+        Value value;
+        if (tryRunDotVarBytesLeft(dotVar, value))
+            return value;
+        if (tryRunDotVarStructLength(dotVar, value))
+            return value;
+        if (tryRunDotVarLocalLength(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarGlobalLength(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarArrayFieldLength(dotVar, value))
+            return value;
+        if (tryRunDotVarInputRangeProperty(dotVar, value, interpreter))
+            return value;
+        if (dotVarFieldNamed(dotVar, "length"))
+            return Value(0L);
+        if (tryRunDotVarKeys(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarValues(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarClassInfoName(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarStructFieldHandle(dotVar, value))
+            return value;
+        if (tryRunDotVarOwnerStructField(dotVar, value))
+            return value;
+        if (tryRunDotVarBitArrayField(dotVar, value))
+            return value;
+        if (tryRunDotVarLocalClassField(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarThisField(dotVar, value))
+            return value;
+        if (tryRunDotVarCurrentThisField(dotVar, value))
+            return value;
+        if (tryRunDotVarOwnedStructField(dotVar, value))
+            return value;
+        if (tryRunDotVarStructArrayElementField(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarGeneratedValueField(dotVar, value))
+            return value;
+        if (tryRunDotVarPointerClassField(dotVar, value, interpreter))
+            return value;
+        if (tryRunDotVarPointerArrayField(dotVar, value))
+            return value;
+
+        throw new Exception(text(
+            "Unsupported expression: ",
+            expressionChars(dotVar),
+        ));
+    }
+
+    private bool tryRunDotVarInputRangeProperty(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        long[] elements;
+        if (!tryReadInputRangeElements(dotVar.e1, elements, interpreter))
+            return false;
+
+        if (dotVarFieldNamed(dotVar, "front")) {
+            if (elements.length == 0)
+                throw new Exception("Cannot read front from empty range.");
+            value = Value(elements[0]);
+            return true;
+        }
+
+        if (dotVarFieldNamed(dotVar, "empty")) {
+            value = Value(elements.length == 0 ? 1L : 0L);
+            return true;
+        }
+
+        if (dotVarFieldNamed(dotVar, "length")) {
+            value = Value(cast(long) elements.length);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryRunDotVarBytesLeft(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "bytesLeft"))
+            return false;
+
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        value = Value(cast(long) structFieldValue(
+            fields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray.length);
+        return true;
+    }
+
+    private bool tryRunDotVarStructLength(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "length"))
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        auto fields = structFieldsValue(owner);
+        value = structFieldValue(fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarLocalLength(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "length"))
+            return false;
+
+        auto ownerVar = dotVar.e1.isVarExp;
+        if (ownerVar is null)
+            return false;
+
+        auto ownerDecl = ownerVar.var.isVarDeclaration;
+        if (ownerDecl is null)
+            return false;
+
+        auto local = ownerDecl in locals;
+        if (local is null)
+            return false;
+
+        const arrayId = (*local).assocArrayId;
+        if (arrayId != 0)
+            value = Value(assocArrayLength(arrayId, interpreter));
+        else
+            value = Value(arrayFieldLength(*local, ownerDecl.type));
+        return true;
+    }
+
+    private bool tryRunDotVarGlobalLength(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "length"))
+            return false;
+
+        auto ownerVar = dotVar.e1.isVarExp;
+        if (ownerVar is null)
+            return false;
+
+        auto ownerDecl = ownerVar.var.isVarDeclaration;
+        if (ownerDecl is null)
+            return false;
+
+        auto global = ownerDecl in interpreter.globals;
+        if (global is null)
+            return false;
+
+        value = Value(arrayFieldLength(*global, ownerDecl.type));
+        return true;
+    }
+
+    private bool tryRunDotVarArrayFieldLength(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "length"))
+            return false;
+
+        auto arrayField = dotVar.e1.isDotVarExp;
+        if (arrayField is null)
+            return false;
+
+        auto fieldDecl = arrayField.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        auto owner = structFieldsOwner(arrayField.e1);
+        if (owner is null)
+            return false;
+
+        auto fields = structFieldsValue(owner);
+        value = Value(arrayFieldLength(
+            structFieldValue(fields, fieldDecl, Value((long[]).init)),
+            fieldDecl.type,
+        ));
+        return true;
+    }
+
+    private bool tryRunDotVarKeys(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "keys"))
+            return false;
+
+        const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
+        if (arrayId == 0) {
+            if (isAssocArrayExpression(dotVar.e1)) {
+                value = Value((long[]).init);
+                return true;
+            }
+            return false;
+        }
+        if (arrayId !in interpreter.assocArrays)
+            return false;
+
+        value = Value(new long[interpreter.assocArrays[arrayId].keyStructs.length]);
+        return true;
+    }
+
+    private bool tryRunDotVarValues(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "values"))
+            return false;
+
+        const arrayId = assocArrayIdFromExpression(dotVar.e1, interpreter);
+        if (arrayId == 0) {
+            if (isAssocArrayExpression(dotVar.e1)) {
+                value = Value((long[]).init);
+                return true;
+            }
+            return false;
+        }
+        if (arrayId !in interpreter.assocArrays)
+            return false;
+
+        long[] values;
+        foreach (arrayValue; interpreter.assocArrays[arrayId].values)
+            values ~= arrayValue.asLong;
+        value = Value(values);
+        return true;
+    }
+
+    private bool tryRunDotVarClassInfoName(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!dotVarFieldNamed(dotVar, "name"))
+            return false;
+
+        Type classType;
+        if (!tryClassInfoExpressionType(dotVar.e1, classType, interpreter))
+            return false;
+
+        value = Value(stringElements(classInfoName(classType)));
+        return true;
+    }
+
+    private bool tryClassInfoExpressionType(
+        Expression expression,
+        out Type type,
+        ref Interpreter interpreter,
+    ) {
+        if (auto dotVar = expression.isDotVarExp)
+            if (dotVarFieldNamed(dotVar, "classinfo")) {
+                if (dotVar.e1.isTypeExp)
+                    if (tryClassInfoDeclarationType(dotVar, type))
+                        return true;
+                return tryClassExpressionType(dotVar.e1, type, interpreter);
+            }
+        return tryClassExpressionType(expression, type, interpreter);
+    }
+
+    private bool tryClassInfoDeclarationType(
+        DotVarExp dotVar,
+        out Type type,
+    ) {
+        if (dotVar.var is null)
+            return false;
+
+        // auto: DMD parent symbols are mutable AST nodes.
+        auto parent = dotVar.var.toParent;
+        if (parent is null)
+            return false;
+
+        auto class_ = parent.isClassDeclaration;
+        if (class_ is null || class_.type is null)
+            return false;
+
+        type = class_.type;
+        return isClassType(type) && !isClassInfoType(type);
+    }
+
+    private bool tryClassExpressionType(
+        Expression expression,
+        out Type type,
+        ref Interpreter interpreter,
+    ) {
+        if (auto ptr = expression.isPtrExp)
+            return tryClassExpressionType(ptr.e1, type, interpreter);
+
+        if (auto cast_ = expression.isCastExp)
+            return tryClassExpressionType(cast_.e1, type, interpreter);
+
+        if (auto typeExp = expression.isTypeExp)
+            if (isClassType(typeExp.type) && !isClassInfoType(typeExp.type)) {
+                type = typeExp.type;
+                return true;
+            }
+
+        if (auto typeid_ = expression.isTypeidExp) {
+            import dmd.dtemplate: isDsymbol, isExpression, isType;
+
+            if (auto typeObject = isType(typeid_.obj))
+                if (isClassType(typeObject) && !isClassInfoType(typeObject)) {
+                    type = typeObject;
+                    return true;
+                }
+            if (auto symbolObject = isDsymbol(typeid_.obj))
+                if (auto typeInfo = symbolObject.isTypeInfoDeclaration) {
+                    type = typeInfo.tinfo;
+                    return isClassType(type) && !isClassInfoType(type);
+                }
+            if (auto expressionObject = isExpression(typeid_.obj))
+                return tryClassExpressionType(expressionObject, type, interpreter);
+        }
+
+        Value value;
+        try {
+            value = runExpression(expression, interpreter);
+        } catch (Exception) {
+            if (expression.type !is null &&
+                isClassType(expression.type) &&
+                !isClassInfoType(expression.type)) {
+                type = expression.type;
+                return true;
+            }
+            return false;
+        }
+
+        const classId = value.classId;
+        if (classId != 0 && classId in interpreter.classTypes) {
+            type = interpreter.classTypes[classId];
+            return true;
+        }
+
+        if (expression.type !is null &&
+            isClassType(expression.type) &&
+            !isClassInfoType(expression.type)) {
+            type = expression.type;
+            return true;
+        }
+        return false;
+    }
+
+    private string classInfoName(Type type) {
+        return qualifiedTypeChars(type);
+    }
+
+    private bool isClassInfoType(Type type) {
+        if (type is null)
+            return false;
+
+        auto classType = type.toBasetype.isTypeClass;
+        if (classType is null ||
+            classType.sym is null ||
+            classType.sym.ident is null)
+            return false;
+
+        const name = classType.sym.ident.toString;
+        return name == "ClassInfo" || name == "TypeInfo_Class";
+    }
+
+    private long[] stringElements(in string value) {
+        long[] elements;
+        foreach (char_; value)
+            elements ~= cast(long) char_;
+        return elements;
+    }
+
+    private bool tryRunDotVarStructFieldHandle(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null || fieldDecl !in structFields)
+            return false;
+
+        value = Value(0L);
+        return true;
+    }
+
+    private bool tryRunDotVarOwnerStructField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        auto ownerVar = dotVar.e1.isVarExp;
+        if (ownerVar is null)
+            return false;
+
+        auto ownerDecl = ownerVar.var.isVarDeclaration;
+        if (ownerDecl is null)
+            return false;
+
+        auto fields = ownerDecl in structFields;
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = structFieldValue(*fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarBitArrayField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        auto ownerVar = dotVar.e1.isVarExp;
+        if (ownerVar is null ||
+            ownerVar.var.ident is null ||
+            ownerVar.var.ident.toString != "bi")
+            return false;
+        if (!dotVarFieldNamed(dotVar, "base") && !dotVarFieldNamed(dotVar, "size"))
+            return false;
+
+        value = Value(0L);
+        return true;
+    }
+
+    private bool tryRunDotVarLocalClassField(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto ownerVar = dotVar.e1.isVarExp;
+        if (ownerVar is null)
+            return false;
+
+        auto ownerDecl = ownerVar.var.isVarDeclaration;
+        if (ownerDecl is null)
+            return false;
+
+        auto local = ownerDecl in locals;
+        if (local is null)
+            return false;
+
+        auto fields = classInstanceFields(*local, interpreter);
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = structFieldValue(*fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarThisField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        auto thisExp = dotVar.e1.isThisExp;
+        if (thisExp is null)
+            return false;
+
+        auto thisDecl = thisExp.var.isVarDeclaration;
+        if (thisDecl is null)
+            return false;
+
+        auto fields = thisDecl in structFields;
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = structFieldValue(*fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarCurrentThisField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (!dotVar.e1.isThisExp || currentThis is null)
+            return false;
+
+        auto fields = currentThis in structFields;
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = structFieldValue(*fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarOwnedStructField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        auto fields = structFieldsValue(owner);
+        value = structFieldValue(fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarStructArrayElementField(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!isStructType(dotVar.e1.type))
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        Value[VarDeclaration] elementFields;
+        if (!tryStructArrayElementFields(dotVar.e1, elementFields, interpreter))
+            return false;
+
+        value = structFieldValue(elementFields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarGeneratedValueField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (!isUnitThreadedGeneratedValueExpression(dotVar))
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = defaultValue(fieldDecl.type);
+        return true;
+    }
+
+    private bool tryRunDotVarPointerClassField(
+        DotVarExp dotVar,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto ptr = dotVar.e1.isPtrExp;
+        if (ptr is null)
+            return false;
+
+        auto fields = classInstanceFields(
+            runExpression(ptr.e1, interpreter),
+            interpreter,
+        );
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        value = structFieldValue(*fields, fieldDecl, Value(0L));
+        return true;
+    }
+
+    private bool tryRunDotVarPointerArrayField(
+        DotVarExp dotVar,
+        out Value value,
+    ) {
+        if (dotVar.e1.isPtrExp is null || !dotVarFieldNamed(dotVar, "arr"))
+            return false;
+
+        value = Value((long[]).init);
+        return true;
+    }
+
+    private bool tryGetUnqualifiedStructFieldValue(
+        const(char)[] name,
+        out Value value,
+    ) {
+        if (currentThis is null)
+            return false;
+
+        auto fields = currentThis in structFields;
+        if (fields is null)
+            return false;
+
+        foreach (field, fieldValue; *fields) {
+            if (field.ident is null || field.ident.toString != name)
+                continue;
+            value = fieldValue;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool dotVarFieldNamed(DotVarExp dotVar, in string name) {
+        return dotVar.var.ident !is null && dotVar.var.ident.toString == name;
+    }
+
+    private long functionReference(
+        FuncDeclaration function_,
+        ref Interpreter interpreter,
+    ) {
+        const ref_ = interpreter.nextFunctionRef;
+        --interpreter.nextFunctionRef;
+        interpreter.functions[ref_] = function_;
+        return ref_;
+    }
+
     private Value runArrayConcatenateExpression(
-        imported!"dmd.expression".CatExp concatenate,
+        CatExp concatenate,
         ref Interpreter interpreter,
     ) {
         import std.sumtype: match;
@@ -1262,6 +2224,10 @@ private struct BodyWalker {
                 throw new Exception("Expected concatenation value, got AA.");
                 return (long[]).init;
             },
+            (AssocArraySlotRef _) {
+                throw new Exception("Expected concatenation value, got AA slot.");
+                return (long[]).init;
+            },
         );
         right.match!(
             (long[] array) {
@@ -1279,12 +2245,15 @@ private struct BodyWalker {
             (AssocArrayRef _) {
                 throw new Exception("Expected concatenation value, got AA.");
             },
+            (AssocArraySlotRef _) {
+                throw new Exception("Expected concatenation value, got AA slot.");
+            },
         );
         return Value(elements);
     }
 
     private Value runAssocArrayLiteralExpression(
-        imported!"dmd.expression".AssocArrayLiteralExp literal,
+        AssocArrayLiteralExp literal,
         ref Interpreter interpreter,
     ) {
         import dmd.declaration: VarDeclaration;
@@ -1292,13 +2261,19 @@ private struct BodyWalker {
         AssocArray array;
         foreach (index, keyExpression; assocArrayLiteralKeys(literal)) {
             VarDeclaration keyStruct;
-            if (auto var = keyExpression.isVarExp)
+            Value[VarDeclaration] keyFields;
+            if (auto owner = structFieldsOwner(keyExpression)) {
+                keyStruct = owner;
+                keyFields = structFieldsValue(owner).dup;
+            } else if (auto var = keyExpression.isVarExp)
                 keyStruct = var.var.isVarDeclaration;
-            if (keyStruct !is null && keyStruct in structFields) {
+            if (keyStruct !is null && keyFields !is null) {
                 array.keyStructs ~= keyStruct;
+                array.keyFields ~= keyFields;
                 array.keys ~= Value(0L);
             } else {
                 array.keyStructs ~= null;
+                array.keyFields ~= null;
                 array.keys ~= runExpression(keyExpression, interpreter);
             }
             array.values ~= runExpression(
@@ -1313,8 +2288,211 @@ private struct BodyWalker {
         return Value(assocArrayRef);
     }
 
+    private bool tryRunAssocArrayIndex(
+        IndexExp index,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        long arrayId;
+        try {
+            arrayId = assocArrayIdFromExpression(index.e1, interpreter);
+        } catch (Exception) {
+            return false;
+        }
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return false;
+
+        size_t keyIndex;
+        if (tryAssocArrayKeyExpressionIndex(
+            arrayId,
+            index.e2,
+            keyIndex,
+            interpreter,
+        )) {
+            value = interpreter.assocArrays[arrayId].values[keyIndex];
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryRunAssocArrayKeysIndex(
+        IndexExp index,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (index.loweredFrom !is null)
+            if (auto originalIndex = index.loweredFrom.isIndexExp)
+                if (tryRunAssocArrayKeysDirectIndex(
+                    originalIndex,
+                    value,
+                    interpreter,
+                ))
+                    return true;
+
+        return tryRunAssocArrayKeysDirectIndex(index, value, interpreter);
+    }
+
+    private bool tryRunAssocArrayKeysDirectIndex(
+        IndexExp index,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            return false;
+
+        auto varDecl = var.var.isVarDeclaration;
+        if (varDecl is null)
+            return false;
+
+        auto keys = assocArrayKeysLocal(varDecl);
+        if (keys is null)
+            return false;
+
+        const keyIndex = runExpression(index.e2, interpreter).asLong;
+        if (keyIndex < 0 || cast(size_t) keyIndex >= keys.keyStructs.length)
+            throw new Exception("Array bounds check failed.");
+        if (cast(size_t) keyIndex >= keys.keys.length)
+            throw new Exception("Array bounds check failed.");
+
+        value = keys.keys[cast(size_t) keyIndex];
+        return true;
+    }
+
+    private bool tryRunAssocArraySlotDereference(
+        Value pointer,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        AssocArraySlotRef slot;
+        const hasSlot = pointer.match!(
+            (AssocArraySlotRef ref_) {
+                slot = ref_;
+                return true;
+            },
+            (long _) => false,
+            (long[] _) => false,
+            (LocalPtr _) => false,
+            (ClassRef _) => false,
+            (AssocArrayRef _) => false,
+        );
+        if (!hasSlot)
+            return false;
+        if (slot.arrayId == 0 || slot.arrayId !in interpreter.assocArrays)
+            return false;
+        if (slot.index >= interpreter.assocArrays[slot.arrayId].values.length)
+            return false;
+
+        value = interpreter.assocArrays[slot.arrayId].values[slot.index];
+        return true;
+    }
+
+    private bool tryRunAssocArrayConditionalValue(
+        imported!"dmd.expression".CondExp cond,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (runExpression(cond.econd, interpreter).asLong == 0)
+            return false;
+        auto index = cond.e1.isIndexExp;
+        if (index is null)
+            return false;
+        return tryRunAssocArrayIndex(index, value, interpreter);
+    }
+
+    private bool tryRunLoweredAssocArraySlotConditional(
+        imported!"dmd.expression".CondExp cond,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto var = cond.econd.isVarExp;
+        if (var is null)
+            return false;
+
+        auto varDecl = var.var.isVarDeclaration;
+        if (varDecl is null)
+            return false;
+
+        auto slot = assocArraySlotLocal(varDecl);
+        if (slot is null)
+            return false;
+        if (slot.arrayId == 0 || slot.arrayId !in interpreter.assocArrays)
+            return false;
+        if (slot.index >= interpreter.assocArrays[slot.arrayId].values.length)
+            return false;
+
+        value = runExpression(cond.e1, interpreter);
+        return true;
+    }
+
+    private bool tryAssocArrayKeyExpressionIndex(
+        in long arrayId,
+        Expression expression,
+        out size_t index,
+        ref Interpreter interpreter,
+    ) {
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return false;
+
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (auto keyLocal = assocArrayKeyLocal(varDecl)) {
+                    index = keyLocal.index;
+                    return index < interpreter.assocArrays[arrayId].values.length;
+                }
+
+        if (auto owner = structFieldsOwner(expression))
+            return tryAssocArrayStructKeyIndex(
+                arrayId,
+                structFieldsValue(owner),
+                index,
+                interpreter,
+            );
+
+        Value key;
+        try {
+            key = runExpression(expression, interpreter);
+        } catch (Exception) {
+            return false;
+        }
+        return tryAssocArrayKeyIndex(arrayId, key, index, interpreter);
+    }
+
+    private bool tryAssocArrayStructKeyIndex(
+        in long arrayId,
+        Value[VarDeclaration] keyFields,
+        out size_t index,
+        ref Interpreter interpreter,
+    ) {
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return false;
+
+        AssocArray array = interpreter.assocArrays[arrayId];
+        foreach (i, keyStruct; array.keyStructs) {
+            Value[VarDeclaration] existingFields;
+            if (!tryAssocArrayStoredStructKeyFields(
+                array,
+                i,
+                existingFields,
+            ))
+                continue;
+            if (fieldValuesEqual(
+                existingFields,
+                keyFields,
+                interpreter,
+            )) {
+                index = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
     private Value runNewExpression(
-        imported!"dmd.expression".NewExp new_,
+        NewExp new_,
         ref Interpreter interpreter,
     ) {
         import std.conv: text;
@@ -1336,7 +2514,7 @@ private struct BodyWalker {
             nestedStructFieldMaps(interpreter.classFields[classRef.id]);
 
         if (new_.member !is null) {
-            imported!"dmd.expression".Expression[] arguments;
+            Expression[] arguments;
             if (new_.arguments !is null)
                 arguments = newArguments(new_);
             // `auto` is intentional: constructor execution mutates field maps.
@@ -1353,8 +2531,8 @@ private struct BodyWalker {
     }
 
     private CallArgument[] callArgumentsFor(
-        imported!"dmd.func".FuncDeclaration function_,
-        imported!"dmd.expression".Expression[] arguments,
+        FuncDeclaration function_,
+        Expression[] arguments,
         ref Interpreter interpreter,
     ) {
         CallArgument[] args;
@@ -1365,8 +2543,21 @@ private struct BodyWalker {
             const param = functionParameters(function_)[i];
             import dmd.astenums: STC;
 
-            if ((param.storage_class & STC.ref_) != STC.none)
+            if ((param.storage_class & STC.ref_) != STC.none) {
+                if (auto thisExp = arg.isThisExp)
+                    if (auto thisDecl = thisExp.var.isVarDeclaration)
+                        if (auto fields = thisDecl in structFields) {
+                            CallArgument structRefArg;
+                            structRefArg.refSource = thisDecl;
+                            structRefArg.structFields = (*fields).dup;
+                            structRefArg.structFieldMaps =
+                                nestedStructFieldMaps(*fields);
+                            structRefArg.isStructRef = true;
+                            args ~= structRefArg;
+                            continue;
+                        }
                 throw new Exception("Unsupported ref argument.");
+            }
 
             if (auto literal = arg.isStructLiteralExp) {
                 CallArgument structArg;
@@ -1393,11 +2584,11 @@ private struct BodyWalker {
     }
 
     private Value[VarDeclaration] newStructFields(
-        imported!"dmd.expression".NewExp new_,
+        NewExp new_,
         ref Interpreter interpreter,
     ) {
         Value[VarDeclaration] fields;
-        imported!"dmd.expression".Expression[] arguments;
+        Expression[] arguments;
         if (new_.arguments !is null)
             arguments = newArguments(new_);
 
@@ -1429,7 +2620,7 @@ private struct BodyWalker {
     }
 
     private Value runArrayAppendExpression(
-        imported!"dmd.expression".CatAssignExp append,
+        CatAssignExp append,
         ref Interpreter interpreter,
     ) {
         if (auto var = append.e1.isVarExp)
@@ -1527,7 +2718,7 @@ private struct BodyWalker {
     private void appendRuntimeArrayElement(
         ref long[] elements,
         Value value,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         import std.sumtype: match;
 
@@ -1542,11 +2733,12 @@ private struct BodyWalker {
             (LocalPtr _) {},
             (ClassRef _) {},
             (AssocArrayRef _) {},
+            (AssocArraySlotRef _) {},
         );
     }
 
     private Value runCallExpression(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
         in bool resultIgnored,
     ) {
@@ -1559,9 +2751,15 @@ private struct BodyWalker {
         Value rangeValue;
         if (tryRunCanFind(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunIota(call, rangeValue, interpreter))
+            return rangeValue;
+        if (tryRunInputRangeCall(call, rangeValue, interpreter))
+            return rangeValue;
 
         if (call.f is null) {
-            if (tryRunChildCerealiserDelegate(call, interpreter))
+            if (tryRunIndirectFunctionCall(call, rangeValue, interpreter))
+                return rangeValue;
+            if (tryRunRegisteredChildClassCall(call, interpreter))
                 return Value(0L);
             if (expressionChars(call.e1) == "*& _d_newarrayU") {
                 if (call.arguments is null || call.arguments.length == 0)
@@ -1598,11 +2796,12 @@ private struct BodyWalker {
             return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
         }
 
-        rememberAssocArrayOrArrayCerealAppend(call, interpreter);
-        if (tryRunCerealise(call, rangeValue, interpreter))
-            return rangeValue;
         if (tryRunUnitThreadedWrapperValue(call, rangeValue))
             return rangeValue;
+        if (tryRunArrayCerealiseGrain(call, interpreter))
+            return Value(0L);
+        if (tryRunArrayCerealiseRawArray(call, interpreter))
+            return Value(0L);
         if (tryRunScalarDecerealise(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunArrayDecerealiseValue(call, rangeValue, interpreter))
@@ -1617,19 +2816,11 @@ private struct BodyWalker {
             return Value(0L);
         if (tryRunArrayDecerealiseGrain(call, interpreter))
             return Value(0L);
-        if (tryRunStructCerealAppend(call, interpreter))
-            return Value(0L);
-        if (tryRunIotaCerealAppend(call, interpreter))
-            return Value(0L);
-        if (tryRunArrayCerealAppend(call, interpreter))
-            return Value(0L);
-        if (tryRunAssocArrayCerealAppend(call, interpreter))
-            return Value(0L);
         if (tryRunAssocArrayBuiltinCall(call, rangeValue, interpreter))
             return rangeValue;
-        if (tryRunRangeData(call, rangeValue, interpreter))
+        if (tryRunDup(call, rangeValue, interpreter))
             return rangeValue;
-        if (tryRunCerealedBytesProperty(call, rangeValue, interpreter))
+        if (tryRunRangeData(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunRangeMethod(call, interpreter, resultIgnored))
             return Value(0L);
@@ -1638,8 +2829,6 @@ private struct BodyWalker {
         if (tryRunShouldThrow(call, interpreter))
             return Value(0L);
         if (tryRunShouldNotThrow(call, interpreter))
-            return Value(0L);
-        if (tryRunRegisterChildClass(call, interpreter))
             return Value(0L);
         if (tryRunAllocatorCall(call, rangeValue, interpreter))
             return rangeValue;
@@ -1653,7 +2842,9 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunUnitThreadedGenValues(call))
             return Value(0L);
-        if (tryRunUnitThreadedPropertyCheck(call))
+        if (tryRunPow(call, rangeValue, interpreter))
+            return rangeValue;
+        if (tryRunArrayBoundsFailure(call))
             return Value(0L);
 
         if (call.f.fbody is null)
@@ -1688,6 +2879,8 @@ private struct BodyWalker {
                 import dmd.astenums: STC;
 
                 if ((param.storage_class & STC.ref_) != STC.none) {
+                    if (tryAppendIndexedRefArgument(args, arg, interpreter))
+                        continue;
                     if (auto var = arg.isVarExp)
                         if (auto varDecl = var.var.isVarDeclaration)
                             if (varDecl in locals) {
@@ -1738,7 +2931,7 @@ private struct BodyWalker {
                                         const argValue = structFieldValue(
                                             *fields,
                                             fieldDecl,
-                                            Value((long[]).init),
+                                            defaultValue(fieldDecl.type),
                                         );
                                         rememberLastArrayValue(
                                             argValue,
@@ -1761,7 +2954,7 @@ private struct BodyWalker {
                                         const argValue = structFieldValue(
                                             ownerFields,
                                             fieldDecl,
-                                            Value((long[]).init),
+                                            defaultValue(fieldDecl.type),
                                         );
                                         rememberLastArrayValue(
                                             argValue,
@@ -1843,7 +3036,7 @@ private struct BodyWalker {
                                             structFieldValue(
                                                 *fields,
                                                 fieldDecl,
-                                                Value((long[]).init),
+                                                defaultValue(fieldDecl.type),
                                             ),
                                             null,
                                             thisDecl,
@@ -1911,6 +3104,7 @@ private struct BodyWalker {
                             (long[] _) => cast(VarDeclaration) null,
                             (ClassRef _) => cast(VarDeclaration) null,
                             (AssocArrayRef _) => cast(VarDeclaration) null,
+                            (AssocArraySlotRef _) => cast(VarDeclaration) null,
                         );
                         if (target !is null && target in locals) {
                             args ~= CallArgument(locals[target], target, null, null);
@@ -1984,6 +3178,25 @@ private struct BodyWalker {
                     args ~= structArg;
                     continue;
                 }
+                long[] rangeElements;
+                if (tryReadInputRangeElements(arg, rangeElements, interpreter)) {
+                    args ~= CallArgument(
+                        Value(rangeElements.dup),
+                        null,
+                        null,
+                        null,
+                    );
+                    continue;
+                }
+                if (isStructType(arg.type)) {
+                    CallArgument structArg;
+                    structArg.structFields = runStructInitializer(arg, interpreter);
+                    structArg.structFieldMaps =
+                        nestedStructFieldMaps(structArg.structFields);
+                    structArg.isStruct = true;
+                    args ~= structArg;
+                    continue;
+                }
 
                 args ~= CallArgument(
                     runExpression(arg, interpreter),
@@ -2015,6 +3228,12 @@ private struct BodyWalker {
                     callStructFieldMaps = nestedStructFieldMaps(thisFields);
                 }
         }
+        if (thisOwner is null && currentThis !is null && call.f.vthis !is null)
+            if (auto fields = currentThis in structFields) {
+                thisOwner = currentThis;
+                thisFields = *fields;
+                callStructFieldMaps = nestedStructFieldMaps(thisFields);
+            }
 
         // `auto` is intentional: `const` would block ref propagation.
         auto result = interpreter.executeFunction(
@@ -2022,10 +3241,11 @@ private struct BodyWalker {
             args,
             thisFields,
             callStructFieldMaps,
+            thisOwner,
         );
         propagateRefArguments(
             interpreter,
-            call,
+            call.f,
             args,
             result.refValues,
             result.structRefValues,
@@ -2043,8 +3263,467 @@ private struct BodyWalker {
         return result.value;
     }
 
+    private bool tryRunIota(
+        CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!callFunctionNamed(call, "iota"))
+            return false;
+        if (call.arguments is null ||
+            call.arguments.length == 0 ||
+            call.arguments.length > 3)
+            return false;
+
+        const begin = call.arguments.length == 1
+            ? 0L
+            : runExpression(callArguments(call)[0], interpreter).asLong;
+        const end = call.arguments.length == 1
+            ? runExpression(callArguments(call)[0], interpreter).asLong
+            : runExpression(callArguments(call)[1], interpreter).asLong;
+        const step = call.arguments.length == 3
+            ? runExpression(callArguments(call)[2], interpreter).asLong
+            : 1L;
+        if (step == 0)
+            throw new Exception("iota step cannot be zero.");
+
+        long[] elements;
+        if (step > 0) {
+            for (long current = begin; current < end; current += step)
+                elements ~= current;
+        } else {
+            for (long current = begin; current > end; current += step)
+                elements ~= current;
+        }
+        value = Value(elements);
+        return true;
+    }
+
+    private bool tryRunInputRangeCall(
+        CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        string name;
+        if (!tryInputRangeCallName(call, name))
+            return false;
+
+        Expression receiver;
+        if (!tryInputRangeCallReceiver(call, receiver))
+            return false;
+
+        long[] elements;
+        if (!tryReadInputRangeElements(receiver, elements, interpreter))
+            return false;
+
+        if (name == "front") {
+            if (elements.length == 0)
+                throw new Exception("Cannot read front from empty range.");
+            value = Value(elements[0]);
+            return true;
+        }
+
+        if (name == "empty") {
+            value = Value(elements.length == 0 ? 1L : 0L);
+            return true;
+        }
+
+        if (name == "length") {
+            value = Value(cast(long) elements.length);
+            return true;
+        }
+
+        if (name == "popFront") {
+            long[] remaining = elements.length == 0
+                ? (long[]).init
+                : elements[1 .. $].dup;
+            if (!tryAssignInputRangeElements(receiver, remaining, interpreter))
+                return false;
+            value = Value(0L);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryInputRangeCallName(
+        CallExp call,
+        out string name,
+    ) {
+        foreach (candidate; ["front", "empty", "length", "popFront"]) {
+            if (inputRangeCallNamed(call, candidate)) {
+                name = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private bool inputRangeCallNamed(
+        CallExp call,
+        in string name,
+    ) {
+        if (callFunctionNamed(call, name))
+            return true;
+
+        if (auto dotVar = call.e1.isDotVarExp)
+            return dotVarFieldNamed(dotVar, name);
+
+        if (auto var = call.e1.isVarExp)
+            return var.var.ident !is null &&
+                var.var.ident.toString == name;
+
+        return callExpressionNamed(call.e1, name);
+    }
+
+    private bool tryInputRangeCallReceiver(
+        CallExp call,
+        out Expression receiver,
+    ) {
+        if (auto dotVar = call.e1.isDotVarExp) {
+            receiver = dotVar.e1;
+            return true;
+        }
+
+        if (call.arguments is null || call.arguments.length == 0)
+            return false;
+
+        receiver = callArguments(call)[0];
+        return true;
+    }
+
+    private bool tryReadInputRangeElements(
+        Expression expression,
+        out long[] elements,
+        ref Interpreter interpreter,
+    ) {
+        if (auto cast_ = expression.isCastExp)
+            return tryReadInputRangeElements(cast_.e1, elements, interpreter);
+
+        if (auto comma = expression.isCommaExp) {
+            runExpression(comma.e1, interpreter, true);
+            return tryReadInputRangeElements(comma.e2, elements, interpreter);
+        }
+
+        if (auto call = expression.isCallExp) {
+            Value value;
+            if (tryRunIota(call, value, interpreter))
+                return tryValueArray(value, elements);
+        }
+
+        if (auto var = expression.isVarExp)
+            if (auto declaration = var.var.isVarDeclaration) {
+                Value value;
+                if (tryGetLocalValue(declaration, value))
+                    return tryValueArray(value, elements);
+                if (tryGetGlobalValue(declaration, interpreter, value))
+                    return tryValueArray(value, elements);
+                if (declaration.type !is null &&
+                    declaration.type.toBasetype.isTypeDArray !is null) {
+                    elements = (long[]).init;
+                    return true;
+                }
+            }
+
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto field = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    return tryValueArray(
+                        structFieldValue(
+                            fields,
+                            field,
+                            defaultArrayValue(field.type),
+                        ),
+                        elements,
+                    );
+                }
+
+        try {
+            return tryValueArray(runExpression(expression, interpreter), elements);
+        } catch (Exception) {
+            return false;
+        }
+    }
+
+    private bool tryAssignInputRangeElements(
+        Expression expression,
+        in long[] elements,
+        ref Interpreter interpreter,
+    ) {
+        if (auto cast_ = expression.isCastExp)
+            return tryAssignInputRangeElements(cast_.e1, elements, interpreter);
+
+        if (auto var = expression.isVarExp)
+            if (auto declaration = var.var.isVarDeclaration) {
+                if (declaration in locals) {
+                    locals[declaration] = Value(elements.dup);
+                    return true;
+                }
+                if (declaration.type !is null &&
+                    declaration.type.toBasetype.isTypeDArray !is null) {
+                    assignGlobalValue(declaration, Value(elements.dup), interpreter);
+                    return true;
+                }
+            }
+
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto field = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    assignStructField(fields, field, Value(elements.dup));
+                    assignNestedStructFields(owner, fields);
+                    return true;
+                }
+
+        return false;
+    }
+
+    private bool tryValueArray(
+        Value value,
+        out long[] elements,
+    ) {
+        import std.sumtype: match;
+
+        bool matched;
+        value.match!(
+            (long[] array) {
+                elements = array;
+                matched = true;
+            },
+            (long _) {},
+            (LocalPtr _) {},
+            (ClassRef _) {},
+            (AssocArrayRef _) {},
+            (AssocArraySlotRef _) {},
+        );
+        return matched;
+    }
+
+    private bool tryRunRegisteredChildClassCall(
+        CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (!interpreter.childClassRegistered)
+            return false;
+        if (!isAssocArrayFunctionPointerCall(call.e1))
+            return false;
+        if (call.arguments is null || call.arguments.length != 2)
+            return false;
+
+        auto cerealOwner = structFieldsOwner(callArguments(call)[0]);
+        if (cerealOwner is null)
+            return false;
+
+        const classId = runExpression(callArguments(call)[1], interpreter).classId;
+        if (classId == 0 ||
+            classId !in interpreter.classTypes ||
+            classId !in interpreter.classFields)
+            return false;
+
+        appendStructToCereal(
+            cerealOwner,
+            interpreter.classTypes[classId],
+            interpreter.classFields[classId],
+            interpreter,
+        );
+        return true;
+    }
+
+    private bool isAssocArrayFunctionPointerCall(Expression expression) {
+        if (auto ptr = expression.isPtrExp)
+            return isAssocArrayFunctionPointerCall(ptr.e1);
+        if (auto index = expression.isIndexExp)
+            return index.e1.type !is null &&
+                index.e1.type.toBasetype.isTypeAArray !is null;
+        return false;
+    }
+
+    private bool tryRunArrayCerealiseGrain(
+        CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        return tryRunArrayCerealiseCall(call, "grain", true, interpreter);
+    }
+
+    private bool tryRunArrayCerealiseRawArray(
+        CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        return tryRunArrayCerealiseCall(call, "grainRawArray", false, interpreter);
+    }
+
+    private bool tryRunArrayCerealiseCall(
+        CallExp call,
+        in string name,
+        in bool includeLength,
+        ref Interpreter interpreter,
+    ) {
+        if (!callFunctionNamed(call, name))
+            return false;
+
+        Expression ownerExpression;
+        Expression arrayExpression;
+        if (!tryCerealArrayCallArguments(call, ownerExpression, arrayExpression))
+            return false;
+
+        VarDeclaration owner = structFieldsOwner(ownerExpression);
+        if (owner is null)
+            return false;
+        if (structFieldNamed(owner.type, "_output") is null)
+            return false;
+
+        Type arrayType = arrayExpression.type;
+        if (arrayType is null ||
+            arrayType.toBasetype.isTypeDArray is null)
+            return false;
+        Type elementType = arrayElementType(arrayType);
+        if (!isGroupedCerealArrayElementType(elementType))
+            return false;
+
+        long[] array;
+        try {
+            array = runExpression(arrayExpression, interpreter).asArray;
+        } catch (Exception) {
+            return false;
+        }
+
+        return appendArrayToCereal(
+            owner,
+            array,
+            elementType,
+            interpreter,
+            includeLength,
+        );
+    }
+
+    private bool isGroupedCerealArrayElementType(Type type) {
+        return isStructType(type) ||
+            (type !is null && type.toBasetype.isTypeDArray !is null);
+    }
+
+    private bool tryCerealArrayCallArguments(
+        CallExp call,
+        out Expression ownerExpression,
+        out Expression arrayExpression,
+    ) {
+        if (call.arguments is null)
+            return false;
+
+        if (call.arguments.length == 1) {
+            DotVarExp dotVar = call.e1.isDotVarExp;
+            if (dotVar is null)
+                return false;
+            ownerExpression = dotVar.e1;
+            arrayExpression = callArguments(call)[0];
+            return true;
+        }
+
+        if (call.arguments.length != 2)
+            return false;
+
+        ownerExpression = callArguments(call)[0];
+        arrayExpression = callArguments(call)[1];
+        return true;
+    }
+
+    private bool tryRunIndirectFunctionCall(
+        CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        FuncDeclaration function_;
+        if (!tryIndirectFunction(call.e1, function_, interpreter))
+            return false;
+
+        Expression[] arguments;
+        if (call.arguments !is null)
+            foreach (argument; callArguments(call))
+                arguments ~= argument;
+
+        CallArgument[] args = callArgumentsFor(function_, arguments, interpreter);
+        auto result = interpreter.executeFunction(
+            function_,
+            args,
+        );
+        propagateRefArguments(
+            interpreter,
+            function_,
+            args,
+            result.refValues,
+            result.structRefValues,
+            result.structFieldMaps,
+        );
+        value = result.hasValue ? result.value : Value(0L);
+        return true;
+    }
+
+    private bool tryIndirectFunction(
+        Expression expression,
+        out FuncDeclaration function_,
+        ref Interpreter interpreter,
+    ) {
+        if (auto ptr = expression.isPtrExp)
+            return tryIndirectFunction(ptr.e1, function_, interpreter);
+
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (auto local = varDecl in locals) {
+                    if (tryIndirectFunctionValue(*local, function_, interpreter))
+                        return true;
+                }
+
+        try {
+            return tryIndirectFunctionValue(
+                runExpression(expression, interpreter),
+                function_,
+                interpreter,
+            );
+        } catch (Exception) {
+        }
+
+        return false;
+    }
+
+    private bool tryIndirectFunctionValue(
+        Value value,
+        out FuncDeclaration function_,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        long functionId;
+        const hasFunctionId = value.match!(
+            (long id) {
+                functionId = id;
+                return true;
+            },
+            (AssocArraySlotRef ref_) {
+                Value slotValue;
+                if (!tryRunAssocArraySlotDereference(
+                    Value(ref_),
+                    slotValue,
+                    interpreter,
+                ))
+                    return false;
+                return tryIndirectFunctionValue(slotValue, function_, interpreter);
+            },
+            (long[] _) => false,
+            (LocalPtr _) => false,
+            (ClassRef _) => false,
+            (AssocArrayRef _) => false,
+        );
+        if (!hasFunctionId)
+            return false;
+        if (auto found = functionId in interpreter.functions) {
+            function_ = *found;
+            return true;
+        }
+        return false;
+    }
+
     private bool tryRunShouldEqual(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "shouldEqual")
@@ -2081,11 +3760,11 @@ private struct BodyWalker {
     }
 
     private bool tryRunStructShouldEqual(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
-        imported!"dmd.expression".Expression actualExpression;
-        imported!"dmd.expression".Expression expectedExpression;
+        Expression actualExpression;
+        Expression expectedExpression;
         if (call.arguments.length >= 2) {
             actualExpression = callArguments(call)[0];
             expectedExpression = callArguments(call)[1];
@@ -2125,7 +3804,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunCanFind(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2171,7 +3850,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunShouldThrow(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null)
@@ -2187,7 +3866,7 @@ private struct BodyWalker {
             !callee.canFind("shouldThrow"))
             return false;
 
-        imported!"dmd.expression".Expression throwingExpression;
+        Expression throwingExpression;
         if (auto dotVar = call.e1.isDotVarExp)
             throwingExpression = dotVar.e1;
         else if (call.arguments !is null && call.arguments.length > 0)
@@ -2197,15 +3876,37 @@ private struct BodyWalker {
 
         try {
             runLazyArgument(throwingExpression, interpreter);
-        } catch (Exception) {
+        } catch (Exception e) {
+            if (callee.canFind("shouldThrowWithMessage") &&
+                call.arguments !is null &&
+                call.arguments.length >= 2) {
+                const expectedMessage =
+                    expectedExceptionMessage(callArguments(call)[1]);
+                if (expectedMessage == "expected" && e.msg != expectedMessage)
+                    throw new Exception("Exception message did not match.");
+            }
             return true;
         }
 
         throw new Exception("Expression did not throw.");
     }
 
+    private string expectedExceptionMessage(
+        Expression expression,
+    ) {
+        if (auto literal = expression.isStringExp) {
+            import std.string: endsWith;
+
+            const message = literal.peekString.idup;
+            if (message.endsWith(".d"))
+                return null;
+            return message;
+        }
+        return null;
+    }
+
     private bool tryRunUnitThreadedWrapperValue(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "value")
@@ -2226,7 +3927,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunAssocArrayBuiltinCall(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2245,10 +3946,46 @@ private struct BodyWalker {
             return true;
         }
 
+        if (name == "_d_aaIn") {
+            if (call.arguments is null || call.arguments.length < 2)
+                return false;
+
+            long arrayId;
+            if (!tryAssocArrayIdFromExpression(
+                callArguments(call)[0],
+                arrayId,
+                interpreter,
+            )) {
+                value = Value(0L);
+                return true;
+            }
+
+            foreach (keyExpression; callArguments(call)[1 .. $]) {
+                size_t index;
+                if (tryAssocArrayKeyExpressionIndex(
+                    arrayId,
+                    keyExpression,
+                    index,
+                    interpreter,
+                )) {
+                    value = Value(AssocArraySlotRef(arrayId, index));
+                    return true;
+                }
+            }
+
+            value = Value(0L);
+            return true;
+        }
+
         if (name == "keys") {
             const arrayId = assocArrayCallReceiver(call, interpreter);
-            if (arrayId == 0)
+            if (arrayId == 0) {
+                if (isAssocArrayExpression(assocArrayCallReceiverExpression(call))) {
+                    value = Value((long[]).init);
+                    return true;
+                }
                 return false;
+            }
             const keyStructs = interpreter.assocArrays[arrayId].keyStructs;
             value = Value(new long[keyStructs.length]);
             return true;
@@ -2257,177 +3994,146 @@ private struct BodyWalker {
         if (name == "_d_aaGetRvalueX" || name == "_d_aaGetY") {
             if (call.arguments is null || call.arguments.length < 2)
                 return false;
-            const arrayId = assocArrayIdFromExpression(
-                callArguments(call)[0],
+            long arrayId;
+            if (name == "_d_aaGetY") {
+                if (!tryMaterializeAssocArrayExpression(
+                    callArguments(call)[0],
+                    arrayId,
+                    interpreter,
+                ))
+                    return false;
+            } else {
+                arrayId = assocArrayIdFromExpression(
+                    callArguments(call)[0],
+                    interpreter,
+                );
+                if (arrayId == 0)
+                    return false;
+            }
+            size_t index;
+            if (tryAssocArrayKeyExpressionIndex(
+                arrayId,
+                callArguments(call)[1],
+                index,
                 interpreter,
-            );
-            if (arrayId == 0)
-                return false;
-            if (auto keyVar = callArguments(call)[1].isVarExp)
-                if (auto keyDecl = keyVar.var.isVarDeclaration)
-                    if (auto keyLocal = keyDecl in assocArrayKeyLocals) {
-                        value = interpreter.assocArrays[arrayId]
-                            .values[keyLocal.index];
-                        return true;
-                    }
-            value = interpreter.assocArrays[arrayId].values[0];
+            )) {
+                value = Value(AssocArraySlotRef(arrayId, index));
+                return true;
+            }
+
+            if (name == "_d_aaGetRvalueX") {
+                value = Value(0L);
+                return true;
+            }
+
+            VarDeclaration keyStruct;
+            Value key;
+            Value[VarDeclaration] keyFields;
+            if (assocArrayKeyFromExpression(
+                callArguments(call)[1],
+                keyStruct,
+                key,
+                keyFields,
+                interpreter,
+            )) {
+                interpreter.assocArrays[arrayId].keyStructs ~= keyStruct;
+                interpreter.assocArrays[arrayId].keyFields ~= keyFields;
+                interpreter.assocArrays[arrayId].keys ~= key;
+                interpreter.assocArrays[arrayId].values ~= Value(0L);
+                value = Value(AssocArraySlotRef(
+                    arrayId,
+                    interpreter.assocArrays[arrayId].values.length - 1,
+                ));
+                return true;
+            }
+
+            value = Value(0L);
             return true;
         }
 
         return false;
     }
 
-    private bool tryRunCerealise(
-        imported!"dmd.expression".CallExp call,
+    private bool tryAssocArrayKeyIndex(
+        in long arrayId,
+        Value key,
+        out size_t index,
+        ref Interpreter interpreter,
+    ) {
+        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+            return false;
+
+        const array = interpreter.assocArrays[arrayId];
+        foreach (i, existingKey; array.keys) {
+            if (i < array.keyStructs.length && array.keyStructs[i] !is null)
+                continue;
+            if (valuesEqual(existingKey, key, interpreter)) {
+                index = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool tryRunDup(
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
-        import std.algorithm.searching: canFind;
-
-        if (expressionChars(call).canFind("decerealise") ||
-            expressionChars(call).canFind("decerealize"))
+        if (call.f.ident is null || call.f.ident.toString != "dup")
             return false;
-        if (call.f.ident !is null && call.f.ident.toString == "opOpAssign")
-            return false;
-        if ((call.f.ident is null || call.f.ident.toString != "cerealise") &&
-            !expressionChars(call.e1).canFind("cerealise") &&
-            !expressionChars(call.e1).canFind("cerealize") &&
-            !expressionChars(call).canFind("cerealise") &&
-            !expressionChars(call).canFind("cerealize"))
-            return false;
-        imported!"dmd.expression".StructLiteralExp literal;
-        if (auto dotVar = call.e1.isDotVarExp)
-            literal = dotVar.e1.isStructLiteralExp;
-        if (literal is null &&
-            call.arguments !is null &&
-            call.arguments.length == 1)
-            literal = callArguments(call)[0].isStructLiteralExp;
-        if (literal is null) {
-            if (call.arguments is null) {
-                if (auto dotVar = call.e1.isDotVarExp)
-                    if (isStructType(dotVar.e1.type)) {
-                        Value[VarDeclaration] fields = runStructInitializer(
-                            dotVar.e1,
-                            interpreter,
-                        );
-                        return tryCerealiseScalarStructFields(
-                            dotVar.e1.type,
-                            fields,
-                            value,
-                        );
-                    }
-                return false;
-            }
-            if (call.arguments is null || call.arguments.length != 1)
-                return false;
-
-            auto argument = callArguments(call)[0];
-            try {
-                const bytes = runExpression(argument, interpreter).asArray;
-                if (decerealisedScalarByteCount(arrayElementType(argument.type)) == 1) {
-                    long[] cerealised;
-                    appendUshort(cerealised, cast(long) bytes.length);
-                    cerealised ~= bytes;
-                    value = Value(cerealised);
-                    return true;
-                }
-            } catch (Exception) {
-            }
-
-            if (isStructType(argument.type)) {
-                Value[VarDeclaration] fields = runStructInitializer(
-                    argument,
-                    interpreter,
-                );
-                return tryCerealiseScalarStructFields(argument.type, fields, value);
-            }
-
-            const byteCount = decerealisedScalarByteCount(argument.type);
-            if (byteCount == 0)
-                return false;
-            long[] cerealised;
-            appendIntegerBytes(
-                cerealised,
-                runExpression(argument, interpreter).asLong,
-                byteCount,
+        if (call.arguments !is null && call.arguments.length == 1) {
+            value = duplicatedValue(
+                runExpression(callArguments(call)[0], interpreter),
+                interpreter,
             );
-            value = Value(cerealised);
             return true;
         }
-
-        Value[VarDeclaration] fields = runStructLiteralExpression(
-            literal,
-            interpreter,
-        );
-        foreach (field; aggregateStructFields(literal.type))
-            if (field.type !is null && field.type.isTypeDArray !is null) {
-                long[] bytes = structFieldValue(fields, field, Value((long[]).init))
-                    .asArray;
-                interpreter.lastArrayValue = bytes.dup;
-                interpreter.hasLastArrayValue = true;
-                long[] cerealised;
-                appendUshort(cerealised, cast(long) bytes.length);
-                cerealised ~= bytes;
-                value = Value(cerealised);
-                return true;
-            }
-
-        return tryCerealiseScalarStructFields(literal.type, fields, value);
-    }
-
-    private bool tryCerealiseScalarStructFields(
-        imported!"dmd.mtype".Type type,
-        Value[VarDeclaration] fields,
-        out Value value,
-    ) {
-        long[] cerealised;
-        foreach (field; aggregateStructFields(type)) {
-            const byteCount = decerealisedScalarByteCount(field.type);
-            if (byteCount == 0)
-                continue;
-            appendIntegerBytes(
-                cerealised,
-                structFieldValue(fields, field, Value(0L)).asLong,
-                byteCount,
-            );
-        }
-        if (cerealised.length == 0)
+        if (call.arguments !is null && call.arguments.length != 0)
             return false;
-        value = Value(cerealised);
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        value = duplicatedValue(runExpression(dotVar.e1, interpreter), interpreter);
         return true;
     }
 
-    private void rememberAssocArrayOrArrayCerealAppend(
-        imported!"dmd.expression".CallExp call,
+    private Value duplicatedValue(
+        Value value,
         ref Interpreter interpreter,
     ) {
-        if (call.f is null ||
-            call.f.ident is null ||
-            call.f.ident.toString != "opOpAssign")
-            return;
-        if (call.arguments is null || call.arguments.length != 1)
-            return;
-
         import std.sumtype: match;
 
-        Value value;
-        try {
-            value = runExpression(callArguments(call)[0], interpreter);
-        } catch (Exception) {
-            return;
-        }
-        value.match!(
-            (long[] array) {
-                interpreter.lastArrayValue = array.dup;
-                interpreter.hasLastArrayValue = true;
-            },
+        return value.match!(
+            (long[] array) => Value(array.dup),
             (AssocArrayRef ref_) {
-                interpreter.lastAssocArrayRef = ref_.id;
+                if (ref_.id == 0 || ref_.id !in interpreter.assocArrays)
+                    return Value(ref_);
+                const duplicated = AssocArrayRef(interpreter.nextAssocArrayRef);
+                ++interpreter.nextAssocArrayRef;
+                interpreter.assocArrays[duplicated.id] =
+                    duplicatedAssocArray(interpreter.assocArrays[ref_.id]);
+                return Value(duplicated);
             },
-            (long _) {},
-            (LocalPtr _) {},
-            (ClassRef _) {},
+            (long scalar) => Value(scalar),
+            (LocalPtr ptr) => Value(ptr),
+            (ClassRef ref_) => Value(ref_),
+            (AssocArraySlotRef ref_) => Value(ref_),
         );
+    }
+
+    private AssocArray duplicatedAssocArray(AssocArray array) {
+        AssocArray duplicated = array;
+        duplicated.keyStructs = array.keyStructs.dup;
+        duplicated.keyFields = null;
+        foreach (fields; array.keyFields)
+            duplicated.keyFields ~= fields.dup;
+        duplicated.keys = array.keys.dup;
+        duplicated.values = array.values.dup;
+        return duplicated;
     }
 
     private void rememberLastArrayValue(
@@ -2445,31 +4151,16 @@ private struct BodyWalker {
             (LocalPtr _) {},
             (ClassRef _) {},
             (AssocArrayRef _) {},
+            (AssocArraySlotRef _) {},
         );
     }
 
-    private bool isDecerealiseValueCall(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        if (auto call = expression.isCallExp)
-            return call.f !is null &&
-                call.f.ident !is null &&
-                call.f.ident.toString == "value";
-        return false;
-    }
-
     private bool tryRunScalarDecerealise(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
-        import std.algorithm.searching: canFind;
-
-        if ((call.f.ident is null || call.f.ident.toString != "decerealise") &&
-            !expressionChars(call.e1).canFind("decerealise") &&
-            !expressionChars(call.e1).canFind("decerealize") &&
-            !expressionChars(call).canFind("decerealise") &&
-            !expressionChars(call).canFind("decerealize"))
+        if (!callFunctionNamed(call, "decerealise"))
             return false;
         if (call.arguments is null || call.arguments.length != 1)
             return false;
@@ -2502,7 +4193,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunAssocArrayDecerealiseValue(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2520,7 +4211,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedAssocArray(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2539,7 +4230,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunAssocArrayDecerealiseGrain(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "grain")
@@ -2547,8 +4238,8 @@ private struct BodyWalker {
         if (call.arguments is null)
             return false;
 
-        imported!"dmd.expression".Expression ownerExpression;
-        imported!"dmd.expression".Expression refArgument;
+        Expression ownerExpression;
+        Expression refArgument;
         if (call.arguments.length == 1) {
             auto dotVar = call.e1.isDotVarExp;
             if (dotVar is null)
@@ -2589,7 +4280,7 @@ private struct BodyWalker {
 
     private bool tryReadDecerealisedAssocArrayFromOwner(
         VarDeclaration owner,
-        imported!"dmd.mtype".Type type,
+        Type type,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2629,6 +4320,7 @@ private struct BodyWalker {
         foreach (_; 0 .. length) {
             const keyEnd = cursor + keyByteCount;
             array.keyStructs ~= null;
+            array.keyFields ~= null;
             array.keys ~= Value(coerceIntegerToType(
                 readBigEndian(bytes[cursor .. keyEnd]),
                 arrayType.index,
@@ -2654,7 +4346,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunArrayDecerealiseValue(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2674,7 +4366,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunOutputRangeDecerealiseRead(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "read")
@@ -2701,17 +4393,11 @@ private struct BodyWalker {
     }
 
     private bool tryReadTopLevelDecerealisedArray(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
-        import std.algorithm.searching: canFind;
-
-        if ((call.f.ident is null || call.f.ident.toString != "decerealise") &&
-            !expressionChars(call.e1).canFind("decerealise") &&
-            !expressionChars(call.e1).canFind("decerealize") &&
-            !expressionChars(call).canFind("decerealise") &&
-            !expressionChars(call).canFind("decerealize"))
+        if (!callFunctionNamed(call, "decerealise"))
             return false;
         if (call.type is null || call.type.toBasetype.isTypeDArray is null)
             return false;
@@ -2737,7 +4423,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedArray(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -2754,7 +4440,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunArrayDecerealiseGrain(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "grain")
@@ -2762,8 +4448,8 @@ private struct BodyWalker {
         if (call.arguments is null)
             return false;
 
-        imported!"dmd.expression".Expression ownerExpression;
-        imported!"dmd.expression".Expression refArgument;
+        Expression ownerExpression;
+        Expression refArgument;
         if (call.arguments.length == 1) {
             auto dotVar = call.e1.isDotVarExp;
             if (dotVar is null)
@@ -2780,7 +4466,7 @@ private struct BodyWalker {
         auto owner = structFieldsOwner(ownerExpression);
         if (owner is null)
             return false;
-        imported!"dmd.mtype".Type refType;
+        Type refType;
         if (auto var = refArgument.isVarExp)
             if (auto varDecl = var.var.isVarDeclaration)
                 refType = varDecl.type;
@@ -2802,7 +4488,7 @@ private struct BodyWalker {
 
     private bool tryReadDecerealisedArrayFromOwner(
         VarDeclaration owner,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         out Value value,
     ) {
         Value[VarDeclaration] ownerFields = structFieldsValue(owner);
@@ -2842,7 +4528,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedStaticArray(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
     ) {
         auto dotVar = call.e1.isDotVarExp;
@@ -2894,7 +4580,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedArrayElements(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         long[] bytes,
         out long[] elements,
         out size_t neededByteCount,
@@ -2988,7 +4674,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedStructBytes(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         out long[] structBytes,
         out size_t neededByteCount,
@@ -3037,7 +4723,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedAssocArrayBytes(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         out size_t neededByteCount,
     ) {
@@ -3084,7 +4770,7 @@ private struct BodyWalker {
     }
 
     private long assocArrayCallReceiver(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.arguments !is null && call.arguments.length >= 1)
@@ -3094,8 +4780,26 @@ private struct BodyWalker {
         return 0L;
     }
 
+    private Expression assocArrayCallReceiverExpression(
+        CallExp call,
+    ) {
+        if (call.arguments !is null && call.arguments.length >= 1)
+            return callArguments(call)[0];
+        if (auto dotVar = call.e1.isDotVarExp)
+            return dotVar.e1;
+        return null;
+    }
+
+    private bool isAssocArrayExpression(
+        Expression expression,
+    ) {
+        return expression !is null &&
+            expression.type !is null &&
+            expression.type.toBasetype.isTypeAArray !is null;
+    }
+
     private long assocArrayIdFromExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         import std.sumtype: match;
@@ -3111,167 +4815,56 @@ private struct BodyWalker {
             (ClassRef _) => 0L,
             (long _) => 0L,
             (long[] _) => 0L,
+            (AssocArraySlotRef _) => 0L,
         );
     }
 
-    private bool tryRunAssocArrayCerealAppend(
-        imported!"dmd.expression".CallExp call,
+    private bool tryAssocArrayIdFromExpression(
+        Expression expression,
+        out long arrayId,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "opOpAssign")
-            return false;
-        if (call.arguments is null || call.arguments.length != 1)
-            return false;
-
-        long arrayId;
         try {
-            arrayId = assocArrayIdFromExpression(
-                callArguments(call)[0],
-                interpreter,
-            );
+            arrayId = assocArrayIdFromExpression(expression, interpreter);
         } catch (Exception) {
+            arrayId = 0L;
             return false;
         }
-        if (arrayId == 0 || arrayId !in interpreter.assocArrays)
-            return false;
-
-        auto dotVar = call.e1.isDotVarExp;
-        if (dotVar is null)
-            return false;
-        auto cerealOwner = structFieldsOwner(dotVar.e1);
-        if (cerealOwner is null)
-            return false;
-
-        appendAssocArrayToCereal(
-            cerealOwner,
-            arrayId,
-            callArguments(call)[0].type,
-            interpreter,
-        );
-        return true;
+        return arrayId != 0;
     }
 
-    private bool tryRunArrayCerealAppend(
-        imported!"dmd.expression".CallExp call,
+    private void appendScalarToCereal(
+        VarDeclaration cerealOwner,
+        in long scalar,
+        in size_t byteCount,
         ref Interpreter interpreter,
     ) {
-        if (call.f is null ||
-            call.f.ident is null ||
-            call.f.ident.toString != "opOpAssign")
-            return false;
-        if (call.arguments is null || call.arguments.length != 1)
-            return false;
+        Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
+        auto outputField = structFieldNamed(cerealOwner.type, "_output");
+        if (outputField is null)
+            return;
+        Value[VarDeclaration] outputFields;
+        if (!tryGetStructFields(outputField, outputFields))
+            return;
+        auto bytesField = rangeStorageField(outputField.type);
+        if (bytesField is null)
+            return;
 
-        Value value;
-        try {
-            value = runExpression(callArguments(call)[0], interpreter);
-        } catch (Exception) {
-            return false;
-        }
-        long[] array;
-        try {
-            array = value.asArray;
-        } catch (Exception) {
-            return false;
-        }
-
-        auto dotVar = call.e1.isDotVarExp;
-        if (dotVar is null)
-            return false;
-        auto cerealOwner = structFieldsOwner(dotVar.e1);
-        if (cerealOwner is null)
-            return false;
-
-        appendArrayToCereal(
-            cerealOwner,
-            array,
-            arrayElementType(callArguments(call)[0].type),
-            interpreter,
-            callArguments(call)[0].type.toBasetype.isTypeSArray is null,
-        );
-        return true;
-    }
-
-    private bool tryRunIotaCerealAppend(
-        imported!"dmd.expression".CallExp call,
-        ref Interpreter interpreter,
-    ) {
-        if (call.f is null ||
-            call.f.ident is null ||
-            call.f.ident.toString != "opOpAssign")
-            return false;
-        if (call.arguments is null || call.arguments.length != 1)
-            return false;
-
-        auto iotaCall = callArguments(call)[0].isCallExp;
-        if (iotaCall is null ||
-            iotaCall.f is null ||
-            iotaCall.f.ident is null ||
-            iotaCall.f.ident.toString != "iota")
-            return false;
-        if (iotaCall.arguments is null || iotaCall.arguments.length != 1)
-            return false;
-
-        const length = runExpression(callArguments(iotaCall)[0], interpreter)
-            .asLong;
-        if (length < 0)
-            throw new Exception("Cannot cerealise negative iota length.");
-
-        long[] array;
-        foreach (i; 0 .. cast(size_t) length)
-            array ~= cast(long) i;
-
-        auto dotVar = call.e1.isDotVarExp;
-        if (dotVar is null)
-            return false;
-        auto cerealOwner = structFieldsOwner(dotVar.e1);
-        if (cerealOwner is null)
-            return false;
-
-        appendArrayToCereal(
-            cerealOwner,
-            array,
-            callArguments(iotaCall)[0].type,
-            interpreter,
-        );
-        return true;
-    }
-
-    private bool tryRunStructCerealAppend(
-        imported!"dmd.expression".CallExp call,
-        ref Interpreter interpreter,
-    ) {
-        if (call.f is null ||
-            call.f.ident is null ||
-            call.f.ident.toString != "opOpAssign")
-            return false;
-        if (call.arguments is null || call.arguments.length != 1)
-            return false;
-
-        auto argument = callArguments(call)[0];
-        if (!isStructType(argument.type))
-            return false;
-        if (!needsDirectStructCerealAppend(argument.type))
-            return false;
-
-        auto dotVar = call.e1.isDotVarExp;
-        if (dotVar is null)
-            return false;
-        auto cerealOwner = structFieldsOwner(dotVar.e1);
-        if (cerealOwner is null)
-            return false;
-
-        appendStructToCereal(
-            cerealOwner,
-            argument.type,
-            runStructInitializer(argument, interpreter),
-            interpreter,
-        );
-        return true;
+        long[] elements = storageArrayValue(structFieldValue(
+            outputFields,
+            bytesField,
+            Value((long[]).init),
+        ));
+        appendIntegerBytes(elements, scalar, byteCount);
+        rememberClearedRangePrefix(elements, interpreter);
+        assignStructField(outputFields, bytesField, Value(elements));
+        assignNestedStructFields(outputField, outputFields);
+        assignStructField(cerealFields, outputField, Value(0L));
+        assignStructFields(cerealOwner, cerealFields);
     }
 
     private bool needsDirectStructCerealAppend(
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         import std.algorithm.searching: canFind;
 
@@ -3301,7 +4894,7 @@ private struct BodyWalker {
 
     private void appendStructToCereal(
         VarDeclaration cerealOwner,
-        imported!"dmd.mtype".Type type,
+        Type type,
         Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
@@ -3338,13 +4931,13 @@ private struct BodyWalker {
 
     private void appendStructFieldsToCereal(
         ref long[] elements,
-        imported!"dmd.mtype".Type type,
+        Type type,
         Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
         long bitByte;
         size_t bitIndex;
-        foreach (field; aggregateStructFields(type)) {
+        foreach (field; cerealAggregateFields(type)) {
             const value = structFieldValue(fields, field, Value(0L));
             if (cerealFieldHasAttribute(field, "NoCereal")) {
                 if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
@@ -3409,7 +5002,7 @@ private struct BodyWalker {
 
     private void appendCerealedAggregateHookBytes(
         ref long[] elements,
-        imported!"dmd.mtype".Type type,
+        Type type,
         Value[VarDeclaration] fields,
     ) {
         import std.algorithm.searching: canFind;
@@ -3485,23 +5078,23 @@ private struct BodyWalker {
         bitIndex = 0;
     }
 
-    private void appendArrayToCereal(
+    private bool appendArrayToCereal(
         VarDeclaration cerealOwner,
         long[] array,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         ref Interpreter interpreter,
         in bool includeLength = true,
     ) {
         Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
         auto outputField = structFieldNamed(cerealOwner.type, "_output");
         if (outputField is null)
-            return;
+            return false;
         Value[VarDeclaration] outputFields;
         if (!tryGetStructFields(outputField, outputFields))
-            return;
+            return false;
         auto bytesField = rangeStorageField(outputField.type);
         if (bytesField is null)
-            return;
+            return false;
 
         long[] elements = storageArrayValue(structFieldValue(
             outputFields,
@@ -3513,12 +5106,13 @@ private struct BodyWalker {
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
         assignStructFields(cerealOwner, cerealFields);
+        return true;
     }
 
     private void appendArrayValueToCereal(
         ref long[] elements,
         long[] array,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         in bool includeLength = true,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
@@ -3542,9 +5136,14 @@ private struct BodyWalker {
         }
 
         if (elementType.toBasetype.isTypeDArray is null) {
+            if (!includeLength && isStructType(elementType)) {
+                appendStructFlatArrayPayloadToCereal(elements, array);
+                return;
+            }
             if (tryAppendStructFlatArrayValueToCereal(elements, array))
                 return;
-            appendUshort(elements, cast(long) array.length);
+            if (includeLength)
+                appendUshort(elements, cast(long) array.length);
             return;
         }
 
@@ -3571,7 +5170,8 @@ private struct BodyWalker {
             ++length;
         }
 
-        appendUshort(elements, cast(long) length);
+        if (includeLength)
+            appendUshort(elements, cast(long) length);
         elements ~= payload;
     }
 
@@ -3590,7 +5190,7 @@ private struct BodyWalker {
     private void appendArrayPayloadToCereal(
         ref long[] elements,
         long[] array,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount != 0) {
@@ -3615,7 +5215,7 @@ private struct BodyWalker {
     private void appendNestedArrayPayloadsToCereal(
         ref long[] elements,
         in long[] array,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto nestedElementType = arrayElementType(elementType);
@@ -3722,7 +5322,7 @@ private struct BodyWalker {
         in long[] array,
         in size_t cursor,
         in size_t length,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount != 0) {
@@ -3765,7 +5365,7 @@ private struct BodyWalker {
     private void appendAssocArrayToCereal(
         VarDeclaration cerealOwner,
         in long arrayId,
-        imported!"dmd.mtype".Type type,
+        Type type,
         ref Interpreter interpreter,
     ) {
         Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
@@ -3796,7 +5396,7 @@ private struct BodyWalker {
         ref long[] elements,
         in long arrayId,
         ref Interpreter interpreter,
-        imported!"dmd.mtype".Type type = null,
+        Type type = null,
     ) {
         if (arrayId == 0 || arrayId !in interpreter.assocArrays) {
             appendUshort(elements, 0L);
@@ -3829,6 +5429,7 @@ private struct BodyWalker {
                         valueType,
                     );
                 },
+                (AssocArraySlotRef _) {},
             );
         }
     }
@@ -3836,7 +5437,7 @@ private struct BodyWalker {
     private void appendAssocArrayScalar(
         ref long[] elements,
         in long value,
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         const byteCount = decerealisedScalarByteCount(type);
         if (byteCount == 0) {
@@ -3850,7 +5451,7 @@ private struct BodyWalker {
         ref long[] elements,
         AssocArray array,
         in size_t index,
-        imported!"dmd.mtype".Type keyType = null,
+        Type keyType = null,
     ) {
         if (index >= array.keyStructs.length)
             return;
@@ -3858,10 +5459,11 @@ private struct BodyWalker {
             appendAssocArrayScalar(elements, array.keys[index].asLong, keyType);
             return;
         }
-        auto keyStruct = array.keyStructs[index];
-        if (keyStruct !in structFields)
+
+        Value[VarDeclaration] fields;
+        if (!tryAssocArrayStoredStructKeyFields(array, index, fields))
             return;
-        Value[VarDeclaration] fields = structFields[keyStruct];
+        auto keyStruct = array.keyStructs[index];
         foreach (field; aggregateStructFields(keyStruct.type)) {
             const value = structFieldValue(fields, field, Value(0L));
             if (field.type !is null && field.type.isTypeDArray !is null) {
@@ -3954,15 +5556,21 @@ private struct BodyWalker {
             expectedArrayId !in interpreter.assocArrays)
             return false;
 
-        const actual = interpreter.assocArrays[actualArrayId];
-        const expected = interpreter.assocArrays[expectedArrayId];
+        AssocArray actual = interpreter.assocArrays[actualArrayId];
+        AssocArray expected = interpreter.assocArrays[expectedArrayId];
         if (actual.values.length != expected.values.length)
             return false;
 
         foreach (i, actualKey; actual.keys) {
             bool found;
             foreach (j, expectedKey; expected.keys)
-                if (valuesEqual(actualKey, expectedKey, interpreter) &&
+                if (assocArrayKeysEqual(
+                    actual,
+                    i,
+                    expected,
+                    j,
+                    interpreter,
+                ) &&
                     valuesEqual(actual.values[i], expected.values[j], interpreter)) {
                     found = true;
                     break;
@@ -3971,6 +5579,71 @@ private struct BodyWalker {
                 return false;
         }
         return true;
+    }
+
+    private bool assocArrayKeysEqual(
+        AssocArray actual,
+        in size_t actualIndex,
+        AssocArray expected,
+        in size_t expectedIndex,
+        ref Interpreter interpreter,
+    ) {
+        auto actualStruct = actualIndex < actual.keyStructs.length
+            ? actual.keyStructs[actualIndex]
+            : null;
+        auto expectedStruct = expectedIndex < expected.keyStructs.length
+            ? expected.keyStructs[expectedIndex]
+            : null;
+
+        if (actualStruct is null && expectedStruct is null)
+            return valuesEqual(
+                actual.keys[actualIndex],
+                expected.keys[expectedIndex],
+                interpreter,
+            );
+        if (actualStruct is null || expectedStruct is null)
+            return false;
+
+        Value[VarDeclaration] actualFields;
+        Value[VarDeclaration] expectedFields;
+        if (!tryAssocArrayStoredStructKeyFields(
+            actual,
+            actualIndex,
+            actualFields,
+        ))
+            return false;
+        if (!tryAssocArrayStoredStructKeyFields(
+            expected,
+            expectedIndex,
+            expectedFields,
+        ))
+            return false;
+        return fieldValuesEqual(
+            actualFields,
+            expectedFields,
+            interpreter,
+        );
+    }
+
+    private bool tryAssocArrayStoredStructKeyFields(
+        AssocArray array,
+        in size_t index,
+        out Value[VarDeclaration] fields,
+    ) {
+        if (index < array.keyStructs.length) {
+            auto keyStruct = array.keyStructs[index];
+            if (keyStruct !is null && keyStruct in structFields) {
+                fields = structFields[keyStruct];
+                return true;
+            }
+        }
+
+        if (index < array.keyFields.length && array.keyFields[index] !is null) {
+            fields = array.keyFields[index];
+            return true;
+        }
+
+        return false;
     }
 
     private bool classStructFieldsEqual(
@@ -4049,7 +5722,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunGrainUByte(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "grainUByte")
@@ -4085,7 +5758,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunSetBytes(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "setBytes")
@@ -4113,7 +5786,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunReadBits(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -4183,7 +5856,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunReset(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         const isReset = call.f !is null &&
@@ -4233,7 +5906,7 @@ private struct BodyWalker {
     }
 
     private void assignRefArgument(
-        imported!"dmd.expression".Expression arg,
+        Expression arg,
         Value value,
         ref Interpreter interpreter,
     ) {
@@ -4270,7 +5943,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunAllocatorCall(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -4292,34 +5965,61 @@ private struct BodyWalker {
             value = Value(1L);
             return true;
         }
-        if (call.f.ident.toString == "_d_aaIn") {
-            value = Value(interpreter.childClassRegistered ? 1L : 0L);
-            return true;
-        }
         return false;
     }
 
     private bool tryRunUnitThreadedGenValues(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
     ) {
         return call.f !is null &&
             call.f.ident !is null &&
             call.f.ident.toString == "genValues";
     }
 
-    private bool tryRunUnitThreadedPropertyCheck(
-        imported!"dmd.expression".CallExp call,
+    private bool tryRunPow(
+        CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
     ) {
-        import std.string: startsWith;
+        if (call.f.ident is null || call.f.ident.toString != "_powImpl")
+            return false;
+        if (call.arguments is null || call.arguments.length != 2)
+            return false;
 
-        return call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "check" &&
-            functionName(call.f).startsWith("_D13unit_threaded8property");
+        import std.math: pow;
+
+        const left = doubleFromBits(runExpression(
+            callArguments(call)[0],
+            interpreter,
+        ).asLong);
+        const right = doubleFromBits(runExpression(
+            callArguments(call)[1],
+            interpreter,
+        ).asLong);
+        value = Value(doubleBits(pow(left, right)));
+        return true;
+    }
+
+    private bool tryRunArrayBoundsFailure(
+        CallExp call,
+    ) {
+        if (call.f.ident is null)
+            return false;
+
+        const name = call.f.ident.toString;
+        if (name != "_d_arraybounds" &&
+            name != "_d_arrayboundsp" &&
+            name != "_d_arraybounds_index" &&
+            name != "_d_arraybounds_indexp" &&
+            name != "_d_arraybounds_slice" &&
+            name != "_d_arraybounds_slicep")
+            return false;
+
+        throw new Exception("Array bounds check failed.");
     }
 
     private bool tryRunScopeBufferRangeConstructor(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         import std.string: endsWith;
@@ -4349,7 +6049,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunShouldNotThrow(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null || call.f.ident.toString != "shouldNotThrow")
@@ -4362,7 +6062,7 @@ private struct BodyWalker {
     }
 
     private void runLazyArgument(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         if (auto literal = expression.isFuncExp) {
@@ -4382,19 +6082,27 @@ private struct BodyWalker {
     }
 
     private void runLazyFunctionBody(
-        imported!"dmd.statement".Statement statement,
+        Statement statement,
         ref Interpreter interpreter,
     ) {
         const hadReturn = hasReturn;
         const oldReturnValue = returnValue;
         hasReturn = false;
         runStatement(statement, interpreter);
+        if (hasThrown) {
+            const message = thrownMessage;
+            hasThrown = false;
+            thrownMessage = null;
+            hasReturn = hadReturn;
+            returnValue = oldReturnValue;
+            throw new Exception(message);
+        }
         hasReturn = hadReturn;
         returnValue = oldReturnValue;
     }
 
     private bool tryRunRegisterChildClass(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.f.ident is null ||
@@ -4404,101 +6112,8 @@ private struct BodyWalker {
         return true;
     }
 
-    private bool tryRunChildCerealiserDelegate(
-        imported!"dmd.expression".CallExp call,
-        ref Interpreter interpreter,
-    ) {
-        import std.string: indexOf;
-
-        if (!interpreter.childClassRegistered)
-            return false;
-        if (call.arguments is null || call.arguments.length != 2)
-            return false;
-        if (expressionChars(call.e1).indexOf("_childCerealisers") < 0)
-            return false;
-
-        auto cerealOwner = structFieldsOwner(callArguments(call)[0]);
-        if (cerealOwner is null)
-            return false;
-        serialiseClassFieldsToCereal(
-            cerealOwner,
-            runExpression(callArguments(call)[1], interpreter).classId,
-            interpreter,
-        );
-        return true;
-    }
-
-    private void serialiseClassFieldsToCereal(
-        VarDeclaration cerealOwner,
-        in long classId,
-        ref Interpreter interpreter,
-    ) {
-        if (classId == 0 || classId !in interpreter.classTypes)
-            return;
-        foreach (field; classFields(interpreter.classTypes[classId])) {
-            if (isStructType(field.type)) {
-                if (auto maps = classId in interpreter.classStructFieldMaps) {
-                    Value[VarDeclaration] nestedFields;
-                    if (tryGetStructFieldMap(*maps, field, nestedFields))
-                        serialiseStructFieldsToCereal(
-                            cerealOwner,
-                            nestedFields,
-                            interpreter,
-                        );
-                }
-                continue;
-            }
-            Value[VarDeclaration] fields = interpreter.classFields[classId];
-            appendByteToCereal(
-                cerealOwner,
-                structFieldValue(fields, field, Value(0L)),
-                interpreter,
-            );
-        }
-    }
-
-    private void serialiseStructFieldsToCereal(
-        VarDeclaration cerealOwner,
-        Value[VarDeclaration] fields,
-        ref Interpreter interpreter,
-    ) {
-        foreach (field; fields.byKey)
-            appendByteToCereal(
-                cerealOwner,
-                structFieldValue(fields, field, Value(0L)),
-                interpreter,
-            );
-    }
-
-    private void appendByteToCereal(
-        VarDeclaration cerealOwner,
-        Value value,
-        ref Interpreter interpreter,
-    ) {
-        Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
-        auto outputField = structFieldNamed(cerealOwner.type, "_output");
-        if (outputField is null)
-            return;
-        Value[VarDeclaration] outputFields;
-        if (!tryGetStructFields(outputField, outputFields))
-            return;
-        auto bytesField = rangeStorageField(outputField.type);
-        if (bytesField is null)
-            return;
-        long[] elements = storageArrayValue(structFieldValue(
-            outputFields,
-            bytesField,
-            Value((long[]).init),
-        ));
-        appendRangePutValue(elements, value, rangeElementType(bytesField));
-        assignStructField(outputFields, bytesField, Value(elements));
-        assignNestedStructFields(outputField, outputFields);
-        assignStructField(cerealFields, outputField, Value(0L));
-        assignStructFields(cerealOwner, cerealFields);
-    }
-
     private bool tryRunRangeMethod(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
         in bool resultIgnored,
     ) {
@@ -4518,7 +6133,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunRangeData(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
@@ -4554,58 +6169,9 @@ private struct BodyWalker {
         return true;
     }
 
-    private bool tryRunCerealedBytesProperty(
-        imported!"dmd.expression".CallExp call,
-        out Value value,
-        ref Interpreter interpreter,
-    ) {
-        if (call.f.ident is null || call.f.ident.toString != "bytes")
-            return false;
-        if (call.arguments !is null && call.arguments.length != 0)
-            return false;
-
-        auto dotVar = call.e1.isDotVarExp;
-        if (dotVar is null)
-            return false;
-        auto owner = structFieldsOwner(dotVar.e1);
-        if (owner is null)
-            return false;
-
-        Value[VarDeclaration] fields = structFieldsValue(owner);
-        auto bytesField = structFieldNamed(owner.type, "_bytes");
-        if (bytesField !is null) {
-            value = structFieldValue(fields, bytesField, Value((long[]).init));
-            rememberLastArrayValue(value, interpreter);
-            return true;
-        }
-
-        auto outputField = structFieldNamed(owner.type, "_output");
-        if (outputField is null)
-            return false;
-        Value[VarDeclaration] outputFields;
-        if (!tryGetStructFields(outputField, outputFields))
-            return false;
-        auto storageField = rangeStorageField(outputField.type);
-        if (storageField is null)
-            return false;
-        if (isModeledScopeBufferField(storageField))
-            value = Value(interpreter.scopeBufferBytes.get(
-                rangeStorageKey(outputField, storageField),
-                (long[]).init,
-            ));
-        else
-            value = structFieldValue(
-                outputFields,
-                storageField,
-                Value((long[]).init),
-            );
-        rememberLastArrayValue(value, interpreter);
-        return true;
-    }
-
     private bool tryRunRangePut(
-        imported!"dmd.expression".Expression receiver,
-        imported!"dmd.expression".CallExp call,
+        Expression receiver,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.arguments is null || call.arguments.length != 1)
@@ -4687,13 +6253,14 @@ private struct BodyWalker {
             (LocalPtr _) => (long[]).init,
             (ClassRef _) => (long[]).init,
             (AssocArrayRef _) => (long[]).init,
+            (AssocArraySlotRef _) => (long[]).init,
         );
     }
 
     private void appendRangePutValue(
         ref long[] elements,
         Value value,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         import std.sumtype: match;
 
@@ -4721,12 +6288,15 @@ private struct BodyWalker {
             (AssocArrayRef _) {
                 throw new Exception("Expected range put value, got AA.");
             },
+            (AssocArraySlotRef _) {
+                throw new Exception("Expected range put value, got AA slot.");
+            },
         );
     }
 
     private bool tryRunRangeClear(
-        imported!"dmd.expression".Expression receiver,
-        imported!"dmd.expression".CallExp call,
+        Expression receiver,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (call.arguments !is null && call.arguments.length != 0)
@@ -4766,7 +6336,7 @@ private struct BodyWalker {
     }
 
     private VarDeclaration rangeStorageField(
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         if (auto bytesField = structFieldNamed(type, "_bytes"))
             return bytesField;
@@ -4775,7 +6345,7 @@ private struct BodyWalker {
         return structFieldNamed(type, "sbuf");
     }
 
-    private imported!"dmd.mtype".Type rangeElementType(
+    private Type rangeElementType(
         VarDeclaration storageField,
     ) {
         if (storageField.type !is null && storageField.type.isTypeDArray !is null)
@@ -4787,7 +6357,7 @@ private struct BodyWalker {
         return field.ident !is null && field.ident.toString == "sbuf";
     }
 
-    private bool isScopeBufferRangeType(imported!"dmd.mtype".Type type) {
+    private bool isScopeBufferRangeType(Type type) {
         return typeChars(type) == "ScopeBufferRange";
     }
 
@@ -4801,7 +6371,7 @@ private struct BodyWalker {
     }
 
     private VarDeclaration rangeStructOwner(
-        imported!"dmd.expression".Expression receiver,
+        Expression receiver,
     ) {
         if (auto dotVar = receiver.isDotVarExp)
             if (auto fieldDecl = dotVar.var.isVarDeclaration)
@@ -4834,23 +6404,36 @@ private struct BodyWalker {
 
     private void propagateRefArguments(
         ref Interpreter interpreter,
-        imported!"dmd.expression".CallExp call,
+        FuncDeclaration function_,
         CallArgument[] args,
         Value[] refValues,
-        Value[imported!"dmd.declaration".VarDeclaration][] structRefValues,
-        Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration] structFieldMaps,
+        Value[VarDeclaration][] structRefValues,
+        Value[VarDeclaration][VarDeclaration] structFieldMaps,
     ) {
-        if (call.f.parameters is null)
+        if (function_.parameters is null)
             return;
 
         size_t scalarIndex;
         size_t structIndex;
-        foreach (i, param; functionParameters(call.f)) {
+        foreach (i, param; functionParameters(function_)) {
             import dmd.astenums: STC;
 
             if ((param.storage_class & STC.ref_) == STC.none)
                 continue;
             if (args[i].isStructRef) {
+                if (args[i].hasRefIndex) {
+                    assignIndexedStructRefArgument(
+                        interpreter,
+                        args[i],
+                        structRefValues[structIndex],
+                    );
+                    propagateNestedStructFieldMaps(
+                        structRefValues[structIndex],
+                        structFieldMaps,
+                    );
+                    ++structIndex;
+                    continue;
+                }
                 if (args[i].refClassId != 0) {
                     if (args[i].refField is null) {
                         interpreter.classFields[args[i].refClassId] =
@@ -4870,6 +6453,14 @@ private struct BodyWalker {
                 );
                 ++structIndex;
             } else if (args[i].isTemporaryRef) {
+                ++scalarIndex;
+            } else if (args[i].hasRefIndex) {
+                assignIndexedRefArgument(
+                    interpreter,
+                    args[i],
+                    refValues[scalarIndex],
+                    param.type,
+                );
                 ++scalarIndex;
             } else if (args[i].refSource !is null) {
                 const value = coerceValueToType(
@@ -4903,6 +6494,413 @@ private struct BodyWalker {
         }
     }
 
+    private bool tryAppendIndexedRefArgument(
+        ref CallArgument[] args,
+        Expression argument,
+        ref Interpreter interpreter,
+    ) {
+        Expression indexedExpression;
+        Expression indexExpression;
+        if (auto index = argument.isIndexExp) {
+            indexedExpression = index.e1;
+            indexExpression = index.e2;
+        } else if (auto array = argument.isArrayExp) {
+            if (arrayExpressionArguments(array).length != 1)
+                return false;
+            indexedExpression = array.e1;
+            indexExpression = arrayExpressionArguments(array)[0];
+        } else {
+            return false;
+        }
+
+        const index = cast(size_t) runExpression(
+            indexExpression,
+            interpreter,
+        ).asLong;
+
+        Value localValue;
+        if (auto var = indexedExpression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration) {
+                if (tryGetLocalValue(varDecl, localValue)) {
+                    if (tryAppendIndexedStructRefArgument(
+                        args,
+                        varDecl,
+                        null,
+                        null,
+                        0L,
+                        false,
+                        localValue,
+                        varDecl.type,
+                        index,
+                        interpreter,
+                    ))
+                        return true;
+                    appendIndexedLocalRefArgument(args, varDecl, localValue, index);
+                    return true;
+                }
+
+                Value globalValue;
+                if (tryGetGlobalValue(varDecl, interpreter, globalValue)) {
+                    if (tryAppendIndexedStructRefArgument(
+                        args,
+                        varDecl,
+                        null,
+                        null,
+                        0L,
+                        true,
+                        globalValue,
+                        varDecl.type,
+                        index,
+                        interpreter,
+                    ))
+                        return true;
+                    CallArgument refArgument;
+                    refArgument.value = Value(globalValue.asArray[index]);
+                    refArgument.refSource = varDecl;
+                    refArgument.isGlobalRef = true;
+                    refArgument.hasRefIndex = true;
+                    refArgument.refIndex = index;
+                    args ~= refArgument;
+                    return true;
+                }
+            }
+
+        if (auto dotVar = indexedExpression.isDotVarExp) {
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    const arrayValue = structFieldValue(
+                        fields,
+                        fieldDecl,
+                        defaultArrayValue(fieldDecl.type),
+                    );
+                    if (tryAppendIndexedStructRefArgument(
+                        args,
+                        null,
+                        owner,
+                        fieldDecl,
+                        0L,
+                        false,
+                        arrayValue,
+                        fieldDecl.type,
+                        index,
+                        interpreter,
+                    ))
+                        return true;
+                    appendIndexedFieldRefArgument(
+                        args,
+                        arrayValue,
+                        owner,
+                        fieldDecl,
+                        0L,
+                        index,
+                    );
+                    return true;
+                }
+
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                    if (auto local = ownerDecl in locals)
+                        if (auto fields = classInstanceFields(
+                            *local,
+                            interpreter,
+                        ))
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const arrayValue = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    defaultArrayValue(fieldDecl.type),
+                                );
+                                if (tryAppendIndexedStructRefArgument(
+                                    args,
+                                    null,
+                                    null,
+                                    fieldDecl,
+                                    (*local).classId,
+                                    false,
+                                    arrayValue,
+                                    fieldDecl.type,
+                                    index,
+                                    interpreter,
+                                ))
+                                    return true;
+                                appendIndexedFieldRefArgument(
+                                    args,
+                                    arrayValue,
+                                    null,
+                                    fieldDecl,
+                                    (*local).classId,
+                                    index,
+                                );
+                                return true;
+                            }
+
+            if (auto thisExp = dotVar.e1.isThisExp)
+                if (auto thisDecl = thisExp.var.isVarDeclaration)
+                    if (auto fields = thisDecl in structFields)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            const arrayValue = structFieldValue(
+                                *fields,
+                                fieldDecl,
+                                defaultArrayValue(fieldDecl.type),
+                            );
+                            if (tryAppendIndexedStructRefArgument(
+                                args,
+                                null,
+                                thisDecl,
+                                fieldDecl,
+                                0L,
+                                false,
+                                arrayValue,
+                                fieldDecl.type,
+                                index,
+                                interpreter,
+                            ))
+                                return true;
+                            appendIndexedFieldRefArgument(
+                                args,
+                                arrayValue,
+                                thisDecl,
+                                fieldDecl,
+                                0L,
+                                index,
+                            );
+                            return true;
+                        }
+        }
+
+        return false;
+    }
+
+    private bool tryAppendIndexedStructRefArgument(
+        ref CallArgument[] args,
+        VarDeclaration source,
+        VarDeclaration owner,
+        VarDeclaration field,
+        in long classId,
+        in bool isGlobal,
+        Value arrayValue,
+        Type arrayType,
+        in size_t index,
+        ref Interpreter interpreter,
+    ) {
+        // auto: DMD type helper APIs require mutable Type nodes.
+        auto elementType = arrayElementType(arrayType);
+        if (!isStructType(elementType))
+            return false;
+
+        Value[VarDeclaration] fields;
+        if (!tryReadStructArrayElementFields(
+            elementType,
+            arrayValue.asArray,
+            index,
+            fields,
+            interpreter,
+        ))
+            return false;
+
+        CallArgument refArgument;
+        refArgument.refSource = source;
+        refArgument.refOwner = owner;
+        refArgument.refField = field;
+        refArgument.refClassId = classId;
+        refArgument.isGlobalRef = isGlobal;
+        refArgument.hasRefIndex = true;
+        refArgument.refIndex = index;
+        refArgument.structFields = fields.dup;
+        refArgument.structFieldMaps = nestedStructFieldMaps(refArgument.structFields);
+        refArgument.isStructRef = true;
+        args ~= refArgument;
+        return true;
+    }
+
+    private void appendIndexedLocalRefArgument(
+        ref CallArgument[] args,
+        VarDeclaration declaration,
+        Value arrayValue,
+        in size_t index,
+    ) {
+        CallArgument refArgument;
+        refArgument.value = Value(arrayValue.asArray[index]);
+        refArgument.refSource = declaration;
+        refArgument.hasRefIndex = true;
+        refArgument.refIndex = index;
+        args ~= refArgument;
+    }
+
+    private void appendIndexedFieldRefArgument(
+        ref CallArgument[] args,
+        Value arrayValue,
+        VarDeclaration owner,
+        VarDeclaration field,
+        in long classId,
+        in size_t index,
+    ) {
+        CallArgument refArgument;
+        refArgument.value = Value(arrayValue.asArray[index]);
+        refArgument.refOwner = owner;
+        refArgument.refField = field;
+        refArgument.refClassId = classId;
+        refArgument.hasRefIndex = true;
+        refArgument.refIndex = index;
+        args ~= refArgument;
+    }
+
+    private void assignIndexedRefArgument(
+        ref Interpreter interpreter,
+        CallArgument argument,
+        Value value,
+        Type parameterType,
+    ) {
+        if (argument.refSource !is null) {
+            Value storageValue;
+            if (argument.isGlobalRef)
+                storageValue = globalValueOrDefault(argument, interpreter);
+            else
+                storageValue = localValueOrDefault(argument);
+
+            long[] elements = arrayStorageValue(storageValue, argument.refSource.type);
+            elements[argument.refIndex] = coerceIntegerToType(
+                value.asLong,
+                arrayElementType(argument.refSource.type),
+            );
+
+            if (argument.isGlobalRef)
+                assignGlobalValue(argument.refSource, Value(elements), interpreter);
+            else {
+                locals[argument.refSource] = Value(elements);
+                propagateArrayAlias(argument.refSource, argument.refIndex, value);
+            }
+            return;
+        }
+
+        if (argument.refField !is null) {
+            Value[VarDeclaration] fields = indexedRefFields(
+                argument,
+                interpreter,
+            );
+            long[] elements = structFieldValue(
+                fields,
+                argument.refField,
+                defaultArrayValue(argument.refField.type),
+            ).asArray;
+            elements[argument.refIndex] = coerceIntegerToType(
+                value.asLong,
+                arrayElementType(argument.refField.type),
+            );
+            assignStructField(fields, argument.refField, Value(elements));
+
+            if (argument.refClassId != 0)
+                interpreter.classFields[argument.refClassId] = fields;
+            else
+                assignNestedStructFields(argument.refOwner, fields);
+            return;
+        }
+
+        const coerced = coerceValueToType(value, parameterType);
+        assert(coerced.asLong == value.asLong);
+    }
+
+    private void assignIndexedStructRefArgument(
+        ref Interpreter interpreter,
+        CallArgument argument,
+        Value[VarDeclaration] fields,
+    ) {
+        // auto: DMD type helper APIs require mutable Type nodes.
+        auto arrayType = argument.refSource !is null
+            ? argument.refSource.type
+            : argument.refField.type;
+        auto elementType = arrayElementType(arrayType);
+        long[] structBytes;
+        appendStructFieldsToCereal(structBytes, elementType, fields, interpreter);
+
+        if (argument.refSource !is null) {
+            Value storageValue;
+            if (argument.isGlobalRef)
+                storageValue = globalValueOrDefault(argument, interpreter);
+            else
+                storageValue = localValueOrDefault(argument);
+            long[] elements = replaceNestedArrayElement(
+                arrayStorageValue(storageValue, arrayType),
+                argument.refIndex,
+                structBytes,
+            );
+
+            if (argument.isGlobalRef)
+                assignGlobalValue(argument.refSource, Value(elements), interpreter);
+            else
+                locals[argument.refSource] = Value(elements);
+            return;
+        }
+
+        Value[VarDeclaration] ownerFields = indexedRefFields(
+            argument,
+            interpreter,
+        );
+        long[] elements = replaceNestedArrayElement(
+            structFieldValue(
+                ownerFields,
+                argument.refField,
+                defaultArrayValue(arrayType),
+            ).asArray,
+            argument.refIndex,
+            structBytes,
+        );
+        assignStructField(ownerFields, argument.refField, Value(elements));
+        if (argument.refClassId != 0)
+            interpreter.classFields[argument.refClassId] = ownerFields;
+        else
+            assignNestedStructFields(argument.refOwner, ownerFields);
+    }
+
+    private long[] replaceNestedArrayElement(
+        long[] array,
+        in size_t index,
+        long[] payload,
+    ) {
+        size_t cursor;
+        foreach (i; 0 .. index + 1) {
+            const elementStart = cursor;
+            const length = nestedArrayLength(array[cursor]);
+            ++cursor;
+            const elementEnd = cursor + length;
+            if (i == index)
+                return array[0 .. elementStart] ~
+                    [cast(long) payload.length] ~
+                    payload ~
+                    array[elementEnd .. $];
+            cursor = elementEnd;
+        }
+        return array;
+    }
+
+    private Value globalValueOrDefault(
+        CallArgument argument,
+        ref Interpreter interpreter,
+    ) {
+        Value value;
+        if (tryGetGlobalValue(argument.refSource, interpreter, value))
+            return value;
+        return defaultArrayValue(argument.refSource.type);
+    }
+
+    private Value localValueOrDefault(
+        CallArgument argument,
+    ) {
+        if (auto value = argument.refSource in locals)
+            return *value;
+        return defaultArrayValue(argument.refSource.type);
+    }
+
+    private Value[VarDeclaration] indexedRefFields(
+        CallArgument argument,
+        ref Interpreter interpreter,
+    ) {
+        if (argument.refClassId != 0)
+            return interpreter.classFields[argument.refClassId].dup;
+        return structFieldsValue(argument.refOwner);
+    }
+
     private Value[VarDeclaration][VarDeclaration] nestedStructFieldMaps(
         ref Value[VarDeclaration] fields,
     ) {
@@ -4934,14 +6932,10 @@ private struct BodyWalker {
     }
 
     private Value runEqualExpression(
-        imported!"dmd.expression".EqualExp equal,
+        EqualExp equal,
         ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
-        import std.algorithm.searching: canFind;
-
-        if (expressionChars(equal).canFind("decerealise(cerealise("))
-            return Value(equal.op == EXP.notEqual ? 0L : 1L);
         const left  = runExpression(equal.e1, interpreter);
         const right = runExpression(equal.e2, interpreter);
         if (equal.op == EXP.notEqual)
@@ -4950,7 +6944,7 @@ private struct BodyWalker {
     }
 
     private Value runIdentityExpression(
-        imported!"dmd.expression".IdentityExp identity,
+        IdentityExp identity,
         ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
@@ -4981,7 +6975,7 @@ private struct BodyWalker {
     }
 
     private bool valueIsNull(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         if (expression.isNullExp)
@@ -4995,11 +6989,12 @@ private struct BodyWalker {
             (long[] a) => a.length == 0,
             (LocalPtr _) => false,
             (AssocArrayRef ref_) => ref_.id == 0,
+            (AssocArraySlotRef ref_) => ref_.arrayId == 0,
         );
     }
 
     private bool isGcBlockBaseExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
     ) {
         if (auto cast_ = expression.isCastExp)
             return isGcBlockBaseExpression(cast_.e1);
@@ -5015,7 +7010,7 @@ private struct BodyWalker {
     }
 
     private Value runDeclarationExpression(
-        imported!"dmd.expression".DeclarationExp decl,
+        DeclarationExp decl,
         ref Interpreter interpreter,
     ) {
         import std.conv: text;
@@ -5034,6 +7029,18 @@ private struct BodyWalker {
             if (isScopeBufferRangeType(variable.type))
                 interpreter.scopeBufferBytes["ScopeBufferRange.sbuf"] =
                     (long[]).init;
+            if (variable._init !is null &&
+                variable._init.isExpInitializer !is null) {
+                long[] rangeElements;
+                if (tryReadInputRangeElements(
+                    variable._init.isExpInitializer.exp,
+                    rangeElements,
+                    interpreter,
+                )) {
+                    locals[variable] = Value(rangeElements.dup);
+                    return Value(0L);
+                }
+            }
             if (variable._init !is null &&
                 variable._init.isExpInitializer !is null &&
                 tryInitializeAssocArrayKeyStruct(
@@ -5067,9 +7074,9 @@ private struct BodyWalker {
 
         if (variable.type !is null &&
             variable.type.toBasetype.isTypeAArray !is null &&
-            interpreter.lastAssocArrayRef != 0) {
-            locals[variable] = Value(AssocArrayRef(interpreter.lastAssocArrayRef));
-            return locals[variable];
+            (variable._init is null || variable._init.isExpInitializer is null)) {
+            locals[variable] = Value(0L);
+            return Value(0L);
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null)
@@ -5077,16 +7084,106 @@ private struct BodyWalker {
 
         auto initializer = variable._init.isExpInitializer;
         // Determine the expression to evaluate for the initial value.
-        imported!"dmd.expression".Expression initExpr = initializer.exp;
+        Expression initExpr = initializer.exp;
         if (auto blit = initializer.exp.isBlitExp)
             initExpr = blit.e2;
         else if (auto assign = initializer.exp.isAssignExp)
             initExpr = assign.e2;
         else if (auto construct = initializer.exp.isConstructExp)
             initExpr = construct.e2;
+        rememberAssocArraySlotLocal(variable, initExpr, interpreter);
         Value value = coerceValueToType(runExpression(initExpr, interpreter), variable.type);
         locals[variable] = value;
         return value;
+    }
+
+    private void rememberAssocArraySlotLocal(
+        VarDeclaration variable,
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        if (variable.type is null || variable.type.toBasetype.isTypePointer is null)
+            return;
+
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.f is null ||
+            call.f.ident is null ||
+            (
+                call.f.ident.toString != "_d_aaGetRvalueX" &&
+                call.f.ident.toString != "_d_aaGetY"
+            ) ||
+            call.arguments is null ||
+            call.arguments.length < 2)
+            return;
+
+        long arrayId;
+        if (call.f.ident.toString == "_d_aaGetY") {
+            if (!tryMaterializeAssocArrayExpression(
+                callArguments(call)[0],
+                arrayId,
+                interpreter,
+            ))
+                return;
+        } else {
+            arrayId = assocArrayIdFromExpression(
+                callArguments(call)[0],
+                interpreter,
+            );
+            if (arrayId == 0 || arrayId !in interpreter.assocArrays)
+                return;
+        }
+
+        size_t index;
+        if (!tryAssocArrayKeyExpressionIndex(
+            arrayId,
+            callArguments(call)[1],
+            index,
+            interpreter,
+        )) {
+            if (call.f.ident.toString != "_d_aaGetY")
+                return;
+            VarDeclaration keyStruct;
+            Value key;
+            Value[VarDeclaration] keyFields;
+            if (!assocArrayKeyFromExpression(
+                callArguments(call)[1],
+                keyStruct,
+                key,
+                keyFields,
+                interpreter,
+            ))
+                return;
+            index = interpreter.assocArrays[arrayId].values.length;
+            interpreter.assocArrays[arrayId].keyStructs ~= keyStruct;
+            interpreter.assocArrays[arrayId].keyFields ~= keyFields;
+            interpreter.assocArrays[arrayId].keys ~= key;
+            interpreter.assocArrays[arrayId].values ~= Value(0L);
+        }
+
+        assocArraySlotLocals[variable] = AssocArraySlotLocal(arrayId, index);
+    }
+
+    private bool assocArrayKeyFromExpression(
+        Expression expression,
+        out VarDeclaration keyStruct,
+        out Value key,
+        out Value[VarDeclaration] keyFields,
+        ref Interpreter interpreter,
+    ) {
+        keyStruct = structFieldsOwner(expression);
+        if (keyStruct !is null) {
+            key = Value(0L);
+            keyFields = structFieldsValue(keyStruct).dup;
+            return true;
+        }
+
+        try {
+            key = runExpression(expression, interpreter);
+        } catch (Exception) {
+            return false;
+        }
+        return true;
     }
 
     private Value initializeArrayVariable(
@@ -5108,22 +7205,27 @@ private struct BodyWalker {
             throw new Exception(unsupportedMessage);
         }
 
-        imported!"dmd.expression".Expression initExpr = initializer.exp;
+        Expression initExpr = initializer.exp;
         if (auto blit = initializer.exp.isBlitExp)
             initExpr = blit.e2;
         else if (auto assign = initializer.exp.isAssignExp)
             initExpr = assign.e2;
         else if (auto construct = initializer.exp.isConstructExp)
             initExpr = construct.e2;
-
         if (auto call = initExpr.isCallExp)
             if (call.f.ident !is null && call.f.ident.toString == "keys") {
                 const arrayId = assocArrayCallReceiver(call, interpreter);
                 if (arrayId != 0 && arrayId in interpreter.assocArrays) {
                     // auto: keep the mutable VarDeclaration array for key lookup.
                     auto keyStructs = interpreter.assocArrays[arrayId].keyStructs;
-                    assocArrayKeyArrays[variable] =
-                        AssocArrayKeys(arrayId, keyStructs);
+                    auto keyFields = interpreter.assocArrays[arrayId].keyFields;
+                    auto assocKeys = AssocArrayKeys(
+                        arrayId,
+                        keyStructs,
+                        keyFields,
+                        interpreter.assocArrays[arrayId].keys.dup,
+                    );
+                    assocArrayKeyArrays[variable] = assocKeys;
                     locals[variable] = Value(new long[keyStructs.length]);
                     return Value(0L);
                 }
@@ -5134,8 +7236,14 @@ private struct BodyWalker {
                 if (arrayId != 0 && arrayId in interpreter.assocArrays) {
                     // auto: keep the mutable VarDeclaration array for key lookup.
                     auto keyStructs = interpreter.assocArrays[arrayId].keyStructs;
-                    assocArrayKeyArrays[variable] =
-                        AssocArrayKeys(arrayId, keyStructs);
+                    auto keyFields = interpreter.assocArrays[arrayId].keyFields;
+                    auto assocKeys = AssocArrayKeys(
+                        arrayId,
+                        keyStructs,
+                        keyFields,
+                        interpreter.assocArrays[arrayId].keys.dup,
+                    );
+                    assocArrayKeyArrays[variable] = assocKeys;
                     locals[variable] = Value(new long[keyStructs.length]);
                     return Value(0L);
                 }
@@ -5172,6 +7280,7 @@ private struct BodyWalker {
                 runExpression(construct.e2, interpreter),
                 variable.type,
             );
+            rememberArrayAlias(variable, construct.e2, interpreter);
             return Value(0L);
         }
 
@@ -5179,15 +7288,42 @@ private struct BodyWalker {
             locals[variable] = defaultArrayValue(variable.type);
 
         locals[variable] = coerceValueToType(
-            runExpression(initializer.exp, interpreter),
+            runExpression(initExpr, interpreter),
             variable.type,
         );
+        rememberArrayAlias(variable, initExpr, interpreter);
         return Value(0L);
     }
 
+    private void rememberArrayAlias(
+        VarDeclaration variable,
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        auto slice = expression.isSliceExp;
+        if (slice is null || slice.lwr is null || slice.upr is null)
+            return;
+        auto var = slice.e1.isVarExp;
+        if (var is null)
+            return;
+        auto owner = var.var.isVarDeclaration;
+        if (owner is null || owner !in locals)
+            return;
+
+        const lower = cast(size_t) runSliceBound(
+            slice.lwr,
+            interpreter,
+            locals[owner].asArray.length,
+        );
+        if (auto parent = owner in arrayAliases)
+            arrayAliases[variable] = ArrayAlias(parent.owner, parent.offset + lower);
+        else
+            arrayAliases[variable] = ArrayAlias(owner, lower);
+    }
+
     private long[] arrayLiteralRuntimeValue(
-        imported!"dmd.expression".ArrayLiteralExp literal,
-        imported!"dmd.mtype".Type elementType,
+        ArrayLiteralExp literal,
+        Type elementType,
         ref Interpreter interpreter,
     ) {
         long[] elements;
@@ -5229,6 +7365,7 @@ private struct BodyWalker {
                 (LocalPtr _) {},
                 (ClassRef _) {},
                 (AssocArrayRef _) {},
+                (AssocArraySlotRef _) {},
             );
         }
 
@@ -5236,7 +7373,7 @@ private struct BodyWalker {
     }
 
     private long[] structLiteralCerealBytes(
-        imported!"dmd.expression".StructLiteralExp literal,
+        StructLiteralExp literal,
         ref Interpreter interpreter,
     ) {
         long[] elements;
@@ -5254,8 +7391,8 @@ private struct BodyWalker {
 
     private void appendExpressionCerealBytes(
         ref long[] elements,
-        imported!"dmd.expression".Expression expression,
-        imported!"dmd.mtype".Type type,
+        Expression expression,
+        Type type,
         ref Interpreter interpreter,
         VarDeclaration field = null,
     ) {
@@ -5310,8 +7447,8 @@ private struct BodyWalker {
 
     private void appendArrayLiteralCerealBytes(
         ref long[] elements,
-        imported!"dmd.expression".ArrayLiteralExp literal,
-        imported!"dmd.mtype".Type arrayType,
+        ArrayLiteralExp literal,
+        Type arrayType,
         ref Interpreter interpreter,
         in bool includeLength = true,
     ) {
@@ -5352,7 +7489,7 @@ private struct BodyWalker {
 
     private bool tryInitializeAssocArrayKeyStruct(
         VarDeclaration variable,
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         if (auto blit = expression.isBlitExp)
@@ -5377,7 +7514,7 @@ private struct BodyWalker {
         if (auto index = expression.isIndexExp)
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (auto keys = varDecl in assocArrayKeyArrays) {
+                    if (auto keys = assocArrayKeysLocal(varDecl)) {
                         const i = cast(size_t) runExpression(
                             index.e2,
                             interpreter,
@@ -5388,6 +7525,9 @@ private struct BodyWalker {
                         auto keyStruct = keys.keyStructs[i];
                         if (keyStruct !is null && keyStruct in structFields)
                             structFields[variable] = structFields[keyStruct].dup;
+                        else if (i < keys.keyFields.length &&
+                            keys.keyFields[i] !is null)
+                            structFields[variable] = keys.keyFields[i].dup;
                         else
                             structFields[variable] =
                                 defaultStructFields(variable.type);
@@ -5399,7 +7539,7 @@ private struct BodyWalker {
     }
 
     private bool isComparisonExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
     ) {
         import dmd.tokens: EXP;
 
@@ -5411,7 +7551,7 @@ private struct BodyWalker {
     }
 
     private Value runComparisonExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
@@ -5441,12 +7581,25 @@ private struct BodyWalker {
     }
 
     private Value runAssignExpression(
-        imported!"dmd.expression".AssignExp assign,
+        AssignExp assign,
         ref Interpreter interpreter,
     ) {
+        Value lengthValue;
+        if (tryRunArrayLengthAssign(assign.e1, assign.e2, lengthValue, interpreter))
+            return lengthValue;
+
         if (auto var = assign.e1.isVarExp)
             if (auto varDecl = var.var.isVarDeclaration)
                 if (isStructType(varDecl.type)) {
+                    long[] rangeElements;
+                    if (tryReadInputRangeElements(
+                        assign.e2,
+                        rangeElements,
+                        interpreter,
+                    )) {
+                        locals[varDecl] = Value(rangeElements.dup);
+                        return Value(0L);
+                    }
                     structFields[varDecl] = runStructInitializer(assign.e2, interpreter);
                     return Value(0L);
                 }
@@ -5464,6 +7617,13 @@ private struct BodyWalker {
                     varDecl.type.isTypeDArray !is null) {
                     interpreter.globals[varDecl] =
                         coerceValueToType(value, varDecl.type);
+                    return value;
+                } else {
+                    assignGlobalValue(
+                        varDecl,
+                        coerceValueToType(value, varDecl.type),
+                        interpreter,
+                    );
                     return value;
                 }
             }
@@ -5537,7 +7697,10 @@ private struct BodyWalker {
                     }
 
         if (auto ptr = assign.e1.isPtrExp) {
-            const classId = runExpression(ptr.e1, interpreter).classId;
+            const pointer = runExpression(ptr.e1, interpreter);
+            if (tryAssignAssocArraySlotPointer(pointer, value, interpreter))
+                return value;
+            const classId = pointer.classId;
             if (classId != 0 && classId in interpreter.heapScalars) {
                 interpreter.heapScalars[classId] = coerceValueToType(
                     value,
@@ -5548,9 +7711,42 @@ private struct BodyWalker {
         }
 
         if (auto index = assign.e1.isIndexExp) {
+            if (tryAssignAssocArrayIndex(
+                index.e1,
+                index.e2,
+                value,
+                interpreter,
+            ))
+                return value;
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
-                    if (varDecl in locals) {
+                    if (auto slot = assocArraySlotLocal(varDecl)) {
+                        if (slot.arrayId != 0 &&
+                            slot.arrayId in interpreter.assocArrays &&
+                            slot.index <
+                            interpreter.assocArrays[slot.arrayId].values.length) {
+                            interpreter.assocArrays[slot.arrayId].values[slot.index] =
+                                value;
+                            return value;
+                        }
+                    }
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (tryAssignAssocArrayIndex(
+                        varDecl,
+                        index.e2,
+                        value,
+                        interpreter,
+                    ))
+                        return value;
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals &&
+                        varDecl.type !is null &&
+                        (
+                            varDecl.type.toBasetype.isTypeDArray !is null ||
+                            varDecl.type.toBasetype.isTypeSArray !is null
+                        )) {
                         const i = runExpression(index.e2, interpreter).asLong;
                         long[] elements = arrayStorageValue(
                             locals[varDecl],
@@ -5561,6 +7757,7 @@ private struct BodyWalker {
                             arrayElementType(varDecl.type),
                         );
                         locals[varDecl] = Value(elements);
+                        propagateArrayAlias(varDecl, cast(size_t) i, value);
                         return value;
                     }
             if (auto dotVar = index.e1.isDotVarExp)
@@ -5640,6 +7837,7 @@ private struct BodyWalker {
                                 arrayElementType(varDecl.type),
                             );
                             locals[varDecl] = Value(elements);
+                            propagateArrayAlias(varDecl, cast(size_t) i, value);
                             return value;
                         }
                 if (auto dotVar = array.e1.isDotVarExp)
@@ -5684,10 +7882,576 @@ private struct BodyWalker {
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
     }
 
+    private Value runBinAssignExpression(
+        BinAssignExp assign,
+        ref Interpreter interpreter,
+    ) {
+        Value value;
+        if (tryRunArrayLengthAssign(assign.e1, assign.e2, value, interpreter))
+            return value;
+        if (tryRunScalarDivideAssign(assign, value, interpreter))
+            return value;
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
+
+    private bool tryRunScalarDivideAssign(
+        BinAssignExp assign,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (assign.op != EXP.divAssign)
+            return false;
+
+        AssignableScalar target;
+        if (!tryReadAssignableScalar(assign.e1, target, interpreter))
+            return false;
+
+        const divisor = runExpression(assign.e2, interpreter).asLong;
+        if (divisor == 0)
+            throw new Exception("Unittest assertion failed.");
+
+        const quotient = scalarDivisionValue(
+            target.value.asLong,
+            divisor,
+            target.type,
+            assign.e1,
+            assign.e2,
+        );
+        value = Value(coerceIntegerToType(quotient, target.type));
+        writeAssignableScalar(target, value, interpreter);
+        return true;
+    }
+
+    private struct AssignableScalar {
+        private Value value;
+        private Type type;
+        private Type containerType;
+        private VarDeclaration declaration;
+        private bool isGlobal;
+        private VarDeclaration owner;
+        private VarDeclaration field;
+        private long classId;
+        private bool isHeapScalar;
+        private bool hasIndex;
+        private size_t index;
+    }
+
+    private bool tryReadAssignableScalar(
+        Expression expression,
+        out AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        if (auto cast_ = expression.isCastExp)
+            return tryReadAssignableScalar(cast_.e1, target, interpreter);
+
+        if (auto var = expression.isVarExp)
+            if (auto declaration = var.var.isVarDeclaration)
+                return tryReadAssignableScalarVariable(
+                    declaration,
+                    target,
+                    interpreter,
+                );
+
+        if (auto dotVar = expression.isDotVarExp)
+            return tryReadAssignableScalarField(dotVar, target, interpreter);
+
+        if (auto ptr = expression.isPtrExp)
+            return tryReadAssignableScalarPointer(ptr.e1, target, interpreter);
+
+        if (auto index = expression.isIndexExp)
+            return tryReadAssignableScalarIndex(
+                index.e1,
+                index.e2,
+                target,
+                interpreter,
+            );
+
+        if (auto array = expression.isArrayExp)
+            if (arrayExpressionArguments(array).length == 1)
+                return tryReadAssignableScalarIndex(
+                    array.e1,
+                    arrayExpressionArguments(array)[0],
+                    target,
+                    interpreter,
+                );
+
+        return false;
+    }
+
+    private bool tryReadAssignableScalarVariable(
+        VarDeclaration declaration,
+        out AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        Value value;
+        if (tryGetLocalValue(declaration, value)) {
+            target.value = value;
+            target.type = declaration.type;
+            target.declaration = declaration;
+            return true;
+        }
+
+        if (tryGetGlobalValue(declaration, interpreter, value)) {
+            target.value = value;
+            target.type = declaration.type;
+            target.declaration = declaration;
+            target.isGlobal = true;
+            return true;
+        }
+
+        if (currentThis !is null)
+            if (auto fields = currentThis in structFields) {
+                target.value = structFieldValue(*fields, declaration, Value(0L));
+                target.type = declaration.type;
+                target.owner = currentThis;
+                target.field = declaration;
+                return true;
+            }
+
+        return false;
+    }
+
+    private bool tryReadAssignableScalarField(
+        DotVarExp dotVar,
+        out AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        if (auto owner = structFieldsOwner(dotVar.e1)) {
+            Value[VarDeclaration] fields = structFieldsValue(owner);
+            target.value = structFieldValue(fields, field, Value(0L));
+            target.type = field.type;
+            target.owner = owner;
+            target.field = field;
+            return true;
+        }
+
+        if (auto ptr = dotVar.e1.isPtrExp) {
+            const pointer = runExpression(ptr.e1, interpreter);
+            const id = pointer.classId;
+            if (id != 0 && id in interpreter.classFields) {
+                target.value = structFieldValue(
+                    interpreter.classFields[id],
+                    field,
+                    Value(0L),
+                );
+                target.type = field.type;
+                target.field = field;
+                target.classId = id;
+                return true;
+            }
+        }
+
+        if (auto ownerVar = dotVar.e1.isVarExp)
+            if (auto ownerDecl = ownerVar.var.isVarDeclaration) {
+                Value ownerValue;
+                if (tryGetLocalValue(ownerDecl, ownerValue)) {
+                    const id = ownerValue.classId;
+                    if (id != 0 && id in interpreter.classFields) {
+                        target.value = structFieldValue(
+                            interpreter.classFields[id],
+                            field,
+                            Value(0L),
+                        );
+                        target.type = field.type;
+                        target.field = field;
+                        target.classId = id;
+                        return true;
+                    }
+                }
+            }
+
+        return false;
+    }
+
+    private bool tryReadAssignableScalarPointer(
+        Expression pointerExpression,
+        out AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        Value pointer = runExpression(pointerExpression, interpreter);
+        VarDeclaration declaration;
+        const isLocalPointer = pointer.match!(
+            (LocalPtr ptr) {
+                declaration = ptr.decl;
+                return true;
+            },
+            (long _) => false,
+            (long[] _) => false,
+            (ClassRef _) => false,
+            (AssocArrayRef _) => false,
+            (AssocArraySlotRef _) => false,
+        );
+        if (isLocalPointer && declaration !is null)
+            return tryReadAssignableScalarVariable(
+                declaration,
+                target,
+                interpreter,
+            );
+
+        const id = pointer.classId;
+        if (id != 0 && id in interpreter.heapScalars) {
+            target.value = interpreter.heapScalars[id];
+            target.type = pointerTargetType(pointerExpression.type);
+            target.classId = id;
+            target.isHeapScalar = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool tryReadAssignableScalarIndex(
+        Expression indexedExpression,
+        Expression indexExpression,
+        out AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        const index = cast(size_t) runExpression(
+            indexExpression,
+            interpreter,
+        ).asLong;
+
+        Value indexedValue;
+        if (auto var = indexedExpression.isVarExp)
+            if (auto declaration = var.var.isVarDeclaration) {
+                if (tryGetLocalValue(declaration, indexedValue)) {
+                    target.value = Value(indexedValue.asArray[index]);
+                    target.type = arrayElementType(declaration.type);
+                    target.containerType = declaration.type;
+                    target.declaration = declaration;
+                    target.hasIndex = true;
+                    target.index = index;
+                    return true;
+                }
+                if (tryGetGlobalValue(declaration, interpreter, indexedValue)) {
+                    target.value = Value(indexedValue.asArray[index]);
+                    target.type = arrayElementType(declaration.type);
+                    target.containerType = declaration.type;
+                    target.declaration = declaration;
+                    target.isGlobal = true;
+                    target.hasIndex = true;
+                    target.index = index;
+                    return true;
+                }
+            }
+
+        if (auto dotVar = indexedExpression.isDotVarExp) {
+            auto field = dotVar.var.isVarDeclaration;
+            if (field is null)
+                return false;
+
+            if (auto owner = structFieldsOwner(dotVar.e1)) {
+                Value[VarDeclaration] fields = structFieldsValue(owner);
+                const array = structFieldValue(
+                    fields,
+                    field,
+                    defaultArrayValue(field.type),
+                );
+                target.value = Value(array.asArray[index]);
+                target.type = arrayElementType(field.type);
+                target.containerType = field.type;
+                target.owner = owner;
+                target.field = field;
+                target.hasIndex = true;
+                target.index = index;
+                return true;
+            }
+
+            if (auto ownerVar = dotVar.e1.isVarExp)
+                if (auto ownerDecl = ownerVar.var.isVarDeclaration) {
+                    Value ownerValue;
+                    if (tryGetLocalValue(ownerDecl, ownerValue)) {
+                        const id = ownerValue.classId;
+                        if (id != 0 && id in interpreter.classFields) {
+                            const array = structFieldValue(
+                                interpreter.classFields[id],
+                                field,
+                                defaultArrayValue(field.type),
+                            );
+                            target.value = Value(array.asArray[index]);
+                            target.type = arrayElementType(field.type);
+                            target.containerType = field.type;
+                            target.field = field;
+                            target.classId = id;
+                            target.hasIndex = true;
+                            target.index = index;
+                            return true;
+                        }
+                    }
+                }
+        }
+
+        return false;
+    }
+
+    private void writeAssignableScalar(
+        AssignableScalar target,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (target.hasIndex) {
+            writeAssignableScalarIndex(target, value, interpreter);
+            return;
+        }
+
+        if (target.isHeapScalar) {
+            interpreter.heapScalars[target.classId] =
+                coerceValueToType(value, target.type);
+            return;
+        }
+
+        if (target.classId != 0) {
+            Value[VarDeclaration] fields = interpreter.classFields[target.classId];
+            assignStructField(
+                fields,
+                target.field,
+                coerceValueToType(value, target.type),
+            );
+            interpreter.classFields[target.classId] = fields;
+            return;
+        }
+
+        if (target.field !is null) {
+            Value[VarDeclaration] fields = structFieldsValue(target.owner);
+            assignStructField(
+                fields,
+                target.field,
+                coerceValueToType(value, target.type),
+            );
+            assignNestedStructFields(target.owner, fields);
+            return;
+        }
+
+        if (target.isGlobal) {
+            assignGlobalValue(
+                target.declaration,
+                coerceValueToType(value, target.type),
+                interpreter,
+            );
+            return;
+        }
+
+        assignLocalValue(
+            target.declaration,
+            coerceValueToType(value, target.type),
+        );
+    }
+
+    private void writeAssignableScalarIndex(
+        AssignableScalar target,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (target.declaration !is null) {
+            Value storage = target.isGlobal
+                ? globalValueOrDefault(target, interpreter)
+                : localValueOrDefault(target);
+            long[] elements = arrayStorageValue(
+                storage,
+                target.containerType,
+            );
+            elements[target.index] = coerceIntegerToType(
+                value.asLong,
+                target.type,
+            );
+
+            if (target.isGlobal)
+                assignGlobalValue(target.declaration, Value(elements), interpreter);
+            else {
+                assignLocalValue(target.declaration, Value(elements));
+                propagateArrayAlias(target.declaration, target.index, value);
+            }
+            return;
+        }
+
+        Value[VarDeclaration] fields = target.classId == 0
+            ? structFieldsValue(target.owner)
+            : interpreter.classFields[target.classId];
+        long[] elements = structFieldValue(
+            fields,
+            target.field,
+            defaultArrayValue(target.containerType),
+        ).asArray;
+        elements[target.index] = coerceIntegerToType(value.asLong, target.type);
+        assignStructField(fields, target.field, Value(elements));
+
+        if (target.classId == 0)
+            assignNestedStructFields(target.owner, fields);
+        else
+            interpreter.classFields[target.classId] = fields;
+    }
+
+    private Value localValueOrDefault(
+        AssignableScalar target,
+    ) {
+        Value value;
+        if (tryGetLocalValue(target.declaration, value))
+            return value;
+        return defaultValue(target.declaration.type);
+    }
+
+    private Value globalValueOrDefault(
+        AssignableScalar target,
+        ref Interpreter interpreter,
+    ) {
+        Value value;
+        if (tryGetGlobalValue(target.declaration, interpreter, value))
+            return value;
+        return defaultValue(target.declaration.type);
+    }
+
+    private void assignLocalValue(
+        VarDeclaration declaration,
+        Value value,
+    ) {
+        if (declaration in locals) {
+            locals[declaration] = value;
+            return;
+        }
+
+        foreach (existingDeclaration; locals.byKey)
+            if (sameStructField(existingDeclaration, declaration)) {
+                locals[existingDeclaration] = value;
+                return;
+            }
+
+        locals[declaration] = value;
+    }
+
+    private long scalarDivisionValue(
+        in long left,
+        in long right,
+        Type targetType,
+        Expression leftExpression,
+        Expression rightExpression,
+    ) {
+        if (typeIsUnsignedInteger(targetType) ||
+            expressionHasUnsignedIntegerType(leftExpression) ||
+            expressionHasUnsignedIntegerType(rightExpression))
+            return cast(long) (cast(ulong) left / cast(ulong) right);
+        return left / right;
+    }
+
+    private bool tryRunArrayLengthAssign(
+        Expression target,
+        Expression valueExpression,
+        out Value result,
+        ref Interpreter interpreter,
+    ) {
+        auto length = target.isArrayLengthExp;
+        if (length is null)
+            return false;
+
+        result = runExpression(valueExpression, interpreter);
+        const newLength = cast(size_t) result.asLong;
+
+        if (auto var = length.e1.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration) {
+                if (varDecl in locals) {
+                    locals[varDecl] = Value(resizeArrayStorage(
+                        locals[varDecl],
+                        varDecl.type,
+                        newLength,
+                        interpreter,
+                    ));
+                    return true;
+                }
+
+                Value globalValue;
+                if (tryGetGlobalValue(varDecl, interpreter, globalValue)) {
+                    assignGlobalValue(
+                        varDecl,
+                        Value(resizeArrayStorage(
+                            globalValue,
+                            varDecl.type,
+                            newLength,
+                            interpreter,
+                        )),
+                        interpreter,
+                    );
+                    return true;
+                }
+            }
+
+        if (auto dotVar = length.e1.isDotVarExp)
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    assignStructField(
+                        fields,
+                        fieldDecl,
+                        Value(resizeArrayStorage(
+                            structFieldValue(
+                                fields,
+                                fieldDecl,
+                                defaultArrayValue(fieldDecl.type),
+                            ),
+                            fieldDecl.type,
+                            newLength,
+                            interpreter,
+                        )),
+                    );
+                    assignNestedStructFields(owner, fields);
+                    return true;
+                }
+
+        return false;
+    }
+
+    private long[] resizeArrayStorage(
+        Value value,
+        Type type,
+        in size_t newLength,
+        ref Interpreter interpreter,
+    ) {
+        // auto: DMD type helper APIs require mutable Type nodes.
+        auto elementType = arrayElementType(type);
+        long[] elements = arrayStorageValue(value, type);
+        if (!isStructType(elementType)) {
+            elements.length = newLength;
+            return elements;
+        }
+
+        const currentLength = cast(size_t) arrayFieldLength(Value(elements), type);
+        if (newLength <= currentLength)
+            return firstNestedArrayElements(elements, newLength);
+
+        foreach (_; currentLength .. newLength) {
+            long[] payload;
+            Value[VarDeclaration] fields = defaultStructFields(elementType);
+            appendStructFieldsToCereal(payload, elementType, fields, interpreter);
+            elements ~= cast(long) payload.length;
+            elements ~= payload;
+        }
+        return elements;
+    }
+
+    private long[] firstNestedArrayElements(
+        long[] elements,
+        in size_t count,
+    ) {
+        size_t cursor;
+        foreach (_; 0 .. count) {
+            const length = nestedArrayLength(elements[cursor]);
+            cursor += 1 + length;
+        }
+        return elements[0 .. cursor].dup;
+    }
+
     private long[] sliceAssignmentValue(
         Value value,
         in long length,
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
     ) {
         import std.sumtype: match;
 
@@ -5712,12 +8476,16 @@ private struct BodyWalker {
                 throw new Exception("Expected slice assignment value, got AA.");
                 return (long[]).init;
             },
+            (AssocArraySlotRef _) {
+                throw new Exception("Expected slice assignment value, got AA slot.");
+                return (long[]).init;
+            },
         );
     }
 
     private long[] arrayStorageValue(
         Value value,
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         import std.sumtype: match;
 
@@ -5736,13 +8504,261 @@ private struct BodyWalker {
                 throw new Exception("Expected array storage, got AA.");
                 return (long[]).init;
             },
+            (AssocArraySlotRef _) {
+                throw new Exception("Expected array storage, got AA slot.");
+                return (long[]).init;
+            },
         );
+    }
+
+    private void propagateArrayAlias(
+        VarDeclaration declaration,
+        in size_t index,
+        Value value,
+    ) {
+        auto alias_ = declaration in arrayAliases;
+        if (alias_ is null || alias_.owner !in locals)
+            return;
+
+        long[] elements = locals[alias_.owner].asArray;
+        elements[alias_.offset + index] = coerceIntegerToType(
+            value.asLong,
+            arrayElementType(alias_.owner.type),
+        );
+        locals[alias_.owner] = Value(elements);
+    }
+
+    private bool tryAssignAssocArrayIndex(
+        VarDeclaration declaration,
+        Expression keyExpression,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (declaration.type is null ||
+            declaration.type.toBasetype.isTypeAArray is null)
+            return false;
+
+        const assocArrayRef = materializeAssocArrayVariable(
+            declaration,
+            interpreter,
+        );
+        return assignAssocArrayValue(
+            assocArrayRef.id,
+            declaration.type,
+            keyExpression,
+            value,
+            interpreter,
+        );
+    }
+
+    private bool tryAssignAssocArrayIndex(
+        Expression arrayExpression,
+        Expression keyExpression,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!isAssocArrayExpression(arrayExpression))
+            return false;
+
+        long arrayId;
+        if (!tryMaterializeAssocArrayExpression(
+            arrayExpression,
+            arrayId,
+            interpreter,
+        ))
+            return false;
+
+        return assignAssocArrayValue(
+            arrayId,
+            arrayExpression.type,
+            keyExpression,
+            value,
+            interpreter,
+        );
+    }
+
+    private bool assignAssocArrayValue(
+        in long arrayId,
+        Type arrayType,
+        Expression keyExpression,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        const coercedValue = coerceValueToType(
+            value,
+            arrayElementType(arrayType),
+        );
+        size_t index;
+        if (tryAssocArrayKeyExpressionIndex(
+            arrayId,
+            keyExpression,
+            index,
+            interpreter,
+        )) {
+            interpreter.assocArrays[arrayId].values[index] = coercedValue;
+            return true;
+        }
+
+        VarDeclaration keyStruct;
+        Value key;
+        Value[VarDeclaration] keyFields;
+        if (!assocArrayKeyFromExpression(
+            keyExpression,
+            keyStruct,
+            key,
+            keyFields,
+            interpreter,
+        ))
+            return false;
+
+        interpreter.assocArrays[arrayId].keyStructs ~= keyStruct;
+        interpreter.assocArrays[arrayId].keyFields ~= keyFields;
+        interpreter.assocArrays[arrayId].keys ~= key;
+        interpreter.assocArrays[arrayId].values ~= coercedValue;
+        return true;
+    }
+
+    private bool tryAssignAssocArraySlotPointer(
+        Value pointer,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.sumtype: match;
+
+        AssocArraySlotRef slot;
+        const hasSlot = pointer.match!(
+            (AssocArraySlotRef ref_) {
+                slot = ref_;
+                return true;
+            },
+            (long _) => false,
+            (long[] _) => false,
+            (LocalPtr _) => false,
+            (ClassRef _) => false,
+            (AssocArrayRef _) => false,
+        );
+        if (!hasSlot)
+            return false;
+        if (slot.arrayId == 0 || slot.arrayId !in interpreter.assocArrays)
+            return false;
+        if (slot.index >= interpreter.assocArrays[slot.arrayId].values.length)
+            return false;
+
+        interpreter.assocArrays[slot.arrayId].values[slot.index] = value;
+        return true;
+    }
+
+    private bool tryMaterializeAssocArrayExpression(
+        Expression expression,
+        out long arrayId,
+        ref Interpreter interpreter,
+    ) {
+        arrayId = 0L;
+
+        if (auto cast_ = expression.isCastExp)
+            return tryMaterializeAssocArrayExpression(
+                cast_.e1,
+                arrayId,
+                interpreter,
+            );
+        if (auto addr = expression.isAddrExp)
+            return tryMaterializeAssocArrayExpression(
+                addr.e1,
+                arrayId,
+                interpreter,
+            );
+
+        try {
+            arrayId = assocArrayIdFromExpression(expression, interpreter);
+        } catch (Exception) {
+            arrayId = 0L;
+        }
+        if (arrayId != 0) {
+            if (arrayId !in interpreter.assocArrays)
+                interpreter.assocArrays[arrayId] = AssocArray.init;
+            return true;
+        }
+
+        if (!isAssocArrayExpression(expression))
+            return false;
+
+        if (auto var = expression.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration) {
+                const assocArrayRef = materializeAssocArrayVariable(
+                    varDecl,
+                    interpreter,
+                );
+                arrayId = assocArrayRef.id;
+                return true;
+            }
+
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    const assocArrayRef = newAssocArray(interpreter);
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    assignStructField(fields, fieldDecl, Value(assocArrayRef));
+                    assignNestedStructFields(owner, fields);
+                    arrayId = assocArrayRef.id;
+                    return true;
+                }
+
+        return false;
+    }
+
+    private AssocArrayRef materializeAssocArrayLocal(
+        VarDeclaration declaration,
+        ref Interpreter interpreter,
+    ) {
+        if (auto local = declaration in locals) {
+            const arrayId = (*local).assocArrayId;
+            if (arrayId != 0) {
+                if (arrayId !in interpreter.assocArrays)
+                    interpreter.assocArrays[arrayId] = AssocArray.init;
+                return AssocArrayRef(arrayId);
+            }
+        }
+
+        const assocArrayRef = newAssocArray(interpreter);
+        locals[declaration] = Value(assocArrayRef);
+        return assocArrayRef;
+    }
+
+    private AssocArrayRef materializeAssocArrayVariable(
+        VarDeclaration declaration,
+        ref Interpreter interpreter,
+    ) {
+        if (declaration in locals)
+            return materializeAssocArrayLocal(declaration, interpreter);
+
+        Value globalValue;
+        if (tryGetGlobalValue(declaration, interpreter, globalValue)) {
+            const arrayId = globalValue.assocArrayId;
+            if (arrayId != 0) {
+                if (arrayId !in interpreter.assocArrays)
+                    interpreter.assocArrays[arrayId] = AssocArray.init;
+                return AssocArrayRef(arrayId);
+            }
+        }
+
+        const assocArrayRef = newAssocArray(interpreter);
+        assignGlobalValue(declaration, Value(assocArrayRef), interpreter);
+        return assocArrayRef;
+    }
+
+    private AssocArrayRef newAssocArray(
+        ref Interpreter interpreter,
+    ) {
+        const assocArrayRef = AssocArrayRef(interpreter.nextAssocArrayRef);
+        ++interpreter.nextAssocArrayRef;
+        interpreter.assocArrays[assocArrayRef.id] = AssocArray.init;
+        return assocArrayRef;
     }
 
     private bool tryAssignNestedStructField(
         ref Value[VarDeclaration] fields,
         VarDeclaration field,
-        imported!"dmd.expression".Expression valueExpression,
+        Expression valueExpression,
     ) {
         if (!isStructType(field.type))
             return false;
@@ -5757,7 +8773,7 @@ private struct BodyWalker {
     }
 
     private VarDeclaration structCopySourceOwner(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
     ) {
         if (auto construct = expression.isConstructExp)
             return structCopySourceOwner(construct.e2);
@@ -5773,7 +8789,7 @@ private struct BodyWalker {
     }
 
     private Value[VarDeclaration] runStructInitializer(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
     ) {
         if (auto construct = expression.isConstructExp)
@@ -5784,6 +8800,9 @@ private struct BodyWalker {
             return runStructInitializer(blit.e2, interpreter);
         if (auto literal = expression.isStructLiteralExp)
             return runStructLiteralExpression(literal, interpreter);
+        Value[VarDeclaration] elementFields;
+        if (tryStructArrayElementFields(expression, elementFields, interpreter))
+            return elementFields;
         if (auto owner = structCopySourceOwner(expression))
             return structFields[owner].dup;
         if (auto call = expression.isCallExp) {
@@ -5811,7 +8830,7 @@ private struct BodyWalker {
                 call.f !is null &&
                 call.f.fbody !is null) {
                 Value[VarDeclaration] fields = defaultStructFields(call.type);
-                imported!"dmd.expression".Expression[] arguments;
+                Expression[] arguments;
                 if (call.arguments !is null)
                     foreach (argument; callArguments(call))
                         arguments ~= argument;
@@ -5870,7 +8889,7 @@ private struct BodyWalker {
     }
 
     private bool tryRunUnitThreadedStructConstructor(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
@@ -5925,7 +8944,7 @@ private struct BodyWalker {
         return false;
     }
 
-    private bool hasUnitThreadedValuesField(imported!"dmd.mtype".Type type) {
+    private bool hasUnitThreadedValuesField(Type type) {
         import std.string: startsWith;
 
         foreach (field; aggregateStructFields(type))
@@ -5936,7 +8955,7 @@ private struct BodyWalker {
     }
 
     private bool isUnitThreadedGeneratedValueExpression(
-        imported!"dmd.expression".DotVarExp dotVar,
+        DotVarExp dotVar,
     ) {
         import std.algorithm.searching: canFind;
 
@@ -5946,8 +8965,8 @@ private struct BodyWalker {
     }
 
     private bool tryRunStructDecerealiseValue(
-        imported!"dmd.expression".CallExp call,
-        imported!"dmd.mtype".Type valueType,
+        CallExp call,
+        Type valueType,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
@@ -5993,19 +9012,12 @@ private struct BodyWalker {
         );
     }
 
-    private bool isCerealedValueCall(imported!"dmd.expression".CallExp call) {
-        if (call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "value")
-            return true;
-
-        import std.string: endsWith;
-
-        return expressionChars(call.e1).endsWith(".value");
+    private bool isCerealedValueCall(CallExp call) {
+        return callFunctionNamed(call, "value");
     }
 
     private bool tryRunOutputRangeDecerealiseValue(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
@@ -6036,7 +9048,7 @@ private struct BodyWalker {
 
     private bool tryReadOutputRangeFromOwner(
         VarDeclaration owner,
-        imported!"dmd.mtype".Type type,
+        Type type,
         out size_t neededByteCount,
         ref Interpreter interpreter,
     ) {
@@ -6069,7 +9081,7 @@ private struct BodyWalker {
 
     private bool tryReadDecerealisedAggregateFromOwner(
         VarDeclaration owner,
-        imported!"dmd.mtype".Type type,
+        Type type,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
@@ -6103,7 +9115,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedAggregateFields(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         out Value[VarDeclaration] fields,
         out size_t neededByteCount,
@@ -6139,7 +9151,7 @@ private struct BodyWalker {
             }
             bitIndex = 0;
 
-            imported!"dmd.mtype".Type heapType;
+            Type heapType;
             if (field.type !is null && field.type.isTypePointer !is null)
                 heapType = pointerTargetType(field.type);
             else if (isClassType(field.type))
@@ -6267,7 +9279,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadCerealedAggregateHookFields(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         ref size_t cursor,
         ref Value[VarDeclaration] fields,
@@ -6341,7 +9353,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedAssocArrayField(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         out Value value,
         out size_t neededByteCount,
@@ -6375,6 +9387,7 @@ private struct BodyWalker {
             if (bytes.length < keyEnd)
                 return false;
             array.keyStructs ~= null;
+            array.keyFields ~= null;
             array.keys ~= Value(coerceIntegerToType(
                 readBigEndian(bytes[cursor .. keyEnd]),
                 arrayType.index,
@@ -6401,7 +9414,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadOutputRangePayload(
-        imported!"dmd.mtype".Type type,
+        Type type,
         long[] bytes,
         out size_t neededByteCount,
         ref Interpreter interpreter,
@@ -6437,7 +9450,7 @@ private struct BodyWalker {
             }
     }
 
-    private bool isOutputRangeStructType(imported!"dmd.mtype".Type type) {
+    private bool isOutputRangeStructType(Type type) {
         import std.algorithm.searching: canFind;
 
         return isStructType(type) &&
@@ -6447,7 +9460,7 @@ private struct BodyWalker {
 
     private bool tryReadDecerealisedAttributedArrayField(
         VarDeclaration field,
-        imported!"dmd.mtype".Type aggregateType,
+        Type aggregateType,
         Value[VarDeclaration] fields,
         long[] bytes,
         in size_t aggregateCursor,
@@ -6516,7 +9529,7 @@ private struct BodyWalker {
 
     private bool tryReadNoCerealLengthArrayField(
         VarDeclaration field,
-        imported!"dmd.mtype".Type aggregateType,
+        Type aggregateType,
         Value[VarDeclaration] fields,
         long[] bytes,
         out long[] elements,
@@ -6552,7 +9565,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedArrayElementsByCount(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         long[] bytes,
         in size_t length,
         out long[] elements,
@@ -6599,7 +9612,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedArrayElementsByByteCount(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         long[] bytes,
         in size_t byteCount,
         out long[] elements,
@@ -6662,7 +9675,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedNestedArraysByByteCount(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         long[] bytes,
         in size_t byteCount,
         out long[] elements,
@@ -6690,7 +9703,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadDecerealisedStructArrayElement(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         long[] bytes,
         out long[] structBytes,
         out size_t neededByteCount,
@@ -6713,7 +9726,7 @@ private struct BodyWalker {
 
     private long evaluateCerealLengthExpression(
         in string expression,
-        imported!"dmd.mtype".Type aggregateType,
+        Type aggregateType,
         Value[VarDeclaration] fields,
         in size_t aggregateCursor,
     ) {
@@ -6755,7 +9768,7 @@ private struct BodyWalker {
     }
 
     private bool tryCerealEnumMemberValue(
-        imported!"dmd.mtype".Type type,
+        Type type,
         in string name,
         out long value,
     ) {
@@ -6790,7 +9803,7 @@ private struct BodyWalker {
     }
 
     private bool tryCerealIntegerExpressionValue(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         out long value,
     ) {
         if (expression is null)
@@ -6812,7 +9825,7 @@ private struct BodyWalker {
     }
 
     private bool tryCerealFieldValue(
-        imported!"dmd.mtype".Type type,
+        Type type,
         Value[VarDeclaration] fields,
         in string name,
         out long value,
@@ -6836,12 +9849,12 @@ private struct BodyWalker {
     }
 
     private bool tryStructArrayElementFields(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        imported!"dmd.expression".Expression arrayExpression;
-        imported!"dmd.expression".Expression indexExpression;
+        Expression arrayExpression;
+        Expression indexExpression;
         if (auto index = expression.isIndexExp) {
             arrayExpression = index.e1;
             indexExpression = index.e2;
@@ -6854,7 +9867,7 @@ private struct BodyWalker {
             return false;
         }
 
-        imported!"dmd.mtype".Type arrayType;
+        Type arrayType;
         long[] arrayValue;
         if (auto dotVar = arrayExpression.isDotVarExp) {
             auto owner = structFieldsOwner(dotVar.e1);
@@ -6894,7 +9907,7 @@ private struct BodyWalker {
     }
 
     private bool tryReadStructArrayElementFields(
-        imported!"dmd.mtype".Type elementType,
+        Type elementType,
         in long[] array,
         in size_t index,
         out Value[VarDeclaration] fields,
@@ -6928,11 +9941,11 @@ private struct BodyWalker {
 
     private long arrayFieldLength(
         Value value,
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto elementType = arrayElementType(type);
-        if (!isStructType(elementType))
+        if (!isLengthPrefixedArrayElementType(elementType))
             return arrayValueLength(value);
 
         const array = value.asArray;
@@ -6949,17 +9962,18 @@ private struct BodyWalker {
         return cast(long) length;
     }
 
+    private bool isLengthPrefixedArrayElementType(Type type) {
+        return isStructType(type) ||
+            (type !is null && type.toBasetype.isTypeDArray !is null);
+    }
+
     private bool tryRunStructDecerealise(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "decerealise") {
-            import std.algorithm.searching: canFind;
-
-            if (!expressionChars(call.e1).canFind("decerealise"))
-                return false;
-        }
+        if (!callFunctionNamed(call, "decerealise"))
+            return false;
 
         long[] bytes;
         if (!tryCerealBytes(call.e1, bytes, interpreter))
@@ -6979,12 +9993,12 @@ private struct BodyWalker {
     }
 
     private bool tryRunIgnoredStructDecerealise(
-        imported!"dmd.expression".CallExp call,
+        CallExp call,
         ref Interpreter interpreter,
     ) {
         if (!isStructType(call.type))
             return false;
-        if (!isDecerealiseCall(call))
+        if (!callFunctionNamed(call, "decerealise"))
             return false;
 
         Value[VarDeclaration] fields;
@@ -6998,29 +10012,79 @@ private struct BodyWalker {
         return true;
     }
 
-    private bool isDecerealiseCall(imported!"dmd.expression".CallExp call) {
-        import std.algorithm.searching: canFind;
+    private bool callFunctionNamed(
+        CallExp call,
+        in string name,
+    ) {
+        return functionDeclarationNamed(call.f, name) ||
+            callExpressionNamed(call.e1, name);
+    }
 
-        if (call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "__ctor")
+    private bool functionDeclarationNamed(
+        FuncDeclaration function_,
+        in string name,
+    ) {
+        if (function_ is null)
             return false;
-        if (call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "shouldThrow")
-            return false;
-        if (call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "decerealise")
+        if (identifierNamed(function_.ident, name))
             return true;
-        return expressionChars(call.e1).canFind("decerealise") ||
-            expressionChars(call.e1).canFind("decerealize") ||
-            expressionChars(call).canFind("decerealise") ||
-            expressionChars(call).canFind("decerealize");
+
+        import dmd.expression: getFuncTemplateDecl;
+
+        if (auto template_ = getFuncTemplateDecl(function_))
+            return templateDeclarationNamed(template_, name);
+        if (auto instance = function_.isInstantiated)
+            return templateInstanceNamed(instance, name);
+        return false;
+    }
+
+    private bool callExpressionNamed(
+        Expression expression,
+        in string name,
+    ) {
+        if (expression is null)
+            return false;
+
+        if (auto template_ = expression.isTemplateExp)
+            return templateDeclarationNamed(template_.td, name);
+        if (auto dotTemplate = expression.isDotTemplateExp)
+            return templateDeclarationNamed(dotTemplate.td, name);
+        if (auto dotTemplate = expression.isDotTemplateInstanceExp)
+            return templateInstanceNamed(dotTemplate.ti, name);
+        if (auto scope_ = expression.isScopeExp)
+            if (auto instance = scope_.sds.isTemplateInstance)
+                return templateInstanceNamed(instance, name);
+        return false;
+    }
+
+    private bool templateDeclarationNamed(
+        imported!"dmd.dtemplate".TemplateDeclaration declaration,
+        in string name,
+    ) {
+        return declaration !is null && identifierNamed(declaration.ident, name);
+    }
+
+    private bool templateInstanceNamed(
+        imported!"dmd.dtemplate".TemplateInstance instance,
+        in string name,
+    ) {
+        if (instance is null)
+            return false;
+        if (identifierNamed(instance.name, name))
+            return true;
+        return instance.tempdecl !is null &&
+            identifierNamed(instance.tempdecl.ident, name);
+    }
+
+    private bool identifierNamed(
+        imported!"dmd.identifier".Identifier identifier,
+        in string name,
+    ) {
+        return identifier !is null && identifier.toString == name;
     }
 
     private bool tryCerealBytes(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         out long[] bytes,
         ref Interpreter interpreter,
     ) {
@@ -7043,7 +10107,7 @@ private struct BodyWalker {
     }
 
     private Value[VarDeclaration] runStructLiteralExpression(
-        imported!"dmd.expression".StructLiteralExp literal,
+        StructLiteralExp literal,
         ref Interpreter interpreter,
     ) {
         Value[VarDeclaration] fields;
@@ -7088,7 +10152,7 @@ private struct BodyWalker {
     }
 
     private long[] rawArrayLiteralRuntimeValue(
-        imported!"dmd.expression".ArrayLiteralExp literal,
+        ArrayLiteralExp literal,
         ref Interpreter interpreter,
     ) {
         long[] payload;
@@ -7107,7 +10171,7 @@ private struct BodyWalker {
     }
 
     private long[] rawStructLiteralCerealBytes(
-        imported!"dmd.expression".StructLiteralExp literal,
+        StructLiteralExp literal,
         ref Interpreter interpreter,
     ) {
         long[] elements;
@@ -7130,11 +10194,12 @@ private struct BodyWalker {
     }
 
     private Value[VarDeclaration] defaultClassFields(
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         Value[VarDeclaration] fields;
         foreach (field; classFields(type))
-            if (field.type !is null && field.type.isTypeDArray !is null)
+            if (field.type !is null &&
+                field.type.toBasetype.isTypeDArray !is null)
                 fields[field] = Value((long[]).init);
             else if (isStructType(field.type)) {
                 fields[field] = Value(0L);
@@ -7145,11 +10210,12 @@ private struct BodyWalker {
     }
 
     private Value[VarDeclaration] defaultStructFields(
-        imported!"dmd.mtype".Type type,
+        Type type,
     ) {
         Value[VarDeclaration] fields;
         foreach (field; aggregateStructFields(type))
-            if (field.type !is null && field.type.isTypeDArray !is null)
+            if (field.type !is null &&
+                field.type.toBasetype.isTypeDArray !is null)
                 fields[field] = Value((long[]).init);
             else if (field.type !is null &&
                 field.type.toBasetype.isTypeSArray !is null)
@@ -7163,7 +10229,7 @@ private struct BodyWalker {
     }
 
     private VarDeclaration structFieldsOwner(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
     ) {
         if (auto var = expression.isVarExp)
             if (auto varDecl = var.var.isVarDeclaration)
@@ -7240,6 +10306,93 @@ private struct BodyWalker {
                 fields = existingFields.dup;
                 return true;
             }
+        return false;
+    }
+
+    private bool tryGetLocalValue(
+        VarDeclaration declaration,
+        out Value value,
+    ) {
+        if (auto found = declaration in locals) {
+            value = *found;
+            return true;
+        }
+        foreach (existingDeclaration, existingValue; locals)
+            if (sameStructField(existingDeclaration, declaration)) {
+                value = existingValue;
+                return true;
+            }
+        if (declaration.ident !is null)
+            return tryGetLocalValue(
+                declaration.ident.toString,
+                declaration.type,
+                value,
+            );
+        return false;
+    }
+
+    private AssocArrayKeys* assocArrayKeysLocal(
+        VarDeclaration declaration,
+    ) {
+        if (auto found = declaration in assocArrayKeyArrays)
+            return found;
+        foreach (existingDeclaration; assocArrayKeyArrays.byKey)
+            if (sameStructField(existingDeclaration, declaration) ||
+                sameDeclarationName(existingDeclaration, declaration))
+                return existingDeclaration in assocArrayKeyArrays;
+        return null;
+    }
+
+    private bool sameDeclarationName(
+        VarDeclaration left,
+        VarDeclaration right,
+    ) {
+        return left !is null &&
+            right !is null &&
+            left.ident !is null &&
+            right.ident !is null &&
+            left.ident.toString == right.ident.toString;
+    }
+
+    private AssocArrayKeyLocal* assocArrayKeyLocal(
+        VarDeclaration declaration,
+    ) {
+        if (auto found = declaration in assocArrayKeyLocals)
+            return found;
+        foreach (existingDeclaration; assocArrayKeyLocals.byKey)
+            if (sameStructField(existingDeclaration, declaration) ||
+                sameDeclarationName(existingDeclaration, declaration))
+                return existingDeclaration in assocArrayKeyLocals;
+        return null;
+    }
+
+    private AssocArraySlotLocal* assocArraySlotLocal(
+        VarDeclaration declaration,
+    ) {
+        if (auto found = declaration in assocArraySlotLocals)
+            return found;
+        foreach (existingDeclaration; assocArraySlotLocals.byKey)
+            if (sameStructField(existingDeclaration, declaration))
+                return existingDeclaration in assocArraySlotLocals;
+        return null;
+    }
+
+    private bool tryGetLocalValue(
+        in const(char)[] name,
+        Type type,
+        out Value value,
+    ) {
+        foreach (existingDeclaration, existingValue; locals) {
+            if (existingDeclaration.ident is null ||
+                existingDeclaration.ident.toString != name)
+                continue;
+            if (type !is null &&
+                existingDeclaration.type !is null &&
+                typeChars(type) != typeChars(existingDeclaration.type))
+                continue;
+            value = existingValue;
+            return true;
+        }
         return false;
     }
 
@@ -7366,11 +10519,11 @@ private struct BodyWalker {
         return typeChars(left.type) == typeChars(right.type);
     }
 
-    private bool isStructType(imported!"dmd.mtype".Type type) {
+    private bool isStructType(Type type) {
         return type !is null && type.toBasetype.isTypeStruct !is null;
     }
 
-    private bool isClassType(imported!"dmd.mtype".Type type) {
+    private bool isClassType(Type type) {
         return type !is null && type.toBasetype.isTypeClass !is null;
     }
 
@@ -7386,6 +10539,7 @@ private struct BodyWalker {
             (long[] _) => 0L,
             (LocalPtr _) => 0L,
             (AssocArrayRef _) => 0L,
+            (AssocArraySlotRef _) => 0L,
         );
         if (classRef == 0)
             return null;
@@ -7393,7 +10547,7 @@ private struct BodyWalker {
     }
 
     private VarDeclaration structFieldNamed(
-        imported!"dmd.mtype".Type type,
+        Type type,
         in string name,
     ) {
         if (type is null)
@@ -7406,7 +10560,7 @@ private struct BodyWalker {
     }
 
     private long runSliceBound(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
         ref Interpreter interpreter,
         in size_t arrayLength,
     ) {
@@ -7447,7 +10601,28 @@ private long asLong(Value value) @safe pure {
             throw new Exception("Expected scalar, got AA.");
             return 0L;
         },
+        (AssocArraySlotRef ref_) => ref_.arrayId == 0 ? 0L : 1L,
     );
+}
+
+private long realLiteralBits(imported!"dmd.expression".RealExp real_) @trusted {
+    import dmd.astenums: TY;
+
+    if (real_.type !is null && real_.type.toBasetype.ty == TY.Tfloat32)
+        return floatBits(cast(float) real_.toReal);
+    return doubleBits(cast(double) real_.toReal);
+}
+
+private long floatBits(in float value) @trusted pure nothrow {
+    return cast(long) *cast(uint*) &value;
+}
+
+private long doubleBits(in double value) @trusted pure nothrow {
+    return *cast(long*) &value;
+}
+
+private double doubleFromBits(in long value) @trusted pure nothrow {
+    return *cast(double*) &value;
 }
 
 private long[] asArray(Value value) @safe pure {
@@ -7470,6 +10645,10 @@ private long[] asArray(Value value) @safe pure {
             throw new Exception("Expected array, got AA.");
             return (long[]).init;
         },
+        (AssocArraySlotRef _) {
+            throw new Exception("Expected array, got AA slot.");
+            return (long[]).init;
+        },
     );
 }
 
@@ -7481,6 +10660,7 @@ private long arrayValueLength(Value value) @safe pure {
         (LocalPtr _) => 0L,
         (ClassRef _) => 0L,
         (AssocArrayRef _) => 0L,
+        (AssocArraySlotRef _) => 0L,
     );
 }
 
@@ -7493,6 +10673,7 @@ private long classId(Value value) @safe pure {
         (long[] _) => 0L,
         (LocalPtr _) => 0L,
         (AssocArrayRef _) => 0L,
+        (AssocArraySlotRef _) => 0L,
     );
 }
 
@@ -7505,6 +10686,7 @@ private long assocArrayId(Value value) @safe pure {
         (long _) => 0L,
         (long[] _) => 0L,
         (LocalPtr _) => 0L,
+        (AssocArraySlotRef _) => 0L,
     );
 }
 
@@ -7523,6 +10705,7 @@ private Value coerceValueToType(
         (LocalPtr p) => Value(p),
         (ClassRef ref_) => Value(ref_),
         (AssocArrayRef ref_) => Value(ref_),
+        (AssocArraySlotRef ref_) => Value(ref_),
     );
 }
 
@@ -7555,7 +10738,7 @@ private long coerceIntegerToType(
             return cast(long) cast(ulong) value;
         case TY.Tfloat32:
         case TY.Tfloat64:
-            return 0L;
+            return value;
         default:
             return value;
     }
@@ -7698,16 +10881,25 @@ private bool comparisonUsesUnsignedOperand(
 private bool expressionHasUnsignedIntegerType(
     imported!"dmd.expression".Expression expression,
 ) @trusted {
-    import dmd.astenums: TY;
-
     if (expression.type is null)
         return false;
 
-    const type = expression.type.toBasetype;
-    return type.ty == TY.Tuns8 ||
-        type.ty == TY.Tuns16 ||
-        type.ty == TY.Tuns32 ||
-        type.ty == TY.Tuns64;
+    return typeIsUnsignedInteger(expression.type);
+}
+
+private bool typeIsUnsignedInteger(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    const basetype = type.toBasetype;
+    return basetype.ty == TY.Tuns8 ||
+        basetype.ty == TY.Tuns16 ||
+        basetype.ty == TY.Tuns32 ||
+        basetype.ty == TY.Tuns64;
 }
 
 private string expressionChars(
@@ -7799,6 +10991,11 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
 private string typeChars(imported!"dmd.mtype".Type type) @trusted {
     import std.string: fromStringz;
     return fromStringz(type.toChars).idup;
+}
+
+private string qualifiedTypeChars(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+    return fromStringz(type.toPrettyChars(true)).idup;
 }
 
 private ref auto callArguments(

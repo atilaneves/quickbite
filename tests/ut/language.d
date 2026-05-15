@@ -41,7 +41,196 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 throw new Exception("boom");
             }
+        }, backend).shouldThrowWithMessage("boom");
+    }
+
+    @(backend.text ~ ".catchExceptionDoesNotCatchAssertFailure")
+    unittest {
+        runTests(q{
+            unittest {
+                try {
+                    assert(false);
+                } catch (Exception) {
+                }
+            }
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+    }
+
+    @(backend.text ~ ".catchExceptionCatchesThrownException")
+    unittest {
+        runTests(q{
+            unittest {
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                }
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".throwPreservesExceptionMessage")
+    unittest {
+        expectRunTestsFailure(q{
+            unittest {
+                throw new Exception("domain failure");
+            }
+        }, backend, "domain failure");
+    }
+
+    @(backend.text ~ ".shouldThrowFailsWhenExpressionDoesNotThrow")
+    unittest {
+        import ut.dub_paths: dubImportPaths;
+
+        expectRunTestsFailure(q{
+            import unit_threaded;
+
+            unittest {
+                shouldThrow(1);
+            }
+        }, dubImportPaths, backend, "Expression did not throw.");
+    }
+
+    @(backend.text ~ ".shouldThrowWithMessageChecksMessage")
+    unittest {
+        import ut.dub_paths: dubImportPaths;
+
+        expectRunTestsFailure(q{
+            import unit_threaded;
+
+            void throwActual() {
+                throw new Exception("actual");
+            }
+
+            unittest {
+                shouldThrowWithMessage(throwActual, "expected");
+            }
+        }, dubImportPaths, backend, "Exception message did not match.");
+    }
+
+    @(backend.text ~ ".distinguishesFloatingPointValues")
+    unittest {
+        runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left != right);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".supportsContinue")
+    unittest {
+        runTests(q{
+            unittest {
+                int sum;
+                for (int i = 0; i < 4; ++i) {
+                    if (i == 2)
+                        continue;
+                    sum += i;
+                }
+                assert(sum == 4);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".supportsSwitch")
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 2;
+                int result;
+                switch (value) {
+                    case 1:
+                        result = 10;
+                        break;
+                    case 2:
+                        result = 20;
+                        break;
+                    default:
+                        result = 30;
+                        break;
+                }
+                assert(result == 20);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".finallyRunsAfterReturn")
+    unittest {
+        runTests(q{
+            int value;
+
+            int setAndReturn() {
+                try {
+                    return 1;
+                } finally {
+                    value = 42;
+                }
+            }
+
+            unittest {
+                assert(setAndReturn == 1);
+                assert(value == 42);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".catchHandlerRuns")
+    unittest {
+        runTests(q{
+            unittest {
+                int value;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    value = 42;
+                }
+                assert(value == 42);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".evaluatesPow")
+    unittest {
+        runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 8.0);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".functionPointerHashCollisionDetected")
+    unittest {
+        runTests(q{
+            unittest {
+                // bAB and a_a produce the same Bernstein hash (602706).
+                int bAB() {
+                    return 1;
+                }
+
+                int a_a() {
+                    return 2;
+                }
+
+                int function() fp = &a_a;
+                assert(fp() == 2);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".nestedSliceWritesPropagateToOriginalArray")
+    unittest {
+        runTests(q{
+            unittest {
+                int[] a = [0, 1, 2, 3, 4];
+                int[] s = a[1 .. 4];
+                int[] s2 = s[0 .. 2];
+                s2[0] = 99;
+                assert(a[1] == 99);
+            }
+        }, backend);
     }
 
     @(backend.text ~ ".localIntReturn")
@@ -1403,6 +1592,44 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }
         }, backend);
     }
+}
+
+@("treeWalking.unitThreadedCheckRunsPredicate", ShouldFail)
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    expectRunTestsFailure(q{
+        import unit_threaded;
+
+        unittest {
+            check!((int value) => false);
+        }
+    }, dubImportPaths, ExecutorBackend.treeWalking, "Property failed.");
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in ExecutorBackend backend,
+    in string expectedMessage,
+) {
+    string[] importPaths;
+    expectRunTestsFailure(source, importPaths, backend, expectedMessage);
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in string[] importPaths,
+    in ExecutorBackend backend,
+    in string expectedMessage,
+) {
+    bool threw;
+    try {
+        runTests(source, importPaths, backend);
+    } catch (Exception exception) {
+        threw = true;
+        exception.msg.should == expectedMessage;
+    }
+    threw.should == true;
 }
 
 static foreach (backend; EnumMembers!ExecutorBackend) {

@@ -138,6 +138,9 @@
   `@trusted` is a deliberate safety boundary and needs a specific
   justification.
 
+- When told not to use `@trusted`, do not add new `@trusted` wrappers around
+  unsafe DMD APIs. Leave the caller unannotated or restructure the code instead.
+
 - When a PR's purpose is to replace a process-spawning CLI call with a
   library call, do not satisfy dependency or vendoring review comments by
   hiding the same CLI call behind a new library-shaped wrapper.

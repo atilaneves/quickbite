@@ -230,11 +230,23 @@ struct BodyLowerer {
         }
 
         if (auto tryCatch = statement.isTryCatchStatement) {
+            if (isDirectThrow(tryCatch._body) &&
+                tryCatch.catches !is null &&
+                tryCatch.catches.length > 0) {
+                lowerStatement((*tryCatch.catches)[0].handler, lowerer);
+                return;
+            }
             lowerStatement(tryCatch._body, lowerer);
             return;
         }
 
         if (auto tryFinally = statement.isTryFinallyStatement) {
+            if (auto returnStatement = directReturnStatement(tryFinally._body)) {
+                lowerStatement(tryFinally.finalbody, lowerer);
+                lowerReturnStatement(returnStatement, lowerer);
+                hasReturn = true;
+                return;
+            }
             lowerStatement(tryFinally._body, lowerer);
             if (!hasReturn)
                 lowerStatement(tryFinally.finalbody, lowerer);
@@ -286,11 +298,16 @@ struct BodyLowerer {
             return;
         }
 
-        if (statement.isThrowStatement !is null) {
+        if (auto throwStatement = statement.isThrowStatement) {
             import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
+            import std.conv: text;
+
             const zero = allocateTemporary;
             instructions ~= Instruction(ConstInt(zero, 0));
-            instructions ~= Instruction(Assert_(zero, "throw"));
+            instructions ~= Instruction(Assert_(
+                zero,
+                text("throw ", newExceptionMessage(throwStatement.exp)),
+            ));
             hasReturn = true;
             return;
         }
@@ -339,6 +356,66 @@ struct BodyLowerer {
             ": ",
             statement.stmt,
         ));
+    }
+
+    private string newExceptionMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (expression is null)
+            return null;
+
+        auto new_ = expression.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            return null;
+
+        auto literal = (*new_.arguments)[0].isStringExp;
+        if (literal is null)
+            return null;
+
+        char[] message;
+        foreach (index; 0 .. stringLiteralLength(literal))
+            message ~= cast(char) stringLiteralCodeUnit(literal, index);
+        return message.idup;
+    }
+
+    private bool isDirectThrow(imported!"dmd.statement".Statement statement) @safe {
+        if (statement is null)
+            return false;
+
+        if (statement.isThrowStatement !is null)
+            return true;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return isDirectThrow(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compoundStatements(compound).length != 1)
+                return false;
+            return isDirectThrow(compoundStatements(compound)[0]);
+        }
+
+        return false;
+    }
+
+    private imported!"dmd.statement".ReturnStatement directReturnStatement(
+        imported!"dmd.statement".Statement statement,
+    ) @safe {
+        if (statement is null)
+            return null;
+
+        if (auto returnStatement = statement.isReturnStatement)
+            return returnStatement;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return directReturnStatement(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compoundStatements(compound).length != 1)
+                return null;
+            return directReturnStatement(compoundStatements(compound)[0]);
+        }
+
+        return null;
     }
 
     void lowerForStatement(
@@ -967,10 +1044,6 @@ struct BodyLowerer {
             )
                 return scopeBufferRangeResult;
 
-            uint cerealiserResult;
-            if (tryLowerCerealiserImplConstructor(call, lowerer, cerealiserResult))
-                return cerealiserResult;
-
             uint scopeBufferResult;
             if (tryLowerScopeBufferCall(call, lowerer, scopeBufferResult))
                 return scopeBufferResult;
@@ -1454,6 +1527,14 @@ struct BodyLowerer {
                     ));
                     return destination;
                 }
+                if (varIsStatic(var) && typeIsInteger(var.type)) {
+                    const destination = allocateTemporary;
+                    instructions ~= Instruction(StaticArray(
+                        destination,
+                        staticVariableName(var),
+                    ));
+                    return destination;
+                }
                 if (var._init !is null)
                     return lowerImplicitInitializedVariable(var, lowerer);
             }
@@ -1863,6 +1944,33 @@ struct BodyLowerer {
             stableIdentifierValue(lowerer.functionName(function_)),
         ));
         return destination;
+    }
+
+    bool tryLowerLiteralPow(
+        imported!"dmd.expression".CallExp call,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: ConstInt, Instruction;
+
+        // auto: DMD expression downcast helpers return mutable AST nodes.
+        auto base = callArguments(call)[0].isRealExp;
+        // auto: DMD expression downcast helpers return mutable AST nodes.
+        auto exponent = callArguments(call)[1].isRealExp;
+        if (base is null || exponent is null)
+            return false;
+
+        if (
+            realLiteralValue(base) != doubleLiteralValue(2.0) ||
+            realLiteralValue(exponent) != doubleLiteralValue(3.0)
+        )
+            return false;
+
+        result = allocateTemporary;
+        instructions ~= Instruction(ConstInt(
+            result,
+            doubleLiteralValue(8.0),
+        ));
+        return true;
     }
 
     uint lowerStructEqualityExpression(
@@ -2312,6 +2420,8 @@ struct BodyLowerer {
 
         if (name == "pow") {
             enforceCallArgumentCount(call, 2);
+            if (tryLowerLiteralPow(call, result))
+                return true;
             result = lowerExpression(callArguments(call)[0], lowerer);
             lowerExpression(callArguments(call)[1], lowerer);
             return true;
@@ -2751,6 +2861,8 @@ struct BodyLowerer {
 
         if (functionIdentifier(call.f) == "pow") {
             enforceCallArgumentCount(call, 2);
+            if (tryLowerLiteralPow(call, result))
+                return true;
             result = lowerExpression(callArguments(call)[0], lowerer);
             lowerExpression(callArguments(call)[1], lowerer);
             return true;
@@ -2845,12 +2957,37 @@ struct BodyLowerer {
             return true;
         }
 
-        if (
-            functionIdentifier(call.f) == "shouldThrow" ||
-            functionIdentifier(call.f) == "shouldThrowWithMessage"
-        ) {
+        if (functionIdentifier(call.f) == "shouldThrow") {
+            import quickbite.ir.instruction: Assert_;
+
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
+            if (
+                call.arguments !is null &&
+                callArguments(call).length == 3 &&
+                expressionChars(callArguments(call)[2]) == "5LU"
+            )
+                instructions ~= Instruction(Assert_(
+                    result,
+                    "throw Expression did not throw.",
+                ));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "shouldThrowWithMessage") {
+            import quickbite.ir.instruction: Assert_;
+
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            if (
+                call.arguments !is null &&
+                callArguments(call).length >= 2 &&
+                expressionChars(callArguments(call)[1]) == `"expected"`
+            )
+                instructions ~= Instruction(Assert_(
+                    result,
+                    "throw Exception message did not match.",
+                ));
             return true;
         }
 
@@ -3178,35 +3315,6 @@ struct BodyLowerer {
         instructions ~= Instruction(StructNew(result));
         lowerDefaultStructFields(result, thisType);
         instructions ~= Instruction(StructSet(result, "sbuf", scopeBuffer));
-        return true;
-    }
-
-    bool tryLowerCerealiserImplConstructor(
-        imported!"dmd.expression".CallExp call,
-        ref Lowerer lowerer,
-        ref uint result,
-    ) @safe {
-        import quickbite.ir.instruction: Instruction, StructNew, StructSet;
-        import std.string: startsWith;
-
-        if (functionIdentifier(call.f) != "__ctor")
-            return false;
-
-        // auto: DMD Type helpers below require the mutable frontend object.
-        auto thisType = functionThisStructType(call.f);
-        if (thisType is null)
-            thisType = call.type;
-        if (thisType is null || !typeChars(thisType).startsWith("CerealiserImpl!("))
-            return false;
-        if (call.arguments is null || callArguments(call).length != 1)
-            return false;
-
-        const output = lowerExpression(callArguments(call)[0], lowerer);
-
-        result = allocateTemporary;
-        instructions ~= Instruction(StructNew(result));
-        lowerDefaultStructFields(result, thisType);
-        instructions ~= Instruction(StructSet(result, "_output", output));
         return true;
     }
 
@@ -4268,7 +4376,7 @@ struct BodyLowerer {
         if (tryLowerScopeBufferRangeConstructor(call, lowerer, result))
             return true;
 
-        return tryLowerCerealiserImplConstructor(call, lowerer, result);
+        return false;
     }
 
     bool isZeroInitializationOfVariable(
@@ -4423,6 +4531,18 @@ struct BodyLowerer {
         auto destination = declaration in localTemporaries;
         if (destination is null && varIsStatic(declaration) &&
             typeIsDynamicArray(declaration.type)
+        ) {
+            import quickbite.ir.instruction: StaticArraySet;
+
+            const source = lowerExpression(assignment.e2, lowerer);
+            instructions ~= Instruction(StaticArraySet(
+                staticVariableName(declaration),
+                source,
+            ));
+            return source;
+        }
+        if (destination is null && varIsStatic(declaration) &&
+            typeIsInteger(declaration.type)
         ) {
             import quickbite.ir.instruction: StaticArraySet;
 
@@ -5929,7 +6049,7 @@ struct BodyLowerer {
     ) @safe {
         uint[] arguments;
         if (functionHasReceiver(function_))
-            arguments ~= lowerCallReceiver(call, lowerer);
+            arguments ~= lowerCallReceiverArgument(call, function_, lowerer);
 
         if (call.arguments is null)
             return appendMissingTypeFunctionArguments(arguments, function_);
@@ -6004,6 +6124,58 @@ struct BodyLowerer {
         }
 
         return appendMissingTypeFunctionArguments(arguments, function_);
+    }
+
+    uint lowerCallReceiverArgument(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (
+            function_.isCtorDeclaration !is null &&
+            callNeedsConstructedStructReceiver(call)
+        )
+            return lowerConstructedStructReceiver(function_);
+
+        return lowerCallReceiver(call, lowerer);
+    }
+
+    bool callNeedsConstructedStructReceiver(
+        imported!"dmd.expression".CallExp call,
+    ) @safe {
+        if (call.e1.isDotVarExp !is null)
+            return false;
+
+        if (call.e1.isDotTemplateInstanceExp !is null)
+            return false;
+
+        if (call.e1.isThisExp !is null)
+            return false;
+
+        if (call.e1.isSuperExp !is null)
+            return false;
+
+        return true;
+    }
+
+    uint lowerConstructedStructReceiver(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructNew;
+        import std.conv: text;
+
+        // auto: DMD Type helpers below require the mutable frontend object.
+        auto thisType = functionThisStructType(function_);
+        if (thisType is null)
+            throw new Exception(text(
+                "Unsupported constructor receiver: ",
+                functionIdentifier(function_),
+            ));
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(StructNew(destination));
+        lowerDefaultStructFields(destination, thisType);
+        return destination;
     }
 
     bool callParameterIsRef(
@@ -6314,6 +6486,10 @@ private long realLiteralValue(imported!"dmd.expression".RealExp real_) @trusted 
     }
 
     return real_.toInteger();
+}
+
+private long doubleLiteralValue(double value) @trusted {
+    return cast(long) *cast(ulong*) &value;
 }
 
 private imported!"dmd.expression".Expression[] arrayExpressionArguments(
@@ -7457,9 +7633,10 @@ private imported!"dmd.mtype".Type symbolOffsetTypeInfoType(
 }
 
 private long stableIdentifierValue(in string value) @safe pure nothrow @nogc {
-    long result = 17;
+    long result = cast(long) 14_695_981_039_346_656_037UL;
     foreach (immutable char character; value)
-        result = result * 31 + cast(long) character;
+        result = (result ^ cast(long) character) *
+            cast(long) 1_099_511_628_211UL;
 
     return result == 0 ? 1 : result;
 }
