@@ -352,7 +352,7 @@ private struct BodyWalker {
                     break;
                 }
                 if (for_.increment !is null)
-                    runExpression(for_.increment, interpreter);
+                    runExpression(for_.increment, interpreter, true);
             }
             return;
         }
