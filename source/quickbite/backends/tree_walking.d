@@ -2601,14 +2601,100 @@ private struct BodyWalker {
             bytesField,
             Value((long[]).init),
         ));
-        appendUshort(elements, cast(long) array.length);
-        const elementByteCount = decerealisedScalarByteCount(elementType);
-        foreach (element; array)
-            appendIntegerBytes(elements, element, elementByteCount);
+        appendArrayValueToCereal(elements, array, elementType);
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
         assignStructFields(cerealOwner, cerealFields);
+    }
+
+    private void appendArrayValueToCereal(
+        ref long[] elements,
+        long[] array,
+        imported!"dmd.mtype".Type elementType,
+    ) {
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            appendUshort(elements, cast(long) array.length);
+            foreach (element; array)
+                appendIntegerBytes(elements, element, elementByteCount);
+            return;
+        }
+
+        if (elementType is null || elementType.toBasetype.isTypeDArray is null) {
+            appendUshort(elements, cast(long) array.length);
+            return;
+        }
+
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto nestedElementType = arrayElementType(elementType);
+        long[] payload;
+        size_t cursor;
+        size_t length;
+        while (cursor < array.length) {
+            const nestedLength = nestedArrayLength(array[cursor]);
+            ++cursor;
+            const nestedFlatLength = nestedArrayFlatLength(
+                array,
+                cursor,
+                nestedLength,
+                nestedElementType,
+            );
+            appendArrayValueToCereal(
+                payload,
+                array[cursor .. cursor + nestedFlatLength],
+                nestedElementType,
+            );
+            cursor += nestedFlatLength;
+            ++length;
+        }
+
+        appendUshort(elements, cast(long) length);
+        elements ~= payload;
+    }
+
+    private size_t nestedArrayFlatLength(
+        in long[] array,
+        in size_t cursor,
+        in size_t length,
+        imported!"dmd.mtype".Type elementType,
+    ) {
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            if (length > array.length - cursor)
+                throw new Exception("Malformed nested array value.");
+            return length;
+        }
+
+        if (elementType is null || elementType.toBasetype.isTypeDArray is null)
+            return length;
+
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto nestedElementType = arrayElementType(elementType);
+        size_t used;
+        foreach (_; 0 .. length) {
+            if (used >= array.length - cursor)
+                throw new Exception("Malformed nested array value.");
+            const nestedLength = nestedArrayLength(array[cursor + used]);
+            ++used;
+            const nestedFlatLength = nestedArrayFlatLength(
+                array,
+                cursor + used,
+                nestedLength,
+                nestedElementType,
+            );
+            if (nestedFlatLength > array.length - cursor - used)
+                throw new Exception("Malformed nested array value.");
+            used += nestedFlatLength;
+        }
+
+        return used;
+    }
+
+    private size_t nestedArrayLength(in long value) @safe pure {
+        if (value < 0)
+            throw new Exception("Malformed nested array value.");
+        return cast(size_t) value;
     }
 
     private void appendAssocArrayToCereal(
