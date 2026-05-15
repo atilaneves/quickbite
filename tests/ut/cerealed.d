@@ -59,6 +59,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "cerealiser_impl.d" &&
             fileName != "bugs.d" &&
             fileName != "classes.d" &&
+            fileName != "decode.d" &&
             fileName != "utils.d"
         )
     ) &&
