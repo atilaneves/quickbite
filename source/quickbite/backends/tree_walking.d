@@ -3126,7 +3126,12 @@ private struct BodyWalker {
         if (cerealOwner is null)
             return false;
 
-        appendAssocArrayToCereal(cerealOwner, arrayId, interpreter);
+        appendAssocArrayToCereal(
+            cerealOwner,
+            arrayId,
+            callArguments(call)[0].type,
+            interpreter,
+        );
         return true;
     }
 
@@ -3335,6 +3340,7 @@ private struct BodyWalker {
                     elements,
                     value.assocArrayId,
                     interpreter,
+                    field.type,
                 );
                 continue;
             }
@@ -3614,6 +3620,7 @@ private struct BodyWalker {
     private void appendAssocArrayToCereal(
         VarDeclaration cerealOwner,
         in long arrayId,
+        imported!"dmd.mtype".Type type,
         ref Interpreter interpreter,
     ) {
         Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
@@ -3632,7 +3639,7 @@ private struct BodyWalker {
             bytesField,
             Value((long[]).init),
         ));
-        appendAssocArrayValueToCereal(elements, arrayId, interpreter);
+        appendAssocArrayValueToCereal(elements, arrayId, interpreter, type);
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
@@ -3644,6 +3651,7 @@ private struct BodyWalker {
         ref long[] elements,
         in long arrayId,
         ref Interpreter interpreter,
+        imported!"dmd.mtype".Type type = null,
     ) {
         if (arrayId == 0 || arrayId !in interpreter.assocArrays) {
             appendUshort(elements, 0L);
@@ -3653,12 +3661,15 @@ private struct BodyWalker {
         import std.sumtype: match;
 
         AssocArray array = interpreter.assocArrays[arrayId];
+        auto arrayType = type is null ? null : type.toBasetype.isTypeAArray;
+        auto keyType = arrayType is null ? null : arrayType.index;
+        auto valueType = arrayType is null ? null : arrayElementType(type);
         appendUshort(elements, cast(long) array.values.length);
         foreach (index, value; array.values) {
-            appendAssocArrayKey(elements, array, index);
+            appendAssocArrayKey(elements, array, index, keyType);
             value.match!(
                 (long scalar) {
-                    appendInt(elements, scalar);
+                    appendAssocArrayScalar(elements, scalar, valueType);
                 },
                 (long[] bytes) {
                     elements ~= bytes;
@@ -3666,21 +3677,40 @@ private struct BodyWalker {
                 (LocalPtr _) {},
                 (ClassRef _) {},
                 (AssocArrayRef nested) {
-                    appendAssocArrayValueToCereal(elements, nested.id, interpreter);
+                    appendAssocArrayValueToCereal(
+                        elements,
+                        nested.id,
+                        interpreter,
+                        valueType,
+                    );
                 },
             );
         }
+    }
+
+    private void appendAssocArrayScalar(
+        ref long[] elements,
+        in long value,
+        imported!"dmd.mtype".Type type,
+    ) {
+        const byteCount = decerealisedScalarByteCount(type);
+        if (byteCount == 0) {
+            appendInt(elements, value);
+            return;
+        }
+        appendIntegerBytes(elements, value, byteCount);
     }
 
     private void appendAssocArrayKey(
         ref long[] elements,
         AssocArray array,
         in size_t index,
+        imported!"dmd.mtype".Type keyType = null,
     ) {
         if (index >= array.keyStructs.length)
             return;
         if (array.keyStructs[index] is null) {
-            appendInt(elements, array.keys[index].asLong);
+            appendAssocArrayScalar(elements, array.keys[index].asLong, keyType);
             return;
         }
         auto keyStruct = array.keyStructs[index];
@@ -3694,7 +3724,7 @@ private struct BodyWalker {
                 appendUshort(elements, cast(long) bytes.length);
                 elements ~= bytes;
             } else {
-                appendInt(elements, value.asLong);
+                appendAssocArrayScalar(elements, value.asLong, field.type);
             }
         }
     }
@@ -4385,6 +4415,7 @@ private struct BodyWalker {
         auto bytesField = structFieldNamed(owner.type, "_bytes");
         if (bytesField !is null) {
             value = structFieldValue(fields, bytesField, Value((long[]).init));
+            rememberLastArrayValue(value, interpreter);
             return true;
         }
 
@@ -4408,6 +4439,7 @@ private struct BodyWalker {
                 storageField,
                 Value((long[]).init),
             );
+        rememberLastArrayValue(value, interpreter);
         return true;
     }
 
@@ -5598,7 +5630,12 @@ private struct BodyWalker {
             Value[VarDeclaration] fields;
             if (tryRunOutputRangeDecerealiseValue(call, fields, interpreter))
                 return fields;
-            if (tryRunStructDecerealiseValue(call, fields, interpreter))
+            if (tryRunStructDecerealiseValue(
+                call,
+                expression.type,
+                fields,
+                interpreter,
+            ))
                 return fields;
             if (tryRunStructDecerealise(call, fields, interpreter))
                 return fields;
@@ -5750,27 +5787,61 @@ private struct BodyWalker {
 
     private bool tryRunStructDecerealiseValue(
         imported!"dmd.expression".CallExp call,
+        imported!"dmd.mtype".Type valueType,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "value")
+        if (!isCerealedValueCall(call))
             return false;
-        if (!isStructType(call.type))
+        if (!isStructType(valueType))
             return false;
 
         auto dotVar = call.e1.isDotVarExp;
         if (dotVar is null)
             return false;
         auto owner = structFieldsOwner(dotVar.e1);
-        if (owner is null)
-            return false;
+        if (owner is null) {
+            if (!interpreter.hasLastArrayValue)
+                return false;
+            size_t neededByteCount;
+            return tryReadDecerealisedAggregateFields(
+                valueType,
+                interpreter.lastArrayValue,
+                fields,
+                neededByteCount,
+                interpreter,
+            );
+        }
 
-        return tryReadDecerealisedAggregateFromOwner(
+        if (tryReadDecerealisedAggregateFromOwner(
             owner,
-            call.type,
+            valueType,
             fields,
             interpreter,
+        ))
+            return true;
+
+        if (!interpreter.hasLastArrayValue)
+            return false;
+        size_t neededByteCount;
+        return tryReadDecerealisedAggregateFields(
+            valueType,
+            interpreter.lastArrayValue,
+            fields,
+            neededByteCount,
+            interpreter,
         );
+    }
+
+    private bool isCerealedValueCall(imported!"dmd.expression".CallExp call) {
+        if (call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "value")
+            return true;
+
+        import std.string: endsWith;
+
+        return expressionChars(call.e1).endsWith(".value");
     }
 
     private bool tryRunOutputRangeDecerealiseValue(
@@ -5938,6 +6009,22 @@ private struct BodyWalker {
                 continue;
             }
 
+            if (field.type !is null && field.type.toBasetype.isTypeAArray !is null) {
+                Value assocArray;
+                size_t assocArrayByteCount;
+                if (!tryReadDecerealisedAssocArrayField(
+                    field.type,
+                    bytes[cursor .. $],
+                    assocArray,
+                    assocArrayByteCount,
+                    interpreter,
+                ))
+                    return false;
+                assignStructField(fields, field, assocArray);
+                cursor += assocArrayByteCount;
+                continue;
+            }
+
             if (field.type !is null && field.type.isTypeDArray !is null) {
                 long[] elements;
                 size_t arrayByteCount;
@@ -5986,6 +6073,66 @@ private struct BodyWalker {
             );
             cursor += byteCount;
         }
+        neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadDecerealisedAssocArrayField(
+        imported!"dmd.mtype".Type type,
+        long[] bytes,
+        out Value value,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        if (type is null)
+            return false;
+        auto arrayType = type.toBasetype.isTypeAArray;
+        if (arrayType is null)
+            return false;
+
+        const keyByteCount = decerealisedScalarByteCount(arrayType.index);
+        const valueByteCount = decerealisedScalarByteCount(arrayElementType(type));
+        if (keyByteCount == 0 || valueByteCount == 0)
+            return false;
+
+        size_t headerByteCount;
+        size_t length;
+        if (!tryReadDecerealisedCollectionLength(
+            bytes,
+            keyByteCount + valueByteCount,
+            headerByteCount,
+            length,
+        ))
+            return false;
+
+        AssocArray array;
+        size_t cursor = headerByteCount;
+        foreach (_; 0 .. length) {
+            const keyEnd = cursor + keyByteCount;
+            if (bytes.length < keyEnd)
+                return false;
+            array.keyStructs ~= null;
+            array.keys ~= Value(coerceIntegerToType(
+                readBigEndian(bytes[cursor .. keyEnd]),
+                arrayType.index,
+            ));
+            cursor = keyEnd;
+
+            const valueEnd = cursor + valueByteCount;
+            if (bytes.length < valueEnd)
+                return false;
+            array.values ~= Value(coerceIntegerToType(
+                readBigEndian(bytes[cursor .. valueEnd]),
+                arrayElementType(type),
+            ));
+            cursor = valueEnd;
+        }
+
+        const assocArrayRef = AssocArrayRef(interpreter.nextAssocArrayRef);
+        ++interpreter.nextAssocArrayRef;
+        interpreter.assocArrays[assocArrayRef.id] = array;
+        interpreter.lastAssocArrayRef = assocArrayRef.id;
+        value = Value(assocArrayRef);
         neededByteCount = cursor;
         return true;
     }
@@ -7002,6 +7149,9 @@ private long coerceIntegerToType(
             return cast(long) value;
         case TY.Tuns64:
             return cast(long) cast(ulong) value;
+        case TY.Tfloat32:
+        case TY.Tfloat64:
+            return 0L;
         default:
             return value;
     }
@@ -7014,6 +7164,12 @@ private size_t decerealisedScalarByteCount(
 
     if (type is null)
         return 0;
+
+    const chars = typeChars(type);
+    if (chars == "float")
+        return 4;
+    if (chars == "double")
+        return 8;
 
     const basetype = type.toBasetype;
     switch (basetype.ty) {
@@ -7327,5 +7483,19 @@ private imported!"dmd.declaration".VarDeclaration[] cerealAggregateFields(
 ) {
     if (type !is null && type.toBasetype.isTypeClass !is null)
         return classFields(type);
-    return aggregateStructFields(type);
+
+    import std.algorithm.sorting: sort;
+
+    imported!"dmd.declaration".VarDeclaration[] fields = aggregateStructFields(type);
+    fields.sort!fieldSourcePrecedes;
+    return fields;
+}
+
+private bool fieldSourcePrecedes(
+    imported!"dmd.declaration".VarDeclaration left,
+    imported!"dmd.declaration".VarDeclaration right,
+) @safe {
+    if (left.loc.linnum != right.loc.linnum)
+        return left.loc.linnum < right.loc.linnum;
+    return left.loc.charnum < right.loc.charnum;
 }
