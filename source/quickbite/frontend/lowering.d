@@ -1040,7 +1040,7 @@ struct BodyLowerer {
             if (equal.lowering !is null)
                 return lowerExpression(equal.lowering, lowerer);
 
-            if (typeIsDynamicArray(equal.e1.type) && typeIsDynamicArray(equal.e2.type))
+            if (typeIsArray(equal.e1.type) && typeIsArray(equal.e2.type))
                 return lowerArrayEqualityExpression(equal, lowerer);
 
             if (equal.op == EXP.notEqual)
@@ -1764,9 +1764,9 @@ struct BodyLowerer {
         const left = lowerExpression(equal.e1, lowerer);
         const right = lowerExpression(equal.e2, lowerer);
         uint equalResult;
-        if (typeNeedsTypedEquality(dynamicArrayElementType(equal.e1.type)))
+        if (typeNeedsTypedEquality(arrayElementType(equal.e1.type)))
             equalResult = lowerElementwiseArrayEquality(
-                dynamicArrayElementType(equal.e1.type),
+                arrayElementType(equal.e1.type),
                 left,
                 right,
             );
@@ -1776,7 +1776,7 @@ struct BodyLowerer {
                 equalResult,
                 left,
                 right,
-                dynamicArrayDepth(equal.e1.type),
+                arrayDepth(equal.e1.type),
             ));
         }
 
@@ -7235,8 +7235,34 @@ private bool typeIsStaticArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.toBasetype.ty == TY.Tsarray;
 }
 
+private bool typeIsArray(imported!"dmd.mtype".Type type) @safe {
+    return typeIsDynamicArray(type) || typeIsStaticArray(type);
+}
+
 private long staticArrayLength(imported!"dmd.mtype".Type type) @trusted {
     return cast(long) type.toBasetype.isTypeSArray.dim.toInteger;
+}
+
+private uint arrayDepth(imported!"dmd.mtype".Type type) @trusted {
+    uint depth;
+    // Explicit type: DMD type handles are mutable while walking nested arrays.
+    imported!"dmd.mtype".Type current = type;
+    while (current !is null) {
+        if (auto dynamicArray = current.toBasetype.isTypeDArray) {
+            ++depth;
+            current = dynamicArray.nextOf;
+            continue;
+        }
+
+        if (auto staticArray = current.toBasetype.isTypeSArray) {
+            ++depth;
+            current = staticArray.nextOf;
+            continue;
+        }
+
+        break;
+    }
+    return depth;
 }
 
 private uint dynamicArrayDepth(imported!"dmd.mtype".Type type) @trusted {
@@ -7265,6 +7291,28 @@ private imported!"dmd.mtype".Type dynamicArrayElementType(
 
     auto array = type.toBasetype.isTypeDArray;
     return array is null ? null : array.nextOf;
+}
+
+private imported!"dmd.mtype".Type staticArrayElementType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    auto array = type.toBasetype.isTypeSArray;
+    return array is null ? null : array.nextOf;
+}
+
+private imported!"dmd.mtype".Type arrayElementType(
+    imported!"dmd.mtype".Type type,
+) @safe {
+    if (typeIsDynamicArray(type))
+        return dynamicArrayElementType(type);
+
+    if (typeIsStaticArray(type))
+        return staticArrayElementType(type);
+
+    return null;
 }
 
 private imported!"dmd.mtype".Type assocArrayKeyType(
