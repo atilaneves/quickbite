@@ -2273,6 +2273,8 @@ private struct BodyWalker {
         if (expressionChars(call).canFind("decerealise") ||
             expressionChars(call).canFind("decerealize"))
             return false;
+        if (call.f.ident !is null && call.f.ident.toString == "opOpAssign")
+            return false;
         if ((call.f.ident is null || call.f.ident.toString != "cerealise") &&
             !expressionChars(call.e1).canFind("cerealise") &&
             !expressionChars(call.e1).canFind("cerealize") &&
@@ -3258,6 +3260,10 @@ private struct BodyWalker {
         imported!"dmd.mtype".Type type,
     ) {
         foreach (field; aggregateStructFields(type)) {
+            if (cerealFieldBitCount(field) != 0)
+                return true;
+            if (cerealFieldHasAttribute(field, "NoCereal"))
+                return true;
             if (field.type !is null && field.type.toBasetype.isTypeAArray !is null)
                 return true;
             if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
@@ -3318,8 +3324,20 @@ private struct BodyWalker {
         Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
+        long bitByte;
+        size_t bitIndex;
         foreach (field; aggregateStructFields(type)) {
+            if (cerealFieldHasAttribute(field, "NoCereal"))
+                continue;
+
             const value = structFieldValue(fields, field, Value(0L));
+            const bitCount = cerealFieldBitCount(field);
+            if (bitCount != 0) {
+                appendCerealBits(elements, bitByte, bitIndex, value.asLong, bitCount);
+                continue;
+            }
+            flushCerealBits(elements, bitByte, bitIndex);
+
             if (field.type !is null && field.type.toBasetype.isTypeDArray !is null) {
                 if (cerealArrayFieldHasExternalLength(field))
                     appendArrayPayloadToCereal(
@@ -3360,6 +3378,43 @@ private struct BodyWalker {
             if (byteCount != 0)
                 appendIntegerBytes(elements, value.asLong, byteCount);
         }
+        flushCerealBits(elements, bitByte, bitIndex);
+    }
+
+    private void appendCerealBits(
+        ref long[] elements,
+        ref long bitByte,
+        ref size_t bitIndex,
+        in long value,
+        in size_t bitCount,
+    ) @safe {
+        size_t remaining = bitCount;
+        while (remaining != 0) {
+            const available = 8 - bitIndex;
+            const take = remaining < available ? remaining : available;
+            const shift = remaining - take;
+            const mask = (1L << take) - 1;
+            bitByte = (bitByte << take) | ((value >> shift) & mask);
+            bitIndex += take;
+            remaining -= take;
+            if (bitIndex == 8) {
+                elements ~= bitByte & 0xff;
+                bitByte = 0L;
+                bitIndex = 0;
+            }
+        }
+    }
+
+    private void flushCerealBits(
+        ref long[] elements,
+        ref long bitByte,
+        ref size_t bitIndex,
+    ) @safe {
+        if (bitIndex == 0)
+            return;
+        elements ~= (bitByte << (8 - bitIndex)) & 0xff;
+        bitByte = 0L;
+        bitIndex = 0;
     }
 
     private void appendArrayToCereal(
@@ -5951,7 +6006,33 @@ private struct BodyWalker {
     ) {
         fields = isClassType(type) ? defaultClassFields(type) : defaultStructFields(type);
         size_t cursor;
+        long bitByte;
+        size_t bitIndex;
         foreach (field; cerealAggregateFields(type)) {
+            if (cerealFieldHasAttribute(field, "NoCereal"))
+                continue;
+
+            const bitCount = cerealFieldBitCount(field);
+            if (bitCount != 0) {
+                long bits;
+                if (!tryReadCerealBits(
+                    bytes,
+                    cursor,
+                    bitByte,
+                    bitIndex,
+                    bitCount,
+                    bits,
+                ))
+                    return false;
+                assignStructField(
+                    fields,
+                    field,
+                    Value(coerceIntegerToType(bits, field.type)),
+                );
+                continue;
+            }
+            bitIndex = 0;
+
             imported!"dmd.mtype".Type heapType;
             if (field.type !is null && field.type.isTypePointer !is null)
                 heapType = pointerTargetType(field.type);
@@ -6074,6 +6155,36 @@ private struct BodyWalker {
             cursor += byteCount;
         }
         neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadCerealBits(
+        long[] bytes,
+        ref size_t cursor,
+        ref long bitByte,
+        ref size_t bitIndex,
+        in size_t bitCount,
+        out long value,
+    ) @safe {
+        size_t remaining = bitCount;
+        while (remaining != 0) {
+            if (bitIndex == 0) {
+                if (cursor >= bytes.length)
+                    return false;
+                bitByte = bytes[cursor];
+                ++cursor;
+            }
+
+            const available = 8 - bitIndex;
+            const take = remaining < available ? remaining : available;
+            const shift = available - take;
+            const mask = (1L << take) - 1;
+            value = (value << take) | ((bitByte >> shift) & mask);
+            bitIndex += take;
+            remaining -= take;
+            if (bitIndex == 8)
+                bitIndex = 0;
+        }
         return true;
     }
 
@@ -7318,6 +7429,27 @@ private bool cerealFieldHasAttribute(
     in string name,
 ) {
     return cerealFieldAttributeChars(field, name).length != 0;
+}
+
+private size_t cerealFieldBitCount(
+    imported!"dmd.declaration".VarDeclaration field,
+) {
+    const attribute = cerealFieldAttributeChars(field, "Bits");
+    if (attribute.length == 0)
+        return 0;
+
+    import std.ascii: isDigit;
+    import std.conv: to;
+
+    foreach (i, char_; attribute) {
+        if (!char_.isDigit)
+            continue;
+        size_t end = i;
+        while (end < attribute.length && attribute[end].isDigit)
+            ++end;
+        return attribute[i .. end].to!size_t;
+    }
+    return 0;
 }
 
 private string cerealFieldAttributeArgument(
