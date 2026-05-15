@@ -881,6 +881,34 @@ private struct BodyWalker {
             unsupported;
         }
 
+        if (auto array = expression.isArrayExp) {
+            if (arrayExpressionArguments(array).length == 0)
+                return runExpression(array.e1, interpreter);
+            if (arrayExpressionArguments(array).length == 1) {
+                const i = runExpression(
+                    arrayExpressionArguments(array)[0],
+                    interpreter,
+                ).asLong;
+                if (auto var = array.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals)
+                            return Value(locals[varDecl].asArray[cast(size_t) i]);
+                if (auto dotVar = array.e1.isDotVarExp)
+                    if (auto owner = structFieldsOwner(dotVar.e1))
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            auto fields = structFieldsValue(owner);
+                            return Value(
+                                structFieldValue(
+                                    fields,
+                                    fieldDecl,
+                                    defaultArrayValue(fieldDecl.type),
+                                ).asArray[cast(size_t) i],
+                            );
+                        }
+            }
+            unsupported;
+        }
+
         if (auto index = expression.isIndexExp) {
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
@@ -1501,6 +1529,25 @@ private struct BodyWalker {
                                 );
                                 continue;
                             }
+                    if (auto dotVar = arg.isDotVarExp)
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                            if (isStructType(fieldDecl.type))
+                                if (structFieldsOwner(dotVar.e1) !is null) {
+                                    if (fieldDecl !in structFields)
+                                        structFields[fieldDecl] =
+                                            defaultStructFields(fieldDecl.type);
+                                    CallArgument structRefArg;
+                                    structRefArg.refSource = fieldDecl;
+                                    structRefArg.structFields =
+                                        structFields[fieldDecl].dup;
+                                    structRefArg.structFieldMaps =
+                                        nestedStructFieldMaps(
+                                            structRefArg.structFields,
+                                        );
+                                    structRefArg.isStructRef = true;
+                                    args ~= structRefArg;
+                                    continue;
+                                }
                     if (auto dotVar = arg.isDotVarExp)
                         if (auto ownerVar = dotVar.e1.isVarExp)
                             if (auto ownerDecl = ownerVar.var.isVarDeclaration)
@@ -4761,6 +4808,24 @@ private struct BodyWalker {
                         return value;
                     }
             if (auto dotVar = index.e1.isDotVarExp)
+                if (auto owner = structFieldsOwner(dotVar.e1))
+                    if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                        const i = runExpression(index.e2, interpreter).asLong;
+                        Value[VarDeclaration] fields = structFieldsValue(owner);
+                        long[] elements = structFieldValue(
+                            fields,
+                            fieldDecl,
+                            Value((long[]).init),
+                        ).asArray;
+                        elements[cast(size_t) i] = coerceIntegerToType(
+                            value.asLong,
+                            arrayElementType(fieldDecl.type),
+                        );
+                        assignStructField(fields, fieldDecl, Value(elements));
+                        assignNestedStructFields(owner, fields);
+                        return value;
+                    }
+            if (auto dotVar = index.e1.isDotVarExp)
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                         if (auto fields = ownerDecl in structFields)
@@ -4799,6 +4864,42 @@ private struct BodyWalker {
                                 assignStructField(*fields, fieldDecl, Value(elements));
                                 return value;
                 }
+        }
+
+        if (auto array = assign.e1.isArrayExp) {
+            if (arrayExpressionArguments(array).length == 1) {
+                const i = runExpression(
+                    arrayExpressionArguments(array)[0],
+                    interpreter,
+                ).asLong;
+                if (auto var = array.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals) {
+                            locals[varDecl].asArray[cast(size_t) i] =
+                                coerceIntegerToType(
+                                    value.asLong,
+                                    arrayElementType(varDecl.type),
+                                );
+                            return value;
+                        }
+                if (auto dotVar = array.e1.isDotVarExp)
+                    if (auto owner = structFieldsOwner(dotVar.e1))
+                        if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                            auto fields = structFieldsValue(owner);
+                            long[] elements = structFieldValue(
+                                fields,
+                                fieldDecl,
+                                defaultArrayValue(fieldDecl.type),
+                            ).asArray;
+                            elements[cast(size_t) i] = coerceIntegerToType(
+                                value.asLong,
+                                arrayElementType(fieldDecl.type),
+                            );
+                            assignStructField(fields, fieldDecl, Value(elements));
+                            assignNestedStructFields(owner, fields);
+                            return value;
+                        }
+            }
         }
 
         if (auto slice = assign.e1.isSliceExp)
@@ -5260,6 +5361,9 @@ private struct BodyWalker {
         foreach (field; aggregateStructFields(type))
             if (field.type !is null && field.type.isTypeDArray !is null)
                 fields[field] = Value((long[]).init);
+            else if (field.type !is null &&
+                field.type.toBasetype.isTypeSArray !is null)
+                fields[field] = defaultArrayValue(field.type);
             else if (isStructType(field.type)) {
                 fields[field] = Value(0L);
                 structFields[field] = defaultStructFields(field.type);
@@ -5690,6 +5794,16 @@ private imported!"dmd.mtype".Type arrayElementType(
     return type.toBasetype.nextOf;
 }
 
+private Value defaultArrayValue(imported!"dmd.mtype".Type type) @trusted {
+    if (type is null)
+        return Value((long[]).init);
+
+    if (auto staticArray = type.toBasetype.isTypeSArray)
+        return Value(new long[cast(size_t) staticArray.dim.toInteger]);
+
+    return Value((long[]).init);
+}
+
 private imported!"dmd.mtype".Type pointerTargetType(
     imported!"dmd.mtype".Type type,
 ) @trusted {
@@ -5749,6 +5863,12 @@ private ref auto callArguments(
     imported!"dmd.expression".CallExp call,
 ) @trusted pure {
     return *call.arguments;
+}
+
+private ref auto arrayExpressionArguments(
+    imported!"dmd.expression".ArrayExp expression,
+) @trusted pure {
+    return *expression.arguments;
 }
 
 private ref auto functionParameters(
