@@ -487,6 +487,13 @@ private struct BodyWalker {
         if (auto dotVar = expression.isDotVarExp) {
             if (dotVar.var.ident !is null &&
                 dotVar.var.ident.toString == "length")
+                if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                    if (auto owner = structFieldsOwner(dotVar.e1)) {
+                        auto fields = structFieldsValue(owner);
+                        return structFieldValue(fields, fieldDecl, Value(0L));
+                    }
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "length")
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                         if (auto local = ownerDecl in locals) {
@@ -494,6 +501,17 @@ private struct BodyWalker {
                             if (arrayId != 0)
                                 return Value(assocArrayLength(arrayId, interpreter));
                             return Value(cast(long) (*local).asArray.length);
+                        }
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "length")
+                if (auto arrayField = dotVar.e1.isDotVarExp)
+                    if (auto fieldDecl = arrayField.var.isVarDeclaration)
+                        if (auto owner = structFieldsOwner(arrayField.e1)) {
+                            auto fields = structFieldsValue(owner);
+                            return Value(arrayFieldLength(
+                                structFieldValue(fields, fieldDecl, Value((long[]).init)),
+                                fieldDecl.type,
+                            ));
                         }
             if (dotVar.var.ident !is null &&
                 dotVar.var.ident.toString == "length")
@@ -550,6 +568,20 @@ private struct BodyWalker {
                 if (auto fieldDecl = dotVar.var.isVarDeclaration) {
                     auto fields = structFieldsValue(owner);
                     return structFieldValue(fields, fieldDecl, Value(0L));
+                }
+            if (isStructType(dotVar.e1.type))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] elementFields;
+                    if (tryStructArrayElementFields(
+                        dotVar.e1,
+                        elementFields,
+                        interpreter,
+                    ))
+                        return structFieldValue(
+                            elementFields,
+                            fieldDecl,
+                            Value(0L),
+                        );
                 }
             if (isUnitThreadedGeneratedValueExpression(dotVar))
                 if (auto fieldDecl = dotVar.var.isVarDeclaration)
@@ -1066,11 +1098,14 @@ private struct BodyWalker {
                                     );
                                 }
                                 return Value(
-                                    arrayValueLength(structFieldValue(
+                                    arrayFieldLength(
+                                        structFieldValue(
                                             *fields,
                                             fieldDecl,
                                             Value((long[]).init),
-                                        )),
+                                        ),
+                                        fieldDecl.type,
+                                    ),
                                 );
                             }
             if (len.e1.isCallExp)
@@ -3094,11 +3129,18 @@ private struct BodyWalker {
         foreach (field; aggregateStructFields(type)) {
             const value = structFieldValue(fields, field, Value(0L));
             if (field.type !is null && field.type.toBasetype.isTypeDArray !is null) {
-                appendArrayValueToCereal(
-                    elements,
-                    storageArrayValue(value),
-                    arrayElementType(field.type),
-                );
+                if (cerealArrayFieldHasExternalLength(field))
+                    appendArrayPayloadToCereal(
+                        elements,
+                        storageArrayValue(value),
+                        arrayElementType(field.type),
+                    );
+                else
+                    appendArrayValueToCereal(
+                        elements,
+                        storageArrayValue(value),
+                        arrayElementType(field.type),
+                    );
                 continue;
             }
             if (field.type !is null && field.type.toBasetype.isTypeAArray !is null) {
@@ -3212,6 +3254,58 @@ private struct BodyWalker {
 
         appendUshort(elements, cast(long) length);
         elements ~= payload;
+    }
+
+    private bool cerealArrayFieldHasExternalLength(VarDeclaration field) {
+        return cerealFieldHasAttribute(field, "ArrayLength") ||
+            cerealFieldHasAttribute(field, "LengthInBytes") ||
+            cerealFieldHasRestAttribute(field);
+    }
+
+    private bool cerealFieldHasRestAttribute(VarDeclaration field) {
+        return cerealFieldHasAttribute(field, "RestOfPacket") ||
+            cerealFieldHasAttribute(field, "RawArray") ||
+            cerealFieldHasAttribute(field, "Rest");
+    }
+
+    private void appendArrayPayloadToCereal(
+        ref long[] elements,
+        long[] array,
+        imported!"dmd.mtype".Type elementType,
+    ) {
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            foreach (element; array)
+                appendIntegerBytes(elements, element, elementByteCount);
+            return;
+        }
+
+        if (isStructType(elementType)) {
+            appendStructFlatArrayPayloadToCereal(elements, array);
+            return;
+        }
+
+        if (elementType is null || elementType.toBasetype.isTypeDArray is null) {
+            elements ~= array;
+            return;
+        }
+
+        appendArrayValueToCereal(elements, array, elementType);
+    }
+
+    private void appendStructFlatArrayPayloadToCereal(
+        ref long[] elements,
+        in long[] array,
+    ) {
+        size_t cursor;
+        while (cursor < array.length) {
+            const length = nestedArrayLength(array[cursor]);
+            ++cursor;
+            if (length > array.length - cursor)
+                throw new Exception("Malformed nested array value.");
+            elements ~= array[cursor .. cursor + length];
+            cursor += length;
+        }
     }
 
     private bool tryAppendNestedFlatArrayValueToCereal(
@@ -4661,7 +4755,7 @@ private struct BodyWalker {
             auto field = structLiteralField(literal, i);
             if (field is null)
                 continue;
-            appendExpressionCerealBytes(elements, element, field.type, interpreter);
+            appendExpressionCerealBytes(elements, element, field.type, interpreter, field);
         }
         return elements;
     }
@@ -4671,22 +4765,32 @@ private struct BodyWalker {
         imported!"dmd.expression".Expression expression,
         imported!"dmd.mtype".Type type,
         ref Interpreter interpreter,
+        VarDeclaration field = null,
     ) {
         if (type !is null && type.toBasetype.isTypeDArray !is null) {
+            const hasExternalLength = cerealArrayFieldHasExternalLength(field);
             if (auto literal = expression.isArrayLiteralExp) {
                 appendArrayLiteralCerealBytes(
                     elements,
                     literal,
                     type,
                     interpreter,
+                    !hasExternalLength,
                 );
                 return;
             }
-            appendArrayValueToCereal(
-                elements,
-                runExpression(expression, interpreter).asArray,
-                arrayElementType(type),
-            );
+            if (hasExternalLength)
+                appendArrayPayloadToCereal(
+                    elements,
+                    runExpression(expression, interpreter).asArray,
+                    arrayElementType(type),
+                );
+            else
+                appendArrayValueToCereal(
+                    elements,
+                    runExpression(expression, interpreter).asArray,
+                    arrayElementType(type),
+                );
             return;
         }
 
@@ -4717,13 +4821,16 @@ private struct BodyWalker {
         imported!"dmd.expression".ArrayLiteralExp literal,
         imported!"dmd.mtype".Type arrayType,
         ref Interpreter interpreter,
+        in bool includeLength = true,
     ) {
         if (literal.elements is null) {
-            appendUshort(elements, 0L);
+            if (includeLength)
+                appendUshort(elements, 0L);
             return;
         }
 
-        appendUshort(elements, cast(long) literal.elements.length);
+        if (includeLength)
+            appendUshort(elements, cast(long) literal.elements.length);
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto elementType = arrayElementType(arrayType);
         foreach (element; arrayLiteralElements(literal)) {
@@ -5365,13 +5472,23 @@ private struct BodyWalker {
             if (field.type !is null && field.type.isTypeDArray !is null) {
                 long[] elements;
                 size_t arrayByteCount;
-                if (!tryReadDecerealisedArrayElements(
-                    arrayElementType(field.type),
+                if (!tryReadDecerealisedAttributedArrayField(
+                    field,
+                    type,
+                    fields,
                     bytes[cursor .. $],
+                    cursor,
                     elements,
                     arrayByteCount,
+                    interpreter,
                 ))
-                    return false;
+                    if (!tryReadDecerealisedArrayElements(
+                        arrayElementType(field.type),
+                        bytes[cursor .. $],
+                        elements,
+                        arrayByteCount,
+                    ))
+                        return false;
                 assignStructField(fields, field, Value(elements));
                 cursor += arrayByteCount;
                 continue;
@@ -5396,6 +5513,373 @@ private struct BodyWalker {
         return true;
     }
 
+    private bool tryReadDecerealisedAttributedArrayField(
+        VarDeclaration field,
+        imported!"dmd.mtype".Type aggregateType,
+        Value[VarDeclaration] fields,
+        long[] bytes,
+        in size_t aggregateCursor,
+        out long[] elements,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        const arrayLengthExpression = cerealFieldAttributeArgument(
+            field,
+            "ArrayLength",
+        );
+        if (arrayLengthExpression.length != 0) {
+            const length = evaluateCerealLengthExpression(
+                arrayLengthExpression,
+                aggregateType,
+                fields,
+                aggregateCursor,
+            );
+            if (length < 0)
+                throw new Exception("Negative cerealed array length.");
+            return tryReadDecerealisedArrayElementsByCount(
+                arrayElementType(field.type),
+                bytes,
+                cast(size_t) length,
+                elements,
+                neededByteCount,
+                interpreter,
+            );
+        }
+
+        const byteLengthExpression = cerealFieldAttributeArgument(
+            field,
+            "LengthInBytes",
+        );
+        if (byteLengthExpression.length != 0) {
+            const byteLength = evaluateCerealLengthExpression(
+                byteLengthExpression,
+                aggregateType,
+                fields,
+                aggregateCursor,
+            );
+            if (byteLength < 0)
+                throw new Exception("Negative cerealed byte length.");
+            return tryReadDecerealisedArrayElementsByByteCount(
+                arrayElementType(field.type),
+                bytes,
+                cast(size_t) byteLength,
+                elements,
+                neededByteCount,
+                interpreter,
+            );
+        }
+
+        if (cerealFieldHasRestAttribute(field))
+            return tryReadDecerealisedArrayElementsByByteCount(
+                arrayElementType(field.type),
+                bytes,
+                bytes.length,
+                elements,
+                neededByteCount,
+                interpreter,
+            );
+
+        return false;
+    }
+
+    private bool tryReadDecerealisedArrayElementsByCount(
+        imported!"dmd.mtype".Type elementType,
+        long[] bytes,
+        in size_t length,
+        out long[] elements,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            neededByteCount = length * elementByteCount;
+            if (bytes.length < neededByteCount)
+                throw new Exception("Not enough bytes left to decerealise array.");
+            foreach (i; 0 .. length) {
+                const begin = i * elementByteCount;
+                const end = begin + elementByteCount;
+                elements ~= coerceIntegerToType(
+                    readBigEndian(bytes[begin .. end]),
+                    elementType,
+                );
+            }
+            return true;
+        }
+
+        if (!isStructType(elementType))
+            return false;
+
+        size_t cursor;
+        foreach (_; 0 .. length) {
+            long[] structBytes;
+            size_t structByteCount;
+            if (!tryReadDecerealisedStructArrayElement(
+                elementType,
+                bytes[cursor .. $],
+                structBytes,
+                structByteCount,
+                interpreter,
+            ))
+                return false;
+            elements ~= cast(long) structBytes.length;
+            elements ~= structBytes;
+            cursor += structByteCount;
+        }
+        neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadDecerealisedArrayElementsByByteCount(
+        imported!"dmd.mtype".Type elementType,
+        long[] bytes,
+        in size_t byteCount,
+        out long[] elements,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        if (bytes.length < byteCount)
+            throw new Exception("Not enough bytes left to decerealise array.");
+
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            if (elementByteCount == 0 || byteCount % elementByteCount != 0)
+                return false;
+            return tryReadDecerealisedArrayElementsByCount(
+                elementType,
+                bytes,
+                byteCount / elementByteCount,
+                elements,
+                neededByteCount,
+                interpreter,
+            );
+        }
+
+        if (!isStructType(elementType))
+            return false;
+
+        size_t cursor;
+        while (cursor < byteCount) {
+            long[] structBytes;
+            size_t structByteCount;
+            if (!tryReadDecerealisedStructArrayElement(
+                elementType,
+                bytes[cursor .. byteCount],
+                structBytes,
+                structByteCount,
+                interpreter,
+            ))
+                return false;
+            if (structByteCount == 0 || cursor + structByteCount > byteCount)
+                return false;
+            elements ~= cast(long) structBytes.length;
+            elements ~= structBytes;
+            cursor += structByteCount;
+        }
+        neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadDecerealisedStructArrayElement(
+        imported!"dmd.mtype".Type elementType,
+        long[] bytes,
+        out long[] structBytes,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] elementFields;
+        if (!tryReadDecerealisedAggregateFields(
+            elementType,
+            bytes,
+            elementFields,
+            neededByteCount,
+            interpreter,
+        ))
+            return false;
+        if (bytes.length < neededByteCount)
+            return false;
+        structBytes = bytes[0 .. neededByteCount].dup;
+        return true;
+    }
+
+    private long evaluateCerealLengthExpression(
+        in string expression,
+        imported!"dmd.mtype".Type aggregateType,
+        Value[VarDeclaration] fields,
+        in size_t aggregateCursor,
+    ) {
+        const compact = removeAsciiWhitespace(expression);
+        if (compact.length == 0)
+            return 0L;
+
+        foreach (i; 1 .. compact.length)
+            if (compact[i] == '-')
+                return evaluateCerealLengthExpression(
+                    compact[0 .. i],
+                    aggregateType,
+                    fields,
+                    aggregateCursor,
+                ) - evaluateCerealLengthExpression(
+                    compact[i + 1 .. $],
+                    aggregateType,
+                    fields,
+                    aggregateCursor,
+                );
+
+        import std.conv: to;
+
+        try {
+            return compact.to!long;
+        } catch (Exception) {
+        }
+
+        if (compact == "headerSize")
+            return cast(long) aggregateCursor;
+
+        long fieldValue;
+        if (tryCerealFieldValue(aggregateType, fields, compact, fieldValue))
+            return fieldValue;
+
+        return 0L;
+    }
+
+    private bool tryCerealFieldValue(
+        imported!"dmd.mtype".Type type,
+        Value[VarDeclaration] fields,
+        in string name,
+        out long value,
+    ) {
+        foreach (field; aggregateStructFields(type)) {
+            if (field.ident !is null && field.ident.toString == name) {
+                value = structFieldValue(fields, field, Value(0L)).asLong;
+                return true;
+            }
+
+            if (!isStructType(field.type))
+                continue;
+
+            Value[VarDeclaration] nestedFields;
+            if (!tryGetStructFields(field, nestedFields))
+                continue;
+            if (tryCerealFieldValue(field.type, nestedFields, name, value))
+                return true;
+        }
+        return false;
+    }
+
+    private bool tryStructArrayElementFields(
+        imported!"dmd.expression".Expression expression,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        imported!"dmd.expression".Expression arrayExpression;
+        imported!"dmd.expression".Expression indexExpression;
+        if (auto index = expression.isIndexExp) {
+            arrayExpression = index.e1;
+            indexExpression = index.e2;
+        } else if (auto array = expression.isArrayExp) {
+            if (arrayExpressionArguments(array).length != 1)
+                return false;
+            arrayExpression = array.e1;
+            indexExpression = arrayExpressionArguments(array)[0];
+        } else {
+            return false;
+        }
+
+        imported!"dmd.mtype".Type arrayType;
+        long[] arrayValue;
+        if (auto dotVar = arrayExpression.isDotVarExp) {
+            auto owner = structFieldsOwner(dotVar.e1);
+            if (owner is null)
+                return false;
+            auto fieldDecl = dotVar.var.isVarDeclaration;
+            if (fieldDecl is null)
+                return false;
+            auto ownerFields = structFieldsValue(owner);
+            arrayValue = structFieldValue(
+                ownerFields,
+                fieldDecl,
+                Value((long[]).init),
+            ).asArray;
+            arrayType = fieldDecl.type;
+        } else if (auto var = arrayExpression.isVarExp) {
+            auto varDecl = var.var.isVarDeclaration;
+            if (varDecl is null || varDecl !in locals)
+                return false;
+            arrayValue = locals[varDecl].asArray;
+            arrayType = varDecl.type;
+        } else {
+            return false;
+        }
+
+        const index = runExpression(indexExpression, interpreter).asLong;
+        if (index < 0)
+            return false;
+
+        return tryReadStructArrayElementFields(
+            arrayElementType(arrayType),
+            arrayValue,
+            cast(size_t) index,
+            fields,
+            interpreter,
+        );
+    }
+
+    private bool tryReadStructArrayElementFields(
+        imported!"dmd.mtype".Type elementType,
+        in long[] array,
+        in size_t index,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (!isStructType(elementType))
+            return false;
+
+        size_t cursor;
+        foreach (i; 0 .. index + 1) {
+            if (cursor >= array.length)
+                return false;
+            const length = nestedArrayLength(array[cursor]);
+            ++cursor;
+            if (length > array.length - cursor)
+                return false;
+            if (i == index) {
+                size_t used;
+                return tryReadDecerealisedAggregateFields(
+                    elementType,
+                    array[cursor .. cursor + length].dup,
+                    fields,
+                    used,
+                    interpreter,
+                );
+            }
+            cursor += length;
+        }
+        return false;
+    }
+
+    private long arrayFieldLength(
+        Value value,
+        imported!"dmd.mtype".Type type,
+    ) {
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(type);
+        if (!isStructType(elementType))
+            return arrayValueLength(value);
+
+        const array = value.asArray;
+        size_t cursor;
+        size_t length;
+        while (cursor < array.length) {
+            const elementLength = nestedArrayLength(array[cursor]);
+            ++cursor;
+            if (elementLength > array.length - cursor)
+                return cast(long) array.length;
+            cursor += elementLength;
+            ++length;
+        }
+        return cast(long) length;
+    }
+
     private bool tryRunStructDecerealise(
         imported!"dmd.expression".CallExp call,
         out Value[VarDeclaration] fields,
@@ -5415,42 +5899,14 @@ private struct BodyWalker {
                 !tryCerealBytes(callArguments(call)[0], bytes, interpreter))
                 return false;
 
-        fields = defaultStructFields(call.type);
-        size_t index;
-        foreach (field; aggregateStructFields(call.type)) {
-            if (field.type !is null && field.type.isTypeDArray !is null) {
-                if (bytes.length < index + 2)
-                    return false;
-                const length = cast(size_t) (
-                    (bytes[index] << 8) | bytes[index + 1]
-                );
-                index += 2;
-                if (bytes.length < index + length)
-                    return false;
-                assignStructField(
-                    fields,
-                    field,
-                    Value(bytes[index .. index + length].dup),
-                );
-                index += length;
-                continue;
-            }
-            const byteCount = decerealisedScalarByteCount(field.type);
-            if (byteCount == 0)
-                return false;
-            if (bytes.length < index + byteCount)
-                return false;
-            assignStructField(
-                fields,
-                field,
-                Value(coerceIntegerToType(
-                    readBigEndian(bytes[index .. index + byteCount]),
-                    field.type,
-                )),
-            );
-            index += byteCount;
-        }
-        return true;
+        size_t neededByteCount;
+        return tryReadDecerealisedAggregateFields(
+            call.type,
+            bytes,
+            fields,
+            neededByteCount,
+            interpreter,
+        );
     }
 
     private bool tryCerealBytes(
@@ -6048,6 +6504,57 @@ private string expressionChars(
 ) @trusted {
     import std.string: fromStringz;
     return fromStringz(expression.toChars).idup;
+}
+
+private bool cerealFieldHasAttribute(
+    imported!"dmd.declaration".VarDeclaration field,
+    in string name,
+) {
+    return cerealFieldAttributeChars(field, name).length != 0;
+}
+
+private string cerealFieldAttributeArgument(
+    imported!"dmd.declaration".VarDeclaration field,
+    in string name,
+) {
+    const attribute = cerealFieldAttributeChars(field, name);
+    foreach (start, char_; attribute)
+        if (char_ == '"')
+            foreach (end, endChar; attribute[start + 1 .. $])
+                if (endChar == '"')
+                    return attribute[start + 1 .. start + 1 + end];
+    return null;
+}
+
+private string cerealFieldAttributeChars(
+    imported!"dmd.declaration".VarDeclaration field,
+    in string name,
+) @trusted {
+    import std.algorithm.searching: canFind;
+
+    if (field is null ||
+        field.userAttribDecl is null ||
+        field.userAttribDecl.atts is null)
+        return null;
+
+    foreach (attribute; *field.userAttribDecl.atts) {
+        const chars = expressionChars(attribute);
+        if (chars.canFind(name))
+            return chars;
+    }
+
+    return null;
+}
+
+private string removeAsciiWhitespace(in string value) @safe pure {
+    string result;
+    foreach (char_; value)
+        if (char_ != ' ' &&
+            char_ != '\t' &&
+            char_ != '\n' &&
+            char_ != '\r')
+            result ~= char_;
+    return result;
 }
 
 private string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
