@@ -900,6 +900,10 @@ struct BodyLowerer {
                 ));
             }
 
+            uint unitThreadedResult;
+            if (tryLowerUnitThreadedClassIsEqual(call, lowerer, unitThreadedResult))
+                return unitThreadedResult;
+
             if (isArrayEqualityCall(call))
                 return lowerArrayEqualityCall(call, lowerer);
 
@@ -974,6 +978,12 @@ struct BodyLowerer {
 
         if (auto equal = expression.isEqualExp) {
             import dmd.tokens: EXP;
+
+            if (
+                structEqualityOperand(equal.e1) !is null &&
+                structEqualityOperand(equal.e2) !is null
+            )
+                return lowerStructEqualityExpression(equal, lowerer);
 
             if (equal.lowering !is null)
                 return lowerExpression(equal.lowering, lowerer);
@@ -1478,6 +1488,27 @@ struct BodyLowerer {
         return destination;
     }
 
+    bool tryLowerUnitThreadedClassIsEqual(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        if (functionIdentifier(call.f) != "isEqual")
+            return false;
+
+        if (call.arguments is null || callArguments(call).length != 2)
+            return false;
+
+        auto arguments = callArguments(call);
+        if (!typeIsClass(arguments[0].type) || !typeIsClass(arguments[1].type))
+            return false;
+
+        const left = lowerExpression(arguments[0], lowerer);
+        const right = lowerExpression(arguments[1], lowerer);
+        result = lowerClassEquality(arguments[0].type, left, right);
+        return true;
+    }
+
     uint lowerArrayEqualityExpression(
         imported!"dmd.expression".EqualExp equal,
         ref Lowerer lowerer,
@@ -1578,6 +1609,179 @@ struct BodyLowerer {
             stableIdentifierValue(lowerer.functionName(function_)),
         ));
         return destination;
+    }
+
+    uint lowerStructEqualityExpression(
+        imported!"dmd.expression".EqualExp equal,
+        ref Lowerer lowerer,
+    ) @safe {
+        import dmd.tokens: EXP;
+        import quickbite.ir.instruction: Instruction, UnaryOp, UnaryOperation;
+
+        auto leftExpression = structEqualityOperand(equal.e1);
+        auto rightExpression = structEqualityOperand(equal.e2);
+        const left = lowerExpression(leftExpression, lowerer);
+        const right = lowerExpression(rightExpression, lowerer);
+        const equalResult = lowerStructEquality(leftExpression.type, left, right);
+        if (equal.op == EXP.equal)
+            return equalResult;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(
+            destination,
+            equalResult,
+            UnaryOperation.not,
+        ));
+        return destination;
+    }
+
+    uint lowerStructEquality(
+        imported!"dmd.mtype".Type type,
+        in uint left,
+        in uint right,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayEqual, BinaryOp, ConstInt,
+            Instruction, Operation, StructGet;
+
+        bool hasFields;
+        uint result;
+        foreach (field; structFields(type)) {
+            const leftField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                leftField,
+                left,
+                declarationName(field),
+            ));
+            const rightField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                rightField,
+                right,
+                declarationName(field),
+            ));
+
+            uint fieldEqual;
+            if (typeIsStruct(field.type))
+                fieldEqual = lowerStructEquality(field.type, leftField, rightField);
+            else {
+                fieldEqual = allocateTemporary;
+                if (typeIsDynamicArray(field.type))
+                    instructions ~= Instruction(ArrayEqual(
+                        fieldEqual,
+                        leftField,
+                        rightField,
+                    ));
+                else
+                    instructions ~= Instruction(BinaryOp(
+                        fieldEqual,
+                        leftField,
+                        rightField,
+                        Operation.equal,
+                    ));
+            }
+
+            if (!hasFields) {
+                result = fieldEqual;
+                hasFields = true;
+                continue;
+            }
+
+            const combined = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                combined,
+                result,
+                fieldEqual,
+                Operation.bitwiseAnd,
+            ));
+            result = combined;
+        }
+
+        if (hasFields)
+            return result;
+
+        result = allocateTemporary;
+        instructions ~= Instruction(ConstInt(result, 1));
+        return result;
+    }
+
+    uint lowerClassEquality(
+        imported!"dmd.mtype".Type type,
+        in uint left,
+        in uint right,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayEqual, BinaryOp, ConstInt,
+            Instruction, Operation, StructGet;
+
+        bool hasFields;
+        uint result;
+        foreach (field; classFields(type)) {
+            const leftField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                leftField,
+                left,
+                declarationName(field),
+            ));
+            const rightField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                rightField,
+                right,
+                declarationName(field),
+            ));
+
+            uint fieldEqual;
+            if (typeIsStruct(field.type))
+                fieldEqual = lowerStructEquality(field.type, leftField, rightField);
+            else {
+                fieldEqual = allocateTemporary;
+                if (typeIsDynamicArray(field.type))
+                    instructions ~= Instruction(ArrayEqual(
+                        fieldEqual,
+                        leftField,
+                        rightField,
+                    ));
+                else
+                    instructions ~= Instruction(BinaryOp(
+                        fieldEqual,
+                        leftField,
+                        rightField,
+                        Operation.equal,
+                    ));
+            }
+
+            if (!hasFields) {
+                result = fieldEqual;
+                hasFields = true;
+                continue;
+            }
+
+            const combined = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                combined,
+                result,
+                fieldEqual,
+                Operation.bitwiseAnd,
+            ));
+            result = combined;
+        }
+
+        if (hasFields)
+            return result;
+
+        result = allocateTemporary;
+        instructions ~= Instruction(ConstInt(result, 1));
+        return result;
+    }
+
+    imported!"dmd.expression".Expression structEqualityOperand(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (typeIsStruct(expression.type))
+            return expression;
+
+        if (auto cast_ = expression.isCastExp)
+            if (typeIsStruct(cast_.e1.type))
+                return cast_.e1;
+
+        return null;
     }
 
     uint lowerAssocArrayLiteral(
