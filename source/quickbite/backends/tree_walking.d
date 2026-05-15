@@ -670,6 +670,38 @@ private struct BodyWalker {
             unsupported;
         }
 
+        if (auto xorAssign = expression.isXorAssignExp) {
+            if (auto var = xorAssign.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const newVal = locals[varDecl].asLong ^
+                            runExpression(xorAssign.e2, interpreter).asLong;
+                        locals[varDecl] = Value(
+                            coerceIntegerToType(newVal, varDecl.type),
+                        );
+                        return Value(newVal);
+                    }
+            if (auto dotVar = xorAssign.e1.isDotVarExp)
+                if (auto thisExp = dotVar.e1.isThisExp)
+                    if (auto thisDecl = thisExp.var.isVarDeclaration)
+                        if (auto fields = thisDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const newVal = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value(0L),
+                                ).asLong ^
+                                    runExpression(xorAssign.e2, interpreter).asLong;
+                                assignStructField(
+                                    *fields,
+                                    fieldDecl,
+                                    Value(coerceIntegerToType(newVal, fieldDecl.type)),
+                                );
+                                return Value(newVal);
+                            }
+            unsupported;
+        }
+
         if (auto post = expression.isPostExp) {
             import dmd.tokens: EXP;
 
