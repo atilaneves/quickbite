@@ -63,6 +63,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "encode.d" &&
             fileName != "encode_decode.d" &&
             fileName != "enums.d" &&
+            fileName != "example.d" &&
             fileName != "utils.d"
         )
     ) &&
