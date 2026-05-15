@@ -922,7 +922,7 @@ struct BodyLowerer {
             }
 
             uint unitThreadedResult;
-            if (tryLowerUnitThreadedClassIsEqual(call, lowerer, unitThreadedResult))
+            if (tryLowerUnitThreadedIsEqual(call, lowerer, unitThreadedResult))
                 return unitThreadedResult;
 
             if (isArrayEqualityCall(call))
@@ -1521,7 +1521,7 @@ struct BodyLowerer {
         return destination;
     }
 
-    bool tryLowerUnitThreadedClassIsEqual(
+    bool tryLowerUnitThreadedIsEqual(
         imported!"dmd.expression".CallExp call,
         ref Lowerer lowerer,
         ref uint result,
@@ -1532,14 +1532,23 @@ struct BodyLowerer {
         if (call.arguments is null || callArguments(call).length != 2)
             return false;
 
+        // auto: DMD expression slices are mutable and used for lowering below.
         auto arguments = callArguments(call);
-        if (!typeIsClass(arguments[0].type) || !typeIsClass(arguments[1].type))
-            return false;
+        if (typeIsClass(arguments[0].type) && typeIsClass(arguments[1].type)) {
+            const left = lowerExpression(arguments[0], lowerer);
+            const right = lowerExpression(arguments[1], lowerer);
+            result = lowerClassEquality(arguments[0].type, left, right);
+            return true;
+        }
 
-        const left = lowerExpression(arguments[0], lowerer);
-        const right = lowerExpression(arguments[1], lowerer);
-        result = lowerClassEquality(arguments[0].type, left, right);
-        return true;
+        if (typeIsStruct(arguments[0].type) && typeIsStruct(arguments[1].type)) {
+            const left = lowerExpression(arguments[0], lowerer);
+            const right = lowerExpression(arguments[1], lowerer);
+            result = lowerStructEquality(arguments[0].type, left, right);
+            return true;
+        }
+
+        return false;
     }
 
     uint lowerArrayEqualityExpression(
