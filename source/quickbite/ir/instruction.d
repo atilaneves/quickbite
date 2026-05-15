@@ -110,6 +110,7 @@ public enum IntegerType {
 
 public struct Assert_ {
     uint condition;
+    string message;
 }
 
 public struct ArrayLiteral {

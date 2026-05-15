@@ -37,8 +37,19 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
 }
 
 void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
-    foreach (test; module_.tests) {
-        executeUnitTest(module_, test);
+    foreach (index, test; module_.tests) {
+        try {
+            executeUnitTest(module_, test);
+        } catch (Exception exception) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "Unittest ",
+                index,
+                " failed: ",
+                exception.msg,
+            ));
+        }
     }
 }
 
@@ -97,22 +108,34 @@ long executeFunction(
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
     foreach (function_; module_.functions) {
-        if (function_.name == calleeName)
-            return executeFunctionBody(
-                module_,
-                function_.instructions,
-                function_.hasReturnValue,
-                function_.numParameters,
-                function_.refParameters,
-                function_.numTemporaries,
-                callerTemporaries,
-                argumentIndices,
-                arrays,
-                structs,
-                assocArrays,
-                staticAssocArrays,
-                arrayAliases,
-            );
+        if (function_.name == calleeName) {
+            try {
+                return executeFunctionBody(
+                    module_,
+                    function_.instructions,
+                    function_.hasReturnValue,
+                    function_.numParameters,
+                    function_.refParameters,
+                    function_.numTemporaries,
+                    callerTemporaries,
+                    argumentIndices,
+                    arrays,
+                    structs,
+                    assocArrays,
+                    staticAssocArrays,
+                    arrayAliases,
+                );
+            } catch (Exception exception) {
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "function ",
+                    calleeName,
+                    " failed: ",
+                    exception.msg,
+                ));
+            }
+        }
     }
 
     throw new Exception("Unsupported callee.");
@@ -228,6 +251,7 @@ ExecutionResult executeInstructions(
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
+    reserveNullArrayHandle(arrays);
     reserveNullStructHandle(structs);
 
     ExecutionResult result;
@@ -235,16 +259,28 @@ ExecutionResult executeInstructions(
 
     uint instructionPointer;
     while (instructionPointer < instructions.length) {
-        const effect = executeInstruction(
-            module_,
-            instructions[instructionPointer],
-            temporaries,
-            arrays,
-            structs,
-            assocArrays,
-            staticAssocArrays,
-            arrayAliases,
-        );
+        InstructionEffect effect;
+        try {
+            effect = executeInstruction(
+                module_,
+                instructions[instructionPointer],
+                temporaries,
+                arrays,
+                structs,
+                assocArrays,
+                staticAssocArrays,
+                arrayAliases,
+            );
+        } catch (Exception exception) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "instruction ",
+                instructionPointer,
+                " failed: ",
+                exception.msg,
+            ));
+        }
         if (effect.hasReturn) {
             result.hasReturn = true;
             result.returnValue = effect.returnValue;
@@ -260,6 +296,11 @@ ExecutionResult executeInstructions(
 void reserveNullStructHandle(ref long[string][] structs) @safe pure {
     if (structs.length == 0)
         structs ~= (long[string]).init;
+}
+
+void reserveNullArrayHandle(ref long[][] arrays) @safe pure {
+    if (arrays.length == 0)
+        arrays ~= [];
 }
 
 struct InstructionEffect {
@@ -385,8 +426,25 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (Assert_ instruction) {
-            if (!readTemporaryValue(temporaries, instruction.condition))
-                throw new Exception("Unittest assertion failed.");
+            if (!readTemporaryValue(temporaries, instruction.condition)) {
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "Unittest assertion failed: condition ",
+                    instruction.condition,
+                    " (",
+                    instruction.message,
+                    ")",
+                    ", temporaries ",
+                    temporaries,
+                    ", arrays ",
+                    arrays,
+                    ", structs ",
+                    structs,
+                    ", assocArrays ",
+                    assocArrays,
+                ));
+            }
 
             return nextInstruction;
         },
@@ -480,13 +538,19 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArrayCopy instruction) {
-            arrays ~= arrays[arrayIndex(temporaries, instruction.source)].dup;
+            arrays ~= copyArrayValue(
+                arrays,
+                arrayIndex(temporaries, instruction.source),
+            );
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) (arrays.length - 1);
             return nextInstruction;
         },
         (ArrayReferenceCopy instruction) {
-            arrays ~= arrays[arrayIndex(temporaries, instruction.source)];
+            arrays ~= referenceArrayValue(
+                arrays,
+                arrayIndex(temporaries, instruction.source),
+            );
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) (arrays.length - 1);
             return nextInstruction;
@@ -831,6 +895,26 @@ bool arrayCanFind(in long[] haystack, in long[] needle) @safe pure {
             return true;
 
     return false;
+}
+
+long[] copyArrayValue(in long[][] arrays, in size_t handle) @safe pure {
+    if (handle < arrays.length)
+        return arrays[handle].dup;
+
+    if (handle == 0)
+        return [];
+
+    throw new Exception("IR: array handle out of range");
+}
+
+long[] referenceArrayValue(ref long[][] arrays, in size_t handle) @safe pure {
+    if (handle < arrays.length)
+        return arrays[handle];
+
+    if (handle == 0)
+        return [];
+
+    throw new Exception("IR: array handle out of range");
 }
 
 void executeUnaryInstruction(

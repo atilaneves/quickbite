@@ -133,6 +133,7 @@ struct BodyLowerer {
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
+    private ArrayElementAlias[string] arrayElementAliasesByName;
     private ArrayElementAlias[] pendingRefArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
@@ -154,6 +155,7 @@ struct BodyLowerer {
     private uint thisTemporary;
     private bool[string] thisFieldNames;
     private VarDeclaration[string] thisFields;
+    private bool[string] activeEqualityTypes;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
@@ -282,7 +284,7 @@ struct BodyLowerer {
             import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
             const zero = allocateTemporary;
             instructions ~= Instruction(ConstInt(zero, 0));
-            instructions ~= Instruction(Assert_(zero));
+            instructions ~= Instruction(Assert_(zero, "throw"));
             hasReturn = true;
             return;
         }
@@ -291,7 +293,7 @@ struct BodyLowerer {
             import quickbite.ir.instruction: Assert_, ConstInt, Instruction;
             const zero = allocateTemporary;
             instructions ~= Instruction(ConstInt(zero, 0));
-            instructions ~= Instruction(Assert_(zero));
+            instructions ~= Instruction(Assert_(zero, "switch error"));
             hasReturn = true;
             return;
         }
@@ -1212,7 +1214,10 @@ struct BodyLowerer {
 
         if (auto assert_ = expression.isAssertExp) {
             const condition = lowerExpression(assert_.e1, lowerer);
-            instructions ~= Instruction(Assert_(condition));
+            instructions ~= Instruction(Assert_(
+                condition,
+                expressionChars(assert_.e1),
+            ));
             return condition;
         }
 
@@ -1638,18 +1643,27 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import dmd.tokens: EXP;
-        import quickbite.ir.instruction:
-            ArrayEqual, Instruction, UnaryOp, UnaryOperation;
+        import quickbite.ir.instruction: ArrayEqual, Instruction, UnaryOp,
+            UnaryOperation;
 
         const left = lowerExpression(equal.e1, lowerer);
         const right = lowerExpression(equal.e2, lowerer);
-        const equalResult = allocateTemporary;
-        instructions ~= Instruction(ArrayEqual(
-            equalResult,
-            left,
-            right,
-            dynamicArrayDepth(equal.e1.type),
-        ));
+        uint equalResult;
+        if (typeNeedsTypedEquality(dynamicArrayElementType(equal.e1.type)))
+            equalResult = lowerElementwiseArrayEquality(
+                dynamicArrayElementType(equal.e1.type),
+                left,
+                right,
+            );
+        else {
+            equalResult = allocateTemporary;
+            instructions ~= Instruction(ArrayEqual(
+                equalResult,
+                left,
+                right,
+                dynamicArrayDepth(equal.e1.type),
+            ));
+        }
 
         if (equal.op == EXP.equal)
             return equalResult;
@@ -1765,9 +1779,18 @@ struct BodyLowerer {
         in uint left,
         in uint right,
     ) @safe {
-        import quickbite.ir.instruction: ArrayEqual, BinaryOp, ConstInt,
-            Instruction, Operation, StructGet;
+        import quickbite.ir.instruction: BinaryOp, ConstInt, Instruction,
+            Operation, StructGet;
 
+        // auto: AA removal needs a mutable string key.
+        auto equalityType = typeChars(type);
+        if (equalityType in activeEqualityTypes) {
+            const recursiveResult = allocateTemporary;
+            instructions ~= Instruction(ConstInt(recursiveResult, 1));
+            return recursiveResult;
+        }
+
+        activeEqualityTypes[equalityType] = true;
         bool hasFields;
         uint result;
         foreach (field; structFields(type)) {
@@ -1784,26 +1807,66 @@ struct BodyLowerer {
                 declarationName(field),
             ));
 
-            uint fieldEqual;
-            if (typeIsStruct(field.type))
-                fieldEqual = lowerStructEquality(field.type, leftField, rightField);
-            else {
-                fieldEqual = allocateTemporary;
-                if (typeIsDynamicArray(field.type))
-                    instructions ~= Instruction(ArrayEqual(
-                        fieldEqual,
-                        leftField,
-                        rightField,
-                        dynamicArrayDepth(field.type),
-                    ));
-                else
-                    instructions ~= Instruction(BinaryOp(
-                        fieldEqual,
-                        leftField,
-                        rightField,
-                        Operation.equal,
-                    ));
+            const fieldEqual = lowerValueEquality(
+                field.type,
+                leftField,
+                rightField,
+            );
+
+            if (!hasFields) {
+                result = fieldEqual;
+                hasFields = true;
+                continue;
             }
+
+            const combined = allocateTemporary;
+            instructions ~= Instruction(BinaryOp(
+                combined,
+                result,
+                fieldEqual,
+                Operation.bitwiseAnd,
+            ));
+            result = combined;
+        }
+
+        activeEqualityTypes.remove(equalityType);
+        if (hasFields)
+            return result;
+
+        result = allocateTemporary;
+        instructions ~= Instruction(ConstInt(result, 1));
+        return result;
+    }
+
+    uint lowerClassEquality(
+        imported!"dmd.mtype".Type type,
+        in uint left,
+        in uint right,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, ConstInt, Instruction,
+            Operation, StructGet;
+
+        bool hasFields;
+        uint result;
+        foreach (field; classFields(type)) {
+            const leftField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                leftField,
+                left,
+                declarationName(field),
+            ));
+            const rightField = allocateTemporary;
+            instructions ~= Instruction(StructGet(
+                rightField,
+                right,
+                declarationName(field),
+            ));
+
+            const fieldEqual = lowerValueEquality(
+                field.type,
+                leftField,
+                rightField,
+            );
 
             if (!hasFields) {
                 result = fieldEqual;
@@ -1829,72 +1892,197 @@ struct BodyLowerer {
         return result;
     }
 
-    uint lowerClassEquality(
+    uint lowerValueEquality(
         imported!"dmd.mtype".Type type,
         in uint left,
         in uint right,
     ) @safe {
-        import quickbite.ir.instruction: ArrayEqual, BinaryOp, ConstInt,
-            Instruction, Operation, StructGet;
+        import quickbite.ir.instruction: ArrayEqual, BinaryOp, Instruction,
+            Operation;
 
-        bool hasFields;
-        uint result;
-        foreach (field; classFields(type)) {
-            const leftField = allocateTemporary;
-            instructions ~= Instruction(StructGet(
-                leftField,
-                left,
-                declarationName(field),
-            ));
-            const rightField = allocateTemporary;
-            instructions ~= Instruction(StructGet(
-                rightField,
-                right,
-                declarationName(field),
-            ));
+        if (typeIsStruct(type))
+            return lowerStructEquality(type, left, right);
 
-            uint fieldEqual;
-            if (typeIsStruct(field.type))
-                fieldEqual = lowerStructEquality(field.type, leftField, rightField);
+        if (typeIsAssociativeArray(type))
+            return lowerAssocArrayEquality(type, left, right);
+
+        const result = allocateTemporary;
+        if (typeIsDynamicArray(type)) {
+            if (typeNeedsTypedEquality(dynamicArrayElementType(type)))
+                return lowerElementwiseArrayEquality(
+                    dynamicArrayElementType(type),
+                    left,
+                    right,
+                );
             else {
-                fieldEqual = allocateTemporary;
-                if (typeIsDynamicArray(field.type))
-                    instructions ~= Instruction(ArrayEqual(
-                        fieldEqual,
-                        leftField,
-                        rightField,
-                        dynamicArrayDepth(field.type),
-                    ));
-                else
-                    instructions ~= Instruction(BinaryOp(
-                        fieldEqual,
-                        leftField,
-                        rightField,
-                        Operation.equal,
-                    ));
+                instructions ~= Instruction(ArrayEqual(
+                    result,
+                    left,
+                    right,
+                    dynamicArrayDepth(type),
+                ));
+                return result;
             }
-
-            if (!hasFields) {
-                result = fieldEqual;
-                hasFields = true;
-                continue;
-            }
-
-            const combined = allocateTemporary;
-            instructions ~= Instruction(BinaryOp(
-                combined,
-                result,
-                fieldEqual,
-                Operation.bitwiseAnd,
-            ));
-            result = combined;
         }
 
-        if (hasFields)
-            return result;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            left,
+            right,
+            Operation.equal,
+        ));
+        return result;
+    }
 
-        result = allocateTemporary;
-        instructions ~= Instruction(ConstInt(result, 1));
+    uint lowerAssocArrayEquality(
+        imported!"dmd.mtype".Type type,
+        in uint left,
+        in uint right,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayEqual, AssocArrayKeys,
+            AssocArrayValues, BinaryOp, Instruction, Operation;
+
+        const leftKeys = allocateTemporary;
+        instructions ~= Instruction(AssocArrayKeys(leftKeys, left));
+        const rightKeys = allocateTemporary;
+        instructions ~= Instruction(AssocArrayKeys(rightKeys, right));
+        const keysEqual = allocateTemporary;
+        instructions ~= Instruction(ArrayEqual(
+            keysEqual,
+            leftKeys,
+            rightKeys,
+            arrayDepthForElementArray(assocArrayKeyType(type)),
+        ));
+
+        // auto: DMD type handles are mutable and reused by helper calls below.
+        auto valueType = assocArrayValueType(type);
+        const leftValues = allocateTemporary;
+        instructions ~= Instruction(AssocArrayValues(leftValues, left));
+        const rightValues = allocateTemporary;
+        instructions ~= Instruction(AssocArrayValues(rightValues, right));
+        uint valuesEqual;
+        // auto: AA removal needs a mutable string key.
+        auto valueTypeKey = typeChars(valueType);
+        if (valueTypeKey in activeEqualityTypes) {
+            import quickbite.ir.instruction: ConstInt;
+
+            valuesEqual = allocateTemporary;
+            instructions ~= Instruction(ConstInt(valuesEqual, 1));
+        } else if (typeNeedsTypedEquality(valueType))
+            valuesEqual = lowerElementwiseArrayEquality(
+                valueType,
+                leftValues,
+                rightValues,
+            );
+        else {
+            valuesEqual = allocateTemporary;
+            instructions ~= Instruction(ArrayEqual(
+                valuesEqual,
+                leftValues,
+                rightValues,
+                arrayDepthForElementArray(valueType),
+            ));
+        }
+
+        const result = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            keysEqual,
+            valuesEqual,
+            Operation.bitwiseAnd,
+        ));
+        return result;
+    }
+
+    uint lowerElementwiseArrayEquality(
+        imported!"dmd.mtype".Type elementType,
+        in uint left,
+        in uint right,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayIndex, ArrayLength, BinaryOp,
+            ConstInt, Copy, Instruction, Jump, JumpIfFalse, Operation;
+
+        const result = allocateTemporary;
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+        instructions ~= Instruction(Copy(result, one));
+
+        const leftLength = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(leftLength, left));
+        const rightLength = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(rightLength, right));
+        const lengthsEqual = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            lengthsEqual,
+            leftLength,
+            rightLength,
+            Operation.equal,
+        ));
+        size_t[] falseJumpIndices;
+        falseJumpIndices ~= instructions.length;
+        instructions ~= Instruction(JumpIfFalse(lengthsEqual, 0));
+
+        const index = allocateTemporary;
+        instructions ~= Instruction(ConstInt(index, 0));
+        const loopStart = instructions.length;
+        const inRange = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            inRange,
+            index,
+            leftLength,
+            Operation.lessThan,
+        ));
+        const doneJumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(inRange, 0));
+
+        const leftElement = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(leftElement, left, index));
+        const rightElement = allocateTemporary;
+        instructions ~= Instruction(ArrayIndex(rightElement, right, index));
+        const elementsEqual = lowerValueEquality(
+            elementType,
+            leftElement,
+            rightElement,
+        );
+        falseJumpIndices ~= instructions.length;
+        instructions ~= Instruction(JumpIfFalse(elementsEqual, 0));
+
+        const nextIndex = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            nextIndex,
+            index,
+            one,
+            Operation.add,
+        ));
+        instructions ~= Instruction(Copy(index, nextIndex));
+        instructions ~= Instruction(Jump(
+            cast(int) loopStart - cast(int) instructions.length,
+        ));
+
+        const successJumpIndex = instructions.length;
+        instructions ~= Instruction(Jump(0));
+        const falseIndex = instructions.length;
+        const zero = allocateTemporary;
+        instructions ~= Instruction(ConstInt(zero, 0));
+        instructions ~= Instruction(Copy(result, zero));
+        const endIndex = instructions.length;
+
+        foreach (falseJumpIndex; falseJumpIndices)
+            replaceJumpOffset(
+                instructions,
+                cast(uint) falseJumpIndex,
+                cast(int) (falseIndex - falseJumpIndex - 1),
+            );
+        replaceJumpOffset(
+            instructions,
+            cast(uint) doneJumpIndex,
+            cast(int) (successJumpIndex - doneJumpIndex - 1),
+        );
+        replaceJumpOffset(
+            instructions,
+            cast(uint) successJumpIndex,
+            cast(int) (endIndex - successJumpIndex),
+        );
         return result;
     }
 
@@ -2062,7 +2250,7 @@ struct BodyLowerer {
 
         enforceCallArgumentCount(call, 1);
         result = lowerTruthValue(lowerExpression(callArguments(call)[0], lowerer));
-        instructions ~= Instruction(Assert_(result));
+        instructions ~= Instruction(Assert_(result, "enforce"));
         return true;
     }
 
@@ -2096,12 +2284,22 @@ struct BodyLowerer {
             return false;
 
         const tableIndex = lowerExpression(index.e2, lowerer);
+        // auto: keep the writeback arrays mutable for emission below.
+        auto savedArrayWritebacks = pendingRefArrayWritebacks;
+        auto savedStructWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = [];
+        pendingRefStructWritebacks = [];
         // `auto` because the IR call owns a mutable arguments array.
         auto arguments = lowerCallArgumentsForFunction(
             call,
             functions[0],
             lowerer,
         );
+        // auto: keep the writeback arrays mutable for emission below.
+        auto arrayWritebacks = pendingRefArrayWritebacks;
+        auto structWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = savedArrayWritebacks;
+        pendingRefStructWritebacks = savedStructWritebacks;
 
         result = allocateTemporary;
         size_t[] endJumpIndices;
@@ -2131,6 +2329,18 @@ struct BodyLowerer {
                 arguments,
             ));
             instructions ~= Instruction(Copy(result, callResult));
+            foreach (writeback; arrayWritebacks)
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".ArraySet(
+                    writeback.array,
+                    writeback.index,
+                    writeback.value,
+                ));
+            foreach (writeback; structWritebacks)
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".StructSet(
+                    writeback.struct_,
+                    writeback.fieldName,
+                    writeback.value,
+                ));
 
             const endJumpIndex = instructions.length;
             instructions ~= Instruction(Jump(0));
@@ -2165,14 +2375,36 @@ struct BodyLowerer {
             return false;
 
         const callee = lowerExpression(pointer.e1, lowerer);
+        // auto: keep the writeback arrays mutable for emission below.
+        auto savedArrayWritebacks = pendingRefArrayWritebacks;
+        auto savedStructWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = [];
+        pendingRefStructWritebacks = [];
         // `auto` because the IR call owns a mutable arguments array.
         auto arguments = lowerIndirectCallArguments(call, lowerer);
+        // auto: keep the writeback arrays mutable for emission below.
+        auto arrayWritebacks = pendingRefArrayWritebacks;
+        auto structWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = savedArrayWritebacks;
+        pendingRefStructWritebacks = savedStructWritebacks;
         result = allocateTemporary;
         instructions ~= Instruction(IndirectCall(
             result,
             callee,
             arguments,
         ));
+        foreach (writeback; arrayWritebacks)
+            instructions ~= Instruction(imported!"quickbite.ir.instruction".ArraySet(
+                writeback.array,
+                writeback.index,
+                writeback.value,
+            ));
+        foreach (writeback; structWritebacks)
+            instructions ~= Instruction(imported!"quickbite.ir.instruction".StructSet(
+                writeback.struct_,
+                writeback.fieldName,
+                writeback.value,
+            ));
         return true;
     }
 
@@ -2289,7 +2521,7 @@ struct BodyLowerer {
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
-            instructions ~= Instruction(Assert_(result));
+            instructions ~= Instruction(Assert_(result, "_d_arraybounds"));
             return true;
         }
 
@@ -3134,29 +3366,47 @@ struct BodyLowerer {
         imported!"dmd.mtype".Type aggregateType,
         imported!"dmd.declaration".VarDeclaration field,
     ) @safe {
-        import quickbite.ir.instruction: ArrayLiteral, Instruction, StructNew,
-            StructSet;
+        import quickbite.ir.instruction: Instruction, StructSet;
 
-        uint value;
-        if (typeIsDynamicArray(field.type)) {
-            value = allocateTemporary;
-            instructions ~= Instruction(ArrayLiteral(value, []));
-        } else if (typeIsStruct(field.type)) {
-            value = allocateTemporary;
-            instructions ~= Instruction(StructNew(value));
-            lowerDefaultStructFields(value, field.type);
-        } else if (typeIsAppender(aggregateType) && typePointsToStruct(field.type)) {
-            value = allocateTemporary;
-            instructions ~= Instruction(StructNew(value));
-            lowerDefaultStructFields(value, pointerTarget(field.type));
-        } else
+        if (
+            !typeNeedsDefaultValue(field.type) &&
+            !(typeIsAppender(aggregateType) && typePointsToStruct(field.type))
+        )
             return;
 
+        const value = typeIsAppender(aggregateType) && typePointsToStruct(field.type)
+            ? lowerDefaultValue(pointerTarget(field.type))
+            : lowerDefaultValue(field.type);
         instructions ~= Instruction(StructSet(
             struct_,
             declarationName(field),
             value,
         ));
+    }
+
+    uint lowerDefaultValue(imported!"dmd.mtype".Type type) @safe {
+        import quickbite.ir.instruction: ArrayLiteral, AssocArrayLiteral,
+            ConstInt, Instruction, StructNew;
+
+        const value = allocateTemporary;
+        if (typeIsDynamicArray(type)) {
+            instructions ~= Instruction(ArrayLiteral(value, []));
+            return value;
+        }
+
+        if (typeIsAssociativeArray(type)) {
+            instructions ~= Instruction(AssocArrayLiteral(value, [], []));
+            return value;
+        }
+
+        if (typeIsStruct(type)) {
+            instructions ~= Instruction(StructNew(value));
+            lowerDefaultStructFields(value, type);
+            return value;
+        }
+
+        instructions ~= Instruction(ConstInt(value, 0));
+        return value;
     }
 
     uint lowerNewStructArgument(
@@ -3697,6 +3947,12 @@ struct BodyLowerer {
                             indexValue,
                             value,
                         );
+                        arrayElementAliasesByName[declarationName(variable)] =
+                            ArrayElementAlias(
+                                array,
+                                indexValue,
+                                value,
+                            );
                         return value;
                     }
                 }
@@ -4287,7 +4543,7 @@ struct BodyLowerer {
         replaceJumpOffset(
             instructions,
             cast(uint) endJumpIndex,
-            cast(int) (instructions.length - endJumpIndex),
+            cast(int) (instructions.length - endJumpIndex - 1),
         );
         return source;
     }
@@ -4297,14 +4553,56 @@ struct BodyLowerer {
         imported!"dmd.expression".Expression sourceExpression,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: ArraySetLength, Instruction;
+        import quickbite.ir.instruction: ArrayLength, ArraySet, ArraySetLength,
+            BinaryOp, ConstInt, Copy, Instruction, Jump, JumpIfFalse, Operation;
 
         const array = lowerExpression(length.e1, lowerer);
+        const oldLength = allocateTemporary;
+        instructions ~= Instruction(ArrayLength(oldLength, array));
         const source = lowerExpression(sourceExpression, lowerer);
         instructions ~= Instruction(ArraySetLength(
             array,
             source,
         ));
+        if (!typeNeedsDefaultArrayElement(dynamicArrayElementType(length.e1.type)))
+            return source;
+
+        const one = allocateTemporary;
+        instructions ~= Instruction(ConstInt(one, 1));
+        const index = allocateTemporary;
+        instructions ~= Instruction(Copy(index, oldLength));
+        const loopStart = instructions.length;
+        const inRange = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            inRange,
+            index,
+            source,
+            Operation.lessThan,
+        ));
+        const endJumpIndex = instructions.length;
+        instructions ~= Instruction(JumpIfFalse(inRange, 0));
+        const value = lowerDefaultValue(dynamicArrayElementType(length.e1.type));
+        instructions ~= Instruction(ArraySet(
+            array,
+            index,
+            value,
+        ));
+        const nextIndex = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            nextIndex,
+            index,
+            one,
+            Operation.add,
+        ));
+        instructions ~= Instruction(Copy(index, nextIndex));
+        instructions ~= Instruction(Jump(
+            cast(int) loopStart - cast(int) instructions.length,
+        ));
+        replaceJumpOffset(
+            instructions,
+            cast(uint) endJumpIndex,
+            cast(int) (instructions.length - endJumpIndex - 1),
+        );
         return source;
     }
 
@@ -5375,7 +5673,6 @@ struct BodyLowerer {
         enum unsupported =
             STC.variadic |
             STC.alias_ |
-            STC.auto_ |
             STC.lazy_;
         return (parameter.storageClass & unsupported) != STC.none;
     }
@@ -5390,7 +5687,7 @@ struct BodyLowerer {
     bool typeParameterIsRef(imported!"dmd.mtype".Parameter parameter) @safe {
         import dmd.astenums: STC;
 
-        enum refLike = STC.ref_ | STC.out_;
+        enum refLike = STC.ref_ | STC.out_ | STC.auto_;
         return (parameter.storageClass & refLike) != STC.none;
     }
 
@@ -5425,22 +5722,54 @@ struct BodyLowerer {
         auto parameters = function_.parameters !is null
             ? functionParameterSlice(function_)
             : null;
+        auto typeParameters = function_.parameters is null
+            ? functionTypeParameters(function_)
+            : null;
         foreach (i, argument; callArguments(call)) {
             VarDeclaration parameter;
             if (i < parameters.length)
                 parameter = parameters[i];
 
+            const isRef = callParameterIsRef(parameters, typeParameters, i);
+            if (isRef) {
+                if (auto index = arrayElementAliasIndex(argument)) {
+                    import quickbite.ir.instruction: ArrayIndex, Instruction;
+
+                    const array = lowerExpression(index.e1, lowerer);
+                    const indexValue = lowerExpression(index.e2, lowerer);
+                    const value = allocateTemporary;
+                    instructions ~= Instruction(ArrayIndex(
+                        value,
+                        array,
+                        indexValue,
+                    ));
+                    pendingRefArrayWritebacks ~= ArrayElementAlias(
+                        array,
+                        indexValue,
+                        value,
+                    );
+                    arguments ~= value;
+                    continue;
+                }
+            }
+
             const source = lowerCallArgument(argument, parameter, lowerer);
-            if (i < parameters.length && parameterIsRef(parameters[i])) {
+            if (isRef) {
                 if (auto variable = argument.isVarExp) {
                     if (auto var = variable.var.isVarDeclaration) {
                         if (auto alias_ = var in arrayElementAliases)
                             pendingRefArrayWritebacks ~= *alias_;
                     }
                 }
+                if (auto identifier = argument.isIdentifierExp) {
+                    if (auto alias_ = identifierName(identifier) in
+                        arrayElementAliasesByName)
+                    {
+                        pendingRefArrayWritebacks ~= *alias_;
+                    }
+                }
             }
-            if (i < parameters.length
-                && !parameterIsRef(parameters[i])
+            if (!isRef
                 && typeIsStruct(argument.type))
             {
                 arguments ~= copyStructByValue(argument.type, source);
@@ -5450,6 +5779,20 @@ struct BodyLowerer {
         }
 
         return appendMissingTypeFunctionArguments(arguments, function_);
+    }
+
+    bool callParameterIsRef(
+        imported!"dmd.declaration".VarDeclaration[] parameters,
+        imported!"dmd.mtype".Parameter[] typeParameters,
+        in size_t index,
+    ) @safe {
+        if (index < parameters.length)
+            return parameterIsRef(parameters[index]);
+
+        if (index < typeParameters.length)
+            return typeParameterIsRef(typeParameters[index]);
+
+        return false;
     }
 
     uint[] appendMissingTypeFunctionArguments(
@@ -5480,8 +5823,29 @@ struct BodyLowerer {
         if (call.arguments is null)
             return arguments;
 
-        foreach (argument; callArguments(call))
+        foreach (argument; callArguments(call)) {
+            if (auto index = arrayElementAliasIndex(argument)) {
+                import quickbite.ir.instruction: ArrayIndex, Instruction;
+
+                const array = lowerExpression(index.e1, lowerer);
+                const indexValue = lowerExpression(index.e2, lowerer);
+                const value = allocateTemporary;
+                instructions ~= Instruction(ArrayIndex(
+                    value,
+                    array,
+                    indexValue,
+                ));
+                pendingRefArrayWritebacks ~= ArrayElementAlias(
+                    array,
+                    indexValue,
+                    value,
+                );
+                arguments ~= value;
+                continue;
+            }
+
             arguments ~= lowerCallArgument(argument, null, lowerer);
+        }
 
         return arguments;
     }
@@ -6644,6 +7008,65 @@ private uint dynamicArrayDepth(imported!"dmd.mtype".Type type) @trusted {
         current = current.toBasetype.nextOf;
     }
     return depth;
+}
+
+private uint arrayDepthForElementArray(imported!"dmd.mtype".Type type) @safe {
+    if (typeIsDynamicArray(type))
+        return dynamicArrayDepth(type) + 1;
+
+    return 1;
+}
+
+private imported!"dmd.mtype".Type dynamicArrayElementType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    auto array = type.toBasetype.isTypeDArray;
+    return array is null ? null : array.nextOf;
+}
+
+private imported!"dmd.mtype".Type assocArrayKeyType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    auto array = type.toBasetype.isTypeAArray;
+    return array is null ? null : array.index;
+}
+
+private imported!"dmd.mtype".Type assocArrayValueType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    auto array = type.toBasetype.isTypeAArray;
+    return array is null ? null : array.nextOf;
+}
+
+private bool typeNeedsTypedEquality(imported!"dmd.mtype".Type type) @safe {
+    if (typeIsStruct(type) || typeIsAssociativeArray(type))
+        return true;
+
+    if (typeIsDynamicArray(type))
+        return typeNeedsTypedEquality(dynamicArrayElementType(type));
+
+    return false;
+}
+
+private bool typeNeedsDefaultArrayElement(imported!"dmd.mtype".Type type) @safe {
+    return typeIsDynamicArray(type) ||
+        typeIsAssociativeArray(type) ||
+        typeIsStruct(type);
+}
+
+private bool typeNeedsDefaultValue(imported!"dmd.mtype".Type type) @safe {
+    return typeIsDynamicArray(type) ||
+        typeIsAssociativeArray(type) ||
+        typeIsStruct(type);
 }
 
 private bool typeIsAssociativeArray(imported!"dmd.mtype".Type type) @trusted {
