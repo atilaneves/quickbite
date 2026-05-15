@@ -1388,6 +1388,8 @@ private struct BodyWalker {
                 return Value(0L);
             if (expressionChars(call.e1) == "condition")
                 return Value(1L);
+            if (expressionChars(call.e1) == "fallbackSeed")
+                return Value(1L);
             string argStr;
             if (call.arguments !is null)
                 foreach (arg; callArguments(call))
