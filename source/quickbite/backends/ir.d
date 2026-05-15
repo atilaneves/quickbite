@@ -2,6 +2,8 @@ module quickbite.backends.ir;
 
 private:
 
+private enum unittestAssertionFailureMessage = "Unittest assertion failed.";
+
 public final class IrExecutor : imported!"quickbite.executor".Executor {
     public void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
@@ -41,6 +43,9 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
         try {
             executeUnitTest(module_, test);
         } catch (Exception exception) {
+            if (isUnittestAssertionFailure(exception))
+                throw exception;
+
             import std.conv: text;
 
             throw new Exception(text(
@@ -51,6 +56,10 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
             ));
         }
     }
+}
+
+private bool isUnittestAssertionFailure(in Exception exception) @safe pure nothrow {
+    return exception.msg == unittestAssertionFailureMessage;
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(
@@ -126,6 +135,9 @@ long executeFunction(
                     arrayAliases,
                 );
             } catch (Exception exception) {
+                if (isUnittestAssertionFailure(exception))
+                    throw exception;
+
                 import std.conv: text;
 
                 throw new Exception(text(
@@ -272,6 +284,9 @@ ExecutionResult executeInstructions(
                 arrayAliases,
             );
         } catch (Exception exception) {
+            if (isUnittestAssertionFailure(exception))
+                throw exception;
+
             import std.conv: text;
 
             throw new Exception(text(
@@ -427,23 +442,7 @@ InstructionEffect executeInstruction(
         },
         (Assert_ instruction) {
             if (!readTemporaryValue(temporaries, instruction.condition)) {
-                import std.conv: text;
-
-                throw new Exception(text(
-                    "Unittest assertion failed: condition ",
-                    instruction.condition,
-                    " (",
-                    instruction.message,
-                    ")",
-                    ", temporaries ",
-                    temporaries,
-                    ", arrays ",
-                    arrays,
-                    ", structs ",
-                    structs,
-                    ", assocArrays ",
-                    assocArrays,
-                ));
+                throw new Exception(unittestAssertionFailureMessage);
             }
 
             return nextInstruction;
