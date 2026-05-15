@@ -919,22 +919,42 @@ private struct BodyWalker {
                         return Value(cast(long) assocKeys.keyStructs.length);
             if (auto var = len.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl.type !is null &&
+                        varDecl.type.toBasetype.isTypeAArray !is null) {
+                        if (varDecl in locals) {
+                            const arrayId = locals[varDecl].assocArrayId;
+                            return Value(assocArrayLength(arrayId, interpreter));
+                        }
+                        return Value(0L);
+                    }
+            if (auto var = len.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
-                        return Value(cast(long) locals[varDecl].asArray.length);
+                        return Value(arrayValueLength(locals[varDecl]));
             if (auto dotVar = len.e1.isDotVarExp)
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
                         if (auto fields = ownerDecl in structFields)
-                            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                if (fieldDecl.type !is null &&
+                                    fieldDecl.type.toBasetype.isTypeAArray !is null) {
+                                    const arrayId = structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(0L),
+                                    ).assocArrayId;
+                                    return Value(
+                                        assocArrayLength(arrayId, interpreter),
+                                    );
+                                }
                                 return Value(
-                                    cast(long) structFieldValue(
+                                    arrayValueLength(structFieldValue(
                                             *fields,
                                             fieldDecl,
                                             Value((long[]).init),
-                                        )
-                                        .asArray
-                                        .length,
+                                        )),
                                 );
+                            }
             if (len.e1.isCallExp)
                 return Value(cast(long) runExpression(len.e1, interpreter).asArray.length);
             if (auto dotVar = len.e1.isDotVarExp)
@@ -4852,6 +4872,17 @@ private long[] asArray(Value value) @safe pure {
             throw new Exception("Expected array, got AA.");
             return (long[]).init;
         },
+    );
+}
+
+private long arrayValueLength(Value value) @safe pure {
+    import std.sumtype: match;
+    return value.match!(
+        (long[] a) => cast(long) a.length,
+        (long _) => 0L,
+        (LocalPtr _) => 0L,
+        (ClassRef _) => 0L,
+        (AssocArrayRef _) => 0L,
     );
 }
 
