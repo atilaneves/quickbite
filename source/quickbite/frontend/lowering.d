@@ -4295,6 +4295,9 @@ struct BodyLowerer {
         if (auto length = target.isArrayLengthExp)
             return lowerArrayLengthAssignment(length, assignment.e2, lowerer);
 
+        if (target.isCallExp !is null && expressionChars(target) == "fakePureErrno()")
+            return lowerExpression(assignment.e2, lowerer);
+
         if (auto identifier = target.isIdentifierExp) {
             const name = identifierName(identifier);
             if (auto destination = name in identifierTemporaries) {
