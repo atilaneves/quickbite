@@ -3296,7 +3296,12 @@ struct BodyLowerer {
                 if (isDefaultStructInitializer(initializer.exp))
                     return destination;
 
-                const source = lowerInitializerExpression(initializer.exp, lowerer);
+                const source = lowerStructInitializerExpression(
+                    variable,
+                    destination,
+                    initializer.exp,
+                    lowerer,
+                );
                 if (source != destination)
                     instructions ~= Instruction(Copy(destination, source));
 
@@ -3403,6 +3408,58 @@ struct BodyLowerer {
         return construct !is null
             ? lowerExpression(construct.e2, lowerer)
             : lowerExpression(expression, lowerer);
+    }
+
+    uint lowerStructInitializerExpression(
+        VarDeclaration variable,
+        in uint destination,
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (auto comma = expression.isCommaExp)
+            if (isZeroInitializationOfVariable(comma.e1, variable)) {
+                lowerExpression(comma.e2, lowerer);
+                return destination;
+            }
+
+        return lowerInitializerExpression(expression, lowerer);
+    }
+
+    bool isZeroInitializationOfVariable(
+        imported!"dmd.expression".Expression expression,
+        VarDeclaration variable,
+    ) @safe {
+        if (auto assignment = expression.isAssignExp)
+            return assignmentIsZeroInitializationOfVariable(assignment, variable);
+
+        if (auto assignment = expression.isConstructExp)
+            return assignmentIsZeroInitializationOfVariable(assignment, variable);
+
+        if (auto assignment = expression.isBlitExp)
+            return assignmentIsZeroInitializationOfVariable(assignment, variable);
+
+        if (auto assignment = expression.isLoweredAssignExp)
+            return assignmentIsZeroInitializationOfVariable(assignment, variable);
+
+        return false;
+    }
+
+    bool assignmentIsZeroInitializationOfVariable(Assignment)(
+        Assignment assignment,
+        VarDeclaration variable,
+    ) @safe {
+        return expressionTargetsVariable(assignment.e1, variable) &&
+            isZeroInitializer(assignment.e2);
+    }
+
+    bool expressionTargetsVariable(
+        imported!"dmd.expression".Expression expression,
+        VarDeclaration variable,
+    ) @safe {
+        if (auto target = expression.isVarExp)
+            return target.var.isVarDeclaration is variable;
+
+        return false;
     }
 
     bool isDefaultStructInitializer(
