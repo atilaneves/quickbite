@@ -706,6 +706,37 @@ private struct BodyWalker {
                                     return Value(oldVal);
                                 }
             }
+            if (post.op == EXP.minusMinus) {
+                if (auto var = post.e1.isVarExp)
+                    if (auto varDecl = var.var.isVarDeclaration)
+                        if (varDecl in locals) {
+                            const oldVal = locals[varDecl].asLong;
+                            locals[varDecl] = Value(
+                                coerceIntegerToType(oldVal - 1, varDecl.type),
+                            );
+                            return Value(oldVal);
+                        }
+                if (auto dotVar = post.e1.isDotVarExp)
+                    if (auto thisExp = dotVar.e1.isThisExp)
+                        if (auto thisDecl = thisExp.var.isVarDeclaration)
+                            if (auto fields = thisDecl in structFields)
+                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                    const oldVal = structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(0L),
+                                    ).asLong;
+                                    assignStructField(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(coerceIntegerToType(
+                                            oldVal - 1,
+                                            fieldDecl.type,
+                                        )),
+                                    );
+                                    return Value(oldVal);
+                                }
+            }
             unsupported;
         }
 
