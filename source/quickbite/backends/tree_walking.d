@@ -1920,8 +1920,35 @@ private struct BodyWalker {
             call.arguments !is null &&
             call.arguments.length == 1)
             literal = callArguments(call)[0].isStructLiteralExp;
-        if (literal is null)
-            return false;
+        if (literal is null) {
+            if (call.arguments is null || call.arguments.length != 1)
+                return false;
+
+            auto argument = callArguments(call)[0];
+            try {
+                const bytes = runExpression(argument, interpreter).asArray;
+                if (decerealisedScalarByteCount(arrayElementType(argument.type)) == 1) {
+                    long[] cerealised;
+                    appendUshort(cerealised, cast(long) bytes.length);
+                    cerealised ~= bytes;
+                    value = Value(cerealised);
+                    return true;
+                }
+            } catch (Exception) {
+            }
+
+            const byteCount = decerealisedScalarByteCount(argument.type);
+            if (byteCount == 0)
+                return false;
+            long[] cerealised;
+            appendIntegerBytes(
+                cerealised,
+                runExpression(argument, interpreter).asLong,
+                byteCount,
+            );
+            value = Value(cerealised);
+            return true;
+        }
 
         Value[VarDeclaration] fields = runStructLiteralExpression(
             literal,
