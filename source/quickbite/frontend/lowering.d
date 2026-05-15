@@ -2648,6 +2648,17 @@ struct BodyLowerer {
             return true;
         }
 
+        if (
+            functionIdentifier(call.f) == "malloc" ||
+            lowerer.functionName(call.f) == "malloc"
+        ) {
+            enforceCallArgumentCount(call, 1);
+            lowerExpression(callArguments(call)[0], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 1));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "fabs") {
             enforceCallArgumentCount(call, 1);
             result = lowerExpression(callArguments(call)[0], lowerer);
