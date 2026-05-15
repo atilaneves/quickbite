@@ -3651,6 +3651,13 @@ private struct BodyWalker {
         imported!"dmd.expression".AssignExp assign,
         ref Interpreter interpreter,
     ) {
+        if (auto var = assign.e1.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (varDecl in structFields) {
+                    structFields[varDecl] = runStructInitializer(assign.e2, interpreter);
+                    return Value(0L);
+                }
+
         const value = runExpression(assign.e2, interpreter);
 
         if (auto var = assign.e1.isVarExp)
