@@ -1287,6 +1287,8 @@ private struct BodyWalker {
             return Value(0L);
         if (tryRunShouldEqual(call, interpreter))
             return Value(0L);
+        if (tryRunShouldThrow(call, interpreter))
+            return Value(0L);
         if (tryRunShouldNotThrow(call, interpreter))
             return Value(0L);
         if (tryRunRegisterChildClass(call, interpreter))
@@ -1665,6 +1667,33 @@ private struct BodyWalker {
             ));
         }
         return true;
+    }
+
+    private bool tryRunShouldThrow(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null)
+            return false;
+        const name = call.f.ident.toString;
+        if (name != "shouldThrow" && name != "shouldThrowWithMessage")
+            return false;
+
+        imported!"dmd.expression".Expression throwingExpression;
+        if (call.arguments !is null && call.arguments.length > 0)
+            throwingExpression = callArguments(call)[0];
+        else if (auto dotVar = call.e1.isDotVarExp)
+            throwingExpression = dotVar.e1;
+        else
+            return false;
+
+        try {
+            runLazyArgument(throwingExpression, interpreter);
+        } catch (Exception) {
+            return true;
+        }
+
+        throw new Exception("Expression did not throw.");
     }
 
     private bool tryRunUnitThreadedWrapperValue(
