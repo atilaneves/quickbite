@@ -2672,6 +2672,14 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "gc_reserveArrayCapacity") {
+            enforceCallArgumentCount(call, 3);
+            lowerExpression(callArguments(call)[0], lowerer);
+            result = lowerExpression(callArguments(call)[1], lowerer);
+            lowerExpression(callArguments(call)[2], lowerer);
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
