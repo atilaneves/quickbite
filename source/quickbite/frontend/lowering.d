@@ -1406,6 +1406,9 @@ struct BodyLowerer {
         }
 
         if (auto variable = expression.isVarExp) {
+            if (expressionChars(expression) == "$")
+                return lowerDollar;
+
             if (auto var = variable.var.isVarDeclaration) {
                 if (var.ident !is null && var.ident.toString == "__ctfe") {
                     // __ctfe is false at runtime.
@@ -1430,9 +1433,6 @@ struct BodyLowerer {
                 if (var._init !is null)
                     return lowerImplicitInitializedVariable(var, lowerer);
             }
-
-            if (expressionChars(expression) == "$")
-                return lowerDollar;
 
             import std.conv: text;
 
