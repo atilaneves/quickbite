@@ -63,6 +63,7 @@ private struct CallArgument {
     private bool isStruct;
     private bool isStructRef; // whole struct passed as ref (refSource = its VarDeclaration)
     private bool isTemporaryRef;
+    private bool isGlobalRef;
 }
 
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
@@ -1676,6 +1677,18 @@ private struct BodyWalker {
                                 );
                                 continue;
                             }
+                    if (auto var = arg.isVarExp)
+                        if (auto varDecl = var.var.isVarDeclaration) {
+                            Value globalRefValue;
+                            if (tryGetGlobalValue(varDecl, interpreter, globalRefValue)) {
+                                CallArgument globalRefArg;
+                                globalRefArg.value = globalRefValue;
+                                globalRefArg.refSource = varDecl;
+                                globalRefArg.isGlobalRef = true;
+                                args ~= globalRefArg;
+                                continue;
+                            }
+                        }
                     if (auto dotVar = arg.isDotVarExp)
                         if (auto fieldDecl = dotVar.var.isVarDeclaration)
                             if (isStructType(fieldDecl.type))
@@ -4503,10 +4516,14 @@ private struct BodyWalker {
             } else if (args[i].isTemporaryRef) {
                 ++scalarIndex;
             } else if (args[i].refSource !is null) {
-                locals[args[i].refSource] = coerceValueToType(
+                const value = coerceValueToType(
                     refValues[scalarIndex],
                     args[i].refSource.type,
                 );
+                if (args[i].isGlobalRef)
+                    assignGlobalValue(args[i].refSource, value, interpreter);
+                else
+                    locals[args[i].refSource] = value;
                 ++scalarIndex;
             } else if (args[i].refClassId != 0) {
                 if (args[i].refField is null)
@@ -6353,6 +6370,23 @@ private struct BodyWalker {
                 return true;
             }
         return false;
+    }
+
+    private void assignGlobalValue(
+        VarDeclaration declaration,
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (declaration in interpreter.globals) {
+            interpreter.globals[declaration] = value;
+            return;
+        }
+        foreach (existingDeclaration; interpreter.globals.byKey)
+            if (sameStructField(existingDeclaration, declaration)) {
+                interpreter.globals[existingDeclaration] = value;
+                return;
+            }
+        interpreter.globals[declaration] = value;
     }
 
     private bool tryGetStructFieldMap(
