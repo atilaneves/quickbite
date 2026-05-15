@@ -768,8 +768,23 @@ private struct BodyWalker {
         if (auto literal = expression.isArrayLiteralExp) {
             long[] elements;
             if (literal.elements !is null)
-                foreach (elem; arrayLiteralElements(literal))
-                    elements ~= runExpression(elem, interpreter).asLong;
+                foreach (elem; arrayLiteralElements(literal)) {
+                    import std.sumtype: match;
+
+                    Value value = runExpression(elem, interpreter);
+                    value.match!(
+                        (long l) {
+                            elements ~= l;
+                        },
+                        (long[] array) {
+                            elements ~= cast(long) array.length;
+                            elements ~= array;
+                        },
+                        (LocalPtr _) {},
+                        (ClassRef _) {},
+                        (AssocArrayRef _) {},
+                    );
+                }
             return Value(elements);
         }
 
@@ -820,6 +835,18 @@ private struct BodyWalker {
         }
 
         if (auto index = expression.isIndexExp) {
+            if (auto var = index.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (varDecl in locals) {
+                        const arrayId = locals[varDecl].assocArrayId;
+                        if (arrayId != 0 && arrayId in interpreter.assocArrays) {
+                            const key = runExpression(index.e2, interpreter);
+                            const array = interpreter.assocArrays[arrayId];
+                            foreach (i, existingKey; array.keys)
+                                if (valuesEqual(existingKey, key, interpreter))
+                                    return array.values[i];
+                        }
+                    }
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals) {
@@ -1234,6 +1261,9 @@ private struct BodyWalker {
         import std.conv: text;
         import dmd.id: Id;
 
+        if (tryRunReset(call, interpreter))
+            return Value(0L);
+
         if (call.f is null) {
             if (tryRunChildCerealiserDelegate(call, interpreter))
                 return Value(0L);
@@ -1278,6 +1308,10 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunAssocArrayDecerealiseValue(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunAssocArrayDecerealiseGrain(call, interpreter))
+            return Value(0L);
+        if (tryRunArrayDecerealiseGrain(call, interpreter))
+            return Value(0L);
         if (tryRunArrayCerealAppend(call, interpreter))
             return Value(0L);
         if (tryRunAssocArrayCerealAppend(call, interpreter))
@@ -1304,6 +1338,8 @@ private struct BodyWalker {
             return Value(0L);
         if (tryRunGrainUByte(call, interpreter))
             return Value(0L);
+        if (tryRunReadBits(call, rangeValue, interpreter))
+            return rangeValue;
 
         if (call.f.fbody is null)
             throw new Exception(text(
@@ -1679,14 +1715,21 @@ private struct BodyWalker {
         if (call.f.ident is null)
             return false;
         const name = call.f.ident.toString;
-        if (name != "shouldThrow" && name != "shouldThrowWithMessage")
+        import std.algorithm.searching: canFind;
+
+        const callee = expressionChars(call.e1);
+        if (name == "shouldNotThrow" || callee.canFind("shouldNotThrow"))
+            return false;
+        if (name != "shouldThrow" &&
+            name != "shouldThrowWithMessage" &&
+            !callee.canFind("shouldThrow"))
             return false;
 
         imported!"dmd.expression".Expression throwingExpression;
-        if (call.arguments !is null && call.arguments.length > 0)
-            throwingExpression = callArguments(call)[0];
-        else if (auto dotVar = call.e1.isDotVarExp)
+        if (auto dotVar = call.e1.isDotVarExp)
             throwingExpression = dotVar.e1;
+        else if (call.arguments !is null && call.arguments.length > 0)
+            throwingExpression = callArguments(call)[0];
         else
             return false;
 
@@ -1879,10 +1922,146 @@ private struct BodyWalker {
             return false;
         if (call.type is null || call.type.toBasetype.isTypeAArray is null)
             return false;
+        if (tryReadDecerealisedAssocArray(call, value, interpreter))
+            return true;
         if (interpreter.lastAssocArrayRef == 0)
             return false;
 
         value = Value(AssocArrayRef(interpreter.lastAssocArrayRef));
+        return true;
+    }
+
+    private bool tryReadDecerealisedAssocArray(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+        return tryReadDecerealisedAssocArrayFromOwner(
+            owner,
+            call.type,
+            value,
+            interpreter,
+        );
+    }
+
+    private bool tryRunAssocArrayDecerealiseGrain(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "grain")
+            return false;
+        if (call.arguments is null)
+            return false;
+
+        imported!"dmd.expression".Expression ownerExpression;
+        imported!"dmd.expression".Expression refArgument;
+        if (call.arguments.length == 1) {
+            auto dotVar = call.e1.isDotVarExp;
+            if (dotVar is null)
+                return false;
+            ownerExpression = dotVar.e1;
+            refArgument = callArguments(call)[0];
+        } else if (call.arguments.length == 2) {
+            ownerExpression = callArguments(call)[0];
+            refArgument = callArguments(call)[1];
+        } else {
+            return false;
+        }
+
+        auto owner = structFieldsOwner(ownerExpression);
+        if (owner is null)
+            return false;
+        auto var = refArgument.isVarExp;
+        if (var is null)
+            return false;
+        auto varDecl = var.var.isVarDeclaration;
+        if (varDecl is null ||
+            varDecl.type is null ||
+            varDecl.type.toBasetype.isTypeAArray is null)
+            return false;
+
+        Value value;
+        if (!tryReadDecerealisedAssocArrayFromOwner(
+            owner,
+            varDecl.type,
+            value,
+            interpreter,
+        ))
+            return false;
+
+        assignRefArgument(refArgument, value, interpreter);
+        return true;
+    }
+
+    private bool tryReadDecerealisedAssocArrayFromOwner(
+        VarDeclaration owner,
+        imported!"dmd.mtype".Type type,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (type is null)
+            return false;
+        auto arrayType = type.toBasetype.isTypeAArray;
+        if (arrayType is null)
+            return false;
+
+        const keyByteCount = decerealisedScalarByteCount(arrayType.index);
+        const valueByteCount = decerealisedScalarByteCount(arrayElementType(type));
+        if (keyByteCount == 0 || valueByteCount == 0)
+            return false;
+
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+        long[] bytes = structFieldValue(
+            ownerFields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+
+        size_t headerByteCount;
+        size_t length;
+        if (!tryReadDecerealisedCollectionLength(
+            bytes,
+            keyByteCount + valueByteCount,
+            headerByteCount,
+            length,
+        ))
+            return false;
+
+        AssocArray array;
+        size_t cursor = headerByteCount;
+        foreach (_; 0 .. length) {
+            const keyEnd = cursor + keyByteCount;
+            array.keyStructs ~= null;
+            array.keys ~= Value(coerceIntegerToType(
+                readBigEndian(bytes[cursor .. keyEnd]),
+                arrayType.index,
+            ));
+            cursor = keyEnd;
+
+            const valueEnd = cursor + valueByteCount;
+            array.values ~= Value(coerceIntegerToType(
+                readBigEndian(bytes[cursor .. valueEnd]),
+                arrayElementType(type),
+            ));
+            cursor = valueEnd;
+        }
+
+        const assocArrayRef = AssocArrayRef(interpreter.nextAssocArrayRef);
+        ++interpreter.nextAssocArrayRef;
+        interpreter.assocArrays[assocArrayRef.id] = array;
+        interpreter.lastAssocArrayRef = assocArrayRef.id;
+        value = Value(assocArrayRef);
+        assignStructField(ownerFields, bytesField, Value(bytes[cursor .. $].dup));
+        assignStructFields(owner, ownerFields);
         return true;
     }
 
@@ -1912,6 +2091,62 @@ private struct BodyWalker {
         if (owner is null)
             return false;
 
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(call.type);
+        return tryReadDecerealisedArrayFromOwner(owner, elementType, value);
+    }
+
+    private bool tryRunArrayDecerealiseGrain(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "grain")
+            return false;
+        if (call.arguments is null)
+            return false;
+
+        imported!"dmd.expression".Expression ownerExpression;
+        imported!"dmd.expression".Expression refArgument;
+        if (call.arguments.length == 1) {
+            auto dotVar = call.e1.isDotVarExp;
+            if (dotVar is null)
+                return false;
+            ownerExpression = dotVar.e1;
+            refArgument = callArguments(call)[0];
+        } else if (call.arguments.length == 2) {
+            ownerExpression = callArguments(call)[0];
+            refArgument = callArguments(call)[1];
+        } else {
+            return false;
+        }
+
+        auto owner = structFieldsOwner(ownerExpression);
+        if (owner is null)
+            return false;
+        auto var = refArgument.isVarExp;
+        if (var is null)
+            return false;
+        auto varDecl = var.var.isVarDeclaration;
+        if (varDecl is null ||
+            varDecl.type is null ||
+            varDecl.type.toBasetype.isTypeDArray is null)
+            return false;
+
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(varDecl.type);
+        Value value;
+        if (!tryReadDecerealisedArrayFromOwner(owner, elementType, value))
+            return false;
+
+        assignRefArgument(refArgument, value, interpreter);
+        return true;
+    }
+
+    private bool tryReadDecerealisedArrayFromOwner(
+        VarDeclaration owner,
+        imported!"dmd.mtype".Type elementType,
+        out Value value,
+    ) {
         Value[VarDeclaration] ownerFields = structFieldsValue(owner);
         auto bytesField = structFieldNamed(owner.type, "_bytes");
         if (bytesField is null)
@@ -1925,11 +2160,16 @@ private struct BodyWalker {
         if (bytes.length < 2)
             return false;
 
-        // auto: DMD Type nodes are mutable and helper APIs expect that type.
-        auto elementType = arrayElementType(call.type);
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount == 0)
-            return false;
+            return tryReadNestedStringArray(
+                owner,
+                elementType,
+                bytes,
+                ownerFields,
+                bytesField,
+                value,
+            );
 
         size_t headerByteCount = 2;
         size_t length = cast(size_t) readBigEndian(bytes[0 .. 2]);
@@ -1962,6 +2202,44 @@ private struct BodyWalker {
             bytesField,
             Value(bytes[neededByteCount .. $].dup),
         );
+        assignStructFields(owner, ownerFields);
+        return true;
+    }
+
+    private bool tryReadNestedStringArray(
+        VarDeclaration owner,
+        imported!"dmd.mtype".Type elementType,
+        long[] bytes,
+        Value[VarDeclaration] ownerFields,
+        VarDeclaration bytesField,
+        out Value value,
+    ) {
+        if (elementType is null ||
+            elementType.toBasetype.isTypeDArray is null ||
+            decerealisedScalarByteCount(arrayElementType(elementType)) != 1)
+            return false;
+        if (bytes.length < 2)
+            return false;
+
+        const length = cast(size_t) readBigEndian(bytes[0 .. 2]);
+        size_t cursor = 2;
+        long[] elements;
+        foreach (_; 0 .. length) {
+            if (bytes.length < cursor + 2)
+                throw new Exception("Not enough bytes left to decerealise array.");
+            const stringLength = cast(size_t) readBigEndian(
+                bytes[cursor .. cursor + 2],
+            );
+            cursor += 2;
+            if (bytes.length < cursor + stringLength)
+                throw new Exception("Not enough bytes left to decerealise array.");
+            elements ~= cast(long) stringLength;
+            elements ~= bytes[cursor .. cursor + stringLength];
+            cursor += stringLength;
+        }
+
+        value = Value(elements);
+        assignStructField(ownerFields, bytesField, Value(bytes[cursor .. $].dup));
         assignStructFields(owner, ownerFields);
         return true;
     }
@@ -2180,6 +2458,15 @@ private struct BodyWalker {
         if (actual == expected)
             return true;
 
+        const actualAssocId = actual.assocArrayId;
+        const expectedAssocId = expected.assocArrayId;
+        if (actualAssocId != 0 || expectedAssocId != 0)
+            return assocArrayValuesEqual(
+                actualAssocId,
+                expectedAssocId,
+                interpreter,
+            );
+
         const actualClassId = actual.classId;
         const expectedClassId = expected.classId;
         if (actualClassId == 0 || expectedClassId == 0)
@@ -2200,6 +2487,36 @@ private struct BodyWalker {
                 expectedFields,
                 interpreter,
             );
+    }
+
+    private bool assocArrayValuesEqual(
+        in long actualArrayId,
+        in long expectedArrayId,
+        ref Interpreter interpreter,
+    ) {
+        if (actualArrayId == 0 || expectedArrayId == 0)
+            return false;
+        if (actualArrayId !in interpreter.assocArrays ||
+            expectedArrayId !in interpreter.assocArrays)
+            return false;
+
+        const actual = interpreter.assocArrays[actualArrayId];
+        const expected = interpreter.assocArrays[expectedArrayId];
+        if (actual.values.length != expected.values.length)
+            return false;
+
+        foreach (i, actualKey; actual.keys) {
+            bool found;
+            foreach (j, expectedKey; expected.keys)
+                if (valuesEqual(actualKey, expectedKey, interpreter) &&
+                    valuesEqual(actual.values[i], expected.values[j], interpreter)) {
+                    found = true;
+                    break;
+                }
+            if (!found)
+                return false;
+        }
+        return true;
     }
 
     private bool classStructFieldsEqual(
@@ -2337,6 +2654,126 @@ private struct BodyWalker {
         long[] bytes = runExpression(callArguments(call)[0], interpreter).asArray;
         assignStructField(ownerFields, bytesField, Value(bytes.dup));
         assignStructField(ownerFields, originalBytesField, Value(bytes.dup));
+        structFields[owner] = ownerFields;
+        return true;
+    }
+
+    private bool tryRunReadBits(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "readBits")
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        auto currentByteField = structFieldNamed(owner.type, "_currentByte");
+        auto bitIndexField = structFieldNamed(owner.type, "_bitIndex");
+        if (bytesField is null ||
+            currentByteField is null ||
+            bitIndexField is null)
+            return false;
+
+        long[] bytes = structFieldValue(
+            ownerFields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+        long currentByte = structFieldValue(
+            ownerFields,
+            currentByteField,
+            Value(0L),
+        ).asLong;
+        long bitIndex = structFieldValue(
+            ownerFields,
+            bitIndexField,
+            Value(0L),
+        ).asLong;
+
+        long result;
+        long remaining = runExpression(callArguments(call)[0], interpreter).asLong;
+        while (remaining > 0) {
+            if (bitIndex == 0) {
+                if (bytes.length == 0)
+                    throw new Exception("Cannot read bits from empty Decerealiser.");
+                currentByte = bytes[0];
+                bytes = bytes[1 .. $].dup;
+            }
+
+            const available = 8 - bitIndex;
+            const take = remaining < available ? remaining : available;
+            const shift = available - take;
+            const mask = (1L << take) - 1;
+            result = (result << take) | ((currentByte >> shift) & mask);
+            bitIndex += take;
+            remaining -= take;
+            if (bitIndex == 8)
+                bitIndex = 0;
+        }
+
+        assignStructField(ownerFields, bytesField, Value(bytes));
+        assignStructField(ownerFields, currentByteField, Value(currentByte));
+        assignStructField(ownerFields, bitIndexField, Value(bitIndex));
+        structFields[owner] = ownerFields;
+        value = Value(result);
+        return true;
+    }
+
+    private bool tryRunReset(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        const isReset = call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "reset";
+        if (!isReset && expressionChars(call.e1) != "reset")
+            return false;
+
+        VarDeclaration owner;
+        if (auto dotVar = call.e1.isDotVarExp)
+            owner = structFieldsOwner(dotVar.e1);
+        else
+            owner = currentThis;
+        if (owner is null)
+            return false;
+
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        auto originalBytesField = structFieldNamed(owner.type, "_originalBytes");
+        auto currentByteField = structFieldNamed(owner.type, "_currentByte");
+        auto bitIndexField = structFieldNamed(owner.type, "_bitIndex");
+        if (bytesField is null ||
+            originalBytesField is null ||
+            currentByteField is null ||
+            bitIndexField is null)
+            return false;
+
+        long[] bytes;
+        if (call.arguments !is null && call.arguments.length == 1) {
+            bytes = runExpression(callArguments(call)[0], interpreter).asArray;
+            assignStructField(ownerFields, originalBytesField, Value(bytes.dup));
+        } else if (call.arguments is null || call.arguments.length == 0) {
+            bytes = structFieldValue(
+                ownerFields,
+                originalBytesField,
+                Value((long[]).init),
+            ).asArray;
+        } else {
+            return false;
+        }
+
+        assignStructField(ownerFields, bytesField, Value(bytes.dup));
+        assignStructField(ownerFields, currentByteField, Value(0L));
+        assignStructField(ownerFields, bitIndexField, Value(0L));
         structFields[owner] = ownerFields;
         return true;
     }
@@ -4007,6 +4444,31 @@ private long readBigEndian(in long[] bytes) @safe {
     foreach (byte_; bytes)
         value = (value << 8) | (byte_ & 0xff);
     return value;
+}
+
+private bool tryReadDecerealisedCollectionLength(
+    in long[] bytes,
+    in size_t elementByteCount,
+    out size_t headerByteCount,
+    out size_t length,
+) @safe {
+    foreach (candidateHeaderByteCount; [2, 4, 8]) {
+        if (bytes.length < candidateHeaderByteCount)
+            continue;
+        const candidateLength = cast(size_t) readBigEndian(
+            bytes[0 .. candidateHeaderByteCount],
+        );
+        const neededByteCount =
+            candidateHeaderByteCount + candidateLength * elementByteCount;
+        if (bytes.length < neededByteCount)
+            continue;
+        if (candidateLength == 0 && bytes.length >= 4)
+            continue;
+        headerByteCount = candidateHeaderByteCount;
+        length = candidateLength;
+        return true;
+    }
+    return false;
 }
 
 private imported!"dmd.mtype".Type arrayElementType(
