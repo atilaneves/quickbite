@@ -928,6 +928,10 @@ struct BodyLowerer {
             if (isArrayEqualityCall(call))
                 return lowerArrayEqualityCall(call, lowerer);
 
+            uint arrayCanFindResult;
+            if (tryLowerArrayCanFindCall(call, lowerer, arrayCanFindResult))
+                return arrayCanFindResult;
+
             uint builtinResult;
             if (tryLowerAssocArrayBuiltinCall(call, lowerer, builtinResult))
                 return builtinResult;
@@ -1517,6 +1521,60 @@ struct BodyLowerer {
             destination,
             left,
             right,
+        ));
+        return destination;
+    }
+
+    bool tryLowerArrayCanFindCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        if (functionIdentifier(call.f) != "canFind")
+            return false;
+
+        if (call.arguments is null)
+            return false;
+
+        if (callArguments(call).length == 1) {
+            if (!typeIsDynamicArray(callArguments(call)[0].type))
+                return false;
+
+            result = lowerArrayCanFindCall(
+                lowerCallReceiver(call, lowerer),
+                callArguments(call)[0],
+                lowerer,
+            );
+            return true;
+        }
+
+        if (callArguments(call).length != 2)
+            return false;
+
+        if (!typeIsDynamicArray(callArguments(call)[1].type))
+            return false;
+
+        result = lowerArrayCanFindCall(
+            lowerExpression(callArguments(call)[0], lowerer),
+            callArguments(call)[1],
+            lowerer,
+        );
+        return true;
+    }
+
+    uint lowerArrayCanFindCall(
+        in uint haystack,
+        imported!"dmd.expression".Expression needleExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayCanFind, Instruction;
+
+        const needle = lowerExpression(needleExpression, lowerer);
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayCanFind(
+            destination,
+            haystack,
+            needle,
         ));
         return destination;
     }

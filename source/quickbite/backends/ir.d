@@ -280,10 +280,11 @@ InstructionEffect executeInstruction(
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
     import quickbite.ir.instruction: ArrayAppend, ArrayAppendArray, ArrayConcat,
-        ArrayCopy, ArrayElementPointer, ArrayEqual, ArrayIndex, ArrayLength,
-        ArrayLiteral, ArrayReferenceCopy, ArraySet, ArraySetLength, ArraySlice,
-        AssocArrayIndex, AssocArrayKeys, AssocArrayLength, AssocArrayLiteral,
-        AssocArraySet, AssocArrayValuePointer, AssocArrayValues, Assert_,
+        ArrayCanFind, ArrayCopy, ArrayElementPointer, ArrayEqual, ArrayIndex,
+        ArrayLength, ArrayLiteral, ArrayReferenceCopy, ArraySet, ArraySetLength,
+        ArraySlice, AssocArrayIndex, AssocArrayKeys, AssocArrayLength,
+        AssocArrayLiteral, AssocArraySet, AssocArrayValuePointer, AssocArrayValues,
+        Assert_,
         BinaryOp, Call, CastInt, ConstInt, Copy, IndirectCall, Jump,
         JumpIfFalse, JumpIfTrue, ReturnValue, ReturnVoid, Select, StaticAssocArray,
         StructGet,
@@ -593,6 +594,14 @@ InstructionEffect executeInstruction(
                 arrays[arrayIndex(temporaries, instruction.right)];
             return nextInstruction;
         },
+        (ArrayCanFind instruction) {
+            writeTemporaryValue(temporaries, instruction.destination) =
+                arrayCanFind(
+                    arrays[arrayIndex(temporaries, instruction.haystack)],
+                    arrays[arrayIndex(temporaries, instruction.needle)],
+                );
+            return nextInstruction;
+        },
         (ArraySlice instruction) {
             arrays ~= arrays[arrayIndex(temporaries, instruction.array)][
                 arrayIndex(temporaries, instruction.lower) ..
@@ -804,6 +813,20 @@ void executeBinaryInstruction(
     }
 
     writeTemporaryValue(temporaries, destination) = result;
+}
+
+bool arrayCanFind(in long[] haystack, in long[] needle) @safe pure {
+    if (needle.length == 0)
+        return true;
+
+    if (needle.length > haystack.length)
+        return false;
+
+    foreach (start; 0 .. haystack.length - needle.length + 1)
+        if (haystack[start .. start + needle.length] == needle)
+            return true;
+
+    return false;
 }
 
 void executeUnaryInstruction(

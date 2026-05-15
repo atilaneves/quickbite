@@ -221,6 +221,12 @@ public struct ArrayEqual {
     uint right;
 }
 
+public struct ArrayCanFind {
+    uint destination;
+    uint haystack;
+    uint needle;
+}
+
 public struct ArraySlice {
     uint destination;
     uint array;
@@ -284,6 +290,7 @@ public alias Instruction = SumType!(
     ArrayElementPointer,
     ArraySet,
     ArrayEqual,
+    ArrayCanFind,
     ArraySlice,
     StructNew,
     StructGet,
