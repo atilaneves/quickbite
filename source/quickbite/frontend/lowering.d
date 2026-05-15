@@ -1374,7 +1374,7 @@ struct BodyLowerer {
                     return destination;
                 }
                 if (auto temporary = var in localTemporaries)
-                    return *temporary;
+                    return lowerTypedParameterRead(*temporary, var);
                 if (auto temporary = declarationName(var) in identifierTemporaries)
                     return *temporary;
                 if (varIsParameter(var))
@@ -5328,7 +5328,7 @@ struct BodyLowerer {
                 arguments ~= copyStructByValue(argument.type, source);
                 continue;
             }
-            arguments ~= source;
+            arguments ~= lowerCallValueArgument(source, parameter);
         }
 
         return appendMissingTypeFunctionArguments(arguments, function_);
@@ -5381,7 +5381,60 @@ struct BodyLowerer {
             if (auto dot = argument.isDotVarExp)
                 return lowerStructFieldRefArgument(dot, lowerer);
 
+        if (parameter !is null && parameterIsRef(parameter)) {
+            if (auto variable = argument.isVarExp)
+                if (auto var = variable.var.isVarDeclaration) {
+                    if (auto temporary = var in localTemporaries)
+                        return *temporary;
+                    if (auto temporary = declarationName(var) in identifierTemporaries)
+                        return *temporary;
+                }
+
+            if (auto identifier = argument.isIdentifierExp)
+                if (auto temporary = identifierName(identifier) in identifierTemporaries)
+                    return *temporary;
+        }
+
         return lowerExpression(argument, lowerer);
+    }
+
+    uint lowerCallValueArgument(
+        in uint source,
+        imported!"dmd.declaration".VarDeclaration parameter,
+    ) @safe {
+        import quickbite.ir.instruction: CastInt, Instruction;
+
+        if (parameter is null || parameterIsRef(parameter))
+            return source;
+
+        if (!typeIsInteger(parameter.type))
+            return source;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            destination,
+            source,
+            integerType(parameter.type),
+        ));
+        return destination;
+    }
+
+    uint lowerTypedParameterRead(
+        in uint source,
+        imported!"dmd.declaration".VarDeclaration variable,
+    ) @safe {
+        import quickbite.ir.instruction: CastInt, Instruction;
+
+        if (!varIsParameter(variable) || !typeIsSignedInteger(variable.type))
+            return source;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(CastInt(
+            destination,
+            source,
+            integerType(variable.type),
+        ));
+        return destination;
     }
 
     uint lowerStructFieldRefArgument(
@@ -5918,6 +5971,19 @@ private bool typeIsInteger(imported!"dmd.mtype".Type type) @trusted {
         basetype.ty == TY.Tdchar ||
         basetype.ty == TY.Tint64 ||
         basetype.ty == TY.Tuns64;
+}
+
+private bool typeIsSignedInteger(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    const basetype = type.toBasetype;
+    return basetype.ty == TY.Tint8 ||
+        basetype.ty == TY.Tint16 ||
+        basetype.ty == TY.Tint32 ||
+        basetype.ty == TY.Tint64;
 }
 
 private bool isArrayEqualityCall(imported!"dmd.expression".CallExp call) @trusted {
