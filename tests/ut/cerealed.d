@@ -69,6 +69,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "pointers.d" &&
             fileName != "property.d" &&
             fileName != "protocol_unit.d" &&
+            fileName != "range.d" &&
             fileName != "utils.d"
         )
     ) &&
