@@ -228,6 +228,7 @@ ExecutionResult executeInstructions(
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
+    reserveNullStructHandle(structs);
 
     ExecutionResult result;
     result.temporaries = temporaries;
@@ -254,6 +255,11 @@ ExecutionResult executeInstructions(
     }
 
     return result;
+}
+
+void reserveNullStructHandle(ref long[string][] structs) @safe pure {
+    if (structs.length == 0)
+        structs ~= (long[string]).init;
 }
 
 struct InstructionEffect {
