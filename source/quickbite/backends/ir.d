@@ -680,9 +680,12 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArraySet instruction) {
-            arrays[arrayIndex(temporaries, instruction.array)][
-                arrayIndex(temporaries, instruction.index)
-            ] = readTemporaryValue(temporaries, instruction.value);
+            writeArrayValue(
+                arrays,
+                arrayIndex(temporaries, instruction.array),
+                arrayIndex(temporaries, instruction.index),
+                readTemporaryValue(temporaries, instruction.value),
+            );
             updateArrayAlias(
                 temporaries,
                 instruction,
