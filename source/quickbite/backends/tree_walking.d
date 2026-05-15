@@ -2271,17 +2271,18 @@ private struct BodyWalker {
         auto owner = structFieldsOwner(ownerExpression);
         if (owner is null)
             return false;
-        auto var = refArgument.isVarExp;
-        if (var is null)
-            return false;
-        auto varDecl = var.var.isVarDeclaration;
-        if (varDecl is null ||
-            varDecl.type is null ||
-            varDecl.type.toBasetype.isTypeDArray is null)
+        imported!"dmd.mtype".Type refType;
+        if (auto var = refArgument.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                refType = varDecl.type;
+        if (auto dotVar = refArgument.isDotVarExp)
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                refType = fieldDecl.type;
+        if (refType is null || refType.toBasetype.isTypeDArray is null)
             return false;
 
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
-        auto elementType = arrayElementType(varDecl.type);
+        auto elementType = arrayElementType(refType);
         Value value;
         if (!tryReadDecerealisedArrayFromOwner(owner, elementType, value))
             return false;
