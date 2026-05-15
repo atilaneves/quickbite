@@ -3851,9 +3851,12 @@ private struct BodyWalker {
     private bool tryRunUnitThreadedPropertyCheck(
         imported!"dmd.expression".CallExp call,
     ) {
+        import std.string: startsWith;
+
         return call.f !is null &&
             call.f.ident !is null &&
-            call.f.ident.toString == "check";
+            call.f.ident.toString == "check" &&
+            functionName(call.f).startsWith("_D13unit_threaded8property");
     }
 
     private bool tryRunScopeBufferRangeConstructor(
@@ -6045,6 +6048,13 @@ private string expressionChars(
 ) @trusted {
     import std.string: fromStringz;
     return fromStringz(expression.toChars).idup;
+}
+
+private string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
+    import dmd.mangle: mangleExact;
+    import std.string: fromStringz;
+
+    return fromStringz(mangleExact(function_)).idup;
 }
 
 private string typeChars(imported!"dmd.mtype".Type type) @trusted {
