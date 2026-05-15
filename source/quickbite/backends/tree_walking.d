@@ -1563,6 +1563,8 @@ private struct BodyWalker {
             return Value(0L);
         if (tryRunStructCerealAppend(call, interpreter))
             return Value(0L);
+        if (tryRunIotaCerealAppend(call, interpreter))
+            return Value(0L);
         if (tryRunArrayCerealAppend(call, interpreter))
             return Value(0L);
         if (tryRunAssocArrayCerealAppend(call, interpreter))
@@ -3024,6 +3026,51 @@ private struct BodyWalker {
             cerealOwner,
             array,
             arrayElementType(callArguments(call)[0].type),
+            interpreter,
+        );
+        return true;
+    }
+
+    private bool tryRunIotaCerealAppend(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f is null ||
+            call.f.ident is null ||
+            call.f.ident.toString != "opOpAssign")
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        auto iotaCall = callArguments(call)[0].isCallExp;
+        if (iotaCall is null ||
+            iotaCall.f is null ||
+            iotaCall.f.ident is null ||
+            iotaCall.f.ident.toString != "iota")
+            return false;
+        if (iotaCall.arguments is null || iotaCall.arguments.length != 1)
+            return false;
+
+        const length = runExpression(callArguments(iotaCall)[0], interpreter)
+            .asLong;
+        if (length < 0)
+            throw new Exception("Cannot cerealise negative iota length.");
+
+        long[] array;
+        foreach (i; 0 .. cast(size_t) length)
+            array ~= cast(long) i;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto cerealOwner = structFieldsOwner(dotVar.e1);
+        if (cerealOwner is null)
+            return false;
+
+        appendArrayToCereal(
+            cerealOwner,
+            array,
+            callArguments(iotaCall)[0].type,
             interpreter,
         );
         return true;
