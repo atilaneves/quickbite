@@ -1728,6 +1728,9 @@ private struct BodyWalker {
         if (call.arguments is null || call.arguments.length == 0)
             return false;
 
+        if (tryRunStructShouldEqual(call, interpreter))
+            return true;
+
         Value actual;
         Value expected;
         if (call.arguments.length >= 2) {
@@ -1751,6 +1754,46 @@ private struct BodyWalker {
             ));
         }
         return true;
+    }
+
+    private bool tryRunStructShouldEqual(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        imported!"dmd.expression".Expression actualExpression;
+        imported!"dmd.expression".Expression expectedExpression;
+        if (call.arguments.length >= 2) {
+            actualExpression = callArguments(call)[0];
+            expectedExpression = callArguments(call)[1];
+        } else if (auto dotVar = call.e1.isDotVarExp) {
+            actualExpression = dotVar.e1;
+            expectedExpression = callArguments(call)[0];
+        } else {
+            return false;
+        }
+
+        if (!isStructType(actualExpression.type) &&
+            !isStructType(expectedExpression.type))
+            return false;
+
+        Value[VarDeclaration] actualFields = runStructInitializer(
+            actualExpression,
+            interpreter,
+        );
+        Value[VarDeclaration] expectedFields = runStructInitializer(
+            expectedExpression,
+            interpreter,
+        );
+        if (fieldValuesEqual(actualFields, expectedFields, interpreter))
+            return true;
+
+        import std.conv: text;
+        throw new Exception(text(
+            "Unittest assertion failed: expected ",
+            expectedFields,
+            ", got ",
+            actualFields,
+        ));
     }
 
     private bool tryRunCanFind(
@@ -4026,6 +4069,8 @@ private struct BodyWalker {
             return structFields[owner].dup;
         if (auto call = expression.isCallExp) {
             Value[VarDeclaration] fields;
+            if (tryRunStructDecerealiseValue(call, fields, interpreter))
+                return fields;
             if (tryRunStructDecerealise(call, fields, interpreter))
                 return fields;
         }
@@ -4128,6 +4173,38 @@ private struct BodyWalker {
         }
 
         return false;
+    }
+
+    private bool tryRunStructDecerealiseValue(
+        imported!"dmd.expression".CallExp call,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
+        if (!isStructType(call.type))
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        fields = defaultStructFields(call.type);
+        foreach (field; aggregateStructFields(call.type))
+            if (field.type !is null && field.type.isTypeDArray !is null) {
+                Value value;
+                if (!tryReadDecerealisedArrayFromOwner(
+                    owner,
+                    arrayElementType(field.type),
+                    value,
+                ))
+                    return false;
+                assignStructField(fields, field, value);
+            }
+        return true;
     }
 
     private bool tryRunStructDecerealise(
