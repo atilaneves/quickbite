@@ -130,11 +130,17 @@ struct BodyLowerer {
         uint value;
     }
 
+    private struct StaticArrayAlias {
+        string name;
+        uint value;
+    }
+
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
     private ArrayElementAlias[string] arrayElementAliasesByName;
     private ArrayElementAlias[] pendingRefArrayWritebacks;
+    private StaticArrayAlias[] pendingRefStaticArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
     private bool[string] arrayValueNames;
@@ -979,14 +985,18 @@ struct BodyLowerer {
             // `const` would make the array incompatible with Call.arguments.
             // auto: keep the mutable array type for restoring the field below.
             auto savedArrayWritebacks = pendingRefArrayWritebacks;
+            auto savedStaticArrayWritebacks = pendingRefStaticArrayWritebacks;
             auto savedStructWritebacks = pendingRefStructWritebacks;
             pendingRefArrayWritebacks = [];
+            pendingRefStaticArrayWritebacks = [];
             pendingRefStructWritebacks = [];
             auto arguments = lowerCallArguments(call, lowerer);
             // auto: ArraySet emission needs mutable element values.
             auto arrayWritebacks = pendingRefArrayWritebacks;
+            auto staticArrayWritebacks = pendingRefStaticArrayWritebacks;
             auto structWritebacks = pendingRefStructWritebacks;
             pendingRefArrayWritebacks = savedArrayWritebacks;
+            pendingRefStaticArrayWritebacks = savedStaticArrayWritebacks;
             pendingRefStructWritebacks = savedStructWritebacks;
 
             const destination = allocateTemporary;
@@ -999,6 +1009,11 @@ struct BodyLowerer {
                 instructions ~= Instruction(imported!"quickbite.ir.instruction".ArraySet(
                     writeback.array,
                     writeback.index,
+                    writeback.value,
+                ));
+            foreach (writeback; staticArrayWritebacks)
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".StaticArraySet(
+                    writeback.name,
                     writeback.value,
                 ));
             foreach (writeback; structWritebacks)
@@ -5912,6 +5927,11 @@ struct BodyLowerer {
                     if (auto var = variable.var.isVarDeclaration) {
                         if (auto alias_ = var in arrayElementAliases)
                             pendingRefArrayWritebacks ~= *alias_;
+                        if (varIsStatic(var) && typeIsDynamicArray(var.type))
+                            pendingRefStaticArrayWritebacks ~= StaticArrayAlias(
+                                staticVariableName(var),
+                                source,
+                            );
                     }
                 }
                 if (auto identifier = argument.isIdentifierExp) {
