@@ -6747,7 +6747,7 @@ private imported!"quickbite.ir.instruction".IntegerType integerType(
     if (basetype.ty == TY.Tint16)
         return IntegerType.i16;
 
-    if (basetype.ty == TY.Tuns16)
+    if (basetype.ty == TY.Tuns16 || basetype.ty == TY.Twchar)
         return IntegerType.u16;
 
     if (basetype.ty == TY.Tint32)
