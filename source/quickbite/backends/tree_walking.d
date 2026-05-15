@@ -2800,6 +2800,12 @@ private struct BodyWalker {
             if (field.type !is null && field.type.toBasetype.isTypeAArray !is null)
                 return true;
             if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
+                if (decerealisedScalarByteCount(arrayElementType(field.type)) == 1)
+                    return true;
+            if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
+                if (arrayElementType(field.type).toBasetype.isTypeDArray !is null)
+                    return true;
+            if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
                 if (isStructType(arrayElementType(field.type)))
                     return true;
             if (isStructType(field.type) && needsDirectStructCerealAppend(field.type))
@@ -2825,12 +2831,20 @@ private struct BodyWalker {
         if (bytesField is null)
             return;
 
-        long[] elements = storageArrayValue(structFieldValue(
-            outputFields,
-            bytesField,
-            Value((long[]).init),
-        ));
+        long[] elements = isModeledScopeBufferField(bytesField)
+            ? interpreter.scopeBufferBytes.get(
+                rangeStorageKey(outputField, bytesField),
+                (long[]).init,
+            )
+            : storageArrayValue(structFieldValue(
+                outputFields,
+                bytesField,
+                Value((long[]).init),
+            ));
         appendStructFieldsToCereal(elements, type, fields, interpreter);
+        if (isModeledScopeBufferField(bytesField))
+            interpreter.scopeBufferBytes[rangeStorageKey(outputField, bytesField)] =
+                elements;
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
