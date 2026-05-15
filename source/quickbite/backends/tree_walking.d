@@ -608,6 +608,28 @@ private struct BodyWalker {
                             );
                             return Value(newVal);
                         }
+            if (auto cast_ = orAssign.e1.isCastExp)
+                if (auto dotVar = cast_.e1.isDotVarExp)
+                    if (auto thisExp = dotVar.e1.isThisExp)
+                        if (auto thisDecl = thisExp.var.isVarDeclaration)
+                            if (auto fields = thisDecl in structFields)
+                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                    const newVal = structFieldValue(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(0L),
+                                    ).asLong |
+                                        runExpression(orAssign.e2, interpreter).asLong;
+                                    assignStructField(
+                                        *fields,
+                                        fieldDecl,
+                                        Value(coerceIntegerToType(
+                                            newVal,
+                                            fieldDecl.type,
+                                        )),
+                                    );
+                                    return Value(newVal);
+                                }
             unsupported;
         }
 
