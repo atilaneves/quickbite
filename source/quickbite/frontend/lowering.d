@@ -829,6 +829,9 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (auto typeid_ = expression.isTypeidExp)
+            return lowerTypeInfoName(typeidObjectType(typeid_));
+
         if (expression.isDollarExp)
             return lowerDollar;
 
