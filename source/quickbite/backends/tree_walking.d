@@ -1937,6 +1937,14 @@ private struct BodyWalker {
             } catch (Exception) {
             }
 
+            if (isStructType(argument.type)) {
+                Value[VarDeclaration] fields = runStructInitializer(
+                    argument,
+                    interpreter,
+                );
+                return tryCerealiseScalarStructFields(argument.type, fields, value);
+            }
+
             const byteCount = decerealisedScalarByteCount(argument.type);
             if (byteCount == 0)
                 return false;
@@ -1967,7 +1975,29 @@ private struct BodyWalker {
                 return true;
             }
 
-        return false;
+        return tryCerealiseScalarStructFields(literal.type, fields, value);
+    }
+
+    private bool tryCerealiseScalarStructFields(
+        imported!"dmd.mtype".Type type,
+        Value[VarDeclaration] fields,
+        out Value value,
+    ) {
+        long[] cerealised;
+        foreach (field; aggregateStructFields(type)) {
+            const byteCount = decerealisedScalarByteCount(field.type);
+            if (byteCount == 0)
+                continue;
+            appendIntegerBytes(
+                cerealised,
+                structFieldValue(fields, field, Value(0L)).asLong,
+                byteCount,
+            );
+        }
+        if (cerealised.length == 0)
+            return false;
+        value = Value(cerealised);
+        return true;
     }
 
     private void rememberAssocArrayOrArrayCerealAppend(
@@ -4004,6 +4034,25 @@ private struct BodyWalker {
             if (tryRunUnitThreadedStructConstructor(call, fields, interpreter))
                 return fields;
         }
+        if (auto call = expression.isCallExp)
+            if (isStructType(call.type) &&
+                call.arguments !is null &&
+                call.arguments.length > 0) {
+                Value[VarDeclaration] fields = defaultStructFields(call.type);
+                foreach (index, field; aggregateStructFields(call.type)) {
+                    if (index >= call.arguments.length)
+                        break;
+                    assignStructField(
+                        fields,
+                        field,
+                        coerceValueToType(
+                            runExpression(callArguments(call)[index], interpreter),
+                            field.type,
+                        ),
+                    );
+                }
+                return fields;
+            }
         if (auto call = expression.isCallExp) {
             Value[VarDeclaration] fields = defaultStructFields(expression.type);
             auto bytesField = structFieldNamed(expression.type, "_bytes");
