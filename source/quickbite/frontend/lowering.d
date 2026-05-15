@@ -102,6 +102,9 @@ private bool functionReturnsVoid(
 ) @trusted {
     import dmd.astenums: TY;
 
+    if (function_.isCtorDeclaration !is null)
+        return true;
+
     return functionReturnType(function_).ty == TY.Tvoid;
 }
 
