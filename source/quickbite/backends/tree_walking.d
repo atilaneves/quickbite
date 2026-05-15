@@ -2320,16 +2320,15 @@ private struct BodyWalker {
                 value,
             );
 
-        size_t headerByteCount = 2;
-        size_t length = cast(size_t) readBigEndian(bytes[0 .. 2]);
-        if (length == 0 && bytes.length >= 8) {
-            const longLength = cast(size_t) readBigEndian(bytes[0 .. 8]);
-            if (longLength > 0 &&
-                bytes.length >= 8 + longLength * elementByteCount) {
-                headerByteCount = 8;
-                length = longLength;
-            }
-        }
+        size_t headerByteCount;
+        size_t length;
+        if (!tryReadDecerealisedCollectionLength(
+            bytes,
+            elementByteCount,
+            headerByteCount,
+            length,
+        ))
+            return false;
 
         const neededByteCount = headerByteCount + length * elementByteCount;
         if (bytes.length < neededByteCount)
@@ -4649,7 +4648,7 @@ private bool tryReadDecerealisedCollectionLength(
     out size_t headerByteCount,
     out size_t length,
 ) @safe {
-    foreach (candidateHeaderByteCount; [2, 4, 8]) {
+    foreach (candidateHeaderByteCount; [2, 4, 8, 1]) {
         if (bytes.length < candidateHeaderByteCount)
             continue;
         const candidateLength = cast(size_t) readBigEndian(
