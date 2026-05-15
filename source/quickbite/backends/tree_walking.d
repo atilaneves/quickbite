@@ -372,6 +372,16 @@ private struct BodyWalker {
             return;
         }
 
+        if (auto tryCatch = statement.isTryCatchStatement) {
+            try {
+                runStatement(tryCatch._body, interpreter);
+            } catch (Exception) {
+                if (tryCatch.catches !is null && tryCatch.catches.length > 0)
+                    runStatement((*tryCatch.catches)[0].handler, interpreter);
+            }
+            return;
+        }
+
         if (auto ret = statement.isReturnStatement) {
             if (ret.exp !is null)
                 returnValue = runExpression(ret.exp, interpreter);
