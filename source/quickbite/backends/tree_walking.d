@@ -4908,8 +4908,13 @@ private struct BodyWalker {
         }
 
         auto initializer = variable._init.isExpInitializer;
-        if (initializer is null)
+        if (initializer is null) {
+            if (variable.type.toBasetype.isTypeSArray !is null) {
+                locals[variable] = defaultArrayValue(variable.type);
+                return Value(0L);
+            }
             throw new Exception(unsupportedMessage);
+        }
 
         imported!"dmd.expression".Expression initExpr = initializer.exp;
         if (auto blit = initializer.exp.isBlitExp)
@@ -5936,7 +5941,15 @@ private struct BodyWalker {
             if (field.type !is null && field.type.isTypeDArray !is null) {
                 long[] elements;
                 size_t arrayByteCount;
-                if (!tryReadDecerealisedAttributedArrayField(
+                if (tryReadNoCerealLengthArrayField(
+                    field,
+                    type,
+                    fields,
+                    bytes[cursor .. $],
+                    elements,
+                    arrayByteCount,
+                )) {
+                } else if (!tryReadDecerealisedAttributedArrayField(
                     field,
                     type,
                     fields,
@@ -6089,6 +6102,43 @@ private struct BodyWalker {
             );
 
         return false;
+    }
+
+    private bool tryReadNoCerealLengthArrayField(
+        VarDeclaration field,
+        imported!"dmd.mtype".Type aggregateType,
+        Value[VarDeclaration] fields,
+        long[] bytes,
+        out long[] elements,
+        out size_t neededByteCount,
+    ) {
+        if (!cerealFieldHasAttribute(field, "NoCereal"))
+            return false;
+        auto lengthField = structFieldNamed(aggregateType, "length");
+        if (lengthField is null)
+            return false;
+        const length = structFieldValue(fields, lengthField, Value(0L)).asLong;
+        if (length < 0)
+            throw new Exception("Negative cerealed array length.");
+
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(field.type);
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount == 0)
+            return false;
+
+        neededByteCount = cast(size_t) length * elementByteCount;
+        if (bytes.length < neededByteCount)
+            throw new Exception("Not enough bytes left to decerealise array.");
+        foreach (i; 0 .. cast(size_t) length) {
+            const begin = i * elementByteCount;
+            const end = begin + elementByteCount;
+            elements ~= coerceIntegerToType(
+                readBigEndian(bytes[begin .. end]),
+                elementType,
+            );
+        }
+        return true;
     }
 
     private bool tryReadDecerealisedArrayElementsByCount(
@@ -6493,12 +6543,16 @@ private struct BodyWalker {
         long[] payload;
         if (literal.elements !is null)
             foreach (element; arrayLiteralElements(literal))
-                if (auto struct_ = element.isStructLiteralExp)
-                    payload ~= rawStructLiteralCerealBytes(struct_, interpreter);
+                if (auto struct_ = element.isStructLiteralExp) {
+                    const structBytes = rawStructLiteralCerealBytes(
+                        struct_,
+                        interpreter,
+                    );
+                    payload ~= cast(long) structBytes.length;
+                    payload ~= structBytes;
+                }
 
-        long[] elements = [cast(long) payload.length];
-        elements ~= payload;
-        return elements;
+        return payload;
     }
 
     private long[] rawStructLiteralCerealBytes(
