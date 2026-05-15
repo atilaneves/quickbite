@@ -2574,6 +2574,17 @@ struct BodyLowerer {
             BinaryOp, ConstInt, Instruction, Operation;
         import std.string: startsWith;
 
+        if (
+            functionIdentifier(call.f) == "genValues" &&
+            lowerer.functionName(call.f).startsWith(
+                "_D13unit_threaded10randomized6random__T11RndValueGen",
+            )
+        ) {
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
