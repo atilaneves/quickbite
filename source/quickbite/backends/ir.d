@@ -255,6 +255,7 @@ struct ArrayAlias {
     size_t assocArray;
     long key;
     bool isAssociative;
+    bool isSlice;
 }
 
 ExecutionResult executeInstructions(
@@ -523,7 +524,7 @@ InstructionEffect executeInstruction(
                 ),
             ];
             const pointer = arrays.length - 1;
-            arrayAliases ~= ArrayAlias(pointer, 0, array, key, true);
+            arrayAliases ~= ArrayAlias(pointer, 0, array, key, true, false);
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) pointer;
             return nextInstruction;
@@ -586,13 +587,21 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArrayAppend instruction) {
-            arrays[arrayIndex(temporaries, instruction.array)] ~=
-                readTemporaryValue(temporaries, instruction.value);
+            appendArrayValue(
+                arrays,
+                arrayIndex(temporaries, instruction.array),
+                readTemporaryValue(temporaries, instruction.value),
+                arrayAliases,
+            );
             return nextInstruction;
         },
         (ArrayAppendArray instruction) {
-            arrays[arrayIndex(temporaries, instruction.array)] ~=
-                arrays[arrayIndex(temporaries, instruction.value)];
+            appendArrayValues(
+                arrays,
+                arrayIndex(temporaries, instruction.array),
+                arrays[arrayIndex(temporaries, instruction.value)],
+                arrayAliases,
+            );
             return nextInstruction;
         },
         (ArrayLength instruction) {
@@ -664,6 +673,7 @@ InstructionEffect executeInstruction(
                 0,
                 cast(long) index,
                 false,
+                false,
             );
             writeTemporaryValue(temporaries, instruction.destination) =
                 cast(long) pointer;
@@ -701,12 +711,21 @@ InstructionEffect executeInstruction(
             return nextInstruction;
         },
         (ArraySlice instruction) {
-            arrays ~= arrays[arrayIndex(temporaries, instruction.array)][
-                arrayIndex(temporaries, instruction.lower) ..
-                arrayIndex(temporaries, instruction.upper)
-            ];
+            const array = arrayIndex(temporaries, instruction.array);
+            const lower = arrayIndex(temporaries, instruction.lower);
+            const upper = arrayIndex(temporaries, instruction.upper);
+            arrays ~= arrays[array][lower .. upper];
+            const slice = arrays.length - 1;
+            arrayAliases ~= ArrayAlias(
+                slice,
+                array,
+                0,
+                cast(long) lower,
+                false,
+                true,
+            );
             writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
+                cast(long) slice;
             return nextInstruction;
         },
         (StructNew instruction) {
@@ -1089,6 +1108,61 @@ long functionPointerValue(in string name) @safe pure nothrow @nogc {
     return result == 0 ? 1 : result;
 }
 
+void appendArrayValues(
+    ref long[][] arrays,
+    in size_t array,
+    in long[] values,
+    in ArrayAlias[] arrayAliases,
+) @safe pure {
+    foreach (value; values)
+        appendArrayValue(arrays, array, value, arrayAliases);
+}
+
+void appendArrayValue(
+    ref long[][] arrays,
+    in size_t array,
+    in long value,
+    in ArrayAlias[] arrayAliases,
+) @safe pure {
+    const index = arrays[array].length;
+    arrays[array] ~= value;
+    updateSliceArrayAlias(arrays, array, index, value, arrayAliases);
+}
+
+void updateSliceArrayAlias(
+    ref long[][] arrays,
+    in size_t array,
+    in size_t index,
+    in long value,
+    in ArrayAlias[] arrayAliases,
+) @safe pure {
+    foreach (alias_; arrayAliases) {
+        if (alias_.array != array || !alias_.isSlice)
+            continue;
+
+        const sourceIndex = cast(size_t) (alias_.key + cast(long) index);
+        writeArrayValue(arrays, alias_.sourceArray, sourceIndex, value);
+        return;
+    }
+}
+
+void writeArrayValue(
+    ref long[][] arrays,
+    in size_t array,
+    in size_t index,
+    in long value,
+) @safe pure {
+    if (index < arrays[array].length) {
+        arrays[array][index] = value;
+        return;
+    }
+
+    if (index != arrays[array].length)
+        throw new Exception("IR: array index out of range");
+
+    arrays[array] ~= value;
+}
+
 void updateArrayAlias(
     in long[] temporaries,
     in imported!"quickbite.ir.instruction".ArraySet instruction,
@@ -1098,22 +1172,27 @@ void updateArrayAlias(
 ) @safe pure {
     const array = arrayIndex(temporaries, instruction.array);
     const index = arrayIndex(temporaries, instruction.index);
-    if (index != 0)
-        return;
-
     foreach (alias_; arrayAliases) {
         if (alias_.array != array)
             continue;
 
         const value = readTemporaryValue(temporaries, instruction.value);
-        if (alias_.isAssociative)
+        if (alias_.isSlice) {
+            writeArrayValue(
+                arrays,
+                alias_.sourceArray,
+                cast(size_t) (alias_.key + cast(long) index),
+                value,
+            );
+        } else if (alias_.isAssociative && index == 0) {
             writeAssocArrayValue(
                 assocArrays[alias_.assocArray],
                 alias_.key,
                 value,
             );
-        else
+        } else if (index == 0) {
             arrays[alias_.sourceArray][cast(size_t) alias_.key] = value;
+        }
         return;
     }
 }
