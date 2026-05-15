@@ -72,6 +72,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "range.d" &&
             fileName != "reset.d" &&
             fileName != "static_array.d" &&
+            fileName != "structs.d" &&
             fileName != "utils.d"
         )
     ) &&
