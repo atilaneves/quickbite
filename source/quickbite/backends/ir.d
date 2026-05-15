@@ -590,8 +590,12 @@ InstructionEffect executeInstruction(
         },
         (ArrayEqual instruction) {
             writeTemporaryValue(temporaries, instruction.destination) =
-                arrays[arrayIndex(temporaries, instruction.left)] ==
-                arrays[arrayIndex(temporaries, instruction.right)];
+                arraysEqual(
+                    arrays,
+                    arrayIndex(temporaries, instruction.left),
+                    arrayIndex(temporaries, instruction.right),
+                    instruction.depth,
+                );
             return nextInstruction;
         },
         (ArrayCanFind instruction) {
@@ -884,6 +888,48 @@ size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     const value = readTemporaryValue(temporaries, temporary);
     if (value < 0)
         throw new Exception("IR: array index out of range");
+
+    return cast(size_t) value;
+}
+
+bool arraysEqual(
+    in long[][] arrays,
+    in size_t left,
+    in size_t right,
+    in uint depth,
+) @safe pure {
+    enforceArrayHandle(arrays, left);
+    enforceArrayHandle(arrays, right);
+    if (depth <= 1)
+        return arrays[left] == arrays[right];
+
+    if (arrays[left].length != arrays[right].length)
+        return false;
+
+    foreach (index; 0 .. arrays[left].length) {
+        if (!arraysEqual(
+            arrays,
+            arrayHandle(arrays[left][index]),
+            arrayHandle(arrays[right][index]),
+            depth - 1,
+        ))
+            return false;
+    }
+
+    return true;
+}
+
+private void enforceArrayHandle(
+    in long[][] arrays,
+    in size_t handle,
+) @safe pure {
+    if (handle >= arrays.length)
+        throw new Exception("IR: array handle out of range");
+}
+
+private size_t arrayHandle(in long value) @safe pure {
+    if (value < 0)
+        throw new Exception("IR: array handle out of range");
 
     return cast(size_t) value;
 }

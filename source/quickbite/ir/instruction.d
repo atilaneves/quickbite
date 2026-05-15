@@ -219,6 +219,7 @@ public struct ArrayEqual {
     uint destination;
     uint left;
     uint right;
+    uint depth;
 }
 
 public struct ArrayCanFind {

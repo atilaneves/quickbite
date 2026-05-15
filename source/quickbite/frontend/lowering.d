@@ -1544,6 +1544,7 @@ struct BodyLowerer {
             destination,
             left,
             right,
+            dynamicArrayDepth(callArguments(call)[0].type),
         ));
         return destination;
     }
@@ -1647,6 +1648,7 @@ struct BodyLowerer {
             equalResult,
             left,
             right,
+            dynamicArrayDepth(equal.e1.type),
         ));
 
         if (equal.op == EXP.equal)
@@ -1792,6 +1794,7 @@ struct BodyLowerer {
                         fieldEqual,
                         leftField,
                         rightField,
+                        dynamicArrayDepth(field.type),
                     ));
                 else
                     instructions ~= Instruction(BinaryOp(
@@ -1860,6 +1863,7 @@ struct BodyLowerer {
                         fieldEqual,
                         leftField,
                         rightField,
+                        dynamicArrayDepth(field.type),
                     ));
                 else
                     instructions ~= Instruction(BinaryOp(
@@ -6629,6 +6633,17 @@ private bool typeIsClass(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.toBasetype.isTypeDArray !is null;
+}
+
+private uint dynamicArrayDepth(imported!"dmd.mtype".Type type) @trusted {
+    uint depth;
+    // Explicit type: DMD type handles are mutable while walking nested arrays.
+    imported!"dmd.mtype".Type current = type;
+    while (current !is null && current.toBasetype.isTypeDArray !is null) {
+        ++depth;
+        current = current.toBasetype.nextOf;
+    }
+    return depth;
 }
 
 private bool typeIsAssociativeArray(imported!"dmd.mtype".Type type) @trusted {
