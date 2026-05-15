@@ -806,26 +806,11 @@ private struct BodyWalker {
             return coerceValueToType(runExpression(cast_.e1, interpreter), cast_.to);
 
         if (auto literal = expression.isArrayLiteralExp) {
-            long[] elements;
-            if (literal.elements !is null)
-                foreach (elem; arrayLiteralElements(literal)) {
-                    import std.sumtype: match;
-
-                    Value value = runExpression(elem, interpreter);
-                    value.match!(
-                        (long l) {
-                            elements ~= l;
-                        },
-                        (long[] array) {
-                            elements ~= cast(long) array.length;
-                            elements ~= array;
-                        },
-                        (LocalPtr _) {},
-                        (ClassRef _) {},
-                        (AssocArrayRef _) {},
-                    );
-                }
-            return Value(elements);
+            return Value(arrayLiteralRuntimeValue(
+                literal,
+                arrayElementType(literal.type),
+                interpreter,
+            ));
         }
 
         if (auto literal = expression.isAssocArrayLiteralExp)
@@ -3809,14 +3794,11 @@ private struct BodyWalker {
             }
 
             if (auto literal = construct.e2.isArrayLiteralExp) {
-                long[] elements;
-                if (literal.elements !is null)
-                    foreach (elem; arrayLiteralElements(literal))
-                        elements ~= coerceIntegerToType(
-                            runExpression(elem, interpreter).asLong,
-                            arrayElementType(variable.type),
-                        );
-                locals[variable] = Value(elements);
+                locals[variable] = Value(arrayLiteralRuntimeValue(
+                    literal,
+                    arrayElementType(variable.type),
+                    interpreter,
+                ));
                 return Value(0L);
             }
 
@@ -3832,6 +3814,47 @@ private struct BodyWalker {
             variable.type,
         );
         return Value(0L);
+    }
+
+    private long[] arrayLiteralRuntimeValue(
+        imported!"dmd.expression".ArrayLiteralExp literal,
+        imported!"dmd.mtype".Type elementType,
+        ref Interpreter interpreter,
+    ) {
+        long[] elements;
+        if (literal.elements is null)
+            return elements;
+
+        foreach (elem; arrayLiteralElements(literal)) {
+            if (auto nested = elem.isArrayLiteralExp) {
+                long[] nestedElements = arrayLiteralRuntimeValue(
+                    nested,
+                    arrayElementType(elementType),
+                    interpreter,
+                );
+                elements ~= cast(long) nestedElements.length;
+                elements ~= nestedElements;
+                continue;
+            }
+
+            import std.sumtype: match;
+
+            Value value = runExpression(elem, interpreter);
+            value.match!(
+                (long l) {
+                    elements ~= coerceIntegerToType(l, elementType);
+                },
+                (long[] array) {
+                    elements ~= cast(long) array.length;
+                    elements ~= array;
+                },
+                (LocalPtr _) {},
+                (ClassRef _) {},
+                (AssocArrayRef _) {},
+            );
+        }
+
+        return elements;
     }
 
     private bool tryInitializeAssocArrayKeyStruct(
