@@ -1548,6 +1548,8 @@ private struct BodyWalker {
             return Value(0L);
         if (tryRunReadBits(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunUnitThreadedGenValues(call))
+            return Value(0L);
 
         if (call.f.fbody is null)
             throw new Exception(text(
@@ -3775,6 +3777,14 @@ private struct BodyWalker {
             return true;
         }
         return false;
+    }
+
+    private bool tryRunUnitThreadedGenValues(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        return call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "genValues";
     }
 
     private bool tryRunScopeBufferRangeConstructor(
