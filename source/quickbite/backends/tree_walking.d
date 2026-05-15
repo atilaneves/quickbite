@@ -2338,13 +2338,19 @@ private struct BodyWalker {
         if (cerealOwner is null)
             return false;
 
-        appendArrayToCereal(cerealOwner, array, interpreter);
+        appendArrayToCereal(
+            cerealOwner,
+            array,
+            arrayElementType(callArguments(call)[0].type),
+            interpreter,
+        );
         return true;
     }
 
     private void appendArrayToCereal(
         VarDeclaration cerealOwner,
         long[] array,
+        imported!"dmd.mtype".Type elementType,
         ref Interpreter interpreter,
     ) {
         Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
@@ -2364,8 +2370,9 @@ private struct BodyWalker {
             Value((long[]).init),
         ));
         appendUshort(elements, cast(long) array.length);
+        const elementByteCount = decerealisedScalarByteCount(elementType);
         foreach (element; array)
-            elements ~= element & 0xff;
+            appendIntegerBytes(elements, element, elementByteCount);
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
@@ -2439,6 +2446,15 @@ private struct BodyWalker {
         elements ~= (value >> 16) & 0xff;
         elements ~= (value >> 8) & 0xff;
         elements ~= value & 0xff;
+    }
+
+    private void appendIntegerBytes(
+        ref long[] elements,
+        in long value,
+        in size_t byteCount,
+    ) {
+        foreach_reverse (index; 0 .. byteCount)
+            elements ~= (value >> (index * 8)) & 0xff;
     }
 
     private long assocArrayLength(
