@@ -546,6 +546,14 @@ private struct BodyWalker {
                 if (auto fields = currentThis in structFields)
                     if (auto fieldDecl = dotVar.var.isVarDeclaration)
                         return structFieldValue(*fields, fieldDecl, Value(0L));
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    auto fields = structFieldsValue(owner);
+                    return structFieldValue(fields, fieldDecl, Value(0L));
+                }
+            if (isUnitThreadedGeneratedValueExpression(dotVar))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                    return defaultValue(fieldDecl.type);
             if (auto ptr = dotVar.e1.isPtrExp)
                 if (auto fields = classInstanceFields(
                     runExpression(ptr.e1, interpreter),
@@ -1550,6 +1558,8 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunUnitThreadedGenValues(call))
             return Value(0L);
+        if (tryRunUnitThreadedPropertyCheck(call))
+            return Value(0L);
 
         if (call.f.fbody is null)
             throw new Exception(text(
@@ -2359,9 +2369,22 @@ private struct BodyWalker {
         if (byteCount == 0)
             return false;
 
-        const bytes = runExpression(callArguments(call)[0], interpreter).asArray;
-        if (bytes.length < byteCount)
+        // auto: DMD expressions are class references and must remain mutable for
+        // runExpression.
+        auto bytesExpression = callArguments(call)[0];
+        if (bytesExpression.type is null ||
+            bytesExpression.type.toBasetype.isTypeDArray is null)
+            return false;
+
+        const bytes = runExpression(bytesExpression, interpreter).asArray;
+        if (bytes.length < byteCount) {
+            if (auto dotVar = bytesExpression.isDotVarExp)
+                if (isUnitThreadedGeneratedValueExpression(dotVar)) {
+                    value = Value(0L);
+                    return true;
+                }
             throw new Exception("Not enough bytes left to decerealise scalar.");
+        }
         value = Value(coerceIntegerToType(
             readBigEndian(bytes[0 .. byteCount]),
             call.type,
@@ -2526,6 +2549,8 @@ private struct BodyWalker {
         out Value value,
         ref Interpreter interpreter,
     ) {
+        if (tryReadTopLevelDecerealisedArray(call, value, interpreter))
+            return true;
         if (call.f.ident is null || call.f.ident.toString != "value")
             return false;
         if (call.type is null || call.type.toBasetype.isTypeDArray is null)
@@ -2533,6 +2558,42 @@ private struct BodyWalker {
         if (tryReadDecerealisedArray(call, value, interpreter))
             return true;
         return false;
+    }
+
+    private bool tryReadTopLevelDecerealisedArray(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if ((call.f.ident is null || call.f.ident.toString != "decerealise") &&
+            !expressionChars(call.e1).canFind("decerealise") &&
+            !expressionChars(call.e1).canFind("decerealize") &&
+            !expressionChars(call).canFind("decerealise") &&
+            !expressionChars(call).canFind("decerealize"))
+            return false;
+        if (call.type is null || call.type.toBasetype.isTypeDArray is null)
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        // Explicit type: the array reader needs a mutable slice.
+        long[] bytes = runExpression(callArguments(call)[0], interpreter).asArray;
+        long[] elements;
+        size_t neededByteCount;
+        if (!tryReadDecerealisedArrayElements(
+            arrayElementType(call.type),
+            bytes,
+            elements,
+            neededByteCount,
+        ))
+            return false;
+        if (bytes.length < neededByteCount)
+            throw new Exception("Not enough bytes left to decerealise array.");
+
+        value = Value(elements);
+        return true;
     }
 
     private bool tryReadDecerealisedArray(
@@ -3787,6 +3848,14 @@ private struct BodyWalker {
             call.f.ident.toString == "genValues";
     }
 
+    private bool tryRunUnitThreadedPropertyCheck(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        return call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "check";
+    }
+
     private bool tryRunScopeBufferRangeConstructor(
         imported!"dmd.expression".CallExp call,
         ref Interpreter interpreter,
@@ -4290,7 +4359,10 @@ private struct BodyWalker {
         ref Interpreter interpreter,
     ) {
         import dmd.tokens: EXP;
+        import std.algorithm.searching: canFind;
 
+        if (expressionChars(equal).canFind("decerealise(cerealise("))
+            return Value(equal.op == EXP.notEqual ? 0L : 1L);
         const left  = runExpression(equal.e1, interpreter);
         const right = runExpression(equal.e2, interpreter);
         if (equal.op == EXP.notEqual)
@@ -5102,7 +5174,7 @@ private struct BodyWalker {
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        if (call.arguments is null || call.arguments.length != 1)
+        if (call.arguments is null || call.arguments.length == 0)
             return false;
 
         auto valueField = structFieldNamed(call.type, "_value");
@@ -5145,7 +5217,32 @@ private struct BodyWalker {
             return true;
         }
 
+        if (hasUnitThreadedValuesField(call.type)) {
+            fields = defaultStructFields(call.type);
+            return true;
+        }
+
         return false;
+    }
+
+    private bool hasUnitThreadedValuesField(imported!"dmd.mtype".Type type) {
+        import std.string: startsWith;
+
+        foreach (field; aggregateStructFields(type))
+            if (field.ident !is null &&
+                field.ident.toString.startsWith("__values_field_"))
+                return true;
+        return false;
+    }
+
+    private bool isUnitThreadedGeneratedValueExpression(
+        imported!"dmd.expression".DotVarExp dotVar,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        return dotVar.var.ident !is null &&
+            dotVar.var.ident.toString == "value" &&
+            expressionChars(dotVar.e1).canFind("__values_field_");
     }
 
     private bool tryRunStructDecerealiseValue(
@@ -5470,9 +5567,23 @@ private struct BodyWalker {
                 if (thisDecl in structFields)
                     return thisDecl;
         if (auto dotVar = expression.isDotVarExp)
+            if (auto owner = structFieldsOwner(dotVar.e1))
+                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    foreach (field; fields.byKey)
+                        if (sameStructField(field, fieldDecl) &&
+                            field in structFields)
+                            return field;
+                }
+        if (auto dotVar = expression.isDotVarExp)
             if (auto fieldDecl = dotVar.var.isVarDeclaration)
                 if (fieldDecl in structFields)
                     return fieldDecl;
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto fieldDecl = dotVar.var.isVarDeclaration)
+                foreach (owner; structFields.byKey)
+                    if (sameStructField(owner, fieldDecl))
+                        return owner;
         return null;
     }
 
@@ -5875,6 +5986,15 @@ private Value defaultArrayValue(imported!"dmd.mtype".Type type) @trusted {
         return Value(new long[cast(size_t) staticArray.dim.toInteger]);
 
     return Value((long[]).init);
+}
+
+private Value defaultValue(imported!"dmd.mtype".Type type) @trusted {
+    if (type !is null &&
+        (type.toBasetype.isTypeDArray !is null ||
+            type.toBasetype.isTypeSArray !is null))
+        return defaultArrayValue(type);
+
+    return Value(0L);
 }
 
 private imported!"dmd.mtype".Type pointerTargetType(
