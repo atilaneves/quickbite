@@ -401,6 +401,16 @@ private struct BodyWalker {
         if (statement.isImportStatement !is null)
             return;
 
+        if (auto conditional = statement.isConditionalStatement) {
+            runStatement(
+                conditionalStatementIncluded(conditional)
+                    ? conditional.ifbody
+                    : conditional.elsebody,
+                interpreter,
+            );
+            return;
+        }
+
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             foreach (child; *unrolled.statements) {
                 runStatement(child, interpreter);
@@ -412,6 +422,14 @@ private struct BodyWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
+    }
+
+    private bool conditionalStatementIncluded(
+        imported!"dmd.statement".ConditionalStatement statement,
+    ) @trusted {
+        import dmd.cond: Include;
+
+        return statement.condition.inc == Include.yes;
     }
 
     private Value runExpression(
