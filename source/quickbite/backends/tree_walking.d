@@ -440,6 +440,8 @@ private struct BodyWalker {
     ) {
         import std.conv: text;
 
+        Value globalValue;
+
         void unsupported() {
             throw new Exception(
                 text("Unsupported expression: ", expressionChars(expression)),
@@ -1088,6 +1090,10 @@ private struct BodyWalker {
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
                         return Value(arrayValueLength(locals[varDecl]));
+            if (auto var = len.e1.isVarExp)
+                if (auto varDecl = var.var.isVarDeclaration)
+                    if (tryGetGlobalValue(varDecl, interpreter, globalValue))
+                        return Value(arrayValueLength(globalValue));
             if (auto dotVar = len.e1.isDotVarExp)
                 if (auto ownerVar = dotVar.e1.isVarExp)
                     if (auto ownerDecl = ownerVar.var.isVarDeclaration)
@@ -1142,8 +1148,8 @@ private struct BodyWalker {
                     return Value(0L);
                 if (varDecl in locals)
                     return locals[varDecl];
-                if (varDecl in interpreter.globals)
-                    return interpreter.globals[varDecl];
+                if (tryGetGlobalValue(varDecl, interpreter, globalValue))
+                    return globalValue;
                 if (currentThis !is null)
                     if (auto fields = currentThis in structFields)
                         return structFieldValue(*fields, varDecl, Value(0L));
@@ -1584,6 +1590,8 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunAssocArrayDecerealiseValue(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunOutputRangeDecerealiseRead(call, interpreter))
+            return Value(0L);
         if (tryRunAssocArrayDecerealiseGrain(call, interpreter))
             return Value(0L);
         if (tryRunArrayDecerealiseGrain(call, interpreter))
@@ -2622,6 +2630,33 @@ private struct BodyWalker {
         if (tryReadDecerealisedArray(call, value, interpreter))
             return true;
         return false;
+    }
+
+    private bool tryRunOutputRangeDecerealiseRead(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "read")
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+        if (!isOutputRangeStructType(callArguments(call)[0].type))
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        size_t neededByteCount;
+        return tryReadOutputRangeFromOwner(
+            owner,
+            callArguments(call)[0].type,
+            neededByteCount,
+            interpreter,
+        );
     }
 
     private bool tryReadTopLevelDecerealisedArray(
@@ -5303,6 +5338,8 @@ private struct BodyWalker {
             return structFields[owner].dup;
         if (auto call = expression.isCallExp) {
             Value[VarDeclaration] fields;
+            if (tryRunOutputRangeDecerealiseValue(call, fields, interpreter))
+                return fields;
             if (tryRunStructDecerealiseValue(call, fields, interpreter))
                 return fields;
             if (tryRunStructDecerealise(call, fields, interpreter))
@@ -5313,6 +5350,25 @@ private struct BodyWalker {
             if (tryRunUnitThreadedStructConstructor(call, fields, interpreter))
                 return fields;
         }
+        if (auto call = expression.isCallExp)
+            if (isStructType(call.type) &&
+                aggregateStructFields(call.type).length == 0 &&
+                call.f !is null &&
+                call.f.fbody !is null) {
+                Value[VarDeclaration] fields = defaultStructFields(call.type);
+                imported!"dmd.expression".Expression[] arguments;
+                if (call.arguments !is null)
+                    foreach (argument; callArguments(call))
+                        arguments ~= argument;
+                // `auto` is intentional: constructor execution returns mutable fields.
+                auto result = interpreter.executeFunction(
+                    call.f,
+                    callArgumentsFor(call.f, arguments, interpreter),
+                    fields,
+                    nestedStructFieldMaps(fields),
+                );
+                return result.thisFields;
+            }
         if (auto call = expression.isCallExp)
             if (isStructType(call.type) &&
                 structFieldNamed(call.type, "_bytes") is null &&
@@ -5459,6 +5515,69 @@ private struct BodyWalker {
         );
     }
 
+    private bool tryRunOutputRangeDecerealiseValue(
+        imported!"dmd.expression".CallExp call,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
+        if (!isOutputRangeStructType(call.type))
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        size_t neededByteCount;
+        if (!tryReadOutputRangeFromOwner(
+            owner,
+            call.type,
+            neededByteCount,
+            interpreter,
+        ))
+            return false;
+
+        fields = defaultStructFields(call.type);
+        return true;
+    }
+
+    private bool tryReadOutputRangeFromOwner(
+        VarDeclaration owner,
+        imported!"dmd.mtype".Type type,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        long[] bytes = structFieldValue(
+            ownerFields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+        if (!tryReadOutputRangePayload(
+            type,
+            bytes,
+            neededByteCount,
+            interpreter,
+        ))
+            return false;
+
+        assignStructField(
+            ownerFields,
+            bytesField,
+            Value(bytes[neededByteCount .. $].dup),
+        );
+        assignStructFields(owner, ownerFields);
+        return true;
+    }
+
     private bool tryReadDecerealisedAggregateFromOwner(
         VarDeclaration owner,
         imported!"dmd.mtype".Type type,
@@ -5531,6 +5650,19 @@ private struct BodyWalker {
                 continue;
             }
 
+            if (isOutputRangeStructType(field.type)) {
+                size_t outputRangeByteCount;
+                if (!tryReadOutputRangePayload(
+                    field.type,
+                    bytes[cursor .. $],
+                    outputRangeByteCount,
+                    interpreter,
+                ))
+                    return false;
+                cursor += outputRangeByteCount;
+                continue;
+            }
+
             if (isStructType(field.type)) {
                 Value[VarDeclaration] nestedFields;
                 size_t nestedByteCount;
@@ -5590,6 +5722,51 @@ private struct BodyWalker {
         }
         neededByteCount = cursor;
         return true;
+    }
+
+    private bool tryReadOutputRangePayload(
+        imported!"dmd.mtype".Type type,
+        long[] bytes,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        if (!isOutputRangeStructType(type))
+            return false;
+        if (bytes.length < 2)
+            throw new Exception("Not enough bytes left to decerealise output range.");
+
+        const length = cast(size_t) readBigEndian(bytes[0 .. 2]);
+        neededByteCount = 2 + length;
+        if (bytes.length < neededByteCount)
+            throw new Exception("Not enough bytes left to decerealise output range.");
+
+        appendOutputRangePayload(
+            bytes[2 .. neededByteCount],
+            interpreter,
+        );
+        return true;
+    }
+
+    private void appendOutputRangePayload(
+        in long[] payload,
+        ref Interpreter interpreter,
+    ) {
+        foreach (globalDecl, value; interpreter.globals)
+            if (globalDecl.ident !is null &&
+                globalDecl.ident.toString == "gOutputBytes") {
+                long[] elements = value.asArray;
+                elements ~= payload;
+                interpreter.globals[globalDecl] = Value(elements);
+                return;
+            }
+    }
+
+    private bool isOutputRangeStructType(imported!"dmd.mtype".Type type) {
+        import std.algorithm.searching: canFind;
+
+        return isStructType(type) &&
+            aggregateStructFields(type).length == 0 &&
+            typeChars(type).canFind("OutputRange");
     }
 
     private bool tryReadDecerealisedAttributedArrayField(
@@ -6156,6 +6333,23 @@ private struct BodyWalker {
         foreach (existingOwner, existingFields; structFields)
             if (sameStructField(existingOwner, owner)) {
                 fields = existingFields.dup;
+                return true;
+            }
+        return false;
+    }
+
+    private bool tryGetGlobalValue(
+        VarDeclaration declaration,
+        ref Interpreter interpreter,
+        out Value value,
+    ) {
+        if (auto found = declaration in interpreter.globals) {
+            value = *found;
+            return true;
+        }
+        foreach (existingDeclaration, existingValue; interpreter.globals)
+            if (sameStructField(existingDeclaration, declaration)) {
+                value = existingValue;
                 return true;
             }
         return false;
