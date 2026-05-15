@@ -1516,6 +1516,12 @@ struct BodyLowerer {
             }
         }
 
+        if (typeIsStaticArray(variable.type)) {
+            const value = lowerDefaultStaticArray(variable.type);
+            rememberLocalTemporary(variable, value);
+            return value;
+        }
+
         if (auto initializer = variable._init.isExpInitializer) {
             const value = lowerInitializerExpression(initializer.exp, lowerer);
             rememberLocalTemporary(variable, value);
@@ -1523,6 +1529,19 @@ struct BodyLowerer {
         }
 
         return lowerUnmappedParameter(variable);
+    }
+
+    uint lowerDefaultStaticArray(imported!"dmd.mtype".Type type) @safe {
+        import quickbite.ir.instruction:
+            ArrayLiteral, ArraySetLength, ConstInt, Instruction;
+
+        const value = allocateTemporary;
+        instructions ~= Instruction(ArrayLiteral(value, []));
+
+        const length = allocateTemporary;
+        instructions ~= Instruction(ConstInt(length, staticArrayLength(type)));
+        instructions ~= Instruction(ArraySetLength(value, length));
+        return value;
     }
 
     uint lowerBinaryExpression(Expression)(
@@ -4058,6 +4077,12 @@ struct BodyLowerer {
 
                 return destination;
             }
+        }
+
+        if (typeIsStaticArray(variable.type)) {
+            const value = lowerDefaultStaticArray(variable.type);
+            rememberLocalTemporary(variable, value);
+            return value;
         }
 
         if (variable._init !is null) {
@@ -7175,6 +7200,16 @@ private bool typeIsClass(imported!"dmd.mtype".Type type) @trusted {
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.toBasetype.isTypeDArray !is null;
+}
+
+private bool typeIsStaticArray(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tsarray;
+}
+
+private long staticArrayLength(imported!"dmd.mtype".Type type) @trusted {
+    return cast(long) type.toBasetype.isTypeSArray.dim.toInteger;
 }
 
 private uint dynamicArrayDepth(imported!"dmd.mtype".Type type) @trusted {

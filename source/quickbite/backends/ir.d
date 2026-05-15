@@ -1155,6 +1155,8 @@ void writeArrayValue(
     in size_t index,
     in long value,
 ) @safe pure {
+    if (array >= arrays.length)
+        arrays.length = array + 1;
     if (index < arrays[array].length) {
         arrays[array][index] = value;
         return;
