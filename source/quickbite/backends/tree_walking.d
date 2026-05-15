@@ -429,6 +429,9 @@ private struct BodyWalker {
         if (auto integer = expression.isIntegerExp)
             return Value(integerValue(integer));
 
+        if (expression.isRealExp)
+            return Value(0L);
+
         if (expression.isNullExp)
             return Value(0L);
 
