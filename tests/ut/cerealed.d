@@ -80,6 +80,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "protocol_unit.d" &&
             fileName != "range.d" &&
             fileName != "reset.d" &&
+            fileName != "static_array.d" &&
             fileName != "structs.d" &&
             fileName != "utils.d"
         )
