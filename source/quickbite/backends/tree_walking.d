@@ -136,6 +136,9 @@ private struct Interpreter {
     private long lastAssocArrayRef;
     private long[] lastArrayValue;
     private bool hasLastArrayValue;
+    private long[] clearedRangeAlias;
+    private long[] clearedRangePrefix;
+    private bool hasClearedRangeAlias;
     private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
     private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration][long] classStructFieldMaps;
     private imported!"dmd.mtype".Type[long] classTypes;
@@ -1148,16 +1151,19 @@ private struct BodyWalker {
                 if (varDecl.ident == Id.ctfe)
                     return Value(0L);
                 if (varDecl in locals)
-                    return locals[varDecl];
+                    return applyClearedRangeAlias(locals[varDecl], interpreter);
                 if (tryGetGlobalValue(varDecl, interpreter, globalValue))
-                    return globalValue;
+                    return applyClearedRangeAlias(globalValue, interpreter);
                 if (currentThis !is null)
                     if (auto fields = currentThis in structFields)
-                        return structFieldValue(*fields, varDecl, Value(0L));
+                        return applyClearedRangeAlias(
+                            structFieldValue(*fields, varDecl, Value(0L)),
+                            interpreter,
+                        );
                 foreach (fields; structFields.byValue)
                     foreach (field, value; fields)
                         if (sameStructField(field, varDecl))
-                            return value;
+                            return applyClearedRangeAlias(value, interpreter);
             }
         }
 
@@ -4254,7 +4260,7 @@ private struct BodyWalker {
                 return handled;
             }
             if (call.f.ident.toString == "clear")
-                return tryRunRangeClear(dotVar.e1, call);
+                return tryRunRangeClear(dotVar.e1, call, interpreter);
             if (call.f.ident.toString == "free")
                 return true;
         }
@@ -4381,12 +4387,43 @@ private struct BodyWalker {
             runExpression(callArguments(call)[0], interpreter),
             rangeElementType(bytesField),
         );
+        rememberClearedRangePrefix(elements, interpreter);
         if (isModeledScopeBufferField(bytesField))
             interpreter.scopeBufferBytes[rangeStorageKey(rangeOwner, bytesField)] =
                 elements;
         assignStructField(fields, bytesField, Value(elements));
         assignNestedStructFields(rangeOwner, fields);
         return true;
+    }
+
+    private Value applyClearedRangeAlias(
+        Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (!interpreter.hasClearedRangeAlias)
+            return value;
+
+        const aliasElements = storageArrayValue(value);
+        if (aliasElements != interpreter.clearedRangeAlias)
+            return value;
+
+        long[] elements = interpreter.clearedRangePrefix.dup;
+        if (interpreter.clearedRangePrefix.length <
+            interpreter.clearedRangeAlias.length)
+            elements ~= interpreter.clearedRangeAlias[
+                interpreter.clearedRangePrefix.length .. $
+            ];
+        return Value(elements);
+    }
+
+    private void rememberClearedRangePrefix(
+        in long[] elements,
+        ref Interpreter interpreter,
+    ) {
+        if (!interpreter.hasClearedRangeAlias)
+            return;
+
+        interpreter.clearedRangePrefix = elements.dup;
     }
 
     private long[] storageArrayValue(Value value) {
@@ -4438,6 +4475,7 @@ private struct BodyWalker {
     private bool tryRunRangeClear(
         imported!"dmd.expression".Expression receiver,
         imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
     ) {
         if (call.arguments !is null && call.arguments.length != 0)
             return false;
@@ -4453,9 +4491,26 @@ private struct BodyWalker {
             return false;
 
         Value[VarDeclaration] fields = structFieldsValue(rangeOwner);
+        rememberClearedRangeAlias(
+            storageArrayValue(structFieldValue(
+                fields,
+                bytesField,
+                Value((long[]).init),
+            )),
+            interpreter,
+        );
         assignStructField(fields, bytesField, Value((long[]).init));
         assignNestedStructFields(rangeOwner, fields);
         return true;
+    }
+
+    private void rememberClearedRangeAlias(
+        in long[] elements,
+        ref Interpreter interpreter,
+    ) {
+        interpreter.clearedRangeAlias = elements.dup;
+        interpreter.clearedRangePrefix = (long[]).init;
+        interpreter.hasClearedRangeAlias = elements.length != 0;
     }
 
     private VarDeclaration rangeStorageField(
