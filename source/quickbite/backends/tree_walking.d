@@ -140,6 +140,7 @@ private struct Interpreter {
     private imported!"dmd.mtype".Type[long] classTypes;
     private Value[long] heapScalars;
     private AssocArray[long] assocArrays;
+    private Value[imported!"dmd.declaration".VarDeclaration] globals;
     private bool childClassRegistered;
 
     private FunctionResult executeFunction(
@@ -502,6 +503,12 @@ private struct BodyWalker {
                                 return Value(assocArrayLength(arrayId, interpreter));
                             return Value(cast(long) (*local).asArray.length);
                         }
+            if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "length")
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto global = ownerDecl in interpreter.globals)
+                            return Value(cast(long) (*global).asArray.length);
             if (dotVar.var.ident !is null &&
                 dotVar.var.ident.toString == "length")
                 if (auto arrayField = dotVar.e1.isDotVarExp)
@@ -1135,6 +1142,8 @@ private struct BodyWalker {
                     return Value(0L);
                 if (varDecl in locals)
                     return locals[varDecl];
+                if (varDecl in interpreter.globals)
+                    return interpreter.globals[varDecl];
                 if (currentThis !is null)
                     if (auto fields = currentThis in structFields)
                         return structFieldValue(*fields, varDecl, Value(0L));
@@ -1410,6 +1419,24 @@ private struct BodyWalker {
                     );
                     locals[varDecl] = Value(elements);
                     return locals[varDecl];
+                }
+        if (auto var = append.e1.isVarExp)
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (varDecl.type !is null &&
+                    varDecl.type.isTypeDArray !is null &&
+                    varDecl !in locals) {
+                    // Explicit type: `elements` must be mutable for append.
+                    long[] elements = interpreter.globals.get(
+                        varDecl,
+                        Value((long[]).init),
+                    ).asArray;
+                    appendRuntimeArrayElement(
+                        elements,
+                        runExpression(append.e2, interpreter),
+                        arrayElementType(varDecl.type),
+                    );
+                    interpreter.globals[varDecl] = Value(elements);
+                    return interpreter.globals[varDecl];
                 }
         if (auto var = append.e1.isVarExp)
             if (auto fieldDecl = var.var.isVarDeclaration)
@@ -5014,6 +5041,11 @@ private struct BodyWalker {
                     locals[varDecl] = coerceValueToType(value, varDecl.type);
                     return value;
                 } else if (varDecl in structFields) {
+                    return value;
+                } else if (varDecl.type !is null &&
+                    varDecl.type.isTypeDArray !is null) {
+                    interpreter.globals[varDecl] =
+                        coerceValueToType(value, varDecl.type);
                     return value;
                 }
             }
