@@ -1345,9 +1345,11 @@ private struct BodyWalker {
         }
 
         rememberAssocArrayOrArrayCerealAppend(call, interpreter);
-        if (tryRunStructLiteralCerealise(call, rangeValue, interpreter))
+        if (tryRunCerealise(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunUnitThreadedWrapperValue(call, rangeValue))
+            return rangeValue;
+        if (tryRunScalarDecerealise(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunArrayDecerealiseValue(call, rangeValue, interpreter))
             return rangeValue;
@@ -1949,12 +1951,21 @@ private struct BodyWalker {
         return false;
     }
 
-    private bool tryRunStructLiteralCerealise(
+    private bool tryRunCerealise(
         imported!"dmd.expression".CallExp call,
         out Value value,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "cerealise")
+        import std.algorithm.searching: canFind;
+
+        if (expressionChars(call).canFind("decerealise") ||
+            expressionChars(call).canFind("decerealize"))
+            return false;
+        if ((call.f.ident is null || call.f.ident.toString != "cerealise") &&
+            !expressionChars(call.e1).canFind("cerealise") &&
+            !expressionChars(call.e1).canFind("cerealize") &&
+            !expressionChars(call).canFind("cerealise") &&
+            !expressionChars(call).canFind("cerealize"))
             return false;
         imported!"dmd.expression".StructLiteralExp literal;
         if (auto dotVar = call.e1.isDotVarExp)
@@ -1964,6 +1975,21 @@ private struct BodyWalker {
             call.arguments.length == 1)
             literal = callArguments(call)[0].isStructLiteralExp;
         if (literal is null) {
+            if (call.arguments is null) {
+                if (auto dotVar = call.e1.isDotVarExp)
+                    if (isStructType(dotVar.e1.type)) {
+                        Value[VarDeclaration] fields = runStructInitializer(
+                            dotVar.e1,
+                            interpreter,
+                        );
+                        return tryCerealiseScalarStructFields(
+                            dotVar.e1.type,
+                            fields,
+                            value,
+                        );
+                    }
+                return false;
+            }
             if (call.arguments is null || call.arguments.length != 1)
                 return false;
 
@@ -2102,6 +2128,36 @@ private struct BodyWalker {
                 call.f.ident !is null &&
                 call.f.ident.toString == "value";
         return false;
+    }
+
+    private bool tryRunScalarDecerealise(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if ((call.f.ident is null || call.f.ident.toString != "decerealise") &&
+            !expressionChars(call.e1).canFind("decerealise") &&
+            !expressionChars(call.e1).canFind("decerealize") &&
+            !expressionChars(call).canFind("decerealise") &&
+            !expressionChars(call).canFind("decerealize"))
+            return false;
+        if (call.arguments is null || call.arguments.length != 1)
+            return false;
+
+        const byteCount = decerealisedScalarByteCount(call.type);
+        if (byteCount == 0)
+            return false;
+
+        const bytes = runExpression(callArguments(call)[0], interpreter).asArray;
+        if (bytes.length < byteCount)
+            throw new Exception("Not enough bytes left to decerealise scalar.");
+        value = Value(coerceIntegerToType(
+            readBigEndian(bytes[0 .. byteCount]),
+            call.type,
+        ));
+        return true;
     }
 
     private bool tryRunAssocArrayDecerealiseValue(
@@ -3557,6 +3613,16 @@ private struct BodyWalker {
 
         const leftNull = identity.e1.isNullExp !is null;
         const rightNull = identity.e2.isNullExp !is null;
+        if (!leftNull &&
+            !rightNull &&
+            isStructType(identity.e1.type) &&
+            isStructType(identity.e2.type)) {
+            const sameStruct = runStructInitializer(identity.e1, interpreter) ==
+                runStructInitializer(identity.e2, interpreter);
+            if (identity.op == EXP.notIdentity)
+                return Value(sameStruct ? 0L : 1L);
+            return Value(sameStruct ? 1L : 0L);
+        }
         const same = leftNull && rightNull
             ? true
             : leftNull
