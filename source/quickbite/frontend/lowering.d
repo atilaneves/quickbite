@@ -3258,6 +3258,9 @@ struct BodyLowerer {
         if (typeIsDynamicArray(new_.newtype))
             return lowerNewDynamicArray(new_, lowerer);
 
+        if (typeIsPointer(new_.type) && !typeIsStruct(new_.newtype))
+            return lowerDefaultValue(new_.newtype);
+
         if (!typeIsPointer(new_.type) || !typeIsStruct(new_.newtype))
             throw new Exception(text("Unsupported expression: ", new_.op));
 
