@@ -2182,13 +2182,29 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            ArrayCopy, ArrayLength, ArrayLiteral, Assert_, BinaryOp, ConstInt,
-            Instruction, Operation;
+            ArrayCopy, ArrayLength, ArrayLiteral, ArraySetLength, Assert_,
+            BinaryOp, ConstInt, Instruction, Operation;
+        import std.string: startsWith;
 
         if (functionIdentifier(call.f) == "_d_arraybounds") {
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
             instructions ~= Instruction(Assert_(result));
+            return true;
+        }
+
+        if (
+            lowerer.functionName(call.f).startsWith(
+                "_D4core8internal5array12construction__T12_d_newarrayU",
+            )
+        ) {
+            result = allocateTemporary;
+            instructions ~= Instruction(ArrayLiteral(result, []));
+            if (call.arguments is null || call.arguments.length == 0)
+                return true;
+
+            const length = lowerExpression(callArguments(call)[0], lowerer);
+            instructions ~= Instruction(ArraySetLength(result, length));
             return true;
         }
 
