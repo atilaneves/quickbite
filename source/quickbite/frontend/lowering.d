@@ -5476,10 +5476,12 @@ struct BodyLowerer {
                     key,
                 ));
 
+                dollarArrays ~= pointer;
                 const indexValue = lowerExpression(
                     arrayExpressionArguments(array)[0],
                     lowerer,
                 );
+                dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
                 const destination = allocateTemporary;
                 instructions ~= Instruction(ArrayIndex(
                     destination,
@@ -5490,7 +5492,9 @@ struct BodyLowerer {
             }
 
         const arrayValue = lowerExpression(array.e1, lowerer);
+        dollarArrays ~= arrayValue;
         const indexValue = lowerExpression(arrayExpressionArguments(array)[0], lowerer);
+        dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
         const destination = allocateTemporary;
         if (typeIsAssociativeArray(array.e1.type)) {
             if (typeIsPointer(array.type)) {
@@ -5850,7 +5854,9 @@ struct BodyLowerer {
                     import quickbite.ir.instruction: ArrayIndex, Instruction;
 
                     const array = lowerExpression(index.e1, lowerer);
+                    dollarArrays ~= array;
                     const indexValue = lowerExpression(index.e2, lowerer);
+                    dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
                     const value = allocateTemporary;
                     instructions ~= Instruction(ArrayIndex(
                         value,
@@ -5942,7 +5948,9 @@ struct BodyLowerer {
                 import quickbite.ir.instruction: ArrayIndex, Instruction;
 
                 const array = lowerExpression(index.e1, lowerer);
+                dollarArrays ~= array;
                 const indexValue = lowerExpression(index.e2, lowerer);
+                dollarArrays = dollarArrays[0 .. dollarArrays.length - 1];
                 const value = allocateTemporary;
                 instructions ~= Instruction(ArrayIndex(
                     value,
