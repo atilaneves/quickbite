@@ -4036,6 +4036,8 @@ private struct BodyWalker {
         }
         if (auto call = expression.isCallExp)
             if (isStructType(call.type) &&
+                structFieldNamed(call.type, "_bytes") is null &&
+                structFieldNamed(call.type, "_originalBytes") is null &&
                 call.arguments !is null &&
                 call.arguments.length > 0) {
                 Value[VarDeclaration] fields = defaultStructFields(call.type);
