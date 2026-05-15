@@ -5189,7 +5189,6 @@ struct BodyLowerer {
         import dmd.astenums: STC;
 
         enum unsupported =
-            STC.out_ |
             STC.variadic |
             STC.alias_ |
             STC.auto_;
@@ -5202,7 +5201,6 @@ struct BodyLowerer {
         import dmd.astenums: STC;
 
         enum unsupported =
-            STC.out_ |
             STC.variadic |
             STC.alias_ |
             STC.auto_ |
@@ -5213,13 +5211,15 @@ struct BodyLowerer {
     bool parameterIsRef(imported!"dmd.declaration".VarDeclaration parameter) @safe {
         import dmd.astenums: STC;
 
-        return (parameter.storage_class & STC.ref_) != STC.none;
+        enum refLike = STC.ref_ | STC.out_;
+        return (parameter.storage_class & refLike) != STC.none;
     }
 
     bool typeParameterIsRef(imported!"dmd.mtype".Parameter parameter) @safe {
         import dmd.astenums: STC;
 
-        return (parameter.storageClass & STC.ref_) != STC.none;
+        enum refLike = STC.ref_ | STC.out_;
+        return (parameter.storageClass & refLike) != STC.none;
     }
 
     bool parameterIsLazy(imported!"dmd.declaration".VarDeclaration parameter) @safe {
