@@ -1319,6 +1319,8 @@ struct BodyLowerer {
             if (auto index = addr.e1.isIndexExp)
                 if (!typeIsAssociativeArray(index.e1.type))
                     return lowerArrayElementPointer(index, lowerer);
+            if (auto dot = addr.e1.isDotVarExp)
+                return lowerStructOwner(dot, lowerer);
             import std.conv: text;
             throw new Exception(text("Unsupported address-of: ", expressionChars(addr.e1)));
         }
