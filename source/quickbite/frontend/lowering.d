@@ -962,6 +962,12 @@ struct BodyLowerer {
             if (tryLowerScopeBufferCall(call, lowerer, scopeBufferResult))
                 return scopeBufferResult;
 
+            if (callArgumentCountExceedsFunctionParameters(call, call.f)) {
+                uint memberCallResult;
+                if (tryLowerUnresolvedMemberCall(call, lowerer, memberCallResult))
+                    return memberCallResult;
+            }
+
             lowerer.ensureFunctionLowered(call.f);
             // `const` would make the array incompatible with Call.arguments.
             // auto: keep the mutable array type for restoring the field below.
@@ -5833,7 +5839,14 @@ private imported!"dmd.func".FuncDeclaration resolveUnqualifiedMemberCall(
     import dmd.dsymbolsem: search, toAlias;
     import dmd.funcsem: FuncResolveFlag, resolveFuncCall;
 
-    auto identifier = call.e1.isIdentifierExp;
+    imported!"dmd.identifier".Identifier identifier;
+    if (auto expressionIdentifier = call.e1.isIdentifierExp)
+        identifier = expressionIdentifier.ident;
+    else if (auto variable = call.e1.isVarExp) {
+        if (auto function_ = variable.var.isFuncDeclaration)
+            identifier = function_.ident;
+    }
+
     if (identifier is null)
         return null;
 
@@ -5844,12 +5857,10 @@ private imported!"dmd.func".FuncDeclaration resolveUnqualifiedMemberCall(
     if (aggregate is null)
         return null;
 
-    auto member = search(aggregate, call.loc, identifier.ident);
-    if (member !is null)
-        if (auto function_ = member.toAlias.isFuncDeclaration)
-            return function_;
+    typeUnqualifiedCallArguments(call, currentFunction, aggregate);
 
-    return resolveFuncCall(
+    auto member = search(aggregate, call.loc, identifier);
+    auto resolved = resolveFuncCall(
         call.loc,
         currentFunction._scope,
         member,
@@ -5858,6 +5869,110 @@ private imported!"dmd.func".FuncDeclaration resolveUnqualifiedMemberCall(
         call.argumentList,
         FuncResolveFlag.quiet,
     );
+    if (
+        resolved !is null &&
+        !callArgumentCountExceedsFunctionParameters(call, resolved)
+    )
+        return resolved;
+
+    if (member !is null)
+        if (auto function_ = member.toAlias.isFuncDeclaration)
+            if (!callArgumentCountExceedsFunctionParameters(call, function_))
+                return function_;
+
+    return null;
+}
+
+private void typeUnqualifiedCallArguments(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+    imported!"dmd.aggregate".AggregateDeclaration aggregate,
+) @trusted {
+    if (call.arguments is null)
+        return;
+
+    foreach (argument; callArguments(call)) {
+        if (argument.type !is null)
+            continue;
+
+        if (auto variable = argument.isVarExp) {
+            if (auto declaration = variable.var.isVarDeclaration)
+                argument.type = declaration.type;
+            continue;
+        }
+
+        auto identifier = argument.isIdentifierExp;
+        if (identifier is null)
+            continue;
+
+        const name = identifierName(identifier);
+        auto parameter = functionParameter(currentFunction, name);
+        if (parameter !is null) {
+            argument.type = parameter.type;
+            continue;
+        }
+
+        auto typeParameter = functionTypeParameter(currentFunction, name);
+        if (typeParameter !is null) {
+            argument.type = typeParameter.type;
+            continue;
+        }
+
+        auto field = aggregateField(aggregate, name);
+        if (field !is null)
+            argument.type = field.type;
+    }
+}
+
+private imported!"dmd.declaration".VarDeclaration functionParameter(
+    imported!"dmd.func".FuncDeclaration function_,
+    in string name,
+) @safe {
+    if (function_ is null || function_.parameters is null)
+        return null;
+
+    foreach (parameter; functionParameterSlice(function_))
+        if (declarationName(parameter) == name)
+            return parameter;
+
+    return null;
+}
+
+private imported!"dmd.mtype".Parameter functionTypeParameter(
+    imported!"dmd.func".FuncDeclaration function_,
+    in string name,
+) @safe {
+    if (function_ is null)
+        return null;
+
+    foreach (parameter; functionTypeParameters(function_))
+        if (parameterName(parameter) == name)
+            return parameter;
+
+    return null;
+}
+
+private imported!"dmd.declaration".VarDeclaration aggregateField(
+    imported!"dmd.aggregate".AggregateDeclaration aggregate,
+    in string name,
+) @safe {
+    if (aggregate is null || aggregate.type is null)
+        return null;
+
+    if (typeIsClass(aggregate.type)) {
+        foreach (field; classFields(aggregate.type))
+            if (declarationName(field) == name)
+                return field;
+        return null;
+    }
+
+    if (typeIsStruct(aggregate.type)) {
+        foreach (field; structFields(aggregate.type))
+            if (declarationName(field) == name)
+                return field;
+    }
+
+    return null;
 }
 
 private imported!"dmd.func".FuncDeclaration templateInstanceFunction(
@@ -6579,6 +6694,30 @@ private bool callHasNoArguments(
     imported!"dmd.expression".CallExp call,
 ) @trusted {
     return call.arguments is null || call.arguments.length == 0;
+}
+
+private bool callArgumentCountExceedsFunctionParameters(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    const argumentCount = call.arguments is null ? 0 : callArguments(call).length;
+    return argumentCount > functionExplicitParameterCount(function_);
+}
+
+private size_t functionExplicitParameterCount(
+    imported!"dmd.func".FuncDeclaration function_,
+) @safe {
+    if (function_.parameters is null)
+        return functionTypeParameters(function_).length;
+
+    // auto: `declarationName` needs DMD's mutable VarDeclaration.
+    auto parameters = functionParameterSlice(function_);
+    if (!functionHasReceiver(function_) || parameters.length == 0)
+        return parameters.length;
+
+    return declarationName(parameters[0]) == "this"
+        ? parameters.length - 1
+        : parameters.length;
 }
 
 private imported!"dmd.expression".Expression immediateFunctionLiteralReturnExpression(
