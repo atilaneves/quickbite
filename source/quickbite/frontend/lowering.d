@@ -888,6 +888,10 @@ struct BodyLowerer {
                 if (tryLowerSuperConstructorCall(call, lowerer, superConstructorResult))
                     return superConstructorResult;
 
+                uint thisConstructorResult;
+                if (tryLowerThisConstructorCall(call, lowerer, thisConstructorResult))
+                    return thisConstructorResult;
+
                 if (callHasNoArguments(call) && expressionChars(call.e1) == "expr") {
                     const destination = allocateTemporary;
                     instructions ~= Instruction(ConstInt(destination, 0));
@@ -2072,7 +2076,34 @@ struct BodyLowerer {
 
         lowerer.ensureFunctionLowered(constructor);
         // `auto` because the IR call owns a mutable arguments array.
-        auto arguments = lowerSuperConstructorArguments(call, constructor, lowerer);
+        auto arguments = lowerConstructorChainArguments(call, constructor, lowerer);
+        result = allocateTemporary;
+        instructions ~= Instruction(Call(
+            result,
+            lowerer.functionName(constructor),
+            arguments,
+        ));
+        return true;
+    }
+
+    bool tryLowerThisConstructorCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: Call, Instruction;
+
+        if (call.e1.isThisExp is null)
+            return false;
+
+        // `auto` keeps DMD's mutable FuncDeclaration for lowering.
+        auto constructor = resolveThisConstructor(call, currentFunction);
+        if (constructor is null)
+            return false;
+
+        lowerer.ensureFunctionLowered(constructor);
+        // `auto` because the IR call owns a mutable arguments array.
+        auto arguments = lowerConstructorChainArguments(call, constructor, lowerer);
         result = allocateTemporary;
         instructions ~= Instruction(Call(
             result,
@@ -2948,7 +2979,7 @@ struct BodyLowerer {
         return arguments;
     }
 
-    uint[] lowerSuperConstructorArguments(
+    uint[] lowerConstructorChainArguments(
         imported!"dmd.expression".CallExp call,
         imported!"dmd.func".FuncDeclaration function_,
         ref Lowerer lowerer,
@@ -5827,6 +5858,39 @@ private imported!"dmd.func".FuncDeclaration resolveSuperConstructor(
     return matchingConstructor(baseClass.ctor, arguments);
 }
 
+private imported!"dmd.func".FuncDeclaration resolveThisConstructor(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    import dmd.funcsem: FuncResolveFlag, resolveFuncCall;
+    import dmd.typesem: addMod;
+
+    if (call.e1.isThisExp is null)
+        return null;
+
+    auto aggregate = currentFunctionAggregate(currentFunction);
+    if (aggregate is null || aggregate.ctor is null)
+        return null;
+
+    auto thisType = aggregate.type.addMod(currentFunction.type.mod);
+    auto resolved = resolveFuncCall(
+        call.loc,
+        null,
+        aggregate.ctor,
+        null,
+        thisType,
+        call.argumentList,
+        FuncResolveFlag.quiet,
+    );
+    if (resolved !is null)
+        return resolved;
+
+    imported!"dmd.expression".Expression[] arguments;
+    if (call.arguments !is null)
+        arguments = callArguments(call);
+    return matchingConstructor(aggregate.ctor, arguments);
+}
+
 private imported!"dmd.dclass".ClassDeclaration superClassForExpression(
     imported!"dmd.expression".SuperExp super_,
 ) @trusted {
@@ -5840,16 +5904,21 @@ private imported!"dmd.dclass".ClassDeclaration superClassForExpression(
 private imported!"dmd.dclass".ClassDeclaration superClassForCurrentFunction(
     imported!"dmd.func".FuncDeclaration currentFunction,
 ) @trusted {
-    if (currentFunction is null)
-        return null;
-
-    imported!"dmd.aggregate".AggregateDeclaration aggregate =
-        currentFunction.isThis;
+    auto aggregate = currentFunctionAggregate(currentFunction);
     if (aggregate is null)
         return null;
 
     auto class_ = aggregate.isClassDeclaration;
     return class_ is null ? null : class_.baseClass;
+}
+
+private imported!"dmd.aggregate".AggregateDeclaration currentFunctionAggregate(
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    if (currentFunction is null)
+        return null;
+
+    return currentFunction.isThis;
 }
 
 private imported!"dmd.func".FuncDeclaration matchingConstructor(
