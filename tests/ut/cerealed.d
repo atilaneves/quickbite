@@ -65,6 +65,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "enums.d" &&
             fileName != "example.d" &&
             fileName != "multidimensional_array.d" &&
+            fileName != "nested.d" &&
             fileName != "utils.d"
         )
     ) &&
