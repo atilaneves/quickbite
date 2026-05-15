@@ -2393,40 +2393,18 @@ private struct BodyWalker {
         if (bytes.length < 2)
             return false;
 
-        const elementByteCount = decerealisedScalarByteCount(elementType);
-        if (elementByteCount == 0)
-            return tryReadNestedStringArray(
-                owner,
-                elementType,
-                bytes,
-                ownerFields,
-                bytesField,
-                value,
-            );
-
-        size_t headerByteCount;
-        size_t length;
-        if (!tryReadDecerealisedCollectionLength(
+        long[] elements;
+        size_t neededByteCount;
+        if (!tryReadDecerealisedArrayElements(
+            elementType,
             bytes,
-            elementByteCount,
-            headerByteCount,
-            length,
+            elements,
+            neededByteCount,
         ))
             return false;
 
-        const neededByteCount = headerByteCount + length * elementByteCount;
         if (bytes.length < neededByteCount)
             throw new Exception("Not enough bytes left to decerealise array.");
-
-        long[] elements;
-        foreach (i; 0 .. length) {
-            const begin = headerByteCount + i * elementByteCount;
-            const end = begin + elementByteCount;
-            elements ~= coerceIntegerToType(
-                readBigEndian(bytes[begin .. end]),
-                elementType,
-            );
-        }
 
         value = Value(elements);
         assignStructField(
@@ -2438,41 +2416,67 @@ private struct BodyWalker {
         return true;
     }
 
-    private bool tryReadNestedStringArray(
-        VarDeclaration owner,
+    private bool tryReadDecerealisedArrayElements(
         imported!"dmd.mtype".Type elementType,
         long[] bytes,
-        Value[VarDeclaration] ownerFields,
-        VarDeclaration bytesField,
-        out Value value,
+        out long[] elements,
+        out size_t neededByteCount,
     ) {
-        if (elementType is null ||
-            elementType.toBasetype.isTypeDArray is null ||
-            decerealisedScalarByteCount(arrayElementType(elementType)) != 1)
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount != 0) {
+            size_t headerByteCount;
+            size_t length;
+            if (!tryReadDecerealisedCollectionLength(
+                bytes,
+                elementByteCount,
+                headerByteCount,
+                length,
+            ))
+                return false;
+
+            neededByteCount = headerByteCount + length * elementByteCount;
+            if (bytes.length < neededByteCount)
+                throw new Exception("Not enough bytes left to decerealise array.");
+
+            foreach (i; 0 .. length) {
+                const begin = headerByteCount + i * elementByteCount;
+                const end = begin + elementByteCount;
+                elements ~= coerceIntegerToType(
+                    readBigEndian(bytes[begin .. end]),
+                    elementType,
+                );
+            }
+
+            return true;
+        }
+
+        if (elementType is null || elementType.toBasetype.isTypeDArray is null)
             return false;
         if (bytes.length < 2)
             return false;
 
-        const length = cast(size_t) readBigEndian(bytes[0 .. 2]);
+        const length = nestedArrayLength(readBigEndian(bytes[0 .. 2]));
         size_t cursor = 2;
-        long[] elements;
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto nestedElementType = arrayElementType(elementType);
         foreach (_; 0 .. length) {
-            if (bytes.length < cursor + 2)
+            long[] nestedElements;
+            size_t nestedByteCount;
+            if (!tryReadDecerealisedArrayElements(
+                nestedElementType,
+                bytes[cursor .. $],
+                nestedElements,
+                nestedByteCount,
+            ))
+                return false;
+            elements ~= cast(long) nestedElements.length;
+            elements ~= nestedElements;
+            cursor += nestedByteCount;
+            if (cursor > bytes.length)
                 throw new Exception("Not enough bytes left to decerealise array.");
-            const stringLength = cast(size_t) readBigEndian(
-                bytes[cursor .. cursor + 2],
-            );
-            cursor += 2;
-            if (bytes.length < cursor + stringLength)
-                throw new Exception("Not enough bytes left to decerealise array.");
-            elements ~= cast(long) stringLength;
-            elements ~= bytes[cursor .. cursor + stringLength];
-            cursor += stringLength;
         }
 
-        value = Value(elements);
-        assignStructField(ownerFields, bytesField, Value(bytes[cursor .. $].dup));
-        assignStructFields(owner, ownerFields);
+        neededByteCount = cursor;
         return true;
     }
 
