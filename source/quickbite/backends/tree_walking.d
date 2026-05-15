@@ -4928,18 +4928,134 @@ private struct BodyWalker {
         if (owner is null)
             return false;
 
-        fields = defaultStructFields(call.type);
-        foreach (field; aggregateStructFields(call.type))
-            if (field.type !is null && field.type.isTypeDArray !is null) {
-                Value value;
-                if (!tryReadDecerealisedArrayFromOwner(
-                    owner,
-                    arrayElementType(field.type),
-                    value,
+        return tryReadDecerealisedAggregateFromOwner(
+            owner,
+            call.type,
+            fields,
+            interpreter,
+        );
+    }
+
+    private bool tryReadDecerealisedAggregateFromOwner(
+        VarDeclaration owner,
+        imported!"dmd.mtype".Type type,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        Value[VarDeclaration] ownerFields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField is null)
+            return false;
+
+        long[] bytes = structFieldValue(
+            ownerFields,
+            bytesField,
+            Value((long[]).init),
+        ).asArray;
+        size_t neededByteCount;
+        if (!tryReadDecerealisedAggregateFields(
+            type,
+            bytes,
+            fields,
+            neededByteCount,
+            interpreter,
+        ))
+            return false;
+
+        assignStructField(
+            ownerFields,
+            bytesField,
+            Value(bytes[neededByteCount .. $].dup),
+        );
+        assignStructFields(owner, ownerFields);
+        return true;
+    }
+
+    private bool tryReadDecerealisedAggregateFields(
+        imported!"dmd.mtype".Type type,
+        long[] bytes,
+        out Value[VarDeclaration] fields,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        fields = isClassType(type) ? defaultClassFields(type) : defaultStructFields(type);
+        size_t cursor;
+        foreach (field; cerealAggregateFields(type)) {
+            imported!"dmd.mtype".Type heapType;
+            if (field.type !is null && field.type.isTypePointer !is null)
+                heapType = pointerTargetType(field.type);
+            else if (isClassType(field.type))
+                heapType = field.type;
+            if (heapType !is null) {
+                Value[VarDeclaration] heapFields;
+                size_t heapByteCount;
+                if (!tryReadDecerealisedAggregateFields(
+                    heapType,
+                    bytes[cursor .. $],
+                    heapFields,
+                    heapByteCount,
+                    interpreter,
                 ))
                     return false;
-                assignStructField(fields, field, value);
+                const classRef = ClassRef(interpreter.nextClassRef);
+                ++interpreter.nextClassRef;
+                interpreter.classTypes[classRef.id] = heapType;
+                interpreter.classFields[classRef.id] = heapFields;
+                interpreter.classStructFieldMaps[classRef.id] =
+                    nestedStructFieldMaps(heapFields);
+                assignStructField(fields, field, Value(classRef));
+                cursor += heapByteCount;
+                continue;
             }
+
+            if (isStructType(field.type)) {
+                Value[VarDeclaration] nestedFields;
+                size_t nestedByteCount;
+                if (!tryReadDecerealisedAggregateFields(
+                    field.type,
+                    bytes[cursor .. $],
+                    nestedFields,
+                    nestedByteCount,
+                    interpreter,
+                ))
+                    return false;
+                structFields[field] = nestedFields;
+                assignStructField(fields, field, Value(0L));
+                cursor += nestedByteCount;
+                continue;
+            }
+
+            if (field.type !is null && field.type.isTypeDArray !is null) {
+                long[] elements;
+                size_t arrayByteCount;
+                if (!tryReadDecerealisedArrayElements(
+                    arrayElementType(field.type),
+                    bytes[cursor .. $],
+                    elements,
+                    arrayByteCount,
+                ))
+                    return false;
+                assignStructField(fields, field, Value(elements));
+                cursor += arrayByteCount;
+                continue;
+            }
+
+            const byteCount = decerealisedScalarByteCount(field.type);
+            if (byteCount == 0)
+                return false;
+            if (bytes.length < cursor + byteCount)
+                return false;
+            assignStructField(
+                fields,
+                field,
+                Value(coerceIntegerToType(
+                    readBigEndian(bytes[cursor .. cursor + byteCount]),
+                    field.type,
+                )),
+            );
+            cursor += byteCount;
+        }
+        neededByteCount = cursor;
         return true;
     }
 
@@ -5511,6 +5627,15 @@ private imported!"dmd.mtype".Type arrayElementType(
     return type.toBasetype.nextOf;
 }
 
+private imported!"dmd.mtype".Type pointerTargetType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null || type.toBasetype.isTypePointer is null)
+        return null;
+
+    return type.toBasetype.nextOf;
+}
+
 private ref auto compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
 ) @trusted pure {
@@ -5651,4 +5776,12 @@ private imported!"dmd.declaration".VarDeclaration[] aggregateStructFields(
             fields ~= field;
 
     return fields;
+}
+
+private imported!"dmd.declaration".VarDeclaration[] cerealAggregateFields(
+    imported!"dmd.mtype".Type type,
+) {
+    if (type !is null && type.toBasetype.isTypeClass !is null)
+        return classFields(type);
+    return aggregateStructFields(type);
 }
