@@ -895,6 +895,10 @@ struct BodyLowerer {
                 if (tryLowerThisConstructorCall(call, lowerer, thisConstructorResult))
                     return thisConstructorResult;
 
+                uint memberCallResult;
+                if (tryLowerUnresolvedMemberCall(call, lowerer, memberCallResult))
+                    return memberCallResult;
+
                 if (callHasNoArguments(call) && expressionChars(call.e1) == "expr") {
                     const destination = allocateTemporary;
                     instructions ~= Instruction(ConstInt(destination, 0));
@@ -2119,6 +2123,52 @@ struct BodyLowerer {
             lowerer.functionName(constructor),
             arguments,
         ));
+        return true;
+    }
+
+    bool tryLowerUnresolvedMemberCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: Call, Instruction;
+
+        auto function_ = resolveUnqualifiedMemberCall(call, currentFunction);
+        if (function_ is null)
+            return false;
+
+        lowerer.ensureFunctionLowered(function_);
+        call.f = function_;
+        // `auto` keeps the writeback arrays mutable for emission below.
+        auto savedArrayWritebacks = pendingRefArrayWritebacks;
+        auto savedStructWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = [];
+        pendingRefStructWritebacks = [];
+        auto arguments = lowerCallArgumentsForFunction(call, function_, lowerer);
+        // `auto` keeps the writeback arrays mutable for emission below.
+        auto arrayWritebacks = pendingRefArrayWritebacks;
+        auto structWritebacks = pendingRefStructWritebacks;
+        pendingRefArrayWritebacks = savedArrayWritebacks;
+        pendingRefStructWritebacks = savedStructWritebacks;
+
+        result = allocateTemporary;
+        instructions ~= Instruction(Call(
+            result,
+            lowerer.functionName(function_),
+            arguments,
+        ));
+        foreach (writeback; arrayWritebacks)
+            instructions ~= Instruction(imported!"quickbite.ir.instruction".ArraySet(
+                writeback.array,
+                writeback.index,
+                writeback.value,
+            ));
+        foreach (writeback; structWritebacks)
+            instructions ~= Instruction(imported!"quickbite.ir.instruction".StructSet(
+                writeback.struct_,
+                writeback.fieldName,
+                writeback.value,
+            ));
         return true;
     }
 
@@ -5335,6 +5385,10 @@ struct BodyLowerer {
             if (hasThisTemporary)
                 return thisTemporary;
 
+        if (call.e1.isIdentifierExp !is null && functionThisType(call.f) !is null)
+            if (hasThisTemporary)
+                return thisTemporary;
+
         throw new Exception(text(
             "Unsupported expression: ",
             call.e1.op,
@@ -5626,6 +5680,40 @@ private imported!"dmd.func".FuncDeclaration dotTemplateInstanceFunction(
         return function_;
 
     return templateInstanceFunction(dot.ti.inst);
+}
+
+private imported!"dmd.func".FuncDeclaration resolveUnqualifiedMemberCall(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    import dmd.dsymbolsem: search, toAlias;
+    import dmd.funcsem: FuncResolveFlag, resolveFuncCall;
+
+    auto identifier = call.e1.isIdentifierExp;
+    if (identifier is null)
+        return null;
+
+    if (currentFunction is null || currentFunction._scope is null)
+        return null;
+
+    auto aggregate = currentFunctionAggregate(currentFunction);
+    if (aggregate is null)
+        return null;
+
+    auto member = search(aggregate, call.loc, identifier.ident);
+    if (member !is null)
+        if (auto function_ = member.toAlias.isFuncDeclaration)
+            return function_;
+
+    return resolveFuncCall(
+        call.loc,
+        currentFunction._scope,
+        member,
+        null,
+        functionThisType(currentFunction),
+        call.argumentList,
+        FuncResolveFlag.quiet,
+    );
 }
 
 private imported!"dmd.func".FuncDeclaration templateInstanceFunction(
