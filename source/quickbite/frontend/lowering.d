@@ -986,6 +986,9 @@ struct BodyLowerer {
                     writeback.fieldName,
                     writeback.value,
                 ));
+            if (call.f.isCtorDeclaration !is null)
+                return arguments[0];
+
             return destination;
         }
 
