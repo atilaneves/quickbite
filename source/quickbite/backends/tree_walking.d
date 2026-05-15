@@ -1609,6 +1609,8 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunRangeData(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunCerealedBytesProperty(call, rangeValue, interpreter))
+            return rangeValue;
         if (tryRunRangeMethod(call, interpreter, resultIgnored))
             return Value(0L);
         if (tryRunShouldEqual(call, interpreter))
@@ -4293,6 +4295,53 @@ private struct BodyWalker {
 
         Value[VarDeclaration] fields = structFieldsValue(rangeOwner);
         value = structFieldValue(fields, bytesField, Value((long[]).init));
+        return true;
+    }
+
+    private bool tryRunCerealedBytesProperty(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f.ident is null || call.f.ident.toString != "bytes")
+            return false;
+        if (call.arguments !is null && call.arguments.length != 0)
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        Value[VarDeclaration] fields = structFieldsValue(owner);
+        auto bytesField = structFieldNamed(owner.type, "_bytes");
+        if (bytesField !is null) {
+            value = structFieldValue(fields, bytesField, Value((long[]).init));
+            return true;
+        }
+
+        auto outputField = structFieldNamed(owner.type, "_output");
+        if (outputField is null)
+            return false;
+        Value[VarDeclaration] outputFields;
+        if (!tryGetStructFields(outputField, outputFields))
+            return false;
+        auto storageField = rangeStorageField(outputField.type);
+        if (storageField is null)
+            return false;
+        if (isModeledScopeBufferField(storageField))
+            value = Value(interpreter.scopeBufferBytes.get(
+                rangeStorageKey(outputField, storageField),
+                (long[]).init,
+            ));
+        else
+            value = structFieldValue(
+                outputFields,
+                storageField,
+                Value((long[]).init),
+            );
         return true;
     }
 
