@@ -153,6 +153,7 @@ struct BodyLowerer {
     private bool hasThisTemporary;
     private uint thisTemporary;
     private bool[string] thisFieldNames;
+    private VarDeclaration[string] thisFields;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
@@ -4487,6 +4488,33 @@ struct BodyLowerer {
                     result,
                 ));
                 return *destination;
+            } else if (auto field = thisField(name)) {
+                const current = allocateTemporary;
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".StructGet(
+                    current,
+                    thisTemporary,
+                    name,
+                ));
+                const source = lowerExpression(assignment.e2, lowerer);
+                const result = allocateTemporary;
+                instructions ~= Instruction(BinaryOp(
+                    result,
+                    current,
+                    source,
+                    operation,
+                ));
+                const stored = allocateTemporary;
+                instructions ~= Instruction(CastInt(
+                    stored,
+                    result,
+                    integerType(field.type),
+                ));
+                instructions ~= Instruction(imported!"quickbite.ir.instruction".StructSet(
+                    thisTemporary,
+                    name,
+                    stored,
+                ));
+                return stored;
             }
         }
         if (variable is null)
@@ -5412,18 +5440,27 @@ struct BodyLowerer {
             return;
 
         if (typeIsClass(type)) {
-            foreach (field; classFields(type))
+            foreach (field; classFields(type)) {
                 thisFieldNames[declarationName(field)] = true;
+                thisFields[declarationName(field)] = field;
+            }
             return;
         }
 
         if (typeIsStruct(type))
-            foreach (field; structFields(type))
+            foreach (field; structFields(type)) {
                 thisFieldNames[declarationName(field)] = true;
+                thisFields[declarationName(field)] = field;
+            }
     }
 
     bool isThisFieldName(in string name) @safe {
         return hasThisTemporary && (name in thisFieldNames) !is null;
+    }
+
+    VarDeclaration thisField(in string name) @safe {
+        auto field = name in thisFields;
+        return field is null ? null : *field;
     }
 
     uint allocateTemporary() @safe pure nothrow @nogc {
