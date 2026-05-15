@@ -65,6 +65,7 @@ struct Lowerer {
 
         BodyLowerer builder;
         builder.currentFunctionName = name;
+        builder.currentFunction = function_;
         builder.currentReturnType = functionReturnType(function_);
         const numParameters = builder.lowerParameters(function_);
         builder.lowerStatement(function_.fbody, this);
@@ -153,6 +154,7 @@ struct BodyLowerer {
     public bool[] refParameters;
     public bool hasReturn;
     public string currentFunctionName;
+    public imported!"dmd.func".FuncDeclaration currentFunction;
     public imported!"dmd.mtype".Type currentReturnType;
 
     // DMD Statement downcast helpers are not const-qualified.
@@ -881,6 +883,10 @@ struct BodyLowerer {
 
                 if (tryLowerIndirectFunctionPointerCall(call, lowerer, indirectResult))
                     return indirectResult;
+
+                uint superConstructorResult;
+                if (tryLowerSuperConstructorCall(call, lowerer, superConstructorResult))
+                    return superConstructorResult;
 
                 if (callHasNoArguments(call) && expressionChars(call.e1) == "expr") {
                     const destination = allocateTemporary;
@@ -2049,6 +2055,33 @@ struct BodyLowerer {
         return true;
     }
 
+    bool tryLowerSuperConstructorCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: Call, Instruction;
+
+        if (call.e1.isSuperExp is null)
+            return false;
+
+        // `auto` keeps DMD's mutable FuncDeclaration for lowering.
+        auto constructor = resolveSuperConstructor(call, currentFunction);
+        if (constructor is null)
+            return false;
+
+        lowerer.ensureFunctionLowered(constructor);
+        // `auto` because the IR call owns a mutable arguments array.
+        auto arguments = lowerSuperConstructorArguments(call, constructor, lowerer);
+        result = allocateTemporary;
+        instructions ~= Instruction(Call(
+            result,
+            lowerer.functionName(constructor),
+            arguments,
+        ));
+        return true;
+    }
+
     bool tryLowerRuntimeBuiltinCall(
         imported!"dmd.expression".CallExp call,
         ref Lowerer lowerer,
@@ -2913,6 +2946,78 @@ struct BodyLowerer {
         }
 
         return arguments;
+    }
+
+    uint[] lowerSuperConstructorArguments(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Lowerer lowerer,
+    ) @safe {
+        import std.conv: text;
+
+        uint[] arguments;
+        arguments ~= lowerExpression(call.e1, lowerer);
+
+        // Pulled in parallel so defaulted parameters can keep the same ref and
+        // by-value struct handling as explicit call arguments.
+        auto parameters = function_.parameters !is null
+            ? functionParameterSlice(function_)
+            : null;
+        // `auto` keeps DMD default-argument expressions mutable for lowering.
+        auto typeParameters = functionTypeParameters(function_);
+
+        size_t index;
+        if (call.arguments !is null)
+            foreach (i, argument; callArguments(call)) {
+                appendLoweredConstructorArgument(
+                    arguments,
+                    argument,
+                    parameterForIndex(parameters, i),
+                    lowerer,
+                );
+                index = i + 1;
+            }
+
+        while (index < typeParameters.length) {
+            // `auto` keeps DMD's default-argument expression mutable.
+            auto parameter = typeParameters[index];
+            if (parameter.defaultArg is null)
+                throw new Exception(text(
+                    "Missing constructor argument: ",
+                    functionIdentifier(function_),
+                    ".",
+                    parameterName(parameter),
+                ));
+
+            appendLoweredConstructorArgument(
+                arguments,
+                parameter.defaultArg,
+                parameterForIndex(parameters, index),
+                lowerer,
+            );
+            ++index;
+        }
+
+        return arguments;
+    }
+
+    void appendLoweredConstructorArgument(
+        ref uint[] arguments,
+        imported!"dmd.expression".Expression argument,
+        imported!"dmd.declaration".VarDeclaration parameter,
+        ref Lowerer lowerer,
+    ) @safe {
+        const source = lowerCallArgument(argument, parameter, lowerer);
+        if (
+            parameter !is null &&
+            !parameterIsRef(parameter) &&
+            typeIsStruct(argument.type)
+        ) {
+            arguments ~= copyStructByValue(argument.type, source);
+            return;
+        }
+
+        arguments ~= source;
     }
 
     uint lowerLogicalAnd(
@@ -5677,6 +5782,137 @@ private imported!"dmd.mtype".Type structReceiverType(
     return null;
 }
 
+private imported!"dmd.func".FuncDeclaration resolveSuperConstructor(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    import dmd.funcsem: FuncResolveFlag, resolveFuncCall;
+    import dmd.typesem: addMod;
+
+    auto super_ = call.e1.isSuperExp;
+    if (super_ is null)
+        return null;
+
+    auto baseClass = superClassForExpression(super_);
+    if (baseClass is null)
+        baseClass = superClassForCurrentFunction(currentFunction);
+    if (baseClass is null || baseClass.ctor is null)
+        return null;
+
+    imported!"dmd.mtype".Type thisType;
+    if (currentFunction !is null) {
+        imported!"dmd.aggregate".AggregateDeclaration aggregate =
+            currentFunction.isThis;
+        if (aggregate !is null)
+            thisType = aggregate.type.addMod(currentFunction.type.mod);
+    }
+
+    if (thisType !is null) {
+        auto resolved = resolveFuncCall(
+            call.loc,
+            null,
+            baseClass.ctor,
+            null,
+            thisType,
+            call.argumentList,
+            FuncResolveFlag.quiet,
+        );
+        if (resolved !is null)
+            return resolved;
+    }
+
+    imported!"dmd.expression".Expression[] arguments;
+    if (call.arguments !is null)
+        arguments = callArguments(call);
+    return matchingConstructor(baseClass.ctor, arguments);
+}
+
+private imported!"dmd.dclass".ClassDeclaration superClassForExpression(
+    imported!"dmd.expression".SuperExp super_,
+) @trusted {
+    if (super_.type is null)
+        return null;
+
+    auto classType = super_.type.toBasetype.isTypeClass;
+    return classType is null ? null : classType.sym;
+}
+
+private imported!"dmd.dclass".ClassDeclaration superClassForCurrentFunction(
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    if (currentFunction is null)
+        return null;
+
+    imported!"dmd.aggregate".AggregateDeclaration aggregate =
+        currentFunction.isThis;
+    if (aggregate is null)
+        return null;
+
+    auto class_ = aggregate.isClassDeclaration;
+    return class_ is null ? null : class_.baseClass;
+}
+
+private imported!"dmd.func".FuncDeclaration matchingConstructor(
+    imported!"dmd.dsymbol".Dsymbol constructor,
+    imported!"dmd.expression".Expression[] arguments,
+) @trusted {
+    import dmd.funcsem: overloadApply;
+
+    imported!"dmd.func".FuncDeclaration result;
+    int resultScore = -1;
+    overloadApply(constructor, (imported!"dmd.dsymbol".Dsymbol symbol) {
+        auto function_ = symbol.isFuncDeclaration;
+        if (function_ is null)
+            return 0;
+
+        const score = constructorMatchScore(function_, arguments);
+        if (score <= resultScore)
+            return 0;
+
+        result = function_;
+        resultScore = score;
+        return 0;
+    });
+    return result;
+}
+
+private int constructorMatchScore(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.expression".Expression[] arguments,
+) @trusted {
+    // `auto` keeps DMD's parameter types mutable for conversion checks.
+    auto parameters = functionTypeParameters(function_);
+    if (arguments.length > parameters.length)
+        return -1;
+
+    int score;
+    foreach (index, argument; arguments) {
+        const match = argumentParameterMatch(argument, parameters[index]);
+        if (match <= 0)
+            return -1;
+        score += match;
+    }
+
+    foreach (parameter; parameters[arguments.length .. $]) {
+        if (parameter.defaultArg is null)
+            return -1;
+    }
+
+    return score;
+}
+
+private int argumentParameterMatch(
+    imported!"dmd.expression".Expression argument,
+    imported!"dmd.mtype".Parameter parameter,
+) @trusted {
+    import dmd.dcast: implicitConvTo;
+
+    if (argument.type is null || parameter.type is null)
+        return 1;
+
+    return cast(int) argument.implicitConvTo(parameter.type);
+}
+
 private imported!"dmd.mtype".Type pointerTarget(
     imported!"dmd.mtype".Type type,
 ) @trusted {
@@ -5829,6 +6065,16 @@ private imported!"dmd.declaration".VarDeclaration[] functionParameterSlice(
     // Caller checked `parameters` for null; DMD owns the array. Slicing
     // avoids `@trusted` at every parameter index access site.
     return (*function_.parameters)[];
+}
+
+private imported!"dmd.declaration".VarDeclaration parameterForIndex(
+    imported!"dmd.declaration".VarDeclaration[] parameters,
+    in size_t index,
+) @safe pure nothrow {
+    if (index >= parameters.length)
+        return null;
+
+    return parameters[index];
 }
 
 private imported!"dmd.mtype".Parameter[] functionTypeParameters(
