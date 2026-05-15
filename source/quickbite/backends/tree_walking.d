@@ -1000,6 +1000,19 @@ private struct BodyWalker {
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (varDecl in locals)
                         return Value(LocalPtr(varDecl));
+            if (auto dotVar = addr.e1.isDotVarExp)
+                if (auto ownerVar = dotVar.e1.isVarExp)
+                    if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                        if (auto fields = ownerDecl in structFields)
+                            if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                const value = structFieldValue(
+                                    *fields,
+                                    fieldDecl,
+                                    Value(0L),
+                                );
+                                if (value.classId != 0)
+                                    return value;
+                            }
         }
 
         // Pointer dereference *ptr: if ptr holds a LocalPtr, read the target.
