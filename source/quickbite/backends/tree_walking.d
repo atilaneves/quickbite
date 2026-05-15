@@ -138,6 +138,7 @@ private struct Interpreter {
     private Value[imported!"dmd.declaration".VarDeclaration][long] classFields;
     private Value[imported!"dmd.declaration".VarDeclaration][imported!"dmd.declaration".VarDeclaration][long] classStructFieldMaps;
     private imported!"dmd.mtype".Type[long] classTypes;
+    private Value[long] heapScalars;
     private AssocArray[long] assocArrays;
     private bool childClassRegistered;
 
@@ -1029,6 +1030,9 @@ private struct BodyWalker {
             );
             if (target !is null && target in locals)
                 return locals[target];
+            const classId = ptrVal.classId;
+            if (classId != 0 && classId in interpreter.heapScalars)
+                return interpreter.heapScalars[classId];
             {
                 import std.string: endsWith;
 
@@ -1131,12 +1135,13 @@ private struct BodyWalker {
 
         if (new_.placement !is null || new_.thisexp !is null)
             throw new Exception(text("Unsupported expression: ", expressionChars(new_)));
-        if (!isClassType(new_.newtype) && !isStructType(new_.newtype))
-            throw new Exception(text("Unsupported expression: ", expressionChars(new_)));
-
         const classRef = ClassRef(interpreter.nextClassRef);
         ++interpreter.nextClassRef;
         interpreter.classTypes[classRef.id] = new_.newtype;
+        if (!isClassType(new_.newtype) && !isStructType(new_.newtype)) {
+            interpreter.heapScalars[classRef.id] = Value(0L);
+            return Value(classRef);
+        }
         if (isClassType(new_.newtype))
             interpreter.classFields[classRef.id] = defaultClassFields(new_.newtype);
         else
@@ -1639,6 +1644,16 @@ private struct BodyWalker {
                                 interpreter.classStructFieldMaps[classId].dup;
                             structRefArg.isStructRef = true;
                             args ~= structRefArg;
+                            continue;
+                        }
+                        if (classId != 0 && classId in interpreter.heapScalars) {
+                            args ~= CallArgument(
+                                interpreter.heapScalars[classId],
+                                null,
+                                null,
+                                null,
+                                classId,
+                            );
                             continue;
                         }
                         VarDeclaration target = ptrVal.match!(
@@ -4079,11 +4094,15 @@ private struct BodyWalker {
                 );
                 ++scalarIndex;
             } else if (args[i].refClassId != 0) {
-                interpreter.classFields[args[i].refClassId][args[i].refField] =
-                    coerceValueToType(
-                        refValues[scalarIndex],
-                        args[i].refField.type,
-                    );
+                if (args[i].refField is null)
+                    interpreter.heapScalars[args[i].refClassId] =
+                        coerceValueToType(refValues[scalarIndex], param.type);
+                else
+                    interpreter.classFields[args[i].refClassId][args[i].refField] =
+                        coerceValueToType(
+                            refValues[scalarIndex],
+                            args[i].refField.type,
+                        );
                 ++scalarIndex;
             } else {
                 structFields[args[i].refOwner][args[i].refField] =
@@ -4697,6 +4716,17 @@ private struct BodyWalker {
                         );
                         return value;
                     }
+
+        if (auto ptr = assign.e1.isPtrExp) {
+            const classId = runExpression(ptr.e1, interpreter).classId;
+            if (classId != 0 && classId in interpreter.heapScalars) {
+                interpreter.heapScalars[classId] = coerceValueToType(
+                    value,
+                    pointerTargetType(ptr.e1.type),
+                );
+                return value;
+            }
+        }
 
         if (auto index = assign.e1.isIndexExp) {
             if (auto var = index.e1.isVarExp)
