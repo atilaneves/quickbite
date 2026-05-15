@@ -2687,6 +2687,16 @@ struct BodyLowerer {
             return true;
         }
 
+        if (functionIdentifier(call.f) == "gc_shrinkArrayUsed") {
+            enforceCallArgumentCount(call, 3);
+            lowerExpression(callArguments(call)[0], lowerer);
+            lowerExpression(callArguments(call)[1], lowerer);
+            lowerExpression(callArguments(call)[2], lowerer);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 1));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
