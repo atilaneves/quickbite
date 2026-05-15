@@ -69,6 +69,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "bugs.d" &&
             fileName != "classes.d" &&
             fileName != "decode.d" &&
+            fileName != "encode.d" &&
             fileName != "encode_decode.d" &&
             fileName != "enums.d" &&
             fileName != "utils.d"
