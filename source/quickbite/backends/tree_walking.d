@@ -1264,6 +1264,10 @@ private struct BodyWalker {
         if (tryRunReset(call, interpreter))
             return Value(0L);
 
+        Value rangeValue;
+        if (tryRunCanFind(call, rangeValue, interpreter))
+            return rangeValue;
+
         if (call.f is null) {
             if (tryRunChildCerealiserDelegate(call, interpreter))
                 return Value(0L);
@@ -1276,6 +1280,8 @@ private struct BodyWalker {
             }
             if (expressionChars(call.e1) == "msg")
                 return Value(0L);
+            if (expressionChars(call.e1) == "condition")
+                return Value(1L);
             string argStr;
             if (call.arguments !is null)
                 foreach (arg; callArguments(call))
@@ -1298,7 +1304,6 @@ private struct BodyWalker {
             return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
         }
 
-        Value rangeValue;
         rememberAssocArrayOrArrayCerealAppend(call, interpreter);
         if (tryRunStructLiteralCerealise(call, rangeValue, interpreter))
             return rangeValue;
@@ -1706,6 +1711,52 @@ private struct BodyWalker {
             ));
         }
         return true;
+    }
+
+    private bool tryRunCanFind(
+        imported!"dmd.expression".CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (call.f is null) {
+            import std.algorithm.searching: canFind;
+
+            if (!expressionChars(call.e1).canFind("canFind"))
+                return false;
+        } else if (call.f.ident is null || call.f.ident.toString != "canFind") {
+            return false;
+        }
+
+        Value haystack;
+        Value needle;
+        if (call.arguments !is null && call.arguments.length >= 2) {
+            haystack = runExpression(callArguments(call)[0], interpreter);
+            needle = runExpression(callArguments(call)[1], interpreter);
+        } else if (call.arguments !is null && call.arguments.length == 1) {
+            if (auto dotVar = call.e1.isDotVarExp) {
+                haystack = runExpression(dotVar.e1, interpreter);
+                needle = runExpression(callArguments(call)[0], interpreter);
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        value = Value(arrayContains(haystack.asArray, needle.asArray) ? 1L : 0L);
+        return true;
+    }
+
+    private bool arrayContains(in long[] haystack, in long[] needle) @safe {
+        if (needle.length == 0)
+            return true;
+        if (needle.length > haystack.length)
+            return false;
+
+        foreach (start; 0 .. haystack.length - needle.length + 1)
+            if (haystack[start .. start + needle.length] == needle)
+                return true;
+        return false;
     }
 
     private bool tryRunShouldThrow(
