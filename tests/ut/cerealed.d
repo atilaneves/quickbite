@@ -77,6 +77,7 @@ private enum bool shouldFailCerealedTest(
             fileName != "nested.d" &&
             fileName != "pointers.d" &&
             fileName != "property.d" &&
+            fileName != "protocol_unit.d" &&
             fileName != "utils.d"
         )
     );
