@@ -2875,6 +2875,9 @@ struct BodyLowerer {
             return destination;
         }
 
+        if (typeIsDynamicArray(new_.newtype))
+            return lowerNewDynamicArray(new_, lowerer);
+
         if (!typeIsPointer(new_.type) || !typeIsStruct(new_.newtype))
             throw new Exception(text("Unsupported expression: ", new_.op));
 
@@ -2902,6 +2905,29 @@ struct BodyLowerer {
             ));
         }
 
+        return destination;
+    }
+
+    uint lowerNewDynamicArray(
+        imported!"dmd.expression".NewExp new_,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayLiteral, ArraySetLength,
+            Instruction;
+        import std.conv: text;
+
+        if (new_.arguments is null)
+            throw new Exception(text("Unsupported expression: ", new_.op));
+
+        // Explicit type keeps DMD expressions mutable for lowering.
+        imported!"dmd.expression".Expression[] arguments = newArguments(new_);
+        if (arguments.length != 1)
+            throw new Exception(text("Unsupported expression: ", new_.op));
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(ArrayLiteral(destination, []));
+        const length = lowerExpression(arguments[0], lowerer);
+        instructions ~= Instruction(ArraySetLength(destination, length));
         return destination;
     }
 
