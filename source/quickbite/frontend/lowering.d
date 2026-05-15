@@ -1163,6 +1163,9 @@ struct BodyLowerer {
         if (auto dot = expression.isDotIdExp)
             return lowerDotIdentifierRead(dot, lowerer);
 
+        if (auto dot = expression.isDotTemplateInstanceExp)
+            return lowerDotTemplateInstanceRead(dot, lowerer);
+
         if (auto literal = expression.isStructLiteralExp)
             return lowerStructLiteral(literal, lowerer);
 
@@ -4268,6 +4271,37 @@ struct BodyLowerer {
         return destination;
     }
 
+    uint lowerDotTemplateInstanceRead(
+        imported!"dmd.expression".DotTemplateInstanceExp dot,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Call, Instruction;
+        import std.conv: text;
+
+        auto function_ = dotTemplateInstanceFunction(dot, currentFunction);
+        if (function_ is null)
+            throw new Exception(text(
+                "Unsupported expression: ",
+                dot.op,
+                " ",
+                expressionChars(dot),
+            ));
+
+        lowerer.ensureFunctionLowered(function_);
+        uint[] arguments;
+        if (functionHasReceiver(function_))
+            arguments ~= lowerExpression(dot.e1, lowerer);
+        arguments = appendMissingTypeFunctionArguments(arguments, function_);
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(Call(
+            destination,
+            lowerer.functionName(function_),
+            arguments,
+        ));
+        return destination;
+    }
+
     uint lowerStructOwner(
         imported!"dmd.expression".DotVarExp dot,
         ref Lowerer lowerer,
@@ -5551,6 +5585,105 @@ private string identifierName(
     imported!"dmd.identifier".Identifier identifier,
 ) @trusted {
     return identifier.toString.idup;
+}
+
+private imported!"dmd.func".FuncDeclaration dotTemplateInstanceFunction(
+    imported!"dmd.expression".DotTemplateInstanceExp dot,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    import dmd.dsymbolsem: dsymbolSemantic, toAlias;
+    import dmd.expressionsem: findTempDecl;
+    import dmd.templatesem: semanticTiargs, updateTempDecl;
+
+    if (auto function_ = dot.ti.toAlias.isFuncDeclaration)
+        return function_;
+
+    if (currentFunction is null || currentFunction._scope is null)
+        return null;
+
+    ensureThisReceiverTyped(dot, currentFunction);
+
+    if (!findTempDecl(dot, currentFunction._scope)) {
+        import dmd.dsymbolsem: search;
+
+        auto aggregate = currentFunctionAggregate(currentFunction);
+        if (aggregate is null || dot.e1.isThisExp is null)
+            return null;
+
+        auto member = search(aggregate, dot.loc, dot.ti.name);
+        if (!dot.ti.updateTempDecl(currentFunction._scope, member))
+            return null;
+    }
+
+    if (!dot.ti.semanticTiargs(currentFunction._scope))
+        return null;
+
+    if (auto function_ = resolveDotTemplateFunctionCall(dot, currentFunction))
+        return function_;
+
+    dsymbolSemantic(dot.ti, currentFunction._scope);
+    if (auto function_ = dot.ti.toAlias.isFuncDeclaration)
+        return function_;
+
+    return templateInstanceFunction(dot.ti.inst);
+}
+
+private imported!"dmd.func".FuncDeclaration templateInstanceFunction(
+    imported!"dmd.dtemplate".TemplateInstance instance,
+) @trusted {
+    import dmd.dsymbolsem: toAlias;
+
+    if (instance is null)
+        return null;
+
+    if (instance.inst !is null && instance.inst != instance)
+        return templateInstanceFunction(instance.inst);
+
+    if (instance.aliasdecl !is null)
+        if (auto function_ = instance.aliasdecl.toAlias.isFuncDeclaration)
+            return function_;
+
+    if (instance.members is null)
+        return null;
+
+    foreach (member; *instance.members)
+        if (auto function_ = member.toAlias.isFuncDeclaration)
+            return function_;
+
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration resolveDotTemplateFunctionCall(
+    imported!"dmd.expression".DotTemplateInstanceExp dot,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    import dmd.arraytypes: Expressions;
+    import dmd.expression: ArgumentList;
+    import dmd.funcsem: FuncResolveFlag, resolveFuncCall;
+
+    return resolveFuncCall(
+        dot.loc,
+        currentFunction._scope,
+        dot.ti.tempdecl,
+        dot.ti.tiargs,
+        functionThisType(currentFunction),
+        ArgumentList(new Expressions, null),
+        FuncResolveFlag.quiet,
+    );
+}
+
+private void ensureThisReceiverTyped(
+    imported!"dmd.expression".DotTemplateInstanceExp dot,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) @trusted {
+    auto this_ = dot.e1.isThisExp;
+    if (this_ is null)
+        return;
+
+    if (this_.type is null)
+        this_.type = functionThisType(currentFunction);
+    if (this_.var is null)
+        this_.var = currentFunction.vthis;
 }
 
 private string locationChars(imported!"dmd.location".Loc location) @trusted {
