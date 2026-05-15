@@ -3345,10 +3345,17 @@ private struct BodyWalker {
         long bitByte;
         size_t bitIndex;
         foreach (field; aggregateStructFields(type)) {
-            if (cerealFieldHasAttribute(field, "NoCereal"))
-                continue;
-
             const value = structFieldValue(fields, field, Value(0L));
+            if (cerealFieldHasAttribute(field, "NoCereal")) {
+                if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
+                    appendArrayPayloadToCereal(
+                        elements,
+                        storageArrayValue(value),
+                        arrayElementType(field.type),
+                    );
+                continue;
+            }
+
             const bitCount = cerealFieldBitCount(field);
             if (bitCount != 0) {
                 appendCerealBits(elements, bitByte, bitIndex, value.asLong, bitCount);
@@ -4359,16 +4366,31 @@ private struct BodyWalker {
         ref Interpreter interpreter,
     ) {
         if (auto literal = expression.isFuncExp) {
-            const hadReturn = hasReturn;
-            const oldReturnValue = returnValue;
-            hasReturn = false;
-            runStatement(literal.fd.fbody, interpreter);
-            hasReturn = hadReturn;
-            returnValue = oldReturnValue;
+            runLazyFunctionBody(literal.fd.fbody, interpreter);
             return;
+        }
+        if (auto var = expression.isVarExp) {
+            if (auto function_ = var.var.isFuncDeclaration) {
+                if (function_.fbody !is null) {
+                    runLazyFunctionBody(function_.fbody, interpreter);
+                    return;
+                }
+            }
         }
 
         runExpression(expression, interpreter, true);
+    }
+
+    private void runLazyFunctionBody(
+        imported!"dmd.statement".Statement statement,
+        ref Interpreter interpreter,
+    ) {
+        const hadReturn = hasReturn;
+        const oldReturnValue = returnValue;
+        hasReturn = false;
+        runStatement(statement, interpreter);
+        hasReturn = hadReturn;
+        returnValue = oldReturnValue;
     }
 
     private bool tryRunRegisterChildClass(
@@ -6093,7 +6115,8 @@ private struct BodyWalker {
         size_t bitIndex;
         foreach (field; cerealAggregateFields(type)) {
             if (cerealFieldHasAttribute(field, "NoCereal"))
-                continue;
+                if (field.type is null || field.type.toBasetype.isTypeDArray is null)
+                    continue;
 
             const bitCount = cerealFieldBitCount(field);
             if (bitCount != 0) {
@@ -6725,8 +6748,67 @@ private struct BodyWalker {
         long fieldValue;
         if (tryCerealFieldValue(aggregateType, fields, compact, fieldValue))
             return fieldValue;
+        if (tryCerealEnumMemberValue(aggregateType, compact, fieldValue))
+            return fieldValue;
 
         return 0L;
+    }
+
+    private bool tryCerealEnumMemberValue(
+        imported!"dmd.mtype".Type type,
+        in string name,
+        out long value,
+    ) {
+        if (type is null)
+            return false;
+
+        auto structType = type.toBasetype.isTypeStruct;
+        if (structType is null || structType.sym.members is null)
+            return false;
+
+        foreach (member; *structType.sym.members) {
+            if (member.ident is null || member.ident.toString != name)
+                continue;
+
+            auto enumMember = member.isEnumMember;
+            if (enumMember !is null)
+                return tryCerealIntegerExpressionValue(enumMember.value, value) ||
+                    tryCerealIntegerExpressionValue(enumMember.origValue, value);
+
+            auto variable = member.isVarDeclaration;
+            if (variable is null ||
+                variable._init is null ||
+                variable._init.isExpInitializer is null)
+                return false;
+            return tryCerealIntegerExpressionValue(
+                variable._init.isExpInitializer.exp,
+                value,
+            );
+        }
+
+        return false;
+    }
+
+    private bool tryCerealIntegerExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long value,
+    ) {
+        if (expression is null)
+            return false;
+        if (auto integer = expression.isIntegerExp) {
+            value = integerValue(integer);
+            return true;
+        }
+
+        import std.conv: to;
+
+        const compact = removeAsciiWhitespace(expressionChars(expression));
+        try {
+            value = compact.to!long;
+            return true;
+        } catch (Exception) {
+            return false;
+        }
     }
 
     private bool tryCerealFieldValue(
