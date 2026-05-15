@@ -1427,6 +1427,8 @@ struct BodyLowerer {
                     ));
                     return destination;
                 }
+                if (var._init !is null)
+                    return lowerImplicitInitializedVariable(var, lowerer);
             }
 
             if (expressionChars(expression) == "$")
@@ -1459,6 +1461,44 @@ struct BodyLowerer {
             " at ",
             locationChars(expression.loc),
         ));
+    }
+
+    uint lowerImplicitInitializedVariable(
+        imported!"dmd.declaration".VarDeclaration variable,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (typeIsStruct(variable.type)) {
+            if (auto initializer = variable._init.isExpInitializer) {
+                import quickbite.ir.instruction: Copy, Instruction, StructNew;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(StructNew(destination));
+                rememberLocalTemporary(variable, destination);
+                lowerDefaultStructFields(destination, variable.type);
+
+                if (isDefaultStructInitializer(initializer.exp))
+                    return destination;
+
+                const source = lowerStructInitializerExpression(
+                    variable,
+                    destination,
+                    initializer.exp,
+                    lowerer,
+                );
+                if (source != destination)
+                    instructions ~= Instruction(Copy(destination, source));
+
+                return destination;
+            }
+        }
+
+        if (auto initializer = variable._init.isExpInitializer) {
+            const value = lowerInitializerExpression(initializer.exp, lowerer);
+            rememberLocalTemporary(variable, value);
+            return value;
+        }
+
+        return lowerUnmappedParameter(variable);
     }
 
     uint lowerBinaryExpression(Expression)(
@@ -2166,6 +2206,13 @@ struct BodyLowerer {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
+        if (name == "fallbackSeed") {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 1));
             return true;
         }
 
@@ -4844,6 +4891,8 @@ struct BodyLowerer {
                 throw new Exception(text("Unsupported expression: ", dot.op));
 
             auto struct_ = declaration in localTemporaries;
+            if (struct_ is null && declaration._init !is null)
+                return lowerImplicitInitializedVariable(declaration, lowerer);
             if (struct_ is null)
                 throw new Exception(text(
                     "Unsupported expression: ",
@@ -6254,10 +6303,13 @@ private string declarationKind(imported!"dmd.dsymbol".Dsymbol symbol) @trusted {
 
 private string initializerChars(
     imported!"dmd.init".Initializer initializer,
-) @trusted {
-    import std.string: fromStringz;
+) @safe {
+    import std.conv: text;
 
-    return fromStringz(initializer.toChars()).idup;
+    if (auto exp = initializer.isExpInitializer)
+        return expressionChars(exp.exp);
+
+    return text(initializer.kind);
 }
 
 private string identifierName(
