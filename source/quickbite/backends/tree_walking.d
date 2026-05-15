@@ -1925,12 +1925,43 @@ private struct BodyWalker {
         if (bytes.length < 2)
             return false;
 
-        const length = cast(size_t) ((bytes[0] << 8) | bytes[1]);
-        if (bytes.length < 2 + length)
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(call.type);
+        const elementByteCount = decerealisedScalarByteCount(elementType);
+        if (elementByteCount == 0)
             return false;
 
-        value = Value(bytes[2 .. 2 + length].dup);
-        assignStructField(ownerFields, bytesField, Value(bytes[2 + length .. $].dup));
+        size_t headerByteCount = 2;
+        size_t length = cast(size_t) readBigEndian(bytes[0 .. 2]);
+        if (length == 0 && bytes.length >= 8) {
+            const longLength = cast(size_t) readBigEndian(bytes[0 .. 8]);
+            if (longLength > 0 &&
+                bytes.length >= 8 + longLength * elementByteCount) {
+                headerByteCount = 8;
+                length = longLength;
+            }
+        }
+
+        const neededByteCount = headerByteCount + length * elementByteCount;
+        if (bytes.length < neededByteCount)
+            throw new Exception("Not enough bytes left to decerealise array.");
+
+        long[] elements;
+        foreach (i; 0 .. length) {
+            const begin = headerByteCount + i * elementByteCount;
+            const end = begin + elementByteCount;
+            elements ~= coerceIntegerToType(
+                readBigEndian(bytes[begin .. end]),
+                elementType,
+            );
+        }
+
+        value = Value(elements);
+        assignStructField(
+            ownerFields,
+            bytesField,
+            Value(bytes[neededByteCount .. $].dup),
+        );
         assignStructFields(owner, ownerFields);
         return true;
     }
@@ -3936,6 +3967,46 @@ private long coerceIntegerToType(
         default:
             return value;
     }
+}
+
+private size_t decerealisedScalarByteCount(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return 0;
+
+    const basetype = type.toBasetype;
+    switch (basetype.ty) {
+        case TY.Tbool:
+        case TY.Tint8:
+        case TY.Tuns8:
+        case TY.Tchar:
+            return 1;
+        case TY.Tint16:
+        case TY.Tuns16:
+        case TY.Twchar:
+            return 2;
+        case TY.Tint32:
+        case TY.Tuns32:
+        case TY.Tdchar:
+        case TY.Tfloat32:
+            return 4;
+        case TY.Tint64:
+        case TY.Tuns64:
+        case TY.Tfloat64:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+private long readBigEndian(in long[] bytes) @safe {
+    long value;
+    foreach (byte_; bytes)
+        value = (value << 8) | (byte_ & 0xff);
+    return value;
 }
 
 private imported!"dmd.mtype".Type arrayElementType(
