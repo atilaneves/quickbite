@@ -1918,16 +1918,12 @@ private struct BodyWalker {
         imported!"dmd.expression".CallExp call,
         out Value value,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "value") {
-            import std.algorithm.searching: canFind;
-
-            if (!expressionChars(call.e1).canFind("value"))
-                return false;
-        }
+        if (call.f.ident is null || call.f.ident.toString != "value")
+            return false;
         auto dotVar = call.e1.isDotVarExp;
-        auto owner = dotVar is null
-            ? structFieldsOwner(call.e1)
-            : structFieldsOwner(dotVar.e1);
+        if (dotVar is null)
+            return false;
+        auto owner = structFieldsOwner(dotVar.e1);
         if (owner is null)
             return false;
         auto valueField = structFieldNamed(owner.type, "_value");
@@ -2778,6 +2774,8 @@ private struct BodyWalker {
         auto argument = callArguments(call)[0];
         if (!isStructType(argument.type))
             return false;
+        if (!needsDirectStructCerealAppend(argument.type))
+            return false;
 
         auto dotVar = call.e1.isDotVarExp;
         if (dotVar is null)
@@ -2793,6 +2791,21 @@ private struct BodyWalker {
             interpreter,
         );
         return true;
+    }
+
+    private bool needsDirectStructCerealAppend(
+        imported!"dmd.mtype".Type type,
+    ) {
+        foreach (field; aggregateStructFields(type)) {
+            if (field.type !is null && field.type.toBasetype.isTypeAArray !is null)
+                return true;
+            if (field.type !is null && field.type.toBasetype.isTypeDArray !is null)
+                if (isStructType(arrayElementType(field.type)))
+                    return true;
+            if (isStructType(field.type) && needsDirectStructCerealAppend(field.type))
+                return true;
+        }
+        return false;
     }
 
     private void appendStructToCereal(
@@ -2914,7 +2927,12 @@ private struct BodyWalker {
             return;
         }
 
-        if (elementType is null || elementType.toBasetype.isTypeDArray is null) {
+        if (elementType is null) {
+            elements ~= array;
+            return;
+        }
+
+        if (elementType.toBasetype.isTypeDArray is null) {
             if (tryAppendStructFlatArrayValueToCereal(elements, array))
                 return;
             appendUshort(elements, cast(long) array.length);
@@ -2957,6 +2975,8 @@ private struct BodyWalker {
         size_t cursor;
         bool allPayloadPrintable = true;
         while (cursor < array.length) {
+            if (array[cursor] < 0)
+                return false;
             const length = nestedArrayLength(array[cursor]);
             ++cursor;
             if (length == 0 || length > array.length - cursor)
