@@ -3703,6 +3703,9 @@ struct BodyLowerer {
         if (auto dot = target.isDotVarExp)
             return lowerStructFieldAssignment(dot, assignment.e2, lowerer);
 
+        if (auto dot = target.isDotIdExp)
+            return lowerDotIdentifierAssignment(dot, assignment.e2, lowerer);
+
         if (auto length = target.isArrayLengthExp)
             return lowerArrayLengthAssignment(length, assignment.e2, lowerer);
 
@@ -4128,6 +4131,23 @@ struct BodyLowerer {
         instructions ~= Instruction(StructSet(
             struct_,
             declarationName(field),
+            source,
+        ));
+        return source;
+    }
+
+    uint lowerDotIdentifierAssignment(
+        imported!"dmd.expression".DotIdExp dot,
+        imported!"dmd.expression".Expression sourceExpression,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, StructSet;
+
+        const struct_ = lowerExpression(dot.e1, lowerer);
+        const source = lowerExpression(sourceExpression, lowerer);
+        instructions ~= Instruction(StructSet(
+            struct_,
+            identifierName(dot.ident),
             source,
         ));
         return source;
