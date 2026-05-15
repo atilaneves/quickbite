@@ -287,7 +287,7 @@ private struct BodyWalker {
                 structFields[param] = args[i].structFields.dup;
                 continue;
             }
-            locals[param] = args[i].value;
+            locals[param] = coerceValueToType(args[i].value, param.type);
         }
     }
 
