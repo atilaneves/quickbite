@@ -816,6 +816,9 @@ private struct BodyWalker {
         if (auto literal = expression.isAssocArrayLiteralExp)
             return runAssocArrayLiteralExpression(literal, interpreter);
 
+        if (auto literal = expression.isStructLiteralExp)
+            return Value(structLiteralCerealBytes(literal, interpreter));
+
         if (auto literal = expression.isStringExp)
             return Value(stringLiteralElements(literal));
 
@@ -3926,6 +3929,15 @@ private struct BodyWalker {
                 elements ~= nestedElements;
                 continue;
             }
+            if (auto nested = elem.isStructLiteralExp) {
+                const nestedElements = structLiteralCerealBytes(
+                    nested,
+                    interpreter,
+                );
+                elements ~= cast(long) nestedElements.length;
+                elements ~= nestedElements;
+                continue;
+            }
 
             import std.sumtype: match;
 
@@ -3945,6 +3957,54 @@ private struct BodyWalker {
         }
 
         return elements;
+    }
+
+    private long[] structLiteralCerealBytes(
+        imported!"dmd.expression".StructLiteralExp literal,
+        ref Interpreter interpreter,
+    ) {
+        long[] elements;
+        foreach (i, element; structLiteralElements(literal)) {
+            if (element is null)
+                continue;
+            // auto: the field comes from DMD's mutable aggregate metadata.
+            auto field = structLiteralField(literal, i);
+            if (field is null)
+                continue;
+            appendExpressionCerealBytes(elements, element, field.type, interpreter);
+        }
+        return elements;
+    }
+
+    private void appendExpressionCerealBytes(
+        ref long[] elements,
+        imported!"dmd.expression".Expression expression,
+        imported!"dmd.mtype".Type type,
+        ref Interpreter interpreter,
+    ) {
+        if (type !is null && type.toBasetype.isTypeDArray !is null) {
+            appendArrayValueToCereal(
+                elements,
+                runExpression(expression, interpreter).asArray,
+                arrayElementType(type),
+            );
+            return;
+        }
+
+        const byteCount = decerealisedScalarByteCount(type);
+        if (byteCount != 0) {
+            appendIntegerBytes(
+                elements,
+                runExpression(expression, interpreter).asLong,
+                byteCount,
+            );
+            return;
+        }
+
+        if (auto literal = expression.isStructLiteralExp) {
+            elements ~= structLiteralCerealBytes(literal, interpreter);
+            return;
+        }
     }
 
     private bool tryInitializeAssocArrayKeyStruct(
