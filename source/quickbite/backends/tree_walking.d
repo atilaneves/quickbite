@@ -2801,15 +2801,24 @@ private struct BodyWalker {
             } else if (args[i].isTemporaryRef) {
                 ++scalarIndex;
             } else if (args[i].refSource !is null) {
-                locals[args[i].refSource] = refValues[scalarIndex];
+                locals[args[i].refSource] = coerceValueToType(
+                    refValues[scalarIndex],
+                    args[i].refSource.type,
+                );
                 ++scalarIndex;
             } else if (args[i].refClassId != 0) {
                 interpreter.classFields[args[i].refClassId][args[i].refField] =
-                    refValues[scalarIndex];
+                    coerceValueToType(
+                        refValues[scalarIndex],
+                        args[i].refField.type,
+                    );
                 ++scalarIndex;
             } else {
                 structFields[args[i].refOwner][args[i].refField] =
-                    refValues[scalarIndex];
+                    coerceValueToType(
+                        refValues[scalarIndex],
+                        args[i].refField.type,
+                    );
                 ++scalarIndex;
             }
         }
