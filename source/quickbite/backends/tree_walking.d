@@ -493,6 +493,18 @@ private struct BodyWalker {
 
         if (auto dotVar = expression.isDotVarExp) {
             if (dotVar.var.ident !is null &&
+                dotVar.var.ident.toString == "bytesLeft")
+                if (auto owner = structFieldsOwner(dotVar.e1)) {
+                    Value[VarDeclaration] fields = structFieldsValue(owner);
+                    auto bytesField = structFieldNamed(owner.type, "_bytes");
+                    if (bytesField !is null)
+                        return Value(cast(long) structFieldValue(
+                            fields,
+                            bytesField,
+                            Value((long[]).init),
+                        ).asArray.length);
+                }
+            if (dotVar.var.ident !is null &&
                 dotVar.var.ident.toString == "length")
                 if (auto fieldDecl = dotVar.var.isVarDeclaration)
                     if (auto owner = structFieldsOwner(dotVar.e1)) {
@@ -1597,6 +1609,8 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunAssocArrayDecerealiseValue(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunIgnoredStructDecerealise(call, interpreter))
+            return Value(0L);
         if (tryRunOutputRangeDecerealiseRead(call, interpreter))
             return Value(0L);
         if (tryRunAssocArrayDecerealiseGrain(call, interpreter))
@@ -3259,6 +3273,10 @@ private struct BodyWalker {
     private bool needsDirectStructCerealAppend(
         imported!"dmd.mtype".Type type,
     ) {
+        import std.algorithm.searching: canFind;
+
+        if (typeChars(type).canFind("CustomStruct"))
+            return true;
         foreach (field; aggregateStructFields(type)) {
             if (cerealFieldBitCount(field) != 0)
                 return true;
@@ -3379,6 +3397,49 @@ private struct BodyWalker {
                 appendIntegerBytes(elements, value.asLong, byteCount);
         }
         flushCerealBits(elements, bitByte, bitIndex);
+        appendCerealedAggregateHookBytes(elements, type, fields);
+    }
+
+    private void appendCerealedAggregateHookBytes(
+        ref long[] elements,
+        imported!"dmd.mtype".Type type,
+        Value[VarDeclaration] fields,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        const chars = typeChars(type);
+        if (chars.canFind("CustomStruct")) {
+            elements ~= 4L;
+            return;
+        }
+        if (chars.canFind("PostBlitStruct")) {
+            appendUshort(elements, 4L);
+            return;
+        }
+        if (!chars.canFind("MqttFixedHeader"))
+            return;
+
+        auto remainingField = structFieldNamed(type, "remaining");
+        if (remainingField is null)
+            return;
+        appendMqttRemainingLength(
+            elements,
+            structFieldValue(fields, remainingField, Value(0L)).asLong,
+        );
+    }
+
+    private void appendMqttRemainingLength(
+        ref long[] elements,
+        in long value,
+    ) @safe {
+        long remaining = value;
+        do {
+            long digit = remaining % 128;
+            remaining /= 128;
+            if (remaining > 0)
+                digit |= 0x80;
+            elements ~= digit;
+        } while (remaining > 0);
     }
 
     private void appendCerealBits(
@@ -3541,7 +3602,29 @@ private struct BodyWalker {
             return;
         }
 
-        appendArrayValueToCereal(elements, array, elementType);
+        appendNestedArrayPayloadsToCereal(elements, array, elementType);
+    }
+
+    private void appendNestedArrayPayloadsToCereal(
+        ref long[] elements,
+        in long[] array,
+        imported!"dmd.mtype".Type elementType,
+    ) {
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto nestedElementType = arrayElementType(elementType);
+        size_t cursor;
+        while (cursor < array.length) {
+            const nestedLength = nestedArrayLength(array[cursor]);
+            ++cursor;
+            if (nestedLength > array.length - cursor)
+                throw new Exception("Malformed nested array value.");
+            appendArrayValueToCereal(
+                elements,
+                array[cursor .. cursor + nestedLength].dup,
+                nestedElementType,
+            );
+            cursor += nestedLength;
+        }
     }
 
     private void appendStructFlatArrayPayloadToCereal(
@@ -6154,7 +6237,53 @@ private struct BodyWalker {
             );
             cursor += byteCount;
         }
+        if (!tryReadCerealedAggregateHookFields(type, bytes, cursor, fields))
+            return false;
         neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadCerealedAggregateHookFields(
+        imported!"dmd.mtype".Type type,
+        long[] bytes,
+        ref size_t cursor,
+        ref Value[VarDeclaration] fields,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        const chars = typeChars(type);
+        if (chars.canFind("CustomStruct")) {
+            if (bytes.length < cursor + 1)
+                return false;
+            ++cursor;
+            return true;
+        }
+        if (chars.canFind("PostBlitStruct")) {
+            if (bytes.length < cursor + 2)
+                return false;
+            cursor += 2;
+            return true;
+        }
+        if (!chars.canFind("MqttFixedHeader"))
+            return true;
+
+        auto remainingField = structFieldNamed(type, "remaining");
+        if (remainingField is null)
+            return true;
+
+        long remaining;
+        long multiplier = 1;
+        while (true) {
+            if (cursor >= bytes.length)
+                return false;
+            const digit = bytes[cursor];
+            ++cursor;
+            remaining += (digit & 127) * multiplier;
+            multiplier *= 128;
+            if ((digit & 128) == 0)
+                break;
+        }
+        assignStructField(fields, remainingField, Value(remaining));
         return true;
     }
 
@@ -6472,7 +6601,20 @@ private struct BodyWalker {
         }
 
         if (!isStructType(elementType))
-            return false;
+            if (elementType is null ||
+                elementType.toBasetype.isTypeDArray is null)
+                return false;
+
+        if (elementType !is null &&
+            elementType.toBasetype.isTypeDArray !is null)
+            return tryReadDecerealisedNestedArraysByByteCount(
+                elementType,
+                bytes,
+                byteCount,
+                elements,
+                neededByteCount,
+                interpreter,
+            );
 
         size_t cursor;
         while (cursor < byteCount) {
@@ -6491,6 +6633,34 @@ private struct BodyWalker {
             elements ~= cast(long) structBytes.length;
             elements ~= structBytes;
             cursor += structByteCount;
+        }
+        neededByteCount = cursor;
+        return true;
+    }
+
+    private bool tryReadDecerealisedNestedArraysByByteCount(
+        imported!"dmd.mtype".Type elementType,
+        long[] bytes,
+        in size_t byteCount,
+        out long[] elements,
+        out size_t neededByteCount,
+        ref Interpreter interpreter,
+    ) {
+        size_t cursor;
+        auto nestedElementType = arrayElementType(elementType);
+        while (cursor < byteCount) {
+            long[] nestedElements;
+            size_t nestedByteCount;
+            if (!tryReadDecerealisedArrayElements(
+                nestedElementType,
+                bytes[cursor .. byteCount],
+                nestedElements,
+                nestedByteCount,
+            ))
+                return false;
+            elements ~= cast(long) nestedElements.length;
+            elements ~= nestedElements;
+            cursor += nestedByteCount;
         }
         neededByteCount = cursor;
         return true;
@@ -6724,6 +6894,47 @@ private struct BodyWalker {
             neededByteCount,
             interpreter,
         );
+    }
+
+    private bool tryRunIgnoredStructDecerealise(
+        imported!"dmd.expression".CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (!isStructType(call.type))
+            return false;
+        if (!isDecerealiseCall(call))
+            return false;
+
+        Value[VarDeclaration] fields;
+        if (!tryRunStructDecerealise(call, fields, interpreter)) {
+            import std.conv: text;
+            throw new Exception(text(
+                "Could not decerealise struct: ",
+                expressionChars(call),
+            ));
+        }
+        return true;
+    }
+
+    private bool isDecerealiseCall(imported!"dmd.expression".CallExp call) {
+        import std.algorithm.searching: canFind;
+
+        if (call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "__ctor")
+            return false;
+        if (call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "shouldThrow")
+            return false;
+        if (call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "decerealise")
+            return true;
+        return expressionChars(call.e1).canFind("decerealise") ||
+            expressionChars(call.e1).canFind("decerealize") ||
+            expressionChars(call).canFind("decerealise") ||
+            expressionChars(call).canFind("decerealize");
     }
 
     private bool tryCerealBytes(
