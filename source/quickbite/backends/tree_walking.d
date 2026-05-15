@@ -4212,8 +4212,12 @@ private struct BodyWalker {
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "decerealise")
-            return false;
+        if (call.f.ident is null || call.f.ident.toString != "decerealise") {
+            import std.algorithm.searching: canFind;
+
+            if (!expressionChars(call.e1).canFind("decerealise"))
+                return false;
+        }
 
         long[] bytes;
         if (!tryCerealBytes(call.e1, bytes, interpreter))
@@ -4242,19 +4246,20 @@ private struct BodyWalker {
                 index += length;
                 continue;
             }
-            if (bytes.length < index + 4)
+            const byteCount = decerealisedScalarByteCount(field.type);
+            if (byteCount == 0)
+                return false;
+            if (bytes.length < index + byteCount)
                 return false;
             assignStructField(
                 fields,
                 field,
-                Value(
-                    (bytes[index] << 24) |
-                    (bytes[index + 1] << 16) |
-                    (bytes[index + 2] << 8) |
-                    bytes[index + 3],
-                ),
+                Value(coerceIntegerToType(
+                    readBigEndian(bytes[index .. index + byteCount]),
+                    field.type,
+                )),
             );
-            index += 4;
+            index += byteCount;
         }
         return true;
     }
@@ -4272,6 +4277,12 @@ private struct BodyWalker {
                     bytes = (*value).asArray.dup;
                     return true;
                 }
+        if (auto literal = expression.isArrayLiteralExp) {
+            if (literal.elements !is null)
+                foreach (element; arrayLiteralElements(literal))
+                    bytes ~= runExpression(element, interpreter).asLong;
+            return true;
+        }
 
         return false;
     }
