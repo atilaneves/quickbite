@@ -2340,7 +2340,25 @@ struct BodyLowerer {
             return true;
         }
 
-        if (functionIdentifier(call.f) == "shouldThrow") {
+        if (
+            functionIdentifier(call.f) == "shouldThrow" ||
+            functionIdentifier(call.f) == "shouldThrowWithMessage"
+        ) {
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
+        if (functionIdentifier(call.f) == "shouldNotThrow") {
+            enforceCallArgumentCount(call, 3);
+            // auto: lazy arguments can be lowered either as expressions or
+            // inlined function literals.
+            auto expression = callArguments(call)[0];
+            if (auto literal = expression.isFuncExp)
+                lowerImmediateFunctionLiteralCall(literal.fd, lowerer);
+            else
+                lowerExpression(expression, lowerer);
+
             result = allocateTemporary;
             instructions ~= Instruction(ConstInt(result, 0));
             return true;
