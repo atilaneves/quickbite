@@ -3418,11 +3418,48 @@ struct BodyLowerer {
     ) @safe {
         if (auto comma = expression.isCommaExp)
             if (isZeroInitializationOfVariable(comma.e1, variable)) {
+                uint constructed;
+                if (tryLowerStructConstructorInitializer(
+                    comma.e2,
+                    lowerer,
+                    constructed,
+                )) {
+                    if (constructed != destination) {
+                        import quickbite.ir.instruction: Copy, Instruction;
+
+                        instructions ~= Instruction(Copy(
+                            destination,
+                            constructed,
+                        ));
+                    }
+                    return destination;
+                }
+
                 lowerExpression(comma.e2, lowerer);
                 return destination;
             }
 
         return lowerInitializerExpression(expression, lowerer);
+    }
+
+    bool tryLowerStructConstructorInitializer(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        // auto: DMD expression helpers return mutable AST nodes.
+        auto valueExpression = expression;
+        if (auto construct = expression.isConstructExp)
+            valueExpression = construct.e2;
+
+        auto call = valueExpression.isCallExp;
+        if (call is null)
+            return false;
+
+        if (tryLowerScopeBufferRangeConstructor(call, lowerer, result))
+            return true;
+
+        return tryLowerCerealiserImplConstructor(call, lowerer, result);
     }
 
     bool isZeroInitializationOfVariable(
