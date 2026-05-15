@@ -2697,6 +2697,16 @@ struct BodyLowerer {
             return true;
         }
 
+        if (
+            functionIdentifier(call.f) == "__errno_location" ||
+            lowerer.functionName(call.f) == "__errno_location"
+        ) {
+            enforceCallArgumentCount(call, 0);
+            result = allocateTemporary;
+            instructions ~= Instruction(ConstInt(result, 0));
+            return true;
+        }
+
         if (functionIdentifier(call.f) == "getControlState") {
             enforceCallArgumentCount(call, 0);
             result = allocateTemporary;
