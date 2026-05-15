@@ -88,6 +88,7 @@ private void executeUnitTest(
     long[][] arrays;
     long[string][] structs;
     AssocArray[] assocArrays;
+    long[string] staticArrays;
     long[string] staticAssocArrays;
     ArrayAlias[] arrayAliases;
     executeInstructions(
@@ -99,6 +100,7 @@ private void executeUnitTest(
         arrays,
         structs,
         assocArrays,
+        staticArrays,
         staticAssocArrays,
         arrayAliases,
     );
@@ -112,6 +114,7 @@ long executeFunction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticArrays,
     ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
@@ -131,6 +134,7 @@ long executeFunction(
                     arrays,
                     structs,
                     assocArrays,
+                    staticArrays,
                     staticAssocArrays,
                     arrayAliases,
                 );
@@ -161,6 +165,7 @@ long executeFunctionPointer(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticArrays,
     ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
@@ -179,6 +184,7 @@ long executeFunctionPointer(
                 arrays,
                 structs,
                 assocArrays,
+                staticArrays,
                 staticAssocArrays,
                 arrayAliases,
             );
@@ -199,6 +205,7 @@ long executeFunctionBody(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticArrays,
     ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
@@ -212,6 +219,7 @@ long executeFunctionBody(
         arrays,
         structs,
         assocArrays,
+        staticArrays,
         staticAssocArrays,
         arrayAliases,
     );
@@ -258,6 +266,7 @@ ExecutionResult executeInstructions(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticArrays,
     ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
@@ -280,6 +289,7 @@ ExecutionResult executeInstructions(
                 arrays,
                 structs,
                 assocArrays,
+                staticArrays,
                 staticAssocArrays,
                 arrayAliases,
             );
@@ -332,6 +342,7 @@ InstructionEffect executeInstruction(
     ref long[][] arrays,
     ref long[string][] structs,
     ref AssocArray[] assocArrays,
+    ref long[string] staticArrays,
     ref long[string] staticAssocArrays,
     ref ArrayAlias[] arrayAliases,
 ) @safe pure {
@@ -343,7 +354,7 @@ InstructionEffect executeInstruction(
         Assert_,
         BinaryOp, Call, CastInt, ConstInt, Copy, IndirectCall, Jump,
         JumpIfFalse, JumpIfTrue, ReturnValue, ReturnVoid, Select, StaticAssocArray,
-        StructGet,
+        StaticArray, StaticArraySet, StructGet,
         StructNew, StructSet, UnaryOp;
     import std.sumtype: match;
 
@@ -363,6 +374,7 @@ InstructionEffect executeInstruction(
                     arrays,
                     structs,
                     assocArrays,
+                    staticArrays,
                     staticAssocArrays,
                     arrayAliases,
                 );
@@ -378,6 +390,7 @@ InstructionEffect executeInstruction(
                     arrays,
                     structs,
                     assocArrays,
+                    staticArrays,
                     staticAssocArrays,
                     arrayAliases,
                 );
@@ -526,6 +539,24 @@ InstructionEffect executeInstruction(
             const array = cast(long) (assocArrays.length - 1);
             staticAssocArrays[instruction.name] = array;
             writeTemporaryValue(temporaries, instruction.destination) = array;
+            return nextInstruction;
+        },
+        (const StaticArray instruction) {
+            if (auto array = instruction.name in staticArrays) {
+                writeTemporaryValue(temporaries, instruction.destination) =
+                    *array;
+                return nextInstruction;
+            }
+
+            arrays ~= [];
+            const array = cast(long) (arrays.length - 1);
+            staticArrays[instruction.name] = array;
+            writeTemporaryValue(temporaries, instruction.destination) = array;
+            return nextInstruction;
+        },
+        (const StaticArraySet instruction) {
+            staticArrays[instruction.name] =
+                readTemporaryValue(temporaries, instruction.value);
             return nextInstruction;
         },
         (AssocArraySet instruction) {

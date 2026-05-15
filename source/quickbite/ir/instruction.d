@@ -156,6 +156,16 @@ public struct StaticAssocArray {
     string name;
 }
 
+public struct StaticArray {
+    uint destination;
+    string name;
+}
+
+public struct StaticArraySet {
+    string name;
+    uint value;
+}
+
 public struct AssocArraySet {
     uint array;
     uint key;
@@ -280,6 +290,8 @@ public alias Instruction = SumType!(
     AssocArrayIndex,
     AssocArrayValuePointer,
     StaticAssocArray,
+    StaticArray,
+    StaticArraySet,
     AssocArraySet,
     ArrayCopy,
     ArrayReferenceCopy,

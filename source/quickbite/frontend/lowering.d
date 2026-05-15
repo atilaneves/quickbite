@@ -797,7 +797,8 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
-            Operation, StaticAssocArray, StructGet, UnaryOp, UnaryOperation;
+            Operation, StaticArray, StaticAssocArray, StructGet, UnaryOp,
+            UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
             const destination = allocateTemporary;
@@ -1425,6 +1426,14 @@ struct BodyLowerer {
                 if (varIsStatic(var) && typeIsAssociativeArray(var.type)) {
                     const destination = allocateTemporary;
                     instructions ~= Instruction(StaticAssocArray(
+                        destination,
+                        staticVariableName(var),
+                    ));
+                    return destination;
+                }
+                if (varIsStatic(var) && typeIsDynamicArray(var.type)) {
+                    const destination = allocateTemporary;
+                    instructions ~= Instruction(StaticArray(
                         destination,
                         staticVariableName(var),
                     ));
@@ -4345,6 +4354,18 @@ struct BodyLowerer {
             throw new Exception(text("Unsupported expression: ", assignment.op));
 
         auto destination = declaration in localTemporaries;
+        if (destination is null && varIsStatic(declaration) &&
+            typeIsDynamicArray(declaration.type)
+        ) {
+            import quickbite.ir.instruction: StaticArraySet;
+
+            const source = lowerExpression(assignment.e2, lowerer);
+            instructions ~= Instruction(StaticArraySet(
+                staticVariableName(declaration),
+                source,
+            ));
+            return source;
+        }
         if (destination is null)
             throw new Exception(text("Unsupported expression: ", expressionChars(target)));
 
@@ -5331,23 +5352,35 @@ struct BodyLowerer {
             throw new Exception(text("Unsupported expression: ", assignment.op));
 
         auto destination = declaration in localTemporaries;
-        if (destination is null)
+        uint staticDestination;
+        if (destination is null && varIsStatic(declaration) &&
+            typeIsDynamicArray(declaration.type)
+        ) {
+            import quickbite.ir.instruction: StaticArray;
+
+            staticDestination = allocateTemporary;
+            instructions ~= Instruction(StaticArray(
+                staticDestination,
+                staticVariableName(declaration),
+            ));
+        } else if (destination is null)
             throw new Exception(text("Unsupported expression: ", expressionChars(target)));
 
         const value = lowerExpression(assignment.e2, lowerer);
+        const array = destination is null ? staticDestination : *destination;
         if (assignmentAppendsArray(assignment)) {
             instructions ~= Instruction(ArrayAppendArray(
-                *destination,
+                array,
                 value,
             ));
-            return *destination;
+            return array;
         }
 
         instructions ~= Instruction(ArrayAppend(
-            *destination,
+            array,
             value,
         ));
-        return *destination;
+        return array;
     }
 
     bool assignmentAppendsArray(
@@ -7220,10 +7253,8 @@ private bool varIsParameter(
 
 private bool varIsStatic(
     imported!"dmd.declaration".VarDeclaration declaration,
-) @safe {
-    import dmd.astenums: STC;
-
-    return (declaration.storage_class & STC.static_) != STC.none;
+) @trusted {
+    return declaration.isDataseg;
 }
 
 private string staticVariableName(
