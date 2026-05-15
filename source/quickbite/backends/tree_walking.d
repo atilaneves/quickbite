@@ -1614,7 +1614,20 @@ private struct BodyWalker {
                     if (auto ptrExp = arg.isPtrExp) {
                         import std.sumtype: match;
                         import dmd.declaration: VarDeclaration;
+                        // `auto` keeps the SumType mutable for match dispatch below.
                         auto ptrVal = runExpression(ptrExp.e1, interpreter);
+                        const classId = ptrVal.classId;
+                        if (classId != 0 && classId in interpreter.classFields) {
+                            CallArgument structRefArg;
+                            structRefArg.refClassId = classId;
+                            structRefArg.structFields =
+                                interpreter.classFields[classId].dup;
+                            structRefArg.structFieldMaps =
+                                interpreter.classStructFieldMaps[classId].dup;
+                            structRefArg.isStructRef = true;
+                            args ~= structRefArg;
+                            continue;
+                        }
                         VarDeclaration target = ptrVal.match!(
                             (LocalPtr p) => p.decl,
                             (long _) => cast(VarDeclaration) null,
@@ -4027,8 +4040,15 @@ private struct BodyWalker {
                 continue;
             if (args[i].isStructRef) {
                 if (args[i].refClassId != 0) {
-                    interpreter.classStructFieldMaps[args[i].refClassId]
-                        [args[i].refField] = structRefValues[structIndex];
+                    if (args[i].refField is null) {
+                        interpreter.classFields[args[i].refClassId] =
+                            structRefValues[structIndex];
+                        interpreter.classStructFieldMaps[args[i].refClassId] =
+                            nestedStructFieldMaps(structRefValues[structIndex]);
+                    } else {
+                        interpreter.classStructFieldMaps[args[i].refClassId]
+                            [args[i].refField] = structRefValues[structIndex];
+                    }
                 } else {
                     structFields[args[i].refSource] = structRefValues[structIndex];
                 }
