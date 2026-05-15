@@ -2419,7 +2419,7 @@ struct BodyLowerer {
         }
 
         if (name == "_d_aaGetRvalueX") {
-            result = lowerAssocArrayIndexCall(call, lowerer);
+            result = lowerAssocArrayValuePointerCall(call, lowerer);
             return true;
         }
 
