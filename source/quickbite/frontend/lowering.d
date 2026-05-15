@@ -4990,11 +4990,15 @@ struct BodyLowerer {
             rememberThisTemporary(temporary, functionThisType(function_));
             refParameters ~= true;
             ++numParameters;
-        } else if (functionThisStructType(function_) !is null) {
-            const temporary = allocateTemporary;
-            rememberThisTemporary(temporary, functionThisStructType(function_));
-            refParameters ~= true;
-            ++numParameters;
+        } else {
+            // `auto` keeps the mutable DMD Type returned for the receiver.
+            auto thisType = functionThisType(function_);
+            if (thisType !is null) {
+                const temporary = allocateTemporary;
+                rememberThisTemporary(temporary, thisType);
+                refParameters ~= true;
+                ++numParameters;
+            }
         }
 
         if (function_.parameters is null)
@@ -5287,7 +5291,7 @@ struct BodyLowerer {
                 }
             }
 
-        if (call.e1.isVarExp !is null && functionThisStructType(call.f) !is null)
+        if (call.e1.isVarExp !is null && functionThisType(call.f) !is null)
             if (hasThisTemporary)
                 return thisTemporary;
 
@@ -5798,7 +5802,7 @@ private bool typePointsToStruct(imported!"dmd.mtype".Type type) @trusted {
 private bool functionHasReceiver(
     imported!"dmd.func".FuncDeclaration function_,
 ) @safe {
-    return function_.vthis !is null || functionThisStructType(function_) !is null;
+    return function_.vthis !is null || functionThisType(function_) !is null;
 }
 
 private imported!"dmd.mtype".Type functionThisStructType(
