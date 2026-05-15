@@ -1516,11 +1516,8 @@ struct BodyLowerer {
             }
         }
 
-        if (typeIsStaticArray(variable.type)) {
-            const value = lowerDefaultStaticArray(variable.type);
-            rememberLocalTemporary(variable, value);
-            return value;
-        }
+        if (typeIsStaticArray(variable.type))
+            return lowerStaticArrayVariable(variable, lowerer);
 
         if (auto initializer = variable._init.isExpInitializer) {
             const value = lowerInitializerExpression(initializer.exp, lowerer);
@@ -1542,6 +1539,39 @@ struct BodyLowerer {
         instructions ~= Instruction(ConstInt(length, staticArrayLength(type)));
         instructions ~= Instruction(ArraySetLength(value, length));
         return value;
+    }
+
+    uint lowerStaticArrayVariable(
+        imported!"dmd.declaration".VarDeclaration variable,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: ArrayCopy, Instruction;
+
+        const value = lowerDefaultStaticArray(variable.type);
+        rememberLocalTemporary(variable, value);
+        if (variable._init is null)
+            return value;
+
+        auto initializer = variable._init.isExpInitializer;
+        if (initializer is null || isZeroInitializer(initializer.exp))
+            return value;
+
+        const source = lowerStaticArrayInitializerExpression(
+            initializer.exp,
+            lowerer,
+        );
+        instructions ~= Instruction(ArrayCopy(value, source));
+        return value;
+    }
+
+    uint lowerStaticArrayInitializerExpression(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+    ) @safe {
+        if (auto blit = expression.isBlitExp)
+            return lowerInitializerExpression(blit.e2, lowerer);
+
+        return lowerInitializerExpression(expression, lowerer);
     }
 
     uint lowerBinaryExpression(Expression)(
@@ -4079,11 +4109,8 @@ struct BodyLowerer {
             }
         }
 
-        if (typeIsStaticArray(variable.type)) {
-            const value = lowerDefaultStaticArray(variable.type);
-            rememberLocalTemporary(variable, value);
-            return value;
-        }
+        if (typeIsStaticArray(variable.type))
+            return lowerStaticArrayVariable(variable, lowerer);
 
         if (variable._init !is null) {
             if (auto initializer = variable._init.isExpInitializer) {
