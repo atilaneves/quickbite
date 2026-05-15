@@ -2418,8 +2418,12 @@ private struct BodyWalker {
         AssocArray array,
         in size_t index,
     ) {
-        if (index >= array.keyStructs.length || array.keyStructs[index] is null)
+        if (index >= array.keyStructs.length)
             return;
+        if (array.keyStructs[index] is null) {
+            appendInt(elements, array.keys[index].asLong);
+            return;
+        }
         auto keyStruct = array.keyStructs[index];
         if (keyStruct !in structFields)
             return;
