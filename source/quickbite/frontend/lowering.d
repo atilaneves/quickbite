@@ -1069,6 +1069,29 @@ struct BodyLowerer {
             );
 
         if (auto identity = expression.isIdentityExp) {
+            if (
+                structEqualityOperand(identity.e1) !is null &&
+                structEqualityOperand(identity.e2) !is null
+            ) {
+                // auto: DMD expression nodes are mutable and lowered below.
+                auto leftExpression = structEqualityOperand(identity.e1);
+                auto rightExpression = structEqualityOperand(identity.e2);
+                const left = lowerExpression(leftExpression, lowerer);
+                const right = lowerExpression(rightExpression, lowerer);
+                const equalResult =
+                    lowerStructEquality(leftExpression.type, left, right);
+                if (identity.op == EXP.identity)
+                    return equalResult;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(UnaryOp(
+                    destination,
+                    equalResult,
+                    UnaryOperation.not,
+                ));
+                return destination;
+            }
+
             if (identity.op == EXP.notIdentity)
                 return lowerBinaryExpression(identity, Operation.notEqual, lowerer);
 
