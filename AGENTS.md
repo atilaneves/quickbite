@@ -59,13 +59,13 @@ Stop and wait for approval before adding or modifying any test.
 
 Run `dub test` after every editing session.
 
+Run `benchmarks/run.sh` before creating a PR to make sure the
+benchmarks still work.
+
 No per-test process spawning, network access, or repeated dependency resolution
 unless explicitly approved.
 
 Never delete test code to make tests pass.
-
-Benchmark changes require manual verification via `benchmarks/run.sh`; a
-compile check alone is insufficient.
 
 # Do nots
 
