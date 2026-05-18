@@ -58,12 +58,15 @@ private enum bool shouldFailCerealedTest(
         (
             fileName != "cerealiser_impl.d" &&
             fileName != "bugs.d" &&
+            fileName != "classes.d" &&
             fileName != "decode.d" &&
+            fileName != "encode.d" &&
             fileName != "encode_decode.d" &&
             fileName != "enums.d" &&
             fileName != "example.d" &&
             fileName != "multidimensional_array.d" &&
             fileName != "nested.d" &&
+            fileName != "pointers.d" &&
             fileName != "reset.d" &&
             fileName != "utils.d"
         )

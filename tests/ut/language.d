@@ -1594,7 +1594,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     }
 }
 
-@("treeWalking.unitThreadedCheckRunsPredicate", ShouldFail)
+@("treeWalking.unitThreadedCheckRunsPredicate")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -1604,7 +1604,7 @@ unittest {
         unittest {
             check!((int value) => false);
         }
-    }, dubImportPaths, ExecutorBackend.treeWalking, "Property failed.");
+    }, dubImportPaths, ExecutorBackend.treeWalking, "Property failed. Seed: 1. Input: 1");
 }
 
 private void expectRunTestsFailure(

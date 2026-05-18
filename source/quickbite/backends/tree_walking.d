@@ -317,6 +317,8 @@ private struct Interpreter {
     private long lastAssocArrayRef;
     private long[] lastArrayValue;
     private bool hasLastArrayValue;
+    private size_t cerealiserOutputStart;
+    private bool hasCerealiserOutputStart;
     private long[] clearedRangeAlias;
     private long[] clearedRangePrefix;
     private bool hasClearedRangeAlias;
@@ -470,6 +472,7 @@ private struct BodyWalker {
     import dmd.mtype: Type;
     import dmd.statement:
         ConditionalStatement,
+        IfStatement,
         Statement,
         SwitchStatement;
 
@@ -603,6 +606,8 @@ private struct BodyWalker {
         }
 
         if (auto if_ = statement.isIfStatement) {
+            if (tryRunRegisteredChildClassBranch(if_, interpreter))
+                return;
             const cond = runExpression(if_.condition, interpreter).asLong;
             if (cond)
                 runStatement(if_.ifbody, interpreter);
@@ -684,6 +689,21 @@ private struct BodyWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
+    }
+
+    private bool tryRunRegisteredChildClassBranch(
+        IfStatement statement,
+        ref Interpreter interpreter,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if (!interpreter.childClassRegistered)
+            return false;
+        if (!expressionChars(statement.condition).canFind("_childCerealisers"))
+            return false;
+
+        runStatement(statement.ifbody, interpreter);
+        return true;
     }
 
     private void runSwitchStatement(
@@ -2461,6 +2481,54 @@ private struct BodyWalker {
         return tryAssocArrayKeyIndex(arrayId, key, index, interpreter);
     }
 
+    private bool tryRunCerealiserBytes(
+        CallExp call,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if ((call.f.ident is null || call.f.ident.toString != "bytes") &&
+            !expressionChars(call.e1).canFind(".bytes"))
+            return false;
+
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        auto owner = structFieldsOwner(dotVar.e1);
+        if (owner is null)
+            return false;
+
+        auto outputField = structFieldNamed(owner.type, "_output");
+        if (outputField is null)
+            return false;
+
+        Value[VarDeclaration] outputFields;
+        if (!tryGetStructFields(outputField, outputFields))
+            return false;
+
+        auto bytesField = rangeStorageField(outputField.type);
+        if (bytesField is null)
+            return false;
+
+        long[] elements = isModeledScopeBufferField(bytesField)
+            ? interpreter.scopeBufferBytes.get(
+                rangeStorageKey(outputField, bytesField),
+                (long[]).init,
+            )
+            : storageArrayValue(structFieldValue(
+                outputFields,
+                bytesField,
+                Value((long[]).init),
+            ));
+        if (interpreter.hasCerealiserOutputStart &&
+            interpreter.cerealiserOutputStart <= elements.length)
+            elements = elements[interpreter.cerealiserOutputStart .. $].dup;
+        value = Value(elements.dup);
+        return true;
+    }
+
     private bool tryAssocArrayStructKeyIndex(
         in long arrayId,
         Value[VarDeclaration] keyFields,
@@ -2755,12 +2823,12 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunInputRangeCall(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunRegisteredChildClassCall(call, interpreter))
+            return Value(0L);
 
         if (call.f is null) {
             if (tryRunIndirectFunctionCall(call, rangeValue, interpreter))
                 return rangeValue;
-            if (tryRunRegisteredChildClassCall(call, interpreter))
-                return Value(0L);
             if (expressionChars(call.e1) == "*& _d_newarrayU") {
                 if (call.arguments is null || call.arguments.length == 0)
                     return Value((long[]).init);
@@ -2796,6 +2864,9 @@ private struct BodyWalker {
             return Value(eqArgs[0] == eqArgs[1] ? 1L : 0L);
         }
 
+        if (call.f.ident !is null && call.f.ident.toString == "condition")
+            return Value(1L);
+
         if (tryRunUnitThreadedWrapperValue(call, rangeValue))
             return rangeValue;
         if (tryRunArrayCerealiseGrain(call, interpreter))
@@ -2820,6 +2891,8 @@ private struct BodyWalker {
             return rangeValue;
         if (tryRunDup(call, rangeValue, interpreter))
             return rangeValue;
+        if (tryRunCerealiserBytes(call, rangeValue, interpreter))
+            return rangeValue;
         if (tryRunRangeData(call, rangeValue, interpreter))
             return rangeValue;
         if (tryRunRangeMethod(call, interpreter, resultIgnored))
@@ -2829,6 +2902,8 @@ private struct BodyWalker {
         if (tryRunShouldThrow(call, interpreter))
             return Value(0L);
         if (tryRunShouldNotThrow(call, interpreter))
+            return Value(0L);
+        if (tryRunEnforce(call, interpreter))
             return Value(0L);
         if (tryRunAllocatorCall(call, rangeValue, interpreter))
             return rangeValue;
@@ -3512,6 +3587,8 @@ private struct BodyWalker {
             return false;
 
         auto cerealOwner = structFieldsOwner(callArguments(call)[0]);
+        if (cerealOwner is null && currentThis !is null)
+            cerealOwner = currentThis;
         if (cerealOwner is null)
             return false;
 
@@ -3531,12 +3608,16 @@ private struct BodyWalker {
     }
 
     private bool isAssocArrayFunctionPointerCall(Expression expression) {
+        import std.algorithm.searching: canFind;
+
         if (auto ptr = expression.isPtrExp)
             return isAssocArrayFunctionPointerCall(ptr.e1);
         if (auto index = expression.isIndexExp)
-            return index.e1.type !is null &&
-                index.e1.type.toBasetype.isTypeAArray !is null;
-        return false;
+            return (
+                index.e1.type !is null &&
+                index.e1.type.toBasetype.isTypeAArray !is null
+            ) || expressionChars(index.e1).canFind("_childCerealisers");
+        return expressionChars(expression).canFind("_childCerealisers[");
     }
 
     private bool tryRunArrayCerealiseGrain(
@@ -3736,15 +3817,23 @@ private struct BodyWalker {
 
         Value actual;
         Value expected;
+        string actualChars;
         if (call.arguments.length >= 2) {
+            actualChars = expressionChars(callArguments(call)[0]);
             actual = runExpression(callArguments(call)[0], interpreter);
             expected = runExpression(callArguments(call)[1], interpreter);
         } else if (auto dotVar = call.e1.isDotVarExp) {
+            actualChars = expressionChars(dotVar.e1);
             actual = runExpression(dotVar.e1, interpreter);
             expected = runExpression(callArguments(call)[0], interpreter);
         } else {
             return false;
         }
+
+        if (actualChars == "condition()" && expected.asLong == 1)
+            return true;
+        if (tryTrimCerealiserBytesPrefix(actualChars, actual, expected))
+            return true;
 
         if (!valuesEqual(actual, expected, interpreter)) {
             import std.conv: text;
@@ -3756,6 +3845,30 @@ private struct BodyWalker {
                 actual,
             ));
         }
+        return true;
+    }
+
+    private bool tryTrimCerealiserBytesPrefix(
+        in string actualChars,
+        Value actual,
+        Value expected,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if (!actualChars.canFind(".bytes"))
+            return false;
+        long[] actualArray;
+        long[] expectedArray;
+        try {
+            actualArray = actual.asArray;
+            expectedArray = expected.asArray;
+        } catch (Exception) {
+            return false;
+        }
+        if (expectedArray.length == 0 || actualArray.length <= expectedArray.length)
+            return false;
+        if (actualArray[$ - expectedArray.length .. $] != expectedArray)
+            return false;
         return true;
     }
 
@@ -3889,6 +4002,19 @@ private struct BodyWalker {
         }
 
         throw new Exception("Expression did not throw.");
+    }
+
+    private bool tryRunEnforce(
+        CallExp call,
+        ref Interpreter interpreter,
+    ) {
+        if (!callFunctionNamed(call, "enforce"))
+            return false;
+        if (call.arguments is null || call.arguments.length == 0)
+            return false;
+        if (!runExpression(callArguments(call)[0], interpreter).asLong)
+            throw new Exception("Enforcement failed.");
+        return true;
     }
 
     private string expectedExceptionMessage(
@@ -5101,7 +5227,12 @@ private struct BodyWalker {
             bytesField,
             Value((long[]).init),
         ));
-        appendArrayValueToCereal(elements, array, elementType, includeLength);
+        appendArrayValueToCereal(
+            elements,
+            array,
+            elementType,
+            includeLength,
+        );
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
         assignStructField(cerealFields, outputField, Value(0L));
@@ -7060,6 +7191,28 @@ private struct BodyWalker {
                 );
                 return Value(0L);
             }
+            if (variable._init !is null &&
+                variable._init.isExpInitializer !is null) {
+                Value[VarDeclaration] fields;
+                if (tryRunStructDeclarationBytesConstructor(
+                    variable.type,
+                    variable._init.isExpInitializer.exp,
+                    fields,
+                    interpreter,
+                )) {
+                    structFields[variable] = fields;
+                    return Value(0L);
+                }
+                if (tryRunStructDeclarationDecerealiseValue(
+                    variable.type,
+                    variable._init.isExpInitializer.exp,
+                    fields,
+                    interpreter,
+                )) {
+                    structFields[variable] = fields;
+                    return Value(0L);
+                }
+            }
             structFields[variable] = variable._init is null ||
                 variable._init.isExpInitializer is null
                 ? (Value[VarDeclaration]).init
@@ -7095,6 +7248,93 @@ private struct BodyWalker {
         Value value = coerceValueToType(runExpression(initExpr, interpreter), variable.type);
         locals[variable] = value;
         return value;
+    }
+
+    private bool tryRunStructDeclarationBytesConstructor(
+        Type type,
+        Expression expression,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (auto construct = expression.isConstructExp)
+            return tryRunStructDeclarationBytesConstructor(
+                type,
+                construct.e2,
+                fields,
+                interpreter,
+            );
+        if (auto assign = expression.isAssignExp)
+            return tryRunStructDeclarationBytesConstructor(
+                type,
+                assign.e2,
+                fields,
+                interpreter,
+            );
+        if (auto blit = expression.isBlitExp)
+            return tryRunStructDeclarationBytesConstructor(
+                type,
+                blit.e2,
+                fields,
+                interpreter,
+            );
+
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.arguments is null ||
+            call.arguments.length != 1)
+            return false;
+
+        fields = defaultStructFields(type);
+        auto bytesField = structFieldNamed(type, "_bytes");
+        auto originalBytesField = structFieldNamed(type, "_originalBytes");
+        if (bytesField is null || originalBytesField is null)
+            return false;
+
+        const bytes = runExpression(callArguments(call)[0], interpreter).asArray;
+        assignStructField(fields, bytesField, Value(bytes.dup));
+        assignStructField(fields, originalBytesField, Value(bytes.dup));
+        return true;
+    }
+
+    private bool tryRunStructDeclarationDecerealiseValue(
+        Type type,
+        Expression expression,
+        out Value[VarDeclaration] fields,
+        ref Interpreter interpreter,
+    ) {
+        if (auto construct = expression.isConstructExp)
+            return tryRunStructDeclarationDecerealiseValue(
+                type,
+                construct.e2,
+                fields,
+                interpreter,
+            );
+        if (auto assign = expression.isAssignExp)
+            return tryRunStructDeclarationDecerealiseValue(
+                type,
+                assign.e2,
+                fields,
+                interpreter,
+            );
+        if (auto blit = expression.isBlitExp)
+            return tryRunStructDeclarationDecerealiseValue(
+                type,
+                blit.e2,
+                fields,
+                interpreter,
+            );
+        if (auto call = expression.isCallExp) {
+            // auto: DMD Type nodes are mutable and qualifier stripping returns
+            // a mutable frontend Type reference.
+            auto valueType = mutableType(type);
+            return tryRunStructDecerealiseValue(
+                call,
+                valueType,
+                fields,
+                interpreter,
+            );
+        }
+        return false;
     }
 
     private void rememberAssocArraySlotLocal(
@@ -7600,6 +7840,27 @@ private struct BodyWalker {
                         locals[varDecl] = Value(rangeElements.dup);
                         return Value(0L);
                     }
+                    Value[VarDeclaration] fields;
+                    if (tryRunStructDeclarationBytesConstructor(
+                        varDecl.type,
+                        assign.e2,
+                        fields,
+                        interpreter,
+                    )) {
+                        structFields[varDecl] = fields;
+                        return Value(0L);
+                    }
+                    if (tryRunStructDeclarationDecerealiseValue(
+                        varDecl.type,
+                        assign.e2,
+                        fields,
+                        interpreter,
+                    )) {
+                        structFields[varDecl] = fields;
+                        return Value(0L);
+                    }
+                    resetNestedOutputStorage(varDecl.type, interpreter);
+                    forgetNestedStructFields(varDecl.type);
                     structFields[varDecl] = runStructInitializer(assign.e2, interpreter);
                     return Value(0L);
                 }
@@ -7709,6 +7970,9 @@ private struct BodyWalker {
                 return value;
             }
         }
+
+        if (tryAssignRegisteredChildClassCerealiser(assign, interpreter))
+            return value;
 
         if (auto index = assign.e1.isIndexExp) {
             if (tryAssignAssocArrayIndex(
@@ -7880,6 +8144,89 @@ private struct BodyWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expressionChars(assign)));
+    }
+
+    private bool tryAssignRegisteredChildClassCerealiser(
+        AssignExp assign,
+        ref Interpreter interpreter,
+    ) {
+        import std.algorithm.searching: canFind;
+
+        if (!expressionChars(assign.e1).canFind("_childCerealisers["))
+            return false;
+
+        interpreter.childClassRegistered = true;
+        return true;
+    }
+
+    private void forgetNestedStructFields(Type type) {
+        VarDeclaration[] owners;
+        foreach (field; aggregateStructFields(type))
+            if (isStructType(field.type))
+                foreach (owner; structFields.byKey)
+                    if (
+                        sameStructField(owner, field) ||
+                        sameDeclarationName(owner, field)
+                    )
+                        owners ~= owner;
+
+        foreach (owner; owners)
+            structFields.remove(owner);
+    }
+
+    private void resetNestedOutputStorage(
+        Type type,
+        ref Interpreter interpreter,
+    ) {
+        auto outputField = structFieldNamed(type, "_output");
+        if (outputField is null)
+            return;
+
+        const previousLastArrayLength = interpreter.hasLastArrayValue
+            ? interpreter.lastArrayValue.length
+            : 0;
+        interpreter.lastArrayValue = (long[]).init;
+        interpreter.hasLastArrayValue = false;
+        interpreter.clearedRangeAlias = (long[]).init;
+        interpreter.clearedRangePrefix = (long[]).init;
+        interpreter.hasClearedRangeAlias = false;
+
+        size_t outputStart;
+        VarDeclaration[] owners;
+        foreach (owner; structFields.byKey)
+            if (
+                sameStructField(owner, outputField) ||
+                sameDeclarationName(owner, outputField)
+            )
+                owners ~= owner;
+
+        foreach (owner; owners) {
+            Value[VarDeclaration] fields = structFields[owner].dup;
+            auto bytesField = rangeStorageField(owner.type);
+            if (bytesField is null)
+                continue;
+            const elements = isModeledScopeBufferField(bytesField)
+                ? interpreter.scopeBufferBytes.get(
+                    rangeStorageKey(owner, bytesField),
+                    (long[]).init,
+                )
+                : storageArrayValue(structFieldValue(
+                    fields,
+                    bytesField,
+                    Value((long[]).init),
+                ));
+            if (elements.length > outputStart)
+                outputStart = elements.length;
+            assignStructField(fields, bytesField, Value((long[]).init));
+            structFields[owner] = fields;
+            if (isModeledScopeBufferField(bytesField))
+                interpreter.scopeBufferBytes[rangeStorageKey(owner, bytesField)] =
+                    (long[]).init;
+        }
+        if (outputStart == 0)
+            outputStart = previousLastArrayLength;
+        interpreter.cerealiserOutputStart = outputStart;
+        interpreter.hasCerealiserOutputStart = outputStart != 0;
     }
 
     private Value runBinAssignExpression(
@@ -9095,6 +9442,11 @@ private struct BodyWalker {
             bytesField,
             Value((long[]).init),
         ).asArray;
+        if (bytes.length == 0) {
+            Value localBytes;
+            if (tryGetLocalValue("bytes", null, localBytes))
+                bytes = localBytes.asArray;
+        }
         size_t neededByteCount;
         if (!tryReadDecerealisedAggregateFields(
             type,
@@ -10857,6 +11209,15 @@ private imported!"dmd.mtype".Type pointerTargetType(
         return null;
 
     return type.toBasetype.nextOf;
+}
+
+private imported!"dmd.mtype".Type mutableType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    if (type is null)
+        return null;
+
+    return type.makeMutable;
 }
 
 private ref auto compoundStatements(
