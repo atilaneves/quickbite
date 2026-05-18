@@ -1,160 +1,115 @@
 # Mistakes To Avoid
 
-- Check the current tree and existing layout before editing paths or
-  source discovery settings.
+- Check the existing tree and layout before editing paths or source-discovery
+  settings.
 
-- Verify external APIs and config syntax against the real local source
-  before inventing names or shapes.
+- Verify external APIs and config syntax against the real local source before
+  inventing names.
 
-- Follow explicit user and repo instructions literally unless there is a
-  documented reason to deviate.
+- Follow instructions literally unless there is a documented reason to deviate.
 
-- Never weaken or replace a test just to make it pass.
+- Never weaken or replace a test to make it pass.
 
-- Keep touched code aligned with repo conventions, especially OTBS/OTBC
-  and local imports.
+- Keep touched code aligned with repo conventions (OTBS, local imports).
 
-- When a user asks for `in` parameters and stronger attributes, do not
-  work around the resulting type mismatch by weakening the qualifier
-  requirement. Reconcile the signatures properly and add the strongest
-  valid attributes instead.
+- For `in` parameters and stronger attributes, reconcile signatures properly
+  instead of weakening qualifiers.
 
-- Do not introduce module-level imports in this repository when a local
-  import inside the relevant function or type block would do. Do not
-  use `imported!"..."` outside parameter and return types.
+- Local imports inside functions/types only. `imported!"..."` only for
+  parameter and return types.
 
-- AGENTS.md asks for both `private:` at the top of each module and
-  explicit `public` and `private` annotations anyway. Do not treat
-  inherited module-private visibility as explicit enough.
+- `private:` at module top and explicit `public`/`private` per declaration are
+  both required.
 
-- DMD AST formatting helpers such as `Expression.toChars()` are not
-  `@safe`; wrap them in a small `@trusted` helper before calling them
-  from `@safe` lowering code.
-
-- Do not use empty parentheses for function calls. Omit them: `doStuff;`
-  not `doStuff();`. This applies to call sites everywhere, including
-  inside `q{...}` test fixtures.
-
-- DMD type helpers such as `Type.nextOf()` are not `@safe`; wrap them
-  in a small `@trusted` helper before calling them from `@safe` lowering
+- DMD helpers such as `Expression.toChars()` and `Type.nextOf()` are not
+  `@safe`; wrap them in a small `@trusted` helper before calling from `@safe`
   code.
 
-- No-empty-parens style applies inside `q{}` fixture source strings too;
-  check no-argument calls there before asking for test feedback.
+- Omit empty parens everywhere, including inside `q{...}` fixtures: `doStuff;`
+  not `doStuff();`.
 
-- When asking for feedback on tests, stop and wait for the user to
-  respond before continuing the TDD loop or committing the test.
+- Stop and wait for user feedback after writing or modifying a test. Do not
+  apply the test diff and ask after — stop before.
 
-- Always ask for feedback after adding or modifying tests. Stop and wait
-  before changing production code.
+- When converting a fixture to an unsupported-diagnostic test, keep the inner
+  assertion for the intended supported behavior.
 
-- When converting a fixture into an unsupported-diagnostic test, keep the
-  inner assertion that describes the intended supported behavior.
+- Don't use `cast(bool)` for STC bitmask checks; compare the masked value
+  against `STC.none`.
 
-- Do not use `cast(bool)` for D storage-class bitmask checks. Compare
-  the masked enum value against `STC.none`.
+- Avoid all-literal fixtures unless constant folding is under test; use runtime
+  values (mutable locals, function calls) so DMD cannot fold the expression
+  before the VM sees it. This applies to tree-walker tests too.
 
-- When testing lowering for a specific operator, do not use all-literal
-  expressions unless constant folding is the behavior under test. Use a
-  value that survives DMD semantic analysis, such as a function call.
+- Prefer `uint[] values;` over `auto values = cast(uint[]) [];`.
 
-- Do not contort initializers to avoid explicit local array types. Prefer
-  `uint[] values;` over noisy forms like `auto values = cast(uint[]) [];`.
+- Don't use variadic functions as call-argument fixtures; they introduce
+  DMD/runtime varargs constructs that can fail before the VM reaches the
+  intended behavior.
 
-- Do not use variadic D functions as simple call-argument fixtures. They
-  introduce DMD/runtime varargs constructs and can fail for unrelated
-  reasons before the VM reaches the intended behavior.
+- In a named git worktree, prefix patched paths with the worktree directory
+  when the session cwd is the parent checkout.
 
-- When working in a named git worktree, remember that `apply_patch` uses
-  the session cwd. Prefix patched paths with the worktree directory when
-  the session cwd is the parent checkout.
+- Don't run parallel `dub test` in the same checkout; it races on shared build
+  artifacts.
 
-- Do not run multiple `dub test` commands in parallel in the same
-  checkout. Dub may race on shared package build artifacts and fail for
-  reasons unrelated to the code.
+- Strict TDD: make the smallest green step (fake if needed), then ask for the
+  next test before expanding the implementation.
 
-- In strict TDD, do not implement the full obvious behavior when the
-  current red test only forces a fake. Make the smallest green step,
-  then ask for feedback on the next test that exposes the fake.
+- Prefer `const`; use `auto` with a reason if `const` fails; use an explicit
+  LHS type only if `auto` fails (explain why).
 
-- Do not reinterpret the `const`/`auto`/explicit-type guideline. Prefer
-  `const`; if `const` cannot work, use `auto` with a reason. Use an
-  explicit LHS type only when `auto` cannot work, and explain why.
+- When adding an `else` branch under `if (auto x = ...)`, brace both branches
+  if both need `x`; otherwise `x` is out of scope in the second branch.
 
-- When testing tree-walker runtime semantics, avoid fixtures that DMD can
-  constant-fold before the walker sees them. Use runtime locals when the
-  test is meant to prove interpreter behavior.
+- Don't add helper functions to fixtures just to avoid constant folding unless
+  the purpose is clear; add a comment if you do; otherwise use a direct runtime
+  expression.
 
-- Stop before changing tests and ask for feedback, even for test-name or
-  fixture-style cleanup. Do not apply the test diff first and ask after.
+- When spawning subagents for backend work, delegate bounded implementation to
+  worker agents with disjoint file ownership after test approval — don't
+  implement everything in the main thread.
 
-- When adding a sibling branch under `if (auto x = ...)`, use braces if
-  both branches need `x`; otherwise the second branch is outside scope.
+- Give subagents that edit code separate git worktrees unless the user
+  explicitly approves sharing a checkout.
 
-- Do not add helper functions to test fixtures just to avoid constant
-  folding unless the function has a clear purpose. If a helper function
-  is needed, add a comment explaining why; otherwise use the smallest
-  direct runtime expression, such as a mutable local when mutation or
-  non-const evaluation is needed.
+- Unit-threaded focused-test arguments use the full name from `./ut -l` (e.g.
+  `ut.ir.ir.minicerealFile`), not just the `@("...")` label.
 
-- When the user asks for subagents to continue backend work, do not only
-  spawn read-only explorers and then implement everything in the main
-  thread. After test approval, delegate bounded implementation work to
-  worker agents with disjoint file ownership.
+- Don't add broad acceptance tests in TDD unless the current implementation is
+  expected to fail them; an immediately-passing test drives no production code.
 
-- When subagents are expected to edit code, set up separate git
-  worktrees first unless the user explicitly asks to share one checkout.
-  File ownership alone does not isolate incomplete edits or test runs.
+- Pass review text containing Markdown backticks via a body file or
+  single-quoted input, not double quotes.
 
-- Unit-threaded focused test arguments must use the full name from
-  `./ut -l`, such as `ut.ir.ir.minicerealFile`, not only the display
-  label shown by the `@("...")` attribute.
+- Don't run the local test suite during PR review just to confirm CI; use the
+  diff and CI signal.
 
-- In strict TDD, do not add broad acceptance tests as the next step
-  unless there is a concrete reason to expect the current implementation
-  to fail them. If they pass immediately, they did not drive production
-  code.
+- In DMD 2.112.1 array equality may stay an `EqualExp` without
+  `EqualExp.lowering`; don't assume all array equality reaches
+  `object.__equals`.
 
-- When passing review text through a shell command, do not put Markdown
-  backticks inside double quotes. Use a body file or single-quoted input
-  so the shell cannot execute command substitutions.
+- Apply `@safe` and other attributes to new helpers immediately, not after
+  review.
 
-- When asked to review a PR, do not run the local test suite just to
-  verify what CI already reports or what is clear from the diff. Use the
-  diff and CI signal for the review unless the user asks for local
-  verification.
+- Don't put expensive work (process spawning) in per-unittest test helpers;
+  cache or move it out of the hot path.
 
-- In DMD 2.112.1 array equality can remain an `EqualExp` without
-  `EqualExp.lowering` when the compiler backend can use memcmp-style
-  comparison. Do not assume all array equality reaches `object.__equals`.
+- Don't add `@trusted` without a specific justification.
 
-- When adding D helpers, apply the repo's attribute guideline immediately;
-  do not wait for review to point out obvious `@safe` opportunities.
+- When a PR replaces a process-spawning CLI call with a library call, don't
+  satisfy review comments by hiding the same CLI call behind a library-shaped
+  wrapper.
 
-- Do not put expensive work such as process spawning in test helpers that
-  are called per generated unittest. Cache it or move it out of the hot path.
+- TDD: for a first red test asking for a count, return the smallest pre-canned
+  value; add another approved test to force real implementation before
+  refactoring.
 
-- Do not add `@trusted` to functions just to satisfy an attribute habit.
-  `@trusted` is a deliberate safety boundary and needs a specific
-  justification.
+- Prefer `.should == expected` over `.shouldEqual(expected)` in new
+  unit-threaded tests.
 
-- When a PR's purpose is to replace a process-spawning CLI call with a
-  library call, do not satisfy dependency or vendoring review comments by
-  hiding the same CLI call behind a new library-shaped wrapper.
+- Don't use unit-threaded assertions or imports inside `q{}` fixture strings;
+  keep host-test dependencies out of code under test.
 
-- In strict TDD, when the first red test asks for a summary count, do not
-  implement real counting immediately. Return the smallest pre-canned
-  value that satisfies the current test, then add another approved test to
-  force a real implementation before refactoring.
-
-- In new unit-threaded tests, prefer `.should == expected` over
-  `.shouldEqual(expected)` unless the surrounding code specifically calls
-  for the older style.
-
-- Do not use unit-threaded assertions or imports inside fixture source
-  strings that quickbite executes. Keep host-test dependencies out of
-  code under test; use ordinary D constructs in `q{}` fixtures.
-
-- Do not use `throw new Exception` as a stand-in for a normal failing
-  unittest fixture unless exception handling itself is under test. Prefer
-  ordinary `assert` when the fixture is meant to represent user tests.
+- Don't use `throw new Exception` as a failing-test stand-in unless exception
+  handling is under test; use `assert`.
