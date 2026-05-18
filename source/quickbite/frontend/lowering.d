@@ -2575,12 +2575,13 @@ private string parameterName(imported!"dmd.mtype".Parameter parameter) @trusted 
     return parameter.ident.toString.idup;
 }
 
-private ref auto compoundStatements(
+private imported!"dmd.statement".Statement[] compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
 ) @trusted {
     // `isCompoundStatement` returning this node guarantees `statements` is a
-    // valid DMD-owned pointer.
-    return *compound.statements;
+    // valid DMD-owned pointer. Slicing avoids `@trusted` at every statement
+    // index access site.
+    return (*compound.statements)[];
 }
 
 private ref auto functionParameters(
