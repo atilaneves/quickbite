@@ -7,10 +7,9 @@ license "BSL-1.0"
 // keep vendor/dmd-backend/ in sync with the new version.
 subPackage {
     name "dmd-backend-vendor"
-    targetType "library"
+    targetType "sourceLibrary"
     sourcePaths "vendor/dmd-backend"
     importPaths "vendor/dmd-backend"
-    dependency "dmd:frontend" version="~>2.112.0"
 }
 
 configuration "unittest" {

@@ -190,12 +190,10 @@ private GeneratedThrowable copyGeneratedThrowable(Throwable throwable) {
 }
 
 private void throwPendingGeneratedThrowable(in GeneratedThrowable throwable) {
-    import std.conv: text;
-
     if (throwable.type is null)
         return;
 
-    throw new Exception(text(throwable.type, ": ", throwable.message));
+    throw new Exception("Unittest assertion failed.");
 }
 
 private void throwPendingUnittestFailure() {
