@@ -6,6 +6,7 @@ public enum ExecutorBackend {
     ir,
     treeWalking,
     dmdCtfe,
+    dmdBackend,
 }
 
 public void runTests(
@@ -24,6 +25,10 @@ public void runTests(
         case ExecutorBackend.dmdCtfe:
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             (new DmdCtfe).runTests(source);
+            return;
+        case ExecutorBackend.dmdBackend:
+            import quickbite.backends.dmd_backend: DmdBackend;
+            (new DmdBackend).runTests(source);
             return;
     }
 }
@@ -55,6 +60,10 @@ public void runTests(
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             (new DmdCtfe).runTests(source, importPaths);
             return;
+        case ExecutorBackend.dmdBackend:
+            import quickbite.backends.dmd_backend: DmdBackend;
+            (new DmdBackend).runTests(source, importPaths);
+            return;
     }
 }
 
@@ -72,5 +81,8 @@ public imported!"quickbite.executor".TestSummary runTestSummary(
         case ExecutorBackend.dmdCtfe:
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             return (new DmdCtfe).runTestSummary(source);
+        case ExecutorBackend.dmdBackend:
+            import quickbite.backends.dmd_backend: DmdBackend;
+            return (new DmdBackend).runTestSummary(source);
     }
 }

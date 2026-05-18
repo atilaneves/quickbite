@@ -1,6 +1,7 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
+import quickbite.backends.dmd_backend: DmdBackend;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
@@ -23,7 +24,6 @@ int main(string[] args) {
     size_t iterations = defaultIterations;
     string[] importPaths;
     string dubPkg;
-    bool noDmd;
 
     auto info = getopt(
         args,
@@ -31,12 +31,11 @@ int main(string[] args) {
         "iterations",   "timed iterations per measurement",            &iterations,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
-        "no-dmd",       "omit the dmd subprocess row",                 &noDmd,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--dub=NAME] [--no-dmd]"
+            ~ " [--import-path=P ...] [--dub=NAME]"
             ~ " [<module.d> ...]",
             info.options,
         );
@@ -49,8 +48,6 @@ int main(string[] args) {
         const dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         fixtures    ~= dubInfo.fixtures;
-        // dmd -run cannot link against a package's precompiled deps.
-        noDmd = true;
     }
 
     if (fixtures.length == 0)
@@ -70,6 +67,7 @@ int main(string[] args) {
     backends["ir"]          = new IrExecutor;
     backends["treeWalking"] = new TreeWalkingExecutor;
     backends["dmd-ctfe"]    = new DmdCtfe;
+    backends["dmd-backend"] = new DmdBackend;
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
@@ -80,7 +78,7 @@ int main(string[] args) {
             auto parsed  = parseModule(source, importPaths);
             auto module_ = parsed.module_;
 
-            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+            foreach (name; ["ir", "treeWalking", "dmd-ctfe", "dmd-backend"]) {
                 auto executor = backends[name];
                 printRow(
                     displayName, name, warmup, iterations,
@@ -91,30 +89,6 @@ int main(string[] args) {
             stderr.writefln("skipping %s: %s", displayName, e.msg);
         }
         writeln;
-    }
-
-    if (!noDmd) {
-        writeln;
-        writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
-        printHeader;
-        foreach (path; fixtures) {
-            const source      = readText(path);
-            const displayName = moduleDisplayName(path, importPaths);
-
-            try {
-                foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-                    auto executor = backends[name];
-                    printRow(
-                        displayName, name, warmup, iterations,
-                        () => executor.runTests(source, importPaths),
-                    );
-                }
-                printRow(displayName, "dmd", warmup, iterations, () => runDmd(path, importPaths));
-            } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", displayName, e.msg);
-            }
-            writeln;
-        }
     }
 
     return 0;
@@ -287,13 +261,6 @@ void printRunHeader(in size_t warmup, in size_t iterations) {
     if (commit.status == 0)
         writefln("commit:      %s", commit.output.strip);
 
-    const dmdVer = execute(["dmd", "--version"]);
-    if (dmdVer.status == 0)
-        writefln(
-            "dmd (subprocess): %s",
-            dmdVer.output.until('\n').array.text.strip,
-        );
-
     writefln("cpu:         %s", processor.strip);
 
     enum governor = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor";
@@ -317,20 +284,4 @@ string buildFlagsSummary() {
     debug flags ~= "-debug";
 
     return flags.join(" ");
-}
-
-void runDmd(in string path, in string[] importPaths = []) {
-    import std.algorithm.iteration: map;
-    import std.array: array, join;
-    import std.conv: text;
-    import std.process: execute;
-
-    const iFlags = importPaths.map!(p => "-I" ~ p).array;
-    const args   = ["dmd", "-unittest", "-main"] ~ iFlags ~ ["-run", path];
-    const result = execute(args);
-    if (result.status != 0)
-        throw new Exception(text(
-            "`", args.join(" "), "` failed (status ", result.status, "):\n",
-            result.output,
-        ));
 }

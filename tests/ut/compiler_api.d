@@ -69,6 +69,40 @@ unittest {
     }
 }
 
+@("runTests.dmdBackendRunsFailingPackageModuleUnittest")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    // The DMD backend looks up the generated __modtest symbol by module
+    // name; dotted module names catch silently-skipped unittests there.
+    runTests(q{
+        module quickbite_dmd_backend_regression.package_module;
+
+        unittest {
+            assert(1 == 2, "Unittest assertion failed.");
+        }
+    }, ExecutorBackend.dmdBackend).shouldThrowWithMessage(
+        "Unittest assertion failed.",
+    );
+}
+
+@("runTests.dmdBackendCatchesAssertWithoutMessage")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    // A bare assert (no message) calls _d_unittestp in the D runtime, which
+    // is a different code path from assert(cond, "msg"). This test confirms
+    // that the dmd backend catches the resulting AssertError rather than
+    // letting it abort the process.
+    runTests(q{
+        module quickbite_dmd_backend_regression.assert_no_message;
+
+        unittest {
+            assert(1 == 2);
+        }
+    }, ExecutorBackend.dmdBackend).shouldThrow;
+}
+
 @("runTests.runsAttributedThrowingUnittests")
 unittest {
     import quickbite: ExecutorBackend, runTests;
