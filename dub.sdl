@@ -21,6 +21,7 @@ configuration "unittest" {
     sourcePaths "tests"
     includePaths "tests"
     versions "unitUnthreaded"
+    lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.1"
     dependency ":dmd-backend-vendor" version="*"
