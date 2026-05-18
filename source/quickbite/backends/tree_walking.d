@@ -3669,18 +3669,82 @@ private struct BodyWalker {
             return false;
         }
 
+        size_t lengthTypeByteCount = 2;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
+
         return appendArrayToCereal(
             owner,
             array,
             elementType,
             interpreter,
             includeLength,
+            lengthTypeByteCount,
         );
     }
 
     private bool isGroupedCerealArrayElementType(Type type) {
+        import dmd.astenums: TY;
+
         return isStructType(type) ||
-            (type !is null && type.toBasetype.isTypeDArray !is null);
+            (type !is null && type.toBasetype.isTypeDArray !is null) ||
+            (decerealisedScalarByteCount(type) != 0 &&
+             type !is null &&
+             type.toBasetype.ty != TY.Tchar &&
+             type.toBasetype.ty != TY.Twchar &&
+             type.toBasetype.ty != TY.Tdchar);
+    }
+
+    private bool tryGetCerealGrainLengthTypeByteCount(
+        CallExp call,
+        out size_t byteCount,
+    ) {
+        import dmd.dtemplate: isType, isDsymbol, isExpression;
+
+        byteCount = 2;
+
+        // Try to get template instance from call.e1 (for member function calls)
+        auto dotTemplate = call.e1.isDotTemplateInstanceExp;
+        if (dotTemplate !is null && dotTemplate.ti !is null) {
+            auto ti = dotTemplate.ti;
+            if (ti.tiargs !is null && ti.tiargs.length > 0) {
+                // Try all template arguments and find the first scalar type
+                foreach (i; 0 .. ti.tiargs.length) {
+                    auto arg = (*ti.tiargs)[i];
+                    if (arg !is null) {
+                        auto typeArg = isType(arg);
+                        if (typeArg !is null) {
+                            auto bc = decerealisedScalarByteCount(typeArg);
+                            if (bc != 0) {
+                                byteCount = bc;
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try to get template instance from call.f (handles UFCS calls)
+        if (call.f !is null) {
+            auto ti = call.f.isInstantiated;
+            if (ti !is null && ti.tiargs !is null && ti.tiargs.length > 0) {
+                foreach (i; 0 .. ti.tiargs.length) {
+                    auto arg = (*ti.tiargs)[i];
+                    if (arg !is null) {
+                        auto typeArg = isType(arg);
+                        if (typeArg !is null) {
+                            auto bc = decerealisedScalarByteCount(typeArg);
+                            if (bc != 0) {
+                                byteCount = bc;
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     private bool tryCerealArrayCallArguments(
@@ -3693,11 +3757,19 @@ private struct BodyWalker {
 
         if (call.arguments.length == 1) {
             DotVarExp dotVar = call.e1.isDotVarExp;
-            if (dotVar is null)
-                return false;
-            ownerExpression = dotVar.e1;
-            arrayExpression = callArguments(call)[0];
-            return true;
+            if (dotVar !is null) {
+                ownerExpression = dotVar.e1;
+                arrayExpression = callArguments(call)[0];
+                return true;
+            }
+            // Handle templated method calls like enc.grain!ubyte(arr)
+            auto dotTemplate = call.e1.isDotTemplateInstanceExp;
+            if (dotTemplate !is null) {
+                ownerExpression = dotTemplate.e1;
+                arrayExpression = callArguments(call)[0];
+                return true;
+            }
+            return false;
         }
 
         if (call.arguments.length != 2)
@@ -4604,8 +4676,12 @@ private struct BodyWalker {
 
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto elementType = arrayElementType(refType);
+
+        size_t lengthTypeByteCount = 2;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
+
         Value value;
-        if (!tryReadDecerealisedArrayFromOwner(owner, elementType, value))
+        if (!tryReadDecerealisedArrayFromOwner(owner, elementType, value, lengthTypeByteCount))
             return false;
 
         assignRefArgument(refArgument, value, interpreter);
@@ -4616,6 +4692,7 @@ private struct BodyWalker {
         VarDeclaration owner,
         Type elementType,
         out Value value,
+        in size_t lengthTypeByteCount = 2,
     ) {
         Value[VarDeclaration] ownerFields = structFieldsValue(owner);
         auto bytesField = structFieldNamed(owner.type, "_bytes");
@@ -4627,7 +4704,7 @@ private struct BodyWalker {
             bytesField,
             Value((long[]).init),
         ).asArray;
-        if (bytes.length < 2)
+        if (bytes.length < 1)
             return false;
 
         long[] elements;
@@ -4637,6 +4714,7 @@ private struct BodyWalker {
             bytes,
             elements,
             neededByteCount,
+            lengthTypeByteCount,
         ))
             return false;
 
@@ -4710,6 +4788,7 @@ private struct BodyWalker {
         long[] bytes,
         out long[] elements,
         out size_t neededByteCount,
+        in size_t lengthTypeByteCount = 2,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount != 0) {
@@ -5210,6 +5289,7 @@ private struct BodyWalker {
         Type elementType,
         ref Interpreter interpreter,
         in bool includeLength = true,
+        in size_t lengthTypeByteCount = 2,
     ) {
         Value[VarDeclaration] cerealFields = structFieldsValue(cerealOwner);
         auto outputField = structFieldNamed(cerealOwner.type, "_output");
@@ -5232,6 +5312,7 @@ private struct BodyWalker {
             array,
             elementType,
             includeLength,
+            lengthTypeByteCount,
         );
         assignStructField(outputFields, bytesField, Value(elements));
         assignNestedStructFields(outputField, outputFields);
@@ -5245,6 +5326,7 @@ private struct BodyWalker {
         long[] array,
         Type elementType,
         in bool includeLength = true,
+        in size_t lengthTypeByteCount = 2,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount != 0) {
@@ -5255,7 +5337,7 @@ private struct BodyWalker {
             ))
                 return;
             if (includeLength)
-                appendUshort(elements, cast(long) array.length);
+                appendIntegerBytes(elements, cast(long) array.length, lengthTypeByteCount);
             foreach (element; array)
                 appendIntegerBytes(elements, element, elementByteCount);
             return;
@@ -5274,7 +5356,7 @@ private struct BodyWalker {
             if (tryAppendStructFlatArrayValueToCereal(elements, array))
                 return;
             if (includeLength)
-                appendUshort(elements, cast(long) array.length);
+                appendIntegerBytes(elements, cast(long) array.length, lengthTypeByteCount);
             return;
         }
 
@@ -5296,13 +5378,15 @@ private struct BodyWalker {
                 payload,
                 array[cursor .. cursor + nestedFlatLength],
                 nestedElementType,
+                true,
+                lengthTypeByteCount,
             );
             cursor += nestedFlatLength;
             ++length;
         }
 
         if (includeLength)
-            appendUshort(elements, cast(long) length);
+            appendIntegerBytes(elements, cast(long) length, lengthTypeByteCount);
         elements ~= payload;
     }
 
