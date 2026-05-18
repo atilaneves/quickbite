@@ -60,6 +60,9 @@ Use UFCS liberally.
 Use local imports where possible. For parameters and return types use
 `imported!"module"`.
 
+Do not assume the code has not been edited by someone else in the
+meanwhile. Always re-read files that you are about to edit.
+
 Use trailing commas.
 
 Use `private:` at the top of every module. Be explicit with `public`
