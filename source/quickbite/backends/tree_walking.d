@@ -7944,8 +7944,13 @@ private struct BodyWalker {
                         return Value(0L);
                     }
                     resetNestedOutputStorage(varDecl.type, interpreter);
+                    // Capture nested struct fields from source before erasing.
+                    Value[VarDeclaration][VarDeclaration] sourceMaps;
+                    if (auto sourceOwner = structCopySourceOwner(assign.e2))
+                        sourceMaps = nestedStructFieldMaps(structFields[sourceOwner]);
                     forgetNestedStructFields(varDecl.type);
                     structFields[varDecl] = runStructInitializer(assign.e2, interpreter);
+                    propagateNestedStructFieldMaps(structFields[varDecl], sourceMaps);
                     return Value(0L);
                 }
 
