@@ -2958,7 +2958,9 @@ private struct BodyWalker {
                         continue;
                     if (auto var = arg.isVarExp)
                         if (auto varDecl = var.var.isVarDeclaration)
-                            if (varDecl in locals) {
+                            if (varDecl in locals &&
+                                !(varDecl in structFields &&
+                                  structFieldNamed(varDecl.type, "_output") !is null)) {
                                 args ~= CallArgument(
                                     locals[varDecl],
                                     varDecl,
@@ -3119,6 +3121,58 @@ private struct BodyWalker {
                                         );
                                         continue;
                                     }
+                    // Struct field accessed via local variable, passed as ref.
+                    if (auto dotVar = arg.isDotVarExp)
+                        if (auto ownerVar = dotVar.e1.isVarExp)
+                            if (auto ownerDecl = ownerVar.var.isVarDeclaration)
+                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
+                                    Value[VarDeclaration] ownerFields;
+                                    if (tryGetStructFields(ownerDecl, ownerFields)) {
+                                        args ~= CallArgument(
+                                            structFieldValue(ownerFields, fieldDecl, defaultValue(fieldDecl.type)),
+                                            null,
+                                            ownerDecl,
+                                            fieldDecl,
+                                        );
+                                        continue;
+                                    }
+                                    if (isStructType(ownerDecl.type) &&
+                                        ownerDecl in locals) {
+                                        // The owner struct is in locals as a byte array from
+                                        // structLiteralCerealBytes.  Try to recover the actual
+                                        // field value by computing the field's byte offset in the
+                                        // struct's natural (non-bit-packed) layout.
+                                        auto localBytes = locals[ownerDecl].asArray;
+                                        Value fieldValue;
+                                        size_t byteOffset = 0;
+                                        bool found = false;
+                                        foreach (structField; aggregateStructFields(ownerDecl.type)) {
+                                            const fbc = decerealisedScalarByteCount(structField.type);
+                                            if (fbc == 0) {
+                                                byteOffset = localBytes.length; // can't compute offset
+                                                break;
+                                            }
+                                            if (sameStructField(structField, fieldDecl)) {
+                                                long v = 0;
+                                                foreach (k; 0..fbc) {
+                                                    if (byteOffset + k < localBytes.length)
+                                                        v = (v << 8) | (localBytes[byteOffset + k] & 0xFF);
+                                                }
+                                                fieldValue = Value(coerceIntegerToType(v, fieldDecl.type));
+                                                found = true;
+                                                break;
+                                            }
+                                            byteOffset += fbc;
+                                        }
+                                        if (!found)
+                                            fieldValue = defaultValue(fieldDecl.type);
+                                        CallArgument tempRefArg;
+                                        tempRefArg.value = fieldValue;
+                                        tempRefArg.isTemporaryRef = true;
+                                        args ~= tempRefArg;
+                                        continue;
+                                    }
+                                }
                     // Whole struct variable passed as ref.
                     if (auto var = arg.isVarExp)
                         if (auto varDecl = var.var.isVarDeclaration)
@@ -7300,6 +7354,30 @@ private struct BodyWalker {
                     interpreter,
                     true,
                 );
+                // After the CommaExp has run, try to update structFields with
+                // the actual field values from the struct constructor/literal.
+                // Data structs (e.g. StructWithNoCereal) may also end up in
+                // locals via the range-bytes side-effect; overwriting the
+                // default-field placeholder with real values lets field-level
+                // ref arguments (e.g. val.nibble1) be resolved correctly.
+                {
+                    auto comma = variable._init.isExpInitializer.exp.isCommaExp;
+                    if (comma !is null) {
+                        Expression rhsExpr = comma.e1;
+                        if (auto construct = rhsExpr.isConstructExp)
+                            rhsExpr = construct.e2;
+                        else if (auto blit = rhsExpr.isBlitExp)
+                            rhsExpr = blit.e2;
+                        else if (auto assign = rhsExpr.isAssignExp)
+                            rhsExpr = assign.e2;
+                        if (rhsExpr.isStructLiteralExp !is null ||
+                            rhsExpr.isCallExp !is null) {
+                            auto sfval = runStructInitializer(rhsExpr, interpreter);
+                            if (sfval.length > 0)
+                                structFields[variable] = sfval;
+                        }
+                    }
+                }
                 return Value(0L);
             }
             if (variable._init !is null &&
