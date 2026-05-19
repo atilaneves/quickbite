@@ -971,6 +971,19 @@ struct BodyLowerer {
                             (identifierName(identifier) in identifierTemporaries) !is null
                         )
                             return lowerExpression(call.e1, lowerer);
+                if (auto variable = call.e1.isVarExp)
+                    if (auto function_ = variable.var.isFuncDeclaration)
+                        if (function_.fbody !is null) {
+                            call.f = function_;
+                            lowerer.ensureFunctionLowered(function_);
+                            const destination = allocateTemporary;
+                            instructions ~= Instruction(Call(
+                                destination,
+                                lowerer.functionName(function_),
+                                lowerCallArguments(call, lowerer),
+                            ));
+                            return destination;
+                        }
 
                 uint builtinResult;
                 if (tryLowerUnresolvedBuiltinCall(call, lowerer, builtinResult))
@@ -1210,7 +1223,11 @@ struct BodyLowerer {
             return lowerArrayConcatenation(concatenate, lowerer);
 
         if (auto add = expression.isAddExp)
-            return lowerBinaryExpression(add, Operation.add, lowerer);
+            return lowerBinaryExpression(
+                add,
+                typeIsFloating(add.type) ? Operation.addDouble : Operation.add,
+                lowerer,
+            );
 
         if (auto subtract = expression.isMinExp)
             return lowerBinaryExpression(subtract, Operation.subtract, lowerer);
@@ -2410,28 +2427,8 @@ struct BodyLowerer {
             return true;
         }
 
-        if (name == "isNaN" || name == "isInfinity" || name == "signbit") {
-            enforceCallArgumentCount(call, 1);
-            lowerExpression(callArguments(call)[0], lowerer);
-            result = allocateTemporary;
-            instructions ~= Instruction(ConstInt(result, 0));
+        if (tryLowerUnresolvedMathIntrinsicCall(call, name, lowerer, result))
             return true;
-        }
-
-        if (name == "fabs" || name == "sqrt") {
-            enforceCallArgumentCount(call, 1);
-            result = lowerExpression(callArguments(call)[0], lowerer);
-            return true;
-        }
-
-        if (name == "pow") {
-            enforceCallArgumentCount(call, 2);
-            if (tryLowerLiteralPow(call, result))
-                return true;
-            result = lowerExpression(callArguments(call)[0], lowerer);
-            lowerExpression(callArguments(call)[1], lowerer);
-            return true;
-        }
 
         if (name == "bsr") {
             enforceCallArgumentCount(call, 1);
@@ -2496,6 +2493,62 @@ struct BodyLowerer {
         enforceCallArgumentCount(call, 1);
         result = lowerTruthValue(lowerExpression(callArguments(call)[0], lowerer));
         instructions ~= Instruction(Assert_(result, "enforce"));
+        return true;
+    }
+
+    bool tryLowerUnresolvedMathIntrinsicCall(
+        imported!"dmd.expression".CallExp call,
+        in string name,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: UnaryOperation;
+
+        UnaryOperation operation;
+        if (tryUnresolvedMathUnaryOperation(name, operation))
+            return lowerMathUnaryIntrinsicCall(call, operation, lowerer, result);
+
+        if (name != "pow")
+            return false;
+
+        return lowerMathPowCall(call, lowerer, result);
+    }
+
+    bool lowerMathUnaryIntrinsicCall(
+        imported!"dmd.expression".CallExp call,
+        in imported!"quickbite.ir.instruction".UnaryOperation operation,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, UnaryOp;
+
+        enforceCallArgumentCount(call, 1);
+        const value = lowerExpression(callArguments(call)[0], lowerer);
+        result = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(result, value, operation));
+        return true;
+    }
+
+    bool lowerMathPowCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Instruction, Operation;
+
+        enforceCallArgumentCount(call, 2);
+        if (tryLowerLiteralPow(call, result))
+            return true;
+
+        const base = lowerExpression(callArguments(call)[0], lowerer);
+        const exponent = lowerExpression(callArguments(call)[1], lowerer);
+        result = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            result,
+            base,
+            exponent,
+            Operation.powDouble,
+        ));
         return true;
     }
 
@@ -2859,20 +2912,8 @@ struct BodyLowerer {
             return true;
         }
 
-        if (functionIdentifier(call.f) == "fabs") {
-            enforceCallArgumentCount(call, 1);
-            result = lowerExpression(callArguments(call)[0], lowerer);
+        if (tryLowerRuntimeMathIntrinsicCall(call, lowerer, result))
             return true;
-        }
-
-        if (functionIdentifier(call.f) == "pow") {
-            enforceCallArgumentCount(call, 2);
-            if (tryLowerLiteralPow(call, result))
-                return true;
-            result = lowerExpression(callArguments(call)[0], lowerer);
-            lowerExpression(callArguments(call)[1], lowerer);
-            return true;
-        }
 
         if (lowerer.functionName(call.f) == "gc_qalloc") {
             if (call.arguments !is null)
@@ -3039,6 +3080,41 @@ struct BodyLowerer {
         }
 
         return false;
+    }
+
+    bool tryLowerRuntimeMathIntrinsicCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+        ref uint result,
+    ) @safe {
+        import quickbite.ir.instruction: UnaryOperation;
+        import std.string: startsWith;
+
+        const identifier = functionIdentifier(call.f);
+        const loweredName = lowerer.functionName(call.f);
+
+        UnaryOperation operation;
+        if (
+            tryRuntimeMathUnaryOperation(
+                identifier,
+                loweredName,
+                call.f.fbody is null,
+                operation,
+            )
+        )
+            return lowerMathUnaryIntrinsicCall(call, operation, lowerer, result);
+
+        if (identifier != "pow")
+            return false;
+
+        if (
+            call.f.fbody !is null &&
+            !loweredName.startsWith("_D3std4math") &&
+            !loweredName.startsWith("_D4core4math")
+        )
+            return false;
+
+        return lowerMathPowCall(call, lowerer, result);
     }
 
     bool tryLowerAssocArrayBuiltinCall(
@@ -7075,6 +7151,75 @@ private string functionIdentifier(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
     return function_.ident.toString.idup;
+}
+
+private bool tryUnresolvedMathUnaryOperation(
+    in string name,
+    out imported!"quickbite.ir.instruction".UnaryOperation operation,
+) @safe pure nothrow {
+    import quickbite.ir.instruction: UnaryOperation;
+
+    if (name == "fabs") {
+        operation = UnaryOperation.fabsDouble;
+        return true;
+    }
+
+    if (name == "isInfinity") {
+        operation = UnaryOperation.isInfinityDouble;
+        return true;
+    }
+
+    if (name == "isNaN") {
+        operation = UnaryOperation.isNaNDouble;
+        return true;
+    }
+
+    if (name == "signbit") {
+        operation = UnaryOperation.signbitDouble;
+        return true;
+    }
+
+    if (name == "sqrt" || name == "core.math.sqrt") {
+        operation = UnaryOperation.sqrtDouble;
+        return true;
+    }
+
+    return false;
+}
+
+private bool tryRuntimeMathUnaryOperation(
+    in string identifier,
+    in string loweredName,
+    in bool hasNoBody,
+    out imported!"quickbite.ir.instruction".UnaryOperation operation,
+) @safe pure nothrow {
+    import quickbite.ir.instruction: UnaryOperation;
+    import std.string: startsWith;
+
+    if (!tryUnresolvedMathUnaryOperation(identifier, operation))
+        return false;
+
+    if (hasNoBody)
+        return true;
+
+    with (UnaryOperation)
+    final switch (operation) {
+        case fabsDouble:
+            return loweredName.startsWith("_D3std4math9algebraic4fabs");
+        case isInfinityDouble:
+            return loweredName.startsWith("_D3std4math6traits__T10isInfinity");
+        case isNaNDouble:
+            return loweredName.startsWith("_D3std4math6traits__T5isNaN");
+        case signbitDouble:
+            return loweredName.startsWith("_D3std4math6traits__T7signbit");
+        case sqrtDouble:
+            return loweredName.startsWith("_D4core4math4sqrt");
+        case negate:
+        case not:
+        case complement:
+        case bitScanReverse:
+            return false;
+    }
 }
 
 private void enforceCallArgumentCount(

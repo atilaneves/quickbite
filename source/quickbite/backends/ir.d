@@ -1391,6 +1391,18 @@ private void executeBinaryInstruction(
         case add:
             result = leftValue + rightValue;
             break;
+        case addDouble:
+            result = doubleBits(
+                doubleFromBits(leftValue) + doubleFromBits(rightValue),
+            );
+            break;
+        case powDouble:
+            import std.math: pow;
+
+            result = doubleBits(
+                pow(doubleFromBits(leftValue), doubleFromBits(rightValue)),
+            );
+            break;
         case subtract:
             result = leftValue - rightValue;
             break;
@@ -1490,23 +1502,56 @@ private void executeUnaryInstruction(
     import quickbite.ir.instruction: UnaryOperation;
 
     const sourceValue = readTemporaryValue(temporaries, source);
+    long result;
 
     with (UnaryOperation)
     final switch (operation) {
         case negate:
-            writeTemporaryValue(temporaries, destination) = -sourceValue;
+            result = -sourceValue;
             break;
         case not:
-            writeTemporaryValue(temporaries, destination) = !sourceValue;
+            result = !sourceValue;
             break;
         case complement:
-            writeTemporaryValue(temporaries, destination) = ~sourceValue;
+            result = ~sourceValue;
             break;
         case bitScanReverse:
-            writeTemporaryValue(temporaries, destination) =
-                bitScanReverseValue(sourceValue);
+            result = bitScanReverseValue(sourceValue);
+            break;
+        case fabsDouble:
+            import std.math: fabs;
+
+            result = doubleBits(fabs(doubleFromBits(sourceValue)));
+            break;
+        case isInfinityDouble:
+            import std.math: isInfinity;
+
+            result = isInfinity(doubleFromBits(sourceValue)) ? 1 : 0;
+            break;
+        case isNaNDouble:
+            import std.math: isNaN;
+
+            result = isNaN(doubleFromBits(sourceValue)) ? 1 : 0;
+            break;
+        case signbitDouble:
+            result = (cast(ulong) sourceValue & (1UL << 63)) != 0;
+            break;
+        case sqrtDouble:
+            import std.math: sqrt;
+
+            result = doubleBits(sqrt(doubleFromBits(sourceValue)));
             break;
     }
+
+    writeTemporaryValue(temporaries, destination) = result;
+}
+
+private long doubleBits(in double value) @trusted pure nothrow {
+    return cast(long) *cast(ulong*) &value;
+}
+
+private double doubleFromBits(in long value) @trusted pure nothrow {
+    return *cast(double*) &value;
 }
 
 private long bitScanReverseValue(in long sourceValue) @safe pure nothrow @nogc {

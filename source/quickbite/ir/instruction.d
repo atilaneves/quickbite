@@ -31,6 +31,8 @@ public struct BinaryOp {
 
 public enum Operation {
     add,
+    addDouble,
+    powDouble,
     subtract,
     multiply,
     divide,
@@ -63,6 +65,11 @@ public enum UnaryOperation {
     not,
     complement,
     bitScanReverse,
+    fabsDouble,
+    isInfinityDouble,
+    isNaNDouble,
+    signbitDouble,
+    sqrtDouble,
 }
 
 public struct Select {
