@@ -162,6 +162,7 @@ struct BodyLowerer {
     private bool[string] thisFieldNames;
     private VarDeclaration[string] thisFields;
     private bool[string] activeEqualityTypes;
+    private imported!"dmd.statement".Statement activeFinallyBody;
     public imported!"quickbite.ir.instruction".Instruction[] instructions;
     public bool[] refParameters;
     public bool hasReturn;
@@ -238,13 +239,14 @@ struct BodyLowerer {
         }
 
         if (auto tryFinally = statement.isTryFinallyStatement) {
-            if (auto returnStatement = directReturnStatement(tryFinally._body)) {
-                lowerStatement(tryFinally.finalbody, lowerer);
-                lowerReturnStatement(returnStatement, lowerer);
-                hasReturn = true;
-                return;
+            {
+                // Restored to a mutable DMD AST field, so const cannot work.
+                auto previousFinallyBody = activeFinallyBody;
+                activeFinallyBody = tryFinally.finalbody;
+                scope (exit)
+                    activeFinallyBody = previousFinallyBody;
+                lowerStatement(tryFinally._body, lowerer);
             }
-            lowerStatement(tryFinally._body, lowerer);
             if (!hasReturn)
                 lowerStatement(tryFinally.finalbody, lowerer);
             return;
@@ -420,27 +422,6 @@ struct BodyLowerer {
             arrayValueNames = savedArrayValueNames;
             return false;
         }
-    }
-
-    private imported!"dmd.statement".ReturnStatement directReturnStatement(
-        imported!"dmd.statement".Statement statement,
-    ) @safe {
-        if (statement is null)
-            return null;
-
-        if (auto returnStatement = statement.isReturnStatement)
-            return returnStatement;
-
-        if (auto scope_ = statement.isScopeStatement)
-            return directReturnStatement(scope_.statement);
-
-        if (auto compound = statement.isCompoundStatement) {
-            if (compound.statements is null || compoundStatements(compound).length != 1)
-                return null;
-            return directReturnStatement(compoundStatements(compound)[0]);
-        }
-
-        return null;
     }
 
     void lowerForStatement(
@@ -5910,13 +5891,53 @@ struct BodyLowerer {
         imported!"dmd.statement".ReturnStatement statement,
         ref Lowerer lowerer,
     ) @safe {
-        import quickbite.ir.instruction: CastInt, Instruction, ReturnValue,
-            ReturnVoid;
+        import quickbite.ir.instruction: Instruction, ReturnValue, ReturnVoid;
+
+        if (activeFinallyBody !is null) {
+            lowerReturnThroughFinally(statement, activeFinallyBody, lowerer);
+            return;
+        }
 
         if (statement.exp is null) {
             instructions ~= Instruction(ReturnVoid.init);
             return;
         }
+
+        instructions ~= Instruction(ReturnValue(
+            lowerReturnValue(statement, lowerer),
+        ));
+    }
+
+    void lowerReturnThroughFinally(
+        imported!"dmd.statement".ReturnStatement statement,
+        imported!"dmd.statement".Statement finalbody,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, ReturnValue, ReturnVoid;
+
+        // Restored to a mutable DMD AST field, so const cannot work.
+        auto previousFinallyBody = activeFinallyBody;
+        activeFinallyBody = null;
+        scope (exit)
+            activeFinallyBody = previousFinallyBody;
+
+        if (statement.exp is null) {
+            lowerStatement(finalbody, lowerer);
+            instructions ~= Instruction(ReturnVoid.init);
+            return;
+        }
+
+        const value = lowerReturnValue(statement, lowerer);
+        lowerStatement(finalbody, lowerer);
+        instructions ~= Instruction(ReturnValue(value));
+    }
+
+    uint lowerReturnValue(
+        imported!"dmd.statement".ReturnStatement statement,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: CastInt, Instruction;
+
         const value = lowerExpression(statement.exp, lowerer);
         if (typeIsInteger(currentReturnType)) {
             const castValue = allocateTemporary;
@@ -5925,11 +5946,10 @@ struct BodyLowerer {
                 value,
                 integerType(currentReturnType),
             ));
-            instructions ~= Instruction(ReturnValue(castValue));
-            return;
+            return castValue;
         }
 
-        instructions ~= Instruction(ReturnValue(value));
+        return value;
     }
 
     uint lowerParameters(imported!"dmd.func".FuncDeclaration function_) @safe {

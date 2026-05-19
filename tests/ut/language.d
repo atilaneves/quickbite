@@ -296,6 +296,57 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }
     }
 
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".finallyReturnCapturesValueBeforeFinally")
+        unittest {
+            runTests(q{
+                int value;
+
+                int readThenMutate() {
+                    try {
+                        return value;
+                    } finally {
+                        value = 2;
+                    }
+                }
+
+                unittest {
+                    value = 1;
+                    assert(readThenMutate == 1);
+                    assert(value == 2);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".finallyBranchReturnsCaptureValueBeforeFinally")
+        unittest {
+            runTests(q{
+                int value;
+
+                int readBranchThenMutate(bool chooseFirst) {
+                    try {
+                        if (chooseFirst)
+                            return value + 10;
+                        else
+                            return value + 20;
+                    } finally {
+                        value = 2;
+                    }
+                }
+
+                unittest {
+                    value = 1;
+                    assert(readBranchThenMutate(true) == 11);
+                    assert(value == 2);
+
+                    value = 3;
+                    assert(readBranchThenMutate(false) == 23);
+                    assert(value == 2);
+                }
+            }, backend);
+        }
+    }
+
     @(backend.text ~ ".catchHandlerRuns")
     unittest {
         runTests(q{
