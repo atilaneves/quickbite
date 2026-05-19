@@ -26,6 +26,16 @@ private struct AssocArraySlotRef {
     private size_t index;
 }
 
+private enum IntBinaryOp : char {
+    add    = '+',
+    sub    = '-',
+    mul    = '*',
+    shl    = '<',
+    bitAnd = '&',
+    bitXor = '^',
+    bitOr  = '|',
+}
+
 // SumType.opAssign is @system in this version of std.sumtype, so all code
 // that stores a Value is @system by transitivity.
 alias Value = imported!"std.sumtype".SumType!(
@@ -1399,12 +1409,18 @@ private struct BodyWalker {
         ref Interpreter interpreter,
     ) {
         if (auto add = expression.isAddExp)
-            return runIntegerBinaryExpression(add.e1, add.e2, '+', value, interpreter);
+            return runIntegerBinaryExpression(
+                add.e1,
+                add.e2,
+                IntBinaryOp.add,
+                value,
+                interpreter,
+            );
         if (auto subtract = expression.isMinExp)
             return runIntegerBinaryExpression(
                 subtract.e1,
                 subtract.e2,
-                '-',
+                IntBinaryOp.sub,
                 value,
                 interpreter,
             );
@@ -1412,7 +1428,7 @@ private struct BodyWalker {
             return runIntegerBinaryExpression(
                 multiply.e1,
                 multiply.e2,
-                '*',
+                IntBinaryOp.mul,
                 value,
                 interpreter,
             );
@@ -1428,7 +1444,7 @@ private struct BodyWalker {
             return runIntegerBinaryExpression(
                 leftShift.e1,
                 leftShift.e2,
-                '<',
+                IntBinaryOp.shl,
                 value,
                 interpreter,
             );
@@ -1436,7 +1452,7 @@ private struct BodyWalker {
             return runIntegerBinaryExpression(
                 bitAnd.e1,
                 bitAnd.e2,
-                '&',
+                IntBinaryOp.bitAnd,
                 value,
                 interpreter,
             );
@@ -1444,7 +1460,7 @@ private struct BodyWalker {
             return runIntegerBinaryExpression(
                 bitXor.e1,
                 bitXor.e2,
-                '^',
+                IntBinaryOp.bitXor,
                 value,
                 interpreter,
             );
@@ -1452,7 +1468,7 @@ private struct BodyWalker {
             return runIntegerBinaryExpression(
                 bitOr.e1,
                 bitOr.e2,
-                '|',
+                IntBinaryOp.bitOr,
                 value,
                 interpreter,
             );
@@ -1462,7 +1478,7 @@ private struct BodyWalker {
     private bool runIntegerBinaryExpression(
         Expression left,
         Expression right,
-        in char op,
+        in IntBinaryOp op,
         ref Value value,
         ref Interpreter interpreter,
     ) {
@@ -1475,25 +1491,24 @@ private struct BodyWalker {
     private long runIntegerBinaryOperation(
         in long left,
         in long right,
-        in char op,
+        in IntBinaryOp op,
     ) const {
-        switch (op) {
-            case '+':
+        with (IntBinaryOp)
+        final switch (op) {
+            case add:
                 return left + right;
-            case '-':
+            case sub:
                 return left - right;
-            case '*':
+            case mul:
                 return left * right;
-            case '<':
+            case shl:
                 return left << right;
-            case '&':
+            case bitAnd:
                 return left & right;
-            case '^':
+            case bitXor:
                 return left ^ right;
-            case '|':
+            case bitOr:
                 return left | right;
-            default:
-                assert(false);
         }
     }
 
@@ -3733,13 +3748,13 @@ private struct BodyWalker {
     private bool isGroupedCerealArrayElementType(Type type) {
         import dmd.astenums: TY;
 
-        return isStructType(type) ||
-            (type !is null && type.toBasetype.isTypeDArray !is null) ||
+        return type !is null &&
+            (isStructType(type) ||
+            type.toBasetype.isTypeDArray !is null ||
             (decerealisedScalarByteCount(type) != 0 &&
-             type !is null &&
              type.toBasetype.ty != TY.Tchar &&
              type.toBasetype.ty != TY.Twchar &&
-             type.toBasetype.ty != TY.Tdchar);
+             type.toBasetype.ty != TY.Tdchar));
     }
 
     private bool tryGetCerealGrainLengthTypeByteCount(
@@ -4689,7 +4704,9 @@ private struct BodyWalker {
         CallExp call,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "grain")
+        if (call.f is null ||
+            call.f.ident is null ||
+            call.f.ident.toString != "grain")
             return false;
         if (call.arguments is null)
             return false;
@@ -8033,10 +8050,12 @@ private struct BodyWalker {
                         return Value(0L);
                     }
                     resetNestedOutputStorage(varDecl.type, interpreter);
-                    // Capture nested struct fields from source before erasing.
+                    // Only plain struct copies propagate nested field maps;
+                    // fresh literals and decerealise results build their own.
                     Value[VarDeclaration][VarDeclaration] sourceMaps;
                     if (auto sourceOwner = structCopySourceOwner(assign.e2))
-                        sourceMaps = nestedStructFieldMaps(structFields[sourceOwner]);
+                        if (auto sourceFields = sourceOwner in structFields)
+                            sourceMaps = nestedStructFieldMaps(*sourceFields);
                     forgetNestedStructFields(varDecl.type);
                     structFields[varDecl] = runStructInitializer(assign.e2, interpreter);
                     propagateNestedStructFieldMaps(structFields[varDecl], sourceMaps);
@@ -9972,6 +9991,7 @@ private struct BodyWalker {
     ) {
         if (!isOutputRangeStructType(type))
             return false;
+        // Truncated range payloads are a best-effort decode miss, not fatal.
         if (bytes.length < 2)
             return false;
 
