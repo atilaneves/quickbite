@@ -37,8 +37,6 @@ alias Value = imported!"std.sumtype".SumType!(
     AssocArraySlotRef,
 );
 
-private shared uint _treeWalkingModuleCounter;
-
 private struct AssocArray {
     import dmd.declaration: VarDeclaration;
 
@@ -120,11 +118,15 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     import quickbite.executor: TestSummary;
 
     public override void runTests(in string source) {
-        runParsedTests(parseTreeWalkingModule(source));
+        import quickbite.frontend.compiler: parseModule;
+
+        runParsedTests(parseModule(source).module_);
     }
 
-    public void runTests(in string source, in string[] importPaths) {
-        runParsedTests(parseTreeWalkingModule(source, importPaths));
+    public override void runTests(in string source, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseModule;
+
+        runParsedTests(parseModule(source, importPaths).module_);
     }
 
     public override void runParsedTests(
@@ -133,7 +135,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         walkModule(module_);
     }
 
-    public TestSummary runTestSummary(
+    public override TestSummary runTestSummary(
         in string source,
     ) {
         import quickbite.frontend.compiler: parseModule;
@@ -141,137 +143,6 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
         auto parsed = parseModule(source);
         return testSummary(parsed.module_);
-    }
-}
-
-private imported!"dmd.dmodule".Module parseTreeWalkingModule(
-    in string source,
-) {
-    string[] importPaths;
-    return parseTreeWalkingModule(source, importPaths);
-}
-
-private imported!"dmd.dmodule".Module parseTreeWalkingModule(
-    in string source,
-    in string[] importPaths,
-) {
-    import quickbite.frontend.compiler: parseModule;
-
-    try {
-        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
-        auto parsed = parseModule(source, importPaths);
-        return parsed.module_;
-    } catch (Exception) {
-        return parseTreeWalkingModuleWithStaticNestedFunctions(
-            source,
-            importPaths,
-        );
-    }
-}
-
-private imported!"dmd.dmodule".Module parseTreeWalkingModuleWithStaticNestedFunctions(
-    in string source,
-    in string[] importPaths,
-) {
-    import core.atomic: atomicFetchAdd;
-    import dmd.errors: diagnostics;
-    import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
-    import dmd.globals: global;
-    import quickbite.frontend.compiler: withCompilerLock;
-    import std.conv: text;
-
-    imported!"dmd.dmodule".Module module_;
-    withCompilerLock({
-        const originalPathLength = global.path.length;
-        scope(exit) global.path.setDim(originalPathLength);
-        foreach (importPath; importPaths)
-            addImport(importPath);
-
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
-
-        const fileName = text(
-            "tree_walking_snippet_",
-            atomicFetchAdd(_treeWalkingModuleCounter, 1u),
-            ".d",
-        );
-
-        auto parsed = dmdParseModule(fileName, source);
-        if (parsed.diagnostics.hasErrors)
-            throw new Exception(treeWalkingDiagnosticMessage);
-
-        makeNestedFunctionsStatic(parsed.module_);
-
-        parsed.module_.fullSemantic;
-        if (global.errors != 0)
-            throw new Exception(treeWalkingDiagnosticMessage);
-
-        module_ = parsed.module_;
-    });
-
-    return module_;
-}
-
-private string treeWalkingDiagnosticMessage() {
-    import dmd.errors: diagnostics, ErrorKind;
-    import std.algorithm.iteration: filter, map;
-    import std.array: array, join;
-
-    const messages = diagnostics
-        .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
-        .map!(diagnostic => diagnostic.message)
-        .array;
-
-    if (messages.length == 0)
-        return "DMD reported an error without a diagnostic message.";
-
-    return messages.join("\n");
-}
-
-private void makeNestedFunctionsStatic(
-    imported!"dmd.dmodule".Module module_,
-) {
-    import quickbite.dmd_util: foreachUnitTestDeclaration;
-
-    foreachUnitTestDeclaration(module_, (unitTest) {
-        makeNestedFunctionsStatic(unitTest.fbody);
-    });
-}
-
-private void makeNestedFunctionsStatic(
-    imported!"dmd.statement".Statement statement,
-) {
-    import dmd.astenums: STC;
-
-    if (statement is null)
-        return;
-
-    if (auto compound = statement.isCompoundStatement) {
-        if (compound.statements !is null)
-            foreach (child; compoundStatements(compound))
-                makeNestedFunctionsStatic(child);
-        return;
-    }
-
-    if (auto compound = statement.isCompoundDeclarationStatement) {
-        if (compound.statements !is null)
-            foreach (child; compoundStatements(compound))
-                makeNestedFunctionsStatic(child);
-        return;
-    }
-
-    if (auto expression = statement.isExpStatement) {
-        if (expression.exp is null)
-            return;
-        auto declaration = expression.exp.isDeclarationExp;
-        if (declaration is null)
-            return;
-        auto function_ = declaration.declaration.isFuncDeclaration;
-        if (function_ is null)
-            return;
-        function_.storage_class |= STC.static_;
-        return;
     }
 }
 
@@ -1029,136 +900,20 @@ private struct BodyWalker {
         if (auto assign = expression.isBinAssignExp)
             return runBinAssignExpression(assign, interpreter);
 
-        if (auto post = expression.isPostExp) {
-            import dmd.tokens: EXP;
-
-            if (post.op == EXP.plusPlus) {
-                if (auto var = post.e1.isVarExp)
-                    if (auto varDecl = var.var.isVarDeclaration)
-                        if (varDecl in locals) {
-                            const oldVal = locals[varDecl].asLong;
-                            locals[varDecl] = Value(
-                                coerceIntegerToType(oldVal + 1, varDecl.type),
-                            );
-                            return Value(oldVal);
-                        }
-                if (auto dotVar = post.e1.isDotVarExp)
-                    if (auto thisExp = dotVar.e1.isThisExp)
-                        if (auto thisDecl = thisExp.var.isVarDeclaration)
-                            if (auto fields = thisDecl in structFields)
-                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                                    const oldVal = structFieldValue(
-                                        *fields,
-                                        fieldDecl,
-                                        Value(0L),
-                                    ).asLong;
-                                    assignStructField(
-                                        *fields,
-                                        fieldDecl,
-                                        Value(
-                                        coerceIntegerToType(
-                                            oldVal + 1,
-                                            fieldDecl.type,
-                                        ),
-                                        ),
-                                    );
-                                    return Value(oldVal);
-                                }
-            }
-            if (post.op == EXP.minusMinus) {
-                if (auto var = post.e1.isVarExp)
-                    if (auto varDecl = var.var.isVarDeclaration)
-                        if (varDecl in locals) {
-                            const oldVal = locals[varDecl].asLong;
-                            locals[varDecl] = Value(
-                                coerceIntegerToType(oldVal - 1, varDecl.type),
-                            );
-                            return Value(oldVal);
-                        }
-                if (auto dotVar = post.e1.isDotVarExp)
-                    if (auto thisExp = dotVar.e1.isThisExp)
-                        if (auto thisDecl = thisExp.var.isVarDeclaration)
-                            if (auto fields = thisDecl in structFields)
-                                if (auto fieldDecl = dotVar.var.isVarDeclaration) {
-                                    const oldVal = structFieldValue(
-                                        *fields,
-                                        fieldDecl,
-                                        Value(0L),
-                                    ).asLong;
-                                    assignStructField(
-                                        *fields,
-                                        fieldDecl,
-                                        Value(coerceIntegerToType(
-                                            oldVal - 1,
-                                            fieldDecl.type,
-                                        )),
-                                    );
-                                    return Value(oldVal);
-                                }
-            }
+        if (expression.isPostExp) {
+            Value value;
+            if (tryRunPostExpression(expression, value))
+                return value;
             unsupported;
         }
 
-        if (auto add = expression.isAddExp)
-            return Value(
-                runExpression(add.e1, interpreter).asLong +
-                runExpression(add.e2, interpreter).asLong,
-            );
-
-        if (auto subtract = expression.isMinExp)
-            return Value(
-                runExpression(subtract.e1, interpreter).asLong -
-                runExpression(subtract.e2, interpreter).asLong,
-            );
-
-        if (auto multiply = expression.isMulExp)
-            return Value(
-                runExpression(multiply.e1, interpreter).asLong *
-                runExpression(multiply.e2, interpreter).asLong,
-            );
-
-        if (auto rightShift = expression.isShrExp) {
-            try {
-                return Value(
-                    runExpression(rightShift.e1, interpreter).asLong >>
-                    runExpression(rightShift.e2, interpreter).asLong,
-                );
-            } catch (Exception e) {
-                throw new Exception(text(
-                    e.msg,
-                    " while evaluating ",
-                    expressionChars(expression),
-                    " left ",
-                    expressionChars(rightShift.e1),
-                    " right ",
-                    expressionChars(rightShift.e2),
-                ));
-            }
-        }
-
-        if (auto leftShift = expression.isShlExp)
-            return Value(
-                runExpression(leftShift.e1, interpreter).asLong <<
-                runExpression(leftShift.e2, interpreter).asLong,
-            );
-
-        if (auto bitAnd = expression.isAndExp)
-            return Value(
-                runExpression(bitAnd.e1, interpreter).asLong &
-                runExpression(bitAnd.e2, interpreter).asLong,
-            );
-
-        if (auto bitXor = expression.isXorExp)
-            return Value(
-                runExpression(bitXor.e1, interpreter).asLong ^
-                runExpression(bitXor.e2, interpreter).asLong,
-            );
-
-        if (auto bitOr = expression.isOrExp)
-            return Value(
-                runExpression(bitOr.e1, interpreter).asLong |
-                runExpression(bitOr.e2, interpreter).asLong,
-            );
+        Value integerBinaryValue;
+        if (tryRunIntegerBinaryExpression(
+            expression,
+            integerBinaryValue,
+            interpreter,
+        ))
+            return integerBinaryValue;
 
         if (auto complement = expression.isComExp)
             return Value(~runExpression(complement.e1, interpreter).asLong);
@@ -1189,33 +944,14 @@ private struct BodyWalker {
             }
         }
 
-        if (auto cond = expression.isCondExp) {
-            Value value;
-            if (tryRunLoweredAssocArraySlotConditional(cond, value, interpreter))
-                return value;
-            if (tryRunAssocArrayConditionalValue(cond, value, interpreter))
-                return value;
-            return runExpression(
-                cond.econd,
-                interpreter,
-            ).asLong
-                ? runExpression(cond.e1, interpreter)
-                : runExpression(cond.e2, interpreter);
-        }
+        if (expression.isCondExp)
+            return runConditionalExpression(expression, interpreter);
 
-        if (auto divide = expression.isDivExp) {
-            const right = runExpression(divide.e2, interpreter).asLong;
-            if (right == 0)
-                throw new Exception("Unittest assertion failed.");
-            return Value(runExpression(divide.e1, interpreter).asLong / right);
-        }
+        if (expression.isDivExp)
+            return runDivExpression(expression, interpreter);
 
-        if (auto modulo = expression.isModExp) {
-            const right = runExpression(modulo.e2, interpreter).asLong;
-            if (right == 0)
-                throw new Exception("Unittest assertion failed.");
-            return Value(runExpression(modulo.e1, interpreter).asLong % right);
-        }
+        if (expression.isModExp)
+            return runModExpression(expression, interpreter);
 
         if (auto cast_ = expression.isCastExp)
             return coerceValueToType(runExpression(cast_.e1, interpreter), cast_.to);
@@ -1577,6 +1313,254 @@ private struct BodyWalker {
 
         unsupported;
         assert(false);
+    }
+
+    private bool tryRunPostExpression(
+        Expression expression,
+        ref Value value,
+    ) {
+        import dmd.tokens: EXP;
+
+        auto post = expression.isPostExp;
+        if (post.op == EXP.plusPlus)
+            return tryRunPostExpression(post.e1, 1L, value);
+        if (post.op == EXP.minusMinus)
+            return tryRunPostExpression(post.e1, -1L, value);
+        return false;
+    }
+
+    private bool tryRunPostExpression(
+        Expression target,
+        in long delta,
+        ref Value value,
+    ) {
+        if (tryRunLocalPostExpression(target, delta, value))
+            return true;
+        return tryRunThisFieldPostExpression(target, delta, value);
+    }
+
+    private bool tryRunLocalPostExpression(
+        Expression target,
+        in long delta,
+        ref Value value,
+    ) {
+        auto var = target.isVarExp;
+        if (var is null)
+            return false;
+
+        auto varDecl = var.var.isVarDeclaration;
+        if (varDecl is null || varDecl !in locals)
+            return false;
+
+        const oldVal = locals[varDecl].asLong;
+        locals[varDecl] = Value(coerceIntegerToType(oldVal + delta, varDecl.type));
+        value = Value(oldVal);
+        return true;
+    }
+
+    private bool tryRunThisFieldPostExpression(
+        Expression target,
+        in long delta,
+        ref Value value,
+    ) {
+        auto dotVar = target.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        auto thisExp = dotVar.e1.isThisExp;
+        if (thisExp is null)
+            return false;
+
+        auto thisDecl = thisExp.var.isVarDeclaration;
+        if (thisDecl is null)
+            return false;
+
+        auto fields = thisDecl in structFields;
+        if (fields is null)
+            return false;
+
+        auto fieldDecl = dotVar.var.isVarDeclaration;
+        if (fieldDecl is null)
+            return false;
+
+        const oldVal = structFieldValue(*fields, fieldDecl, Value(0L)).asLong;
+        assignStructField(
+            *fields,
+            fieldDecl,
+            Value(coerceIntegerToType(oldVal + delta, fieldDecl.type)),
+        );
+        value = Value(oldVal);
+        return true;
+    }
+
+    private bool tryRunIntegerBinaryExpression(
+        Expression expression,
+        ref Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (auto add = expression.isAddExp)
+            return runIntegerBinaryExpression(add.e1, add.e2, '+', value, interpreter);
+        if (auto subtract = expression.isMinExp)
+            return runIntegerBinaryExpression(
+                subtract.e1,
+                subtract.e2,
+                '-',
+                value,
+                interpreter,
+            );
+        if (auto multiply = expression.isMulExp)
+            return runIntegerBinaryExpression(
+                multiply.e1,
+                multiply.e2,
+                '*',
+                value,
+                interpreter,
+            );
+        if (auto rightShift = expression.isShrExp)
+            return runRightShiftExpression(
+                expression,
+                rightShift.e1,
+                rightShift.e2,
+                value,
+                interpreter,
+            );
+        if (auto leftShift = expression.isShlExp)
+            return runIntegerBinaryExpression(
+                leftShift.e1,
+                leftShift.e2,
+                '<',
+                value,
+                interpreter,
+            );
+        if (auto bitAnd = expression.isAndExp)
+            return runIntegerBinaryExpression(
+                bitAnd.e1,
+                bitAnd.e2,
+                '&',
+                value,
+                interpreter,
+            );
+        if (auto bitXor = expression.isXorExp)
+            return runIntegerBinaryExpression(
+                bitXor.e1,
+                bitXor.e2,
+                '^',
+                value,
+                interpreter,
+            );
+        if (auto bitOr = expression.isOrExp)
+            return runIntegerBinaryExpression(
+                bitOr.e1,
+                bitOr.e2,
+                '|',
+                value,
+                interpreter,
+            );
+        return false;
+    }
+
+    private bool runIntegerBinaryExpression(
+        Expression left,
+        Expression right,
+        in char op,
+        ref Value value,
+        ref Interpreter interpreter,
+    ) {
+        const leftValue = runExpression(left, interpreter).asLong;
+        const rightValue = runExpression(right, interpreter).asLong;
+        value = Value(runIntegerBinaryOperation(leftValue, rightValue, op));
+        return true;
+    }
+
+    private long runIntegerBinaryOperation(
+        in long left,
+        in long right,
+        in char op,
+    ) const {
+        switch (op) {
+            case '+':
+                return left + right;
+            case '-':
+                return left - right;
+            case '*':
+                return left * right;
+            case '<':
+                return left << right;
+            case '&':
+                return left & right;
+            case '^':
+                return left ^ right;
+            case '|':
+                return left | right;
+            default:
+                assert(false);
+        }
+    }
+
+    private bool runRightShiftExpression(
+        Expression expression,
+        Expression left,
+        Expression right,
+        ref Value value,
+        ref Interpreter interpreter,
+    ) {
+        import std.conv: text;
+
+        try {
+            value = Value(
+                runExpression(left, interpreter).asLong >>
+                runExpression(right, interpreter).asLong,
+            );
+            return true;
+        } catch (Exception e) {
+            throw new Exception(text(
+                e.msg,
+                " while evaluating ",
+                expressionChars(expression),
+                " left ",
+                expressionChars(left),
+                " right ",
+                expressionChars(right),
+            ));
+        }
+    }
+
+    private Value runConditionalExpression(
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        auto cond = expression.isCondExp;
+
+        Value value;
+        if (tryRunLoweredAssocArraySlotConditional(cond, value, interpreter))
+            return value;
+        if (tryRunAssocArrayConditionalValue(cond, value, interpreter))
+            return value;
+        if (runExpression(cond.econd, interpreter).asLong)
+            return runExpression(cond.e1, interpreter);
+        return runExpression(cond.e2, interpreter);
+    }
+
+    private Value runDivExpression(
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        auto divide = expression.isDivExp;
+        const right = runExpression(divide.e2, interpreter).asLong;
+        if (right == 0)
+            throw new Exception("Unittest assertion failed.");
+        return Value(runExpression(divide.e1, interpreter).asLong / right);
+    }
+
+    private Value runModExpression(
+        Expression expression,
+        ref Interpreter interpreter,
+    ) {
+        auto modulo = expression.isModExp;
+        const right = runExpression(modulo.e2, interpreter).asLong;
+        if (right == 0)
+            throw new Exception("Unittest assertion failed.");
+        return Value(runExpression(modulo.e1, interpreter).asLong % right);
     }
 
     private Value runDotVarExpression(

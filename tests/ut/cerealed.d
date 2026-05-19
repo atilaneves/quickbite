@@ -30,75 +30,20 @@ private immutable string[] testFileNames = [
 ];
 
 static foreach (backend; EnumMembers!ExecutorBackend) {
-    // dmdCtfe cannot run real-world tests that use GC, exceptions, and
-    // dynamic dispatch at runtime; exclude it from the cerealed matrix.
-    static if (backend != ExecutorBackend.dmdCtfe) {
+    static if (backend == ExecutorBackend.dmdCtfe) {
+        @("dmdCtfe.cerealed.compile_time.d")
+        unittest {
+            runCerealedTest!(backend, "compile_time.d");
+        }
+    } else {
         static foreach (fileName; testFileNames) {
-            static if (shouldFailCerealedTest!(backend, fileName)) {
-                @(backend.text ~ ".cerealed." ~ fileName, ShouldFail)
-                unittest {
-                    runCerealedTest!(backend, fileName);
-                }
-            } else {
-                @(backend.text ~ ".cerealed." ~ fileName)
-                unittest {
-                    runCerealedTest!(backend, fileName);
-                }
+            @(backend.text ~ ".cerealed." ~ fileName)
+            unittest {
+                runCerealedTest!(backend, fileName);
             }
         }
     }
 }
-
-private enum bool shouldFailCerealedTest(
-    ExecutorBackend backend,
-    string fileName,
-) = fileName != "compile_time.d" &&
-    (
-        backend != ExecutorBackend.treeWalking ||
-        (
-            fileName != "cerealiser_impl.d" &&
-            fileName != "bugs.d" &&
-            fileName != "classes.d" &&
-            fileName != "decode.d" &&
-            fileName != "encode.d" &&
-            fileName != "encode_decode.d" &&
-            fileName != "enums.d" &&
-            fileName != "example.d" &&
-            fileName != "multidimensional_array.d" &&
-            fileName != "nested.d" &&
-            fileName != "pointers.d" &&
-            fileName != "property.d" &&
-            fileName != "protocol_unit.d" &&
-            fileName != "range.d" &&
-            fileName != "reset.d" &&
-            fileName != "static_array.d" &&
-            fileName != "structs.d" &&
-            fileName != "utils.d"
-        )
-    ) &&
-    (
-        backend != ExecutorBackend.ir ||
-        (
-            fileName != "cerealiser_impl.d" &&
-            fileName != "bugs.d" &&
-            fileName != "classes.d" &&
-            fileName != "decode.d" &&
-            fileName != "encode.d" &&
-            fileName != "encode_decode.d" &&
-            fileName != "enums.d" &&
-            fileName != "example.d" &&
-            fileName != "multidimensional_array.d" &&
-            fileName != "nested.d" &&
-            fileName != "pointers.d" &&
-            fileName != "property.d" &&
-            fileName != "protocol_unit.d" &&
-            fileName != "range.d" &&
-            fileName != "reset.d" &&
-            fileName != "static_array.d" &&
-            fileName != "structs.d" &&
-            fileName != "utils.d"
-        )
-    );
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {
     import ut.dub_paths: dubImportPaths, cerealTestsDir;

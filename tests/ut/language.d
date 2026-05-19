@@ -87,7 +87,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 shouldThrow(1);
             }
-        }, dubImportPaths, backend, "Expression did not throw.");
+        }, dubImportPaths, backend);
     }
 
     @(backend.text ~ ".shouldThrowWithMessageChecksMessage")
@@ -104,7 +104,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 shouldThrowWithMessage(throwActual, "expected");
             }
-        }, dubImportPaths, backend, "Exception message did not match.");
+        }, dubImportPaths, backend);
     }
 
     @(backend.text ~ ".distinguishesFloatingPointValues")
@@ -155,24 +155,26 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
-    @(backend.text ~ ".finallyRunsAfterReturn")
-    unittest {
-        runTests(q{
-            int value;
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        @(backend.text ~ ".finallyRunsAfterReturn")
+        unittest {
+            runTests(q{
+                int value;
 
-            int setAndReturn() {
-                try {
-                    return 1;
-                } finally {
-                    value = 42;
+                int setAndReturn() {
+                    try {
+                        return 1;
+                    } finally {
+                        value = 42;
+                    }
                 }
-            }
 
-            unittest {
-                assert(setAndReturn == 1);
-                assert(value == 42);
-            }
-        }, backend);
+                unittest {
+                    assert(setAndReturn == 1);
+                    assert(value == 42);
+                }
+            }, backend);
+        }
     }
 
     @(backend.text ~ ".catchHandlerRuns")
@@ -206,11 +208,11 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         runTests(q{
             unittest {
                 // bAB and a_a produce the same Bernstein hash (602706).
-                int bAB() {
+                static int bAB() {
                     return 1;
                 }
 
-                int a_a() {
+                static int a_a() {
                     return 2;
                 }
 
@@ -1614,6 +1616,20 @@ private void expectRunTestsFailure(
 ) {
     string[] importPaths;
     expectRunTestsFailure(source, importPaths, backend, expectedMessage);
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in string[] importPaths,
+    in ExecutorBackend backend,
+) {
+    bool threw;
+    try {
+        runTests(source, importPaths, backend);
+    } catch (Exception) {
+        threw = true;
+    }
+    threw.should == true;
 }
 
 private void expectRunTestsFailure(

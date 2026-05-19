@@ -4,14 +4,18 @@ private:
 
 public final class DmdCtfe : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
-        runSourceTests(this, source, []);
+        import quickbite.frontend.compiler: parseModule;
+
+        runParsedTests(parseModule(source).module_);
     }
 
-    public void runTests(in string source, in string[] importPaths) {
-        runSourceTests(this, source, importPaths);
+    public override void runTests(in string source, in string[] importPaths) {
+        import quickbite.frontend.compiler: parseModule;
+
+        runParsedTests(parseModule(source, importPaths).module_);
     }
 
-    public imported!"quickbite.executor".TestSummary runTestSummary(
+    public override imported!"quickbite.executor".TestSummary runTestSummary(
         in string source,
     ) {
         import quickbite.frontend.compiler: parseModule;
@@ -26,85 +30,6 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
             runCtfe(unitTest);
         });
     }
-}
-
-private void runSourceTests(
-    DmdCtfe executor,
-    in string source,
-    in string[] importPaths,
-) {
-    try
-        executor.runParsedTests(parseCtfeModule(source, importPaths));
-    catch (Exception exception) {
-        if (const message = expectedSourceFailureMessage(source, exception.msg))
-            throw new Exception(message);
-        if (expectedSourcePasses(source, exception.msg))
-            return;
-        throw exception;
-    }
-}
-
-private imported!"dmd.dmodule".Module parseCtfeModule(
-    in string source,
-    in string[] importPaths,
-) {
-    import quickbite.frontend.compiler: parseModule;
-
-    try
-        return parseModule(source, importPaths).module_;
-    catch (Exception exception) {
-        if (exception.msg != "DMD reported an error without a diagnostic message.")
-            throw exception;
-        if (!hasFunctionPointerCollisionFixture(source))
-            throw exception;
-
-        import std.array: replace;
-
-        const adjustedSource = source
-            .replace("int bAB()", "int unusedNoCollision()")
-            .replace(
-                "int function() fp = &a_a;\n                assert(fp() == 2);",
-                "assert(a_a() == 2);",
-            );
-
-        return parseModule(adjustedSource, importPaths).module_;
-    }
-}
-
-private bool hasFunctionPointerCollisionFixture(in string source)
-    @safe pure nothrow
-{
-    import std.algorithm.searching: canFind;
-
-    return source.canFind("int bAB()") &&
-        source.canFind("int a_a()") &&
-        source.canFind("int function() fp = &a_a;");
-}
-
-private string expectedSourceFailureMessage(
-    in string source,
-    in string failure,
-) @safe pure nothrow {
-    import std.algorithm.searching: canFind;
-
-    if (failure != "Unittest assertion failed.")
-        return null;
-    if (source.canFind("shouldThrow(1);"))
-        return "Expression did not throw.";
-    if (source.canFind("shouldThrowWithMessage("))
-        return "Exception message did not match.";
-    return null;
-}
-
-private bool expectedSourcePasses(in string source, in string failure)
-    @safe pure nothrow
-{
-    import std.algorithm.searching: canFind;
-
-    return failure == "Unittest assertion failed." &&
-        source.canFind("finally") &&
-        source.canFind("return 1;") &&
-        source.canFind("value = 42;");
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(

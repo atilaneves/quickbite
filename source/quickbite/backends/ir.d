@@ -18,28 +18,28 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     import dmd.dmodule: Module;
     import quickbite.executor: TestSummary;
 
-    public void runTests(in string source) {
+    public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        auto parsed = parseModule(irCompatibleSource(source));
+        auto parsed = parseModule(source);
         runParsedTests(parsed.module_);
     }
 
-    public void runTests(in string source, in string[] importPaths) {
+    public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        auto parsed = parseModule(irCompatibleSource(source), importPaths);
+        auto parsed = parseModule(source, importPaths);
         runParsedTests(parsed.module_);
     }
 
-    public void runParsedTests(Module module_) {
+    public override void runParsedTests(Module module_) {
         import quickbite.frontend.compiler: lowerModule;
 
         const loweredModule = lowerModule(module_);
         executeUnitTests(loweredModule);
     }
 
-    public TestSummary runTestSummary(
+    public override TestSummary runTestSummary(
         in string source,
     ) {
         import quickbite.frontend.compiler: lowerModule, parseModule;
@@ -70,18 +70,6 @@ void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe p
             ));
         }
     }
-}
-
-private string irCompatibleSource(in string source) @safe pure {
-    import std.algorithm.searching: canFind;
-    import std.array: replace;
-
-    if (!source.canFind("int function() fp = &a_a;"))
-        return source.idup;
-
-    return source
-        .replace("int bAB() {", "static int bAB() {")
-        .replace("int a_a() {", "static int a_a() {");
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(
@@ -145,14 +133,11 @@ long executeFunction(
             } catch (UserThrownException exception) {
                 throw exception;
             } catch (Exception exception) {
-                import std.conv: text;
-
-                throw new Exception(text(
-                    "function ",
+                throw internalExecutionFailure(
+                    "function",
                     calleeName,
-                    " failed: ",
-                    exception.msg,
-                ));
+                    exception,
+                );
             }
         }
     }
@@ -228,6 +213,9 @@ struct ExecutionResult {
 }
 
 struct ExecutionContext {
+    // IR temporaries store array and struct references as indexes into these
+    // tables. Index 0 is reserved for null/invalid references; allocated
+    // values are stored at non-zero indexes.
     long[][] arrays;
     long[string][] structs;
     AssocArray[] assocArrays;
@@ -268,9 +256,7 @@ ExecutionResult executeInstructions(
 ) @safe pure {
     long[] temporaries = new long[numTemporaries];
     writeArguments(temporaries, numParameters, arguments);
-    // Array handle 0 is the reserved null/invalid handle; real arrays follow.
     reserveNullArrayHandle(context.arrays);
-    // Struct handle 0 mirrors the array null-handle convention.
     reserveNullStructHandle(context.structs);
 
     ExecutionResult result;
@@ -291,14 +277,11 @@ ExecutionResult executeInstructions(
         } catch (UserThrownException exception) {
             throw exception;
         } catch (Exception exception) {
-            import std.conv: text;
-
-            throw new Exception(text(
-                "instruction ",
+            throw internalExecutionFailure(
+                "instruction",
                 instructionPointer,
-                " failed: ",
-                exception.msg,
-            ));
+                exception,
+            );
         }
         if (effect.hasReturn) {
             result.hasReturn = true;
@@ -310,6 +293,28 @@ ExecutionResult executeInstructions(
     }
 
     return result;
+}
+
+private Exception internalExecutionFailure(
+    in string scope_,
+    in string name,
+    in Exception exception,
+) @safe pure {
+    import std.conv: text;
+
+    // Internal backend failures need IR execution context for debugging; user
+    // exceptions and unittest assertion failures are rethrown before this.
+    return new Exception(text(scope_, " ", name, " failed: ", exception.msg));
+}
+
+private Exception internalExecutionFailure(
+    in string scope_,
+    in uint index,
+    in Exception exception,
+) @safe pure {
+    import std.conv: text;
+
+    return new Exception(text(scope_, " ", index, " failed: ", exception.msg));
 }
 
 void reserveNullStructHandle(ref long[string][] structs) @safe pure {
@@ -341,323 +346,230 @@ InstructionEffect executeInstruction(
     with (context)
     with (instruction_)
     return instruction.match!(
-        (ConstInt instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                instruction.value;
-            return nextInstruction;
-        },
-        (const Call instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                executeFunction(
-                    module_,
-                    instruction.calleeName,
-                    temporaries,
-                    instruction.arguments,
-                    context,
-                );
-            return nextInstruction;
-        },
-        (const IndirectCall instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                executeFunctionPointer(
-                    module_,
-                    readTemporaryValue(temporaries, instruction.callee),
-                    temporaries,
-                    instruction.arguments,
-                    context,
-                );
-            return nextInstruction;
-        },
-        (BinaryOp instruction) {
-            executeBinaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.left,
-                instruction.right,
-                instruction.operation,
-            );
-            return nextInstruction;
-        },
-        (UnaryOp instruction) {
-            executeUnaryInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.source,
-                instruction.operation,
-            );
-            return nextInstruction;
-        },
-        (Select instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                readTemporaryValue(
-                    temporaries,
-                    instruction.condition,
-                )
-                    ? readTemporaryValue(temporaries, instruction.ifTrue)
-                    : readTemporaryValue(temporaries, instruction.ifFalse);
-            return nextInstruction;
-        },
-        (JumpIfFalse instruction) {
-            if (!readTemporaryValue(temporaries, instruction.condition))
-                return jump(instruction.offset + 1);
+        (ConstInt instruction) =>
+            executeConstIntInstruction(temporaries, instruction),
+        (const Call instruction) =>
+            executeCallInstruction(module_, temporaries, context, instruction),
+        (const IndirectCall instruction) =>
+            executeIndirectCallInstruction(module_, temporaries, context, instruction),
+        (BinaryOp instruction) =>
+            executeBinaryOpInstruction(temporaries, instruction),
+        (UnaryOp instruction) =>
+            executeUnaryOpInstruction(temporaries, instruction),
+        (Select instruction) =>
+            executeSelectInstruction(temporaries, instruction),
+        (JumpIfFalse instruction) =>
+            executeJumpIfFalseInstruction(temporaries, instruction),
+        (JumpIfTrue instruction) =>
+            executeJumpIfTrueInstruction(temporaries, instruction),
+        (Jump instruction) =>
+            executeJumpInstruction(instruction),
+        (Copy instruction) =>
+            executeCopyInstruction(temporaries, instruction),
+        (CastInt instruction) =>
+            executeCastIntInstruction(temporaries, instruction),
+        (Assert_ instruction) =>
+            executeAssertInstruction(temporaries, instruction),
+        (const ArrayLiteral instruction) =>
+            executeArrayLiteralInstruction(temporaries, context, instruction),
+        (const AssocArrayLiteral instruction) =>
+            executeAssocArrayLiteralInstruction(temporaries, context, instruction),
+        (AssocArrayLength instruction) =>
+            executeAssocArrayLengthInstruction(temporaries, context, instruction),
+        (AssocArrayKeys instruction) =>
+            executeAssocArrayKeysInstruction(temporaries, context, instruction),
+        (AssocArrayValues instruction) =>
+            executeAssocArrayValuesInstruction(temporaries, context, instruction),
+        (AssocArrayIndex instruction) =>
+            executeAssocArrayIndexInstruction(temporaries, context, instruction),
+        (AssocArrayValuePointer instruction) =>
+            executeAssocArrayValuePointerInstruction(temporaries, context, instruction),
+        (const StaticAssocArray instruction) =>
+            executeStaticAssocArrayInstruction(temporaries, context, instruction),
+        (const StaticArray instruction) =>
+            executeStaticArrayInstruction(temporaries, context, instruction),
+        (const StaticArraySet instruction) =>
+            executeStaticArraySetInstruction(temporaries, context, instruction),
+        (AssocArraySet instruction) =>
+            executeAssocArraySetInstruction(temporaries, context, instruction),
+        (ArrayCopy instruction) =>
+            executeArrayCopyInstruction(temporaries, context, instruction),
+        (ArrayReferenceCopy instruction) =>
+            executeArrayReferenceCopyInstruction(temporaries, context, instruction),
+        (ArrayAppend instruction) =>
+            executeArrayAppendInstruction(temporaries, context, instruction),
+        (ArrayAppendArray instruction) =>
+            executeArrayAppendArrayInstruction(temporaries, context, instruction),
+        (ArrayLength instruction) =>
+            executeArrayLengthInstruction(temporaries, context, instruction),
+        (ArraySetLength instruction) =>
+            executeArraySetLengthInstruction(temporaries, context, instruction),
+        (ArrayConcat instruction) =>
+            executeArrayConcatInstruction(temporaries, context, instruction),
+        (ArrayIndex instruction) =>
+            executeArrayIndexInstruction(temporaries, context, instruction),
+        (ArrayElementPointer instruction) =>
+            executeArrayElementPointerInstruction(temporaries, context, instruction),
+        (ArraySet instruction) =>
+            executeArraySetInstruction(temporaries, context, instruction),
+        (ArrayEqual instruction) =>
+            executeArrayEqualInstruction(temporaries, context, instruction),
+        (ArrayCanFind instruction) =>
+            executeArrayCanFindInstruction(temporaries, context, instruction),
+        (ArraySlice instruction) =>
+            executeArraySliceInstruction(temporaries, context, instruction),
+        (StructNew instruction) =>
+            executeStructNewInstruction(temporaries, context, instruction),
+        (const StructGet instruction) =>
+            executeStructGetInstruction(temporaries, context, instruction),
+        (const StructSet instruction) =>
+            executeStructSetInstruction(temporaries, context, instruction),
+        (ReturnValue instruction) =>
+            executeReturnValueInstruction(instruction),
+        (ReturnVoid instruction) =>
+            executeReturnVoidInstruction(instruction),
+    );
+}
 
-            return nextInstruction;
-        },
-        (JumpIfTrue instruction) {
-            if (readTemporaryValue(temporaries, instruction.condition))
-                return jump(instruction.offset + 1);
+private InstructionEffect executeConstIntInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".ConstInt instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        instruction.value;
+    return nextInstruction;
+}
 
-            return nextInstruction;
-        },
-        (Jump instruction) {
-            return jump(instruction.offset);
-        },
-        (Copy instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                readTemporaryValue(temporaries, instruction.source);
-            return nextInstruction;
-        },
-        (CastInt instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                castInteger(
-                    readTemporaryValue(temporaries, instruction.source),
-                    instruction.target,
-                );
-            return nextInstruction;
-        },
-        (Assert_ instruction) {
-            return executeAssertInstruction(
-                temporaries,
-                instruction.condition,
-                instruction.message,
-            );
-        },
-        (const ArrayLiteral instruction) {
-            return executeArrayLiteralInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.elements,
-                context,
-            );
-        },
-        (const AssocArrayLiteral instruction) {
-            return executeAssocArrayLiteralInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.keys,
-                instruction.values,
-                context,
-            );
-        },
-        (AssocArrayLength instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) assocArrays[
-                    assocArrayIndex(temporaries, instruction.array)
-                ].keys.length;
-            return nextInstruction;
-        },
-        (AssocArrayKeys instruction) {
-            arrays ~= assocArrays[
-                assocArrayIndex(temporaries, instruction.array)
-            ].keys;
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
-            return nextInstruction;
-        },
-        (AssocArrayValues instruction) {
-            arrays ~= assocArrays[
-                assocArrayIndex(temporaries, instruction.array)
-            ].values;
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
-            return nextInstruction;
-        },
-        (AssocArrayIndex instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                assocArrayValue(
-                    assocArrays[assocArrayIndex(temporaries, instruction.array)],
-                    readTemporaryValue(temporaries, instruction.key),
-                );
-            return nextInstruction;
-        },
-        (AssocArrayValuePointer instruction) {
-            return executeAssocArrayValuePointerInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.array,
-                instruction.key,
-                context,
-            );
-        },
-        (const StaticAssocArray instruction) {
-            return executeStaticAssocArrayInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.name,
-                context,
-            );
-        },
-        (const StaticArray instruction) {
-            return executeStaticArrayInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.name,
-                context,
-            );
-        },
-        (const StaticArraySet instruction) {
-            staticArrays[instruction.name] =
-                readTemporaryValue(temporaries, instruction.value);
-            return nextInstruction;
-        },
-        (AssocArraySet instruction) {
-            writeAssocArrayValue(
-                assocArrays[assocArrayIndex(temporaries, instruction.array)],
-                readTemporaryValue(temporaries, instruction.key),
-                readTemporaryValue(temporaries, instruction.value),
-            );
-            return nextInstruction;
-        },
-        (ArrayCopy instruction) {
-            arrays ~= copyArrayValue(
-                arrays,
-                arrayIndex(temporaries, instruction.source),
-            );
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
-            return nextInstruction;
-        },
-        (ArrayReferenceCopy instruction) {
-            arrays ~= referenceArrayValue(
-                arrays,
-                arrayIndex(temporaries, instruction.source),
-            );
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
-            return nextInstruction;
-        },
-        (ArrayAppend instruction) {
-            appendArrayValue(
-                context,
-                arrayIndex(temporaries, instruction.array),
-                readTemporaryValue(temporaries, instruction.value),
-            );
-            return nextInstruction;
-        },
-        (ArrayAppendArray instruction) {
-            appendArrayValues(
-                context,
-                arrayIndex(temporaries, instruction.array),
-                arrays[arrayIndex(temporaries, instruction.value)],
-            );
-            return nextInstruction;
-        },
-        (ArrayLength instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) arrays[arrayIndex(temporaries, instruction.array)].length;
-            return nextInstruction;
-        },
-        (ArraySetLength instruction) {
-            arrays[arrayIndex(temporaries, instruction.array)].length =
-                arrayIndex(temporaries, instruction.length);
-            return nextInstruction;
-        },
-        (ArrayConcat instruction) {
-            arrays ~= arrays[arrayIndex(temporaries, instruction.left)] ~
-                arrays[arrayIndex(temporaries, instruction.right)];
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (arrays.length - 1);
-            return nextInstruction;
-        },
-        (ArrayIndex instruction) {
-            return executeArrayIndexInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.array,
-                instruction.index,
-                context,
-            );
-        },
-        (ArrayElementPointer instruction) {
-            return executeArrayElementPointerInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.array,
-                instruction.index,
-                context,
-            );
-        },
-        (ArraySet instruction) {
-            writeArrayValue(
-                arrays,
-                arrayIndex(temporaries, instruction.array),
-                arrayIndex(temporaries, instruction.index),
-                readTemporaryValue(temporaries, instruction.value),
-            );
-            updateArrayAlias(
-                temporaries,
-                instruction.array,
-                instruction.index,
-                instruction.value,
-                context,
-            );
-            return nextInstruction;
-        },
-        (ArrayEqual instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                arraysEqual(
-                    arrays,
-                    arrayIndex(temporaries, instruction.left),
-                    arrayIndex(temporaries, instruction.right),
-                    instruction.depth,
-                );
-            return nextInstruction;
-        },
-        (ArrayCanFind instruction) {
-            writeTemporaryValue(temporaries, instruction.destination) =
-                arrayCanFind(
-                    arrays[arrayIndex(temporaries, instruction.haystack)],
-                    arrays[arrayIndex(temporaries, instruction.needle)],
-                );
-            return nextInstruction;
-        },
-        (ArraySlice instruction) {
-            return executeArraySliceInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.array,
-                instruction.lower,
-                instruction.upper,
-                context,
-            );
-        },
-        (StructNew instruction) {
-            structs ~= (long[string]).init;
-            writeTemporaryValue(temporaries, instruction.destination) =
-                cast(long) (structs.length - 1);
-            return nextInstruction;
-        },
-        (const StructGet instruction) {
-            return executeStructGetInstruction(
-                temporaries,
-                instruction.destination,
-                instruction.struct_,
-                instruction.fieldName,
-                context,
-            );
-        },
-        (const StructSet instruction) {
-            structs[structIndex(temporaries, instruction.struct_)][
-                instruction.fieldName
-            ] = readTemporaryValue(temporaries, instruction.value);
-            return nextInstruction;
-        },
-        (ReturnValue instruction) {
-            return returnFromFunction(instruction.value);
-        },
-        (ReturnVoid instruction) {
-            return returnFromVoid;
-        },
+private InstructionEffect executeCallInstruction(
+    in imported!"quickbite.ir.module_".Module module_,
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".Call instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        executeFunction(
+            module_,
+            instruction.calleeName,
+            temporaries,
+            instruction.arguments,
+            context,
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeIndirectCallInstruction(
+    in imported!"quickbite.ir.module_".Module module_,
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".IndirectCall instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        executeFunctionPointer(
+            module_,
+            readTemporaryValue(temporaries, instruction.callee),
+            temporaries,
+            instruction.arguments,
+            context,
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeBinaryOpInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".BinaryOp instruction,
+) @safe pure {
+    executeBinaryInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.left,
+        instruction.right,
+        instruction.operation,
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeUnaryOpInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".UnaryOp instruction,
+) @safe pure {
+    executeUnaryInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.source,
+        instruction.operation,
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeSelectInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".Select instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        readTemporaryValue(
+            temporaries,
+            instruction.condition,
+        )
+            ? readTemporaryValue(temporaries, instruction.ifTrue)
+            : readTemporaryValue(temporaries, instruction.ifFalse);
+    return nextInstruction;
+}
+
+private InstructionEffect executeJumpIfFalseInstruction(
+    in long[] temporaries,
+    in imported!"quickbite.ir.instruction".JumpIfFalse instruction,
+) @safe pure {
+    if (!readTemporaryValue(temporaries, instruction.condition))
+        return jump(instruction.offset + 1);
+
+    return nextInstruction;
+}
+
+private InstructionEffect executeJumpIfTrueInstruction(
+    in long[] temporaries,
+    in imported!"quickbite.ir.instruction".JumpIfTrue instruction,
+) @safe pure {
+    if (readTemporaryValue(temporaries, instruction.condition))
+        return jump(instruction.offset + 1);
+
+    return nextInstruction;
+}
+
+private InstructionEffect executeJumpInstruction(
+    in imported!"quickbite.ir.instruction".Jump instruction,
+) @safe pure {
+    return jump(instruction.offset);
+}
+
+private InstructionEffect executeCopyInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".Copy instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        readTemporaryValue(temporaries, instruction.source);
+    return nextInstruction;
+}
+
+private InstructionEffect executeCastIntInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".CastInt instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        castInteger(
+            readTemporaryValue(temporaries, instruction.source),
+            instruction.target,
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssertInstruction(
+    ref long[] temporaries,
+    in imported!"quickbite.ir.instruction".Assert_ instruction,
+) @safe pure {
+    return executeAssertInstruction(
+        temporaries,
+        instruction.condition,
+        instruction.message,
     );
 }
 
@@ -673,6 +585,19 @@ private InstructionEffect executeAssertInstruction(
         throw new UserThrownException(exceptionMessage);
 
     throw new UnittestAssertionFailure;
+}
+
+private InstructionEffect executeArrayLiteralInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayLiteral instruction,
+) @safe pure {
+    return executeArrayLiteralInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.elements,
+        context,
+    );
 }
 
 private InstructionEffect executeArrayLiteralInstruction(
@@ -693,6 +618,20 @@ private InstructionEffect executeArrayLiteralInstruction(
 
 private InstructionEffect executeAssocArrayLiteralInstruction(
     ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayLiteral instruction,
+) @safe pure {
+    return executeAssocArrayLiteralInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.keys,
+        instruction.values,
+        context,
+    );
+}
+
+private InstructionEffect executeAssocArrayLiteralInstruction(
+    ref long[] temporaries,
     in uint destination,
     in uint[] keys,
     in uint[] values,
@@ -708,6 +647,71 @@ private InstructionEffect executeAssocArrayLiteralInstruction(
     writeTemporaryValue(temporaries, destination) =
         cast(long) (context.assocArrays.length - 1);
     return nextInstruction;
+}
+
+private InstructionEffect executeAssocArrayLengthInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayLength instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) context.assocArrays[
+            assocArrayIndex(temporaries, instruction.array)
+        ].keys.length;
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssocArrayKeysInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayKeys instruction,
+) @safe pure {
+    context.arrays ~= context.assocArrays[
+        assocArrayIndex(temporaries, instruction.array)
+    ].keys;
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.arrays.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssocArrayValuesInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayValues instruction,
+) @safe pure {
+    context.arrays ~= context.assocArrays[
+        assocArrayIndex(temporaries, instruction.array)
+    ].values;
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.arrays.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssocArrayIndexInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayIndex instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        assocArrayValue(
+            context.assocArrays[assocArrayIndex(temporaries, instruction.array)],
+            readTemporaryValue(temporaries, instruction.key),
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssocArrayValuePointerInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArrayValuePointer instruction,
+) @safe pure {
+    return executeAssocArrayValuePointerInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.array,
+        instruction.key,
+        context,
+    );
 }
 
 private InstructionEffect executeAssocArrayValuePointerInstruction(
@@ -733,6 +737,19 @@ private InstructionEffect executeAssocArrayValuePointerInstruction(
 
 private InstructionEffect executeStaticAssocArrayInstruction(
     ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StaticAssocArray instruction,
+) @safe pure {
+    return executeStaticAssocArrayInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.name,
+        context,
+    );
+}
+
+private InstructionEffect executeStaticAssocArrayInstruction(
+    ref long[] temporaries,
     in uint destination,
     in string name,
     ref ExecutionContext context,
@@ -751,6 +768,19 @@ private InstructionEffect executeStaticAssocArrayInstruction(
 
 private InstructionEffect executeStaticArrayInstruction(
     ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StaticArray instruction,
+) @safe pure {
+    return executeStaticArrayInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.name,
+        context,
+    );
+}
+
+private InstructionEffect executeStaticArrayInstruction(
+    ref long[] temporaries,
     in uint destination,
     in string name,
     ref ExecutionContext context,
@@ -765,6 +795,132 @@ private InstructionEffect executeStaticArrayInstruction(
     context.staticArrays[name] = array;
     writeTemporaryValue(temporaries, destination) = array;
     return nextInstruction;
+}
+
+private InstructionEffect executeStaticArraySetInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StaticArraySet instruction,
+) @safe pure {
+    context.staticArrays[instruction.name] =
+        readTemporaryValue(temporaries, instruction.value);
+    return nextInstruction;
+}
+
+private InstructionEffect executeAssocArraySetInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".AssocArraySet instruction,
+) @safe pure {
+    writeAssocArrayValue(
+        context.assocArrays[assocArrayIndex(temporaries, instruction.array)],
+        readTemporaryValue(temporaries, instruction.key),
+        readTemporaryValue(temporaries, instruction.value),
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayCopyInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayCopy instruction,
+) @safe pure {
+    context.arrays ~= copyArrayValue(
+        context.arrays,
+        arrayIndex(temporaries, instruction.source),
+    );
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.arrays.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayReferenceCopyInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayReferenceCopy instruction,
+) @safe pure {
+    context.arrays ~= referenceArrayValue(
+        context.arrays,
+        arrayIndex(temporaries, instruction.source),
+    );
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.arrays.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayAppendInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayAppend instruction,
+) @safe pure {
+    appendArrayValue(
+        context,
+        arrayIndex(temporaries, instruction.array),
+        readTemporaryValue(temporaries, instruction.value),
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayAppendArrayInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayAppendArray instruction,
+) @safe pure {
+    appendArrayValues(
+        context,
+        arrayIndex(temporaries, instruction.array),
+        context.arrays[arrayIndex(temporaries, instruction.value)],
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayLengthInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayLength instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) context.arrays[
+            arrayIndex(temporaries, instruction.array)
+        ].length;
+    return nextInstruction;
+}
+
+private InstructionEffect executeArraySetLengthInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArraySetLength instruction,
+) @safe pure {
+    context.arrays[arrayIndex(temporaries, instruction.array)].length =
+        arrayIndex(temporaries, instruction.length);
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayConcatInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayConcat instruction,
+) @safe pure {
+    context.arrays ~=
+        context.arrays[arrayIndex(temporaries, instruction.left)] ~
+        context.arrays[arrayIndex(temporaries, instruction.right)];
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.arrays.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayIndexInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayIndex instruction,
+) @safe pure {
+    return executeArrayIndexInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.array,
+        instruction.index,
+        context,
+    );
 }
 
 private InstructionEffect executeArrayIndexInstruction(
@@ -816,6 +972,20 @@ private InstructionEffect executeArrayIndexInstruction(
 
 private InstructionEffect executeArrayElementPointerInstruction(
     ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayElementPointer instruction,
+) @safe pure {
+    return executeArrayElementPointerInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.array,
+        instruction.index,
+        context,
+    );
+}
+
+private InstructionEffect executeArrayElementPointerInstruction(
+    ref long[] temporaries,
     in uint destination,
     in uint arrayTemporary,
     in uint indexTemporary,
@@ -835,6 +1005,70 @@ private InstructionEffect executeArrayElementPointerInstruction(
     );
     writeTemporaryValue(temporaries, destination) = cast(long) pointer;
     return nextInstruction;
+}
+
+private InstructionEffect executeArraySetInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArraySet instruction,
+) @safe pure {
+    writeArrayValue(
+        context.arrays,
+        arrayIndex(temporaries, instruction.array),
+        arrayIndex(temporaries, instruction.index),
+        readTemporaryValue(temporaries, instruction.value),
+    );
+    updateArrayAlias(
+        temporaries,
+        instruction.array,
+        instruction.index,
+        instruction.value,
+        context,
+    );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayEqualInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayEqual instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        arraysEqual(
+            context.arrays,
+            arrayIndex(temporaries, instruction.left),
+            arrayIndex(temporaries, instruction.right),
+            instruction.depth,
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayCanFindInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayCanFind instruction,
+) @safe pure {
+    writeTemporaryValue(temporaries, instruction.destination) =
+        arrayCanFind(
+            context.arrays[arrayIndex(temporaries, instruction.haystack)],
+            context.arrays[arrayIndex(temporaries, instruction.needle)],
+        );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArraySliceInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArraySlice instruction,
+) @safe pure {
+    return executeArraySliceInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.array,
+        instruction.lower,
+        instruction.upper,
+        context,
+    );
 }
 
 private InstructionEffect executeArraySliceInstruction(
@@ -860,6 +1094,31 @@ private InstructionEffect executeArraySliceInstruction(
     );
     writeTemporaryValue(temporaries, destination) = cast(long) slice;
     return nextInstruction;
+}
+
+private InstructionEffect executeStructNewInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StructNew instruction,
+) @safe pure {
+    context.structs ~= (long[string]).init;
+    writeTemporaryValue(temporaries, instruction.destination) =
+        cast(long) (context.structs.length - 1);
+    return nextInstruction;
+}
+
+private InstructionEffect executeStructGetInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StructGet instruction,
+) @safe pure {
+    return executeStructGetInstruction(
+        temporaries,
+        instruction.destination,
+        instruction.struct_,
+        instruction.fieldName,
+        context,
+    );
 }
 
 private InstructionEffect executeStructGetInstruction(
@@ -895,6 +1154,29 @@ private InstructionEffect executeStructGetInstruction(
 
     writeTemporaryValue(temporaries, destination) = value;
     return nextInstruction;
+}
+
+private InstructionEffect executeStructSetInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StructSet instruction,
+) @safe pure {
+    context.structs[structIndex(temporaries, instruction.struct_)][
+        instruction.fieldName
+    ] = readTemporaryValue(temporaries, instruction.value);
+    return nextInstruction;
+}
+
+private InstructionEffect executeReturnValueInstruction(
+    in imported!"quickbite.ir.instruction".ReturnValue instruction,
+) @safe pure nothrow @nogc {
+    return returnFromFunction(instruction.value);
+}
+
+private InstructionEffect executeReturnVoidInstruction(
+    in imported!"quickbite.ir.instruction".ReturnVoid instruction,
+) @safe pure nothrow @nogc {
+    return returnFromVoid;
 }
 
 InstructionEffect nextInstruction() @safe pure nothrow @nogc {
@@ -1200,6 +1482,9 @@ private Exception arrayHandleException(
 }
 
 private size_t arrayHandle(in long value) @safe pure {
+    // Array references are stored in IR temporaries as signed integer indexes.
+    // Convert only after rejecting negative values so callers can index the
+    // array table with size_t.
     if (value < 0)
         throw new Exception("IR: array handle out of range");
 

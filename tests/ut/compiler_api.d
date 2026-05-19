@@ -143,6 +143,23 @@ unittest {
     }
 }
 
+@("runTestSummary.ir.countsAssertErrorsAsFailures")
+unittest {
+    import quickbite: ExecutorBackend, runTestSummary;
+
+    const summary = runTestSummary(q{
+        import core.exception: AssertError;
+
+        unittest {
+            throw new AssertError("expected");
+        }
+    }, ExecutorBackend.ir);
+
+    summary.total.should == 1;
+    summary.passed.should == 0;
+    summary.failed.should == 1;
+}
+
 @("parseModule.countsAttributedUnittests")
 unittest {
     import quickbite.dmd_util: foreachUnitTestDeclaration;
