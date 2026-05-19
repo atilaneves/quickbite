@@ -65,7 +65,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {
-    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
 
     Interpreter interpreter;
     foreachUnitTestDeclaration(module_, (unitTest) {
@@ -76,7 +76,7 @@ private void walkModule(imported!"dmd.dmodule".Module module_) {
 private imported!"quickbite.executor".TestSummary testSummary(
     imported!"dmd.dmodule".Module module_,
 ) {
-    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
     import quickbite.executor: TestSummary;
 
     TestSummary summary;

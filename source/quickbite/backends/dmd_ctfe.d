@@ -22,7 +22,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
     }
 
     public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
-        import quickbite.dmd_util: foreachUnitTestDeclaration;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
             runCtfe(unitTest);
@@ -33,7 +33,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 private imported!"quickbite.executor".TestSummary testSummary(
     imported!"dmd.dmodule".Module module_,
 ) {
-    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
     import quickbite.executor: TestSummary;
 
     TestSummary summary;

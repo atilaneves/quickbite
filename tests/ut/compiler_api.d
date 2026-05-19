@@ -179,7 +179,7 @@ unittest {
 
 @("parseModule.countsAttributedUnittests")
 unittest {
-    import quickbite.dmd_util: foreachUnitTestDeclaration;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
     import quickbite.frontend.compiler: parseModule;
 
     // auto: DMD owns mutable Module state.

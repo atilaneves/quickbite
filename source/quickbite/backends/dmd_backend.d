@@ -11,9 +11,6 @@ private:
 
 __gshared bool _backendInit;
 __gshared uint _tempCounter;
-__gshared string _unittestFailureMessage;
-__gshared string _unittestFailureFile;
-__gshared uint _unittestFailureLine;
 
 public final class DmdBackend : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
@@ -27,7 +24,7 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
     }
 
     public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
-        import quickbite.dmd_util: foreachUnitTestDeclaration;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         bool hasTests;
         foreachUnitTestDeclaration(module_, (_) { hasTests = true; });
@@ -40,7 +37,7 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
     public imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
         import quickbite.executor: TestSummary;
         import quickbite.frontend.compiler: parseModule;
-        import quickbite.dmd_util: foreachUnitTestDeclaration;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         auto module_ = parseModule(source).module_;
         TestSummary summary;
@@ -128,24 +125,6 @@ private void link(in string objPath, in string soPath) {
         throw new Exception(text("dmd link failed: ", result.output));
 }
 
-extern(C) void _d_unittest_msg(string msg, string file, uint line) {
-    if (_unittestFailureMessage !is null)
-        return;
-
-    _unittestFailureMessage = msg.idup;
-    _unittestFailureFile = file.idup;
-    _unittestFailureLine = line;
-}
-
-extern(C) void _d_unittestp(string file, uint line) {
-    if (_unittestFailureMessage !is null)
-        return;
-
-    _unittestFailureMessage = "Unittest assertion failed.";
-    _unittestFailureFile = file;
-    _unittestFailureLine = line;
-}
-
 private void loadAndRunTests(
     in string soPath,
     imported!"dmd.dmodule".Module module_,
@@ -164,59 +143,36 @@ private void loadAndRunTests(
     const modtestZ   = modtestSym ~ "\0";
     auto fn = cast(void function()) dlsym(handle, modtestZ.ptr);
     if (fn) {
-        clearUnittestFailure;
-        scope(exit) clearUnittestFailure;
-        GeneratedThrowable generatedThrowable;
+        bool unittestRunnerThrowableCaught;
         try {
             fn();
-        } catch (Throwable throwable) {
-            generatedThrowable = copyGeneratedThrowable(throwable);
+        } catch (Throwable) {
+            // DMD's generated __modtest runner can throw from any unittest
+            // failure: druntime turns failed asserts into AssertError, and
+            // user code can throw directly from the unittest body.
+            unittestRunnerThrowableCaught = true;
         }
-        throwPendingUnittestFailure;
-        throwPendingGeneratedThrowable(generatedThrowable);
+        throwIfUnittestRunnerThrowableCaught(unittestRunnerThrowableCaught);
     }
 }
 
-private struct GeneratedThrowable {
-    public string type;
-    public string message;
-}
-
-private GeneratedThrowable copyGeneratedThrowable(Throwable throwable) {
-    return GeneratedThrowable(
-        throwable.classinfo.name.idup,
-        throwable.msg.idup,
-    );
-}
-
-private void throwPendingGeneratedThrowable(in GeneratedThrowable throwable) {
-    if (throwable.type is null)
+private void throwIfUnittestRunnerThrowableCaught(
+    in bool unittestRunnerThrowableCaught,
+) {
+    if (!unittestRunnerThrowableCaught)
         return;
 
     throw new Exception("Unittest assertion failed.");
 }
 
-private void throwPendingUnittestFailure() {
-    if (_unittestFailureMessage is null)
-        return;
-
-    throw new Exception(_unittestFailureMessage);
-}
-
-private void clearUnittestFailure() nothrow @nogc {
-    _unittestFailureMessage = null;
-    _unittestFailureFile = null;
-    _unittestFailureLine = 0;
-}
-
 private string modtestSymbol(
     imported!"dmd.dmodule".Module module_,
 ) @trusted {
-    import dmd.common.outbuffer: OutBuffer;
-    import dmd.mangle: mangleToBuffer;
+    import core.demangle: mangleFunc;
     import std.conv: text;
+    import std.exception: assumeUnique;
+    import std.string: fromStringz;
 
-    OutBuffer moduleMangle;
-    mangleToBuffer(module_, moduleMangle);
-    return text("_D", moduleMangle.extractSlice, "9__modtestFZv");
+    const modtestName = text(module_.toPrettyChars.fromStringz, ".__modtest");
+    return mangleFunc!(void function())(modtestName).assumeUnique;
 }
