@@ -60,3 +60,12 @@ take the following steps:
 Repeat these steps until the new tree walker passes all cerealed
 integration tests. At that point, `TreeWalkingExecutorOld` and
 `ExecutorBackend.treeWalkingOld` can be deleted.
+
+## Don't
+
+* Do not edit the source files to make it so things work. Do not write
+  unit tests with especially curated source that will happen to work.
+  If the backend is incapable of executing correct D code, change the
+  backend so that it's capable.
+* Do not overfit to cerealed or any other library. Do not write
+  backend code that caters to any specific user-written D code.
