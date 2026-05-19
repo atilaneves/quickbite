@@ -13,6 +13,12 @@ __gshared bool _backendInit;
 __gshared uint _tempCounter;
 
 public final class DmdBackend : imported!"quickbite.executor".Executor {
+    private string[] linkFiles;
+
+    public this(in string[] linkFiles = []) {
+        this.linkFiles = linkFiles.dup;
+    }
+
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
         runParsedTests(parseModule(source).module_);
@@ -31,7 +37,7 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
         if (!hasTests)
             return;
 
-        compileAndRun(module_);
+        compileAndRun(module_, linkFiles);
     }
 
     public imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
@@ -49,7 +55,7 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
             return summary;
 
         try {
-            compileAndRun(module_);
+            compileAndRun(module_, linkFiles);
             summary.passed = summary.total;
         } catch (Exception) {
             summary.failed = 1;
@@ -60,7 +66,10 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
     }
 }
 
-private void compileAndRun(imported!"dmd.dmodule".Module module_) @trusted {
+private void compileAndRun(
+    imported!"dmd.dmodule".Module module_,
+    in string[] linkFiles,
+) @trusted {
     import core.atomic: atomicFetchAdd;
     import quickbite.frontend.compiler: withCompilerLock;
     import std.conv: text;
@@ -80,7 +89,7 @@ private void compileAndRun(imported!"dmd.dmodule".Module module_) @trusted {
         generateObj(module_, objPath);
     });
 
-    link(objPath, soPath);
+    link(objPath, soPath, linkFiles);
     loadAndRunTests(soPath, module_);
 }
 
@@ -112,15 +121,24 @@ private void generateObj(
     generateCodeAndWrite([module_], [], "", "", false, true, false, false, false);
 }
 
-private void link(in string objPath, in string soPath) {
+private void link(in string objPath, in string soPath, in string[] linkFiles) {
     import std.process: execute;
     import std.conv: text;
 
-    const result = execute([
+    auto command = [
         "dmd", "-shared", "-fPIC",
+    ];
+    version (QuickbiteRuntimeLoadLibrary) {
+        command ~= "-defaultlib=libphobos2.so";
+        command ~= ["-L=-z", "-L=defs"];
+    }
+    command ~= [
         "-of=" ~ soPath,
         objPath,
-    ]);
+    ];
+    command ~= linkFiles;
+
+    const result = execute(command);
     if (result.status != 0)
         throw new Exception(text("dmd link failed: ", result.output));
 }
@@ -129,19 +147,26 @@ private void loadAndRunTests(
     in string soPath,
     imported!"dmd.dmodule".Module module_,
 ) @trusted {
-    import core.sys.posix.dlfcn: dlclose, dlerror, dlopen, dlsym, RTLD_GLOBAL, RTLD_NOW;
+    import core.sys.posix.dlfcn: dlerror, dlsym;
     import std.conv: text;
-    import std.string: fromStringz;
+    import std.string: fromStringz, toStringz;
 
-    const soPathZ = soPath ~ "\0";
-    auto handle = dlopen(soPathZ.ptr, RTLD_NOW | RTLD_GLOBAL);
+    void* handle;
+    version (QuickbiteRuntimeLoadLibrary) {
+        import core.runtime: Runtime;
+
+        handle = Runtime.loadLibrary(soPath);
+    } else {
+        import core.sys.posix.dlfcn: dlclose, dlopen, RTLD_GLOBAL, RTLD_NOW;
+
+        handle = dlopen(soPath.toStringz, RTLD_NOW | RTLD_GLOBAL);
+        scope(exit) if (handle) dlclose(handle);
+    }
     if (!handle)
         throw new Exception(text("dlopen failed: ", dlerror.fromStringz));
-    scope(exit) dlclose(handle);
 
     const modtestSym = modtestSymbol(module_);
-    const modtestZ   = modtestSym ~ "\0";
-    auto fn = cast(void function()) dlsym(handle, modtestZ.ptr);
+    auto fn = cast(void function()) dlsym(handle, modtestSym.toStringz);
     if (fn) {
         bool unittestRunnerThrowableCaught;
         try {

@@ -23,6 +23,8 @@ int main(string[] args) {
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
     string[] importPaths;
+    string[] linkFiles;
+    string[] backendNames;
     string dubPkg;
 
     auto info = getopt(
@@ -30,12 +32,13 @@ int main(string[] args) {
         "warmup",       "untimed iterations before sampling",          &warmup,
         "iterations",   "timed iterations per measurement",            &iterations,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
+        "backend",      "backend to measure (repeatable)",             &backendNames,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--dub=NAME]"
+            ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME]"
             ~ " [<module.d> ...]",
             info.options,
         );
@@ -45,8 +48,9 @@ int main(string[] args) {
     string[] fixtures = args[1 .. $].dup;
 
     if (dubPkg.length > 0) {
-        const dubInfo = resolveDubPkg(dubPkg);
+        auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
+        linkFiles   ~= dubInfo.linkFiles;
         fixtures    ~= dubInfo.fixtures;
     }
 
@@ -67,31 +71,53 @@ int main(string[] args) {
     backends["ir"]          = new IrExecutor;
     backends["treeWalking"] = new TreeWalkingExecutor;
     backends["dmd-ctfe"]    = new DmdCtfe;
-    backends["dmd-backend"] = new DmdBackend;
+    backends["dmd-backend"] = new DmdBackend(linkFiles);
+
+    if (backendNames.length == 0)
+        backendNames = ["ir", "treeWalking", "dmd-ctfe", "dmd-backend"];
+
+    foreach (name; backendNames)
+        if (name !in backends)
+            throw new Exception("unknown backend: " ~ name);
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
-    foreach (path; fixtures) {
-        const source      = readText(path);
-        const displayName = moduleDisplayName(path, importPaths);
-        try {
-            auto parsed  = parseModule(source, importPaths);
-            auto module_ = parsed.module_;
+    foreach (name; backendNames) {
+        auto executor = backends[name];
+        foreach (path; fixtures) {
+            const source      = readText(path);
+            const displayName = moduleDisplayName(path, importPaths);
+            try {
+                auto parsed  = parseModule(source, importPaths);
+                auto module_ = parsed.module_;
 
-            foreach (name; ["ir", "treeWalking", "dmd-ctfe", "dmd-backend"]) {
-                auto executor = backends[name];
-                printRow(
-                    displayName, name, warmup, iterations,
-                    () => executor.runParsedTests(module_),
-                );
+                try {
+                    printRow(
+                        displayName, name, warmup, iterations,
+                        () => executor.runParsedTests(module_),
+                    );
+                } catch (Exception e) {
+                    stderr.writefln(
+                        "skipping %s %s: %s",
+                        displayName, name, firstLine(e.msg),
+                    );
+                }
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", displayName, firstLine(e.msg));
             }
-        } catch (Exception e) {
-            stderr.writefln("skipping %s: %s", displayName, e.msg);
+            writeln;
         }
-        writeln;
     }
 
     return 0;
+}
+
+string firstLine(in string message) {
+    import std.string: lineSplitter;
+
+    foreach (line; message.lineSplitter)
+        return line.idup;
+    return "";
 }
 
 string moduleDisplayName(in string path, in string[] importPaths) {
@@ -110,6 +136,7 @@ string moduleDisplayName(in string path, in string[] importPaths) {
 
 struct DubInfo {
     string[] importPaths;
+    string[] linkFiles;
     string[] fixtures;
 }
 
@@ -124,25 +151,49 @@ DubInfo resolveDubPkg(in string name) {
 
     const pkgDir = findPkgDir(name);
     // Prefer the unittest config so test-only deps (e.g. unit-threaded) are included.
-    auto descResult = execute(
+    auto importPathResult = execute(
         ["dub", "describe", "--config=unittest", "--data=import-paths", "--data-list"],
         null, Config.none, size_t.max,
         pkgDir,
     );
-    if (descResult.status != 0)
-        descResult = execute(
+    if (importPathResult.status != 0)
+        importPathResult = execute(
             ["dub", "describe", "--data=import-paths", "--data-list"],
             null, Config.none, size_t.max,
             pkgDir,
         );
-    if (descResult.status != 0)
-        throw new Exception("dub describe failed for " ~ name ~ ": " ~ descResult.output);
+    if (importPathResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ importPathResult.output);
 
-    auto importPaths = descResult.output
+    auto importPaths = importPathResult.output
         .splitLines
         .map!(l => l.strip)
         .filter!(l => l.length > 0)
         .array;
+
+    auto linkFileResult = execute(
+        ["dub", "describe", "--config=unittest", "--data=linker-files", "--data-list"],
+        null, Config.none, size_t.max,
+        pkgDir,
+    );
+    if (linkFileResult.status != 0)
+        linkFileResult = execute(
+            ["dub", "describe", "--data=linker-files", "--data-list"],
+            null, Config.none, size_t.max,
+            pkgDir,
+        );
+    if (linkFileResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ linkFileResult.output);
+
+    auto linkFiles = linkFileResult.output
+        .splitLines
+        .map!(l => l.strip)
+        .filter!(l => l.length > 0)
+        .array;
+
+    const rootLibrary = buildPath(pkgDir, "bin", "lib" ~ name ~ ".a");
+    if (rootLibrary.exists)
+        linkFiles = rootLibrary ~ linkFiles;
 
     const testsDir = buildPath(pkgDir, "tests");
     if (!testsDir.exists)
@@ -155,7 +206,7 @@ DubInfo resolveDubPkg(in string name) {
         .array;
     fixtures.sort;
 
-    return DubInfo(importPaths, fixtures);
+    return DubInfo(importPaths, linkFiles, fixtures);
 }
 
 bool isTestRunnerFile(in string basename) {

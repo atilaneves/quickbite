@@ -55,6 +55,8 @@ configuration "benchmark" {
     mainSourceFile "benchmarks/main.d"
     sourcePaths "benchmarks"
     includePaths "benchmarks"
+    dflags "-defaultlib=libphobos2.so"
+    versions "QuickbiteRuntimeLoadLibrary"
 
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"
