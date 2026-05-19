@@ -86,6 +86,13 @@ public struct Jump {
     int offset;
 }
 
+// Executes the next bodyLength instructions as the protected body and the
+// following handlerLength instructions as the catch handler.
+public struct TryCatch {
+    uint bodyLength;
+    uint handlerLength;
+}
+
 public struct Copy {
     uint destination;
     uint source;
@@ -157,6 +164,11 @@ public struct StaticAssocArray {
 }
 
 public struct StaticArray {
+    uint destination;
+    string name;
+}
+
+public struct StaticInt {
     uint destination;
     string name;
 }
@@ -279,6 +291,7 @@ public alias Instruction = SumType!(
     JumpIfFalse,
     JumpIfTrue,
     Jump,
+    TryCatch,
     Copy,
     CastInt,
     Assert_,
@@ -291,6 +304,7 @@ public alias Instruction = SumType!(
     AssocArrayValuePointer,
     StaticAssocArray,
     StaticArray,
+    StaticInt,
     StaticArraySet,
     AssocArraySet,
     ArrayCopy,

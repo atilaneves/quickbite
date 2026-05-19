@@ -68,6 +68,125 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".catchExceptionCatchesThrownExceptionFromCalledFunction")
+        unittest {
+            runTests(q{
+                void f() {
+                    throw new Exception("expected");
+                }
+
+                unittest {
+                    int value;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        value = 42;
+                    }
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesThrowAfterCalleeSideEffect")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void f() {
+                    marker = 1;
+                    throw new Exception("expected");
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    int caught;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesNestedBranchThrowFromCalledFunction")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void g(bool shouldThrow) {
+                    if (shouldThrow) {
+                        marker = 1;
+                        throw new Exception("expected");
+                    }
+
+                    marker = 2;
+                }
+
+                void f() {
+                    g(true);
+                    marker = 3;
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    g(false);
+                    assert(marker == 2);
+
+                    int caught;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesRuntimeBranchThrowFromCalledFunction")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void f(int value) {
+                    if (value == 1) {
+                        marker = 1;
+                        throw new Exception("expected");
+                    }
+
+                    marker = 2;
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    int caught;
+                    int runtimeValue = caught + 1;
+                    try {
+                        f(runtimeValue);
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    // Unlike earlier catch-call tests, runtime data selects
+                    // the branch, so lowering cannot prove the throw path
+                    // syntactically.
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+    }
+
     @(backend.text ~ ".throwPreservesExceptionMessage")
     unittest {
         expectRunTestsFailure(q{

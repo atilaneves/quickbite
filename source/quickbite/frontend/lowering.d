@@ -230,12 +230,9 @@ struct BodyLowerer {
         }
 
         if (auto tryCatch = statement.isTryCatchStatement) {
-            if (isDirectThrow(tryCatch._body) &&
-                tryCatch.catches !is null &&
-                tryCatch.catches.length > 0) {
-                lowerStatement((*tryCatch.catches)[0].handler, lowerer);
-                return;
-            }
+            if (tryCatch.catches !is null && tryCatch.catches.length > 0)
+                if (tryLowerRuntimeTryCatch(tryCatch, lowerer))
+                    return;
             lowerStatement(tryCatch._body, lowerer);
             return;
         }
@@ -378,23 +375,51 @@ struct BodyLowerer {
         return message.idup;
     }
 
-    private bool isDirectThrow(imported!"dmd.statement".Statement statement) @safe {
-        if (statement is null)
-            return false;
+    private bool tryLowerRuntimeTryCatch(
+        imported!"dmd.statement".TryCatchStatement tryCatch,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, TryCatch;
 
-        if (statement.isThrowStatement !is null)
+        auto savedInstructions = instructions.dup;
+        const savedNextTemporary = nextTemporary;
+        const savedHasReturn = hasReturn;
+        auto savedLocalTemporaries = localTemporaries.dup;
+        auto savedIdentifierTemporaries = identifierTemporaries.dup;
+        auto savedArrayValueNames = arrayValueNames.dup;
+
+        try {
+            const tryCatchIndex = instructions.length;
+            instructions ~= Instruction(TryCatch(0, 0));
+
+            const bodyStart = instructions.length;
+            lowerStatement(tryCatch._body, lowerer);
+            const bodyLength = instructions.length - bodyStart;
+
+            // The protected body and handler are alternate runtime paths.
+            // Keep lowering-time return state from one path out of the other.
+            hasReturn = savedHasReturn;
+            const handlerStart = instructions.length;
+            lowerStatement((*tryCatch.catches)[0].handler, lowerer);
+            const handlerLength = instructions.length - handlerStart;
+            hasReturn = savedHasReturn;
+
+            replaceTryCatchLengths(
+                instructions,
+                cast(uint) tryCatchIndex,
+                cast(uint) bodyLength,
+                cast(uint) handlerLength,
+            );
             return true;
-
-        if (auto scope_ = statement.isScopeStatement)
-            return isDirectThrow(scope_.statement);
-
-        if (auto compound = statement.isCompoundStatement) {
-            if (compound.statements is null || compoundStatements(compound).length != 1)
-                return false;
-            return isDirectThrow(compoundStatements(compound)[0]);
+        } catch (Exception) {
+            instructions = savedInstructions;
+            nextTemporary = savedNextTemporary;
+            hasReturn = savedHasReturn;
+            localTemporaries = savedLocalTemporaries;
+            identifierTemporaries = savedIdentifierTemporaries;
+            arrayValueNames = savedArrayValueNames;
+            return false;
         }
-
-        return false;
     }
 
     private imported!"dmd.statement".ReturnStatement directReturnStatement(
@@ -880,7 +905,7 @@ struct BodyLowerer {
         ref Lowerer lowerer,
     ) @safe {
         import quickbite.ir.instruction: Assert_, Call, ConstInt, Instruction,
-            Operation, StaticArray, StaticAssocArray, StructGet, UnaryOp,
+            Operation, StaticArray, StaticAssocArray, StaticInt, StructGet, UnaryOp,
             UnaryOperation;
 
         if (auto integer = expression.isIntegerExp) {
@@ -1529,7 +1554,7 @@ struct BodyLowerer {
                 }
                 if (varIsStatic(var) && typeIsInteger(var.type)) {
                     const destination = allocateTemporary;
-                    instructions ~= Instruction(StaticArray(
+                    instructions ~= Instruction(StaticInt(
                         destination,
                         staticVariableName(var),
                     ));
@@ -6559,6 +6584,26 @@ private void replaceJumpOffset(
         },
         (_) {
             assert(0, "Expected jump instruction");
+        },
+    );
+}
+
+private void replaceTryCatchLengths(
+    ref imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint index,
+    in uint bodyLength,
+    in uint handlerLength,
+) @safe {
+    import quickbite.ir.instruction: TryCatch;
+    import std.sumtype: match;
+
+    instructions[index].match!(
+        (ref TryCatch instruction) {
+            instruction.bodyLength = bodyLength;
+            instruction.handlerLength = handlerLength;
+        },
+        (_) {
+            assert(0, "Expected try/catch instruction");
         },
     );
 }

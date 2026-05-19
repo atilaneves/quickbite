@@ -51,7 +51,7 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     }
 }
 
-void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
+private void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {
     foreach (index, test; module_.tests) {
         try {
             executeUnitTest(module_, test);
@@ -106,7 +106,7 @@ private void executeUnitTest(
     );
 }
 
-long executeFunction(
+private long executeFunction(
     in imported!"quickbite.ir.module_".Module module_,
     in string calleeName,
     ref long[] callerTemporaries,
@@ -145,7 +145,7 @@ long executeFunction(
     throw new Exception("Unsupported callee.");
 }
 
-long executeFunctionPointer(
+private long executeFunctionPointer(
     in imported!"quickbite.ir.module_".Module module_,
     in long callee,
     ref long[] callerTemporaries,
@@ -171,7 +171,7 @@ long executeFunctionPointer(
     throw new Exception("Unsupported function pointer callee.");
 }
 
-long executeFunctionBody(
+private long executeFunctionBody(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in bool hasReturnValue,
@@ -246,7 +246,7 @@ struct ArrayAlias {
     bool isSlice;
 }
 
-ExecutionResult executeInstructions(
+private ExecutionResult executeInstructions(
     in imported!"quickbite.ir.module_".Module module_,
     in imported!"quickbite.ir.instruction".Instruction[] instructions,
     in uint numTemporaries,
@@ -268,7 +268,8 @@ ExecutionResult executeInstructions(
         try {
             effect = executeInstruction(
                 module_,
-                instructions[instructionPointer],
+                instructions,
+                instructionPointer,
                 temporaries,
                 context,
             );
@@ -317,12 +318,12 @@ private Exception internalExecutionFailure(
     return new Exception(text(scope_, " ", index, " failed: ", exception.msg));
 }
 
-void reserveNullStructHandle(ref long[string][] structs) @safe pure {
+private void reserveNullStructHandle(ref long[string][] structs) @safe pure {
     if (structs.length == 0)
         structs ~= (long[string]).init;
 }
 
-void reserveNullArrayHandle(ref long[][] arrays) @safe pure {
+private void reserveNullArrayHandle(ref long[][] arrays) @safe pure {
     if (arrays.length == 0)
         arrays ~= [];
 }
@@ -334,14 +335,17 @@ struct InstructionEffect {
     uint returnValue;
 }
 
-InstructionEffect executeInstruction(
+private InstructionEffect executeInstruction(
     in imported!"quickbite.ir.module_".Module module_,
-    in imported!"quickbite.ir.instruction".Instruction instruction,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint instructionPointer,
     ref long[] temporaries,
     ref ExecutionContext context,
 ) @safe pure {
     import instruction_ = quickbite.ir.instruction;
     import std.sumtype: match;
+
+    const instruction = instructions[instructionPointer];
 
     with (context)
     with (instruction_)
@@ -364,6 +368,15 @@ InstructionEffect executeInstruction(
             executeJumpIfTrueInstruction(temporaries, instruction),
         (Jump instruction) =>
             executeJumpInstruction(instruction),
+        (const TryCatch instruction) =>
+            executeTryCatchInstruction(
+                module_,
+                instructions,
+                instructionPointer,
+                temporaries,
+                context,
+                instruction,
+            ),
         (Copy instruction) =>
             executeCopyInstruction(temporaries, instruction),
         (CastInt instruction) =>
@@ -388,6 +401,8 @@ InstructionEffect executeInstruction(
             executeStaticAssocArrayInstruction(temporaries, context, instruction),
         (const StaticArray instruction) =>
             executeStaticArrayInstruction(temporaries, context, instruction),
+        (const StaticInt instruction) =>
+            executeStaticIntInstruction(temporaries, context, instruction),
         (const StaticArraySet instruction) =>
             executeStaticArraySetInstruction(temporaries, context, instruction),
         (AssocArraySet instruction) =>
@@ -539,6 +554,84 @@ private InstructionEffect executeJumpInstruction(
     in imported!"quickbite.ir.instruction".Jump instruction,
 ) @safe pure {
     return jump(instruction.offset);
+}
+
+private InstructionEffect executeTryCatchInstruction(
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint instructionPointer,
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".TryCatch instruction,
+) @safe pure {
+    const bodyStart = instructionPointer + 1;
+    const handlerStart = bodyStart + instruction.bodyLength;
+    const tryCatchEnd = handlerStart + instruction.handlerLength;
+
+    try {
+        const effect = executeInstructionRange(
+            module_,
+            instructions,
+            bodyStart,
+            handlerStart,
+            temporaries,
+            context,
+        );
+        if (effect.hasReturn)
+            return effect;
+    } catch (UserThrownException) {
+        const effect = executeInstructionRange(
+            module_,
+            instructions,
+            handlerStart,
+            tryCatchEnd,
+            temporaries,
+            context,
+        );
+        if (effect.hasReturn)
+            return effect;
+    }
+
+    return jump(cast(int) (tryCatchEnd - instructionPointer));
+}
+
+private InstructionEffect executeInstructionRange(
+    in imported!"quickbite.ir.module_".Module module_,
+    in imported!"quickbite.ir.instruction".Instruction[] instructions,
+    in uint start,
+    in uint end,
+    ref long[] temporaries,
+    ref ExecutionContext context,
+) @safe pure {
+    uint instructionPointer = start;
+    while (instructionPointer < end) {
+        InstructionEffect effect;
+        try {
+            effect = executeInstruction(
+                module_,
+                instructions,
+                instructionPointer,
+                temporaries,
+                context,
+            );
+        } catch (UnittestAssertionFailure exception) {
+            throw exception;
+        } catch (UserThrownException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw internalExecutionFailure(
+                "instruction",
+                instructionPointer,
+                exception,
+            );
+        }
+        if (effect.hasReturn)
+            return effect;
+
+        instructionPointer += effect.offset;
+    }
+
+    return nextInstruction;
 }
 
 private InstructionEffect executeCopyInstruction(
@@ -794,6 +887,20 @@ private InstructionEffect executeStaticArrayInstruction(
     const array = cast(long) (context.arrays.length - 1);
     context.staticArrays[name] = array;
     writeTemporaryValue(temporaries, destination) = array;
+    return nextInstruction;
+}
+
+private InstructionEffect executeStaticIntInstruction(
+    ref long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".StaticInt instruction,
+) @safe pure {
+    if (auto value = instruction.name in context.staticArrays) {
+        writeTemporaryValue(temporaries, instruction.destination) = *value;
+        return nextInstruction;
+    }
+
+    writeTemporaryValue(temporaries, instruction.destination) = 0;
     return nextInstruction;
 }
 
@@ -1179,7 +1286,7 @@ private InstructionEffect executeReturnVoidInstruction(
     return returnFromVoid;
 }
 
-InstructionEffect nextInstruction() @safe pure nothrow @nogc {
+private InstructionEffect nextInstruction() @safe pure nothrow @nogc {
     return InstructionEffect(1);
 }
 
@@ -1191,19 +1298,19 @@ private string thrownExceptionMessage(in string message) @safe pure nothrow {
     return message[prefix.length .. $];
 }
 
-InstructionEffect jump(in int offset) @safe pure nothrow @nogc {
+private InstructionEffect jump(in int offset) @safe pure nothrow @nogc {
     return InstructionEffect(offset);
 }
 
-InstructionEffect returnFromFunction(in uint value) @safe pure nothrow @nogc {
+private InstructionEffect returnFromFunction(in uint value) @safe pure nothrow @nogc {
     return InstructionEffect(0, true, value);
 }
 
-InstructionEffect returnFromVoid() @safe pure nothrow @nogc {
+private InstructionEffect returnFromVoid() @safe pure nothrow @nogc {
     return InstructionEffect(0, true);
 }
 
-long castInteger(
+private long castInteger(
     in long value,
     in imported!"quickbite.ir.instruction".IntegerType target,
 ) @safe pure nothrow @nogc {
@@ -1230,7 +1337,7 @@ long castInteger(
     }
 }
 
-void writeArguments(
+private void writeArguments(
     ref long[] temporaries,
     in uint numParameters,
     in long[] arguments,
@@ -1242,7 +1349,7 @@ void writeArguments(
         writeTemporaryValue(temporaries, cast(uint) index) = argument;
 }
 
-void writeRefArguments(
+private void writeRefArguments(
     in long[] calleeTemporaries,
     in bool[] refParameters,
     ref long[] callerTemporaries,
@@ -1257,7 +1364,7 @@ void writeRefArguments(
     }
 }
 
-long[] argumentValues(in long[] temporaries, in uint[] arguments) @safe pure {
+private long[] argumentValues(in long[] temporaries, in uint[] arguments) @safe pure {
     long[] result;
 
     foreach (argument; arguments)
@@ -1266,7 +1373,7 @@ long[] argumentValues(in long[] temporaries, in uint[] arguments) @safe pure {
     return result;
 }
 
-void executeBinaryInstruction(
+private void executeBinaryInstruction(
     ref long[] temporaries,
     in uint destination,
     in uint left,
@@ -1348,13 +1455,13 @@ void executeBinaryInstruction(
     writeTemporaryValue(temporaries, destination) = result;
 }
 
-bool arrayCanFind(in long[] haystack, in long[] needle) @safe pure {
+private bool arrayCanFind(in long[] haystack, in long[] needle) @safe pure {
     import std.algorithm.searching: canFind;
 
     return haystack.canFind(needle);
 }
 
-long[] copyArrayValue(in long[][] arrays, in size_t handle) @safe pure {
+private long[] copyArrayValue(in long[][] arrays, in size_t handle) @safe pure {
     if (handle < arrays.length)
         return arrays[handle].dup;
 
@@ -1364,7 +1471,7 @@ long[] copyArrayValue(in long[][] arrays, in size_t handle) @safe pure {
     throw arrayHandleException(arrays, handle);
 }
 
-long[] referenceArrayValue(ref long[][] arrays, in size_t handle) @safe pure {
+private long[] referenceArrayValue(ref long[][] arrays, in size_t handle) @safe pure {
     if (handle < arrays.length)
         return arrays[handle];
 
@@ -1374,7 +1481,7 @@ long[] referenceArrayValue(ref long[][] arrays, in size_t handle) @safe pure {
     throw arrayHandleException(arrays, handle);
 }
 
-void executeUnaryInstruction(
+private void executeUnaryInstruction(
     ref long[] temporaries,
     in uint destination,
     in uint source,
@@ -1402,7 +1509,7 @@ void executeUnaryInstruction(
     }
 }
 
-long bitScanReverseValue(in long sourceValue) @safe pure nothrow @nogc {
+private long bitScanReverseValue(in long sourceValue) @safe pure nothrow @nogc {
     // Implements the IR UnaryOperation.bitScanReverse semantics. core.bitop.bsr
     // is avoided here because this VM needs the explicit zero result below.
     const bits = cast(ulong) sourceValue;
@@ -1415,22 +1522,22 @@ long bitScanReverseValue(in long sourceValue) @safe pure nothrow @nogc {
     return -1;
 }
 
-void enforceNonZeroDivisor(in long value) @safe pure {
+private void enforceNonZeroDivisor(in long value) @safe pure {
     if (value == 0)
         throw new UnittestAssertionFailure;
 }
 
-long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
+private long readTemporaryValue(in long[] temporaries, in uint index) @safe pure {
     enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
 }
 
-ref long writeTemporaryValue(ref long[] temporaries, in uint index) @safe pure {
+private ref long writeTemporaryValue(ref long[] temporaries, in uint index) @safe pure {
     enforceTemporaryIndex(temporaries.length, index);
     return temporaries[index];
 }
 
-size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
+private size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     const value = readTemporaryValue(temporaries, temporary);
     if (value < 0)
         throw new Exception("IR: array index out of range");
@@ -1438,7 +1545,7 @@ size_t arrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     return cast(size_t) value;
 }
 
-bool arraysEqual(
+private bool arraysEqual(
     in long[][] arrays,
     in size_t left,
     in size_t right,
@@ -1491,7 +1598,7 @@ private size_t arrayHandle(in long value) @safe pure {
     return cast(size_t) value;
 }
 
-size_t assocArrayIndex(in long[] temporaries, in uint temporary) @safe pure {
+private size_t assocArrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     const value = readTemporaryValue(temporaries, temporary);
     if (value < 0)
         throw new Exception("IR: associative array index out of range");
@@ -1499,7 +1606,7 @@ size_t assocArrayIndex(in long[] temporaries, in uint temporary) @safe pure {
     return cast(size_t) value;
 }
 
-long assocArrayValue(in AssocArray array, in long key) @safe pure {
+private long assocArrayValue(in AssocArray array, in long key) @safe pure {
     foreach (index, existingKey; array.keys)
         if (existingKey == key)
             return array.values[index];
@@ -1507,7 +1614,7 @@ long assocArrayValue(in AssocArray array, in long key) @safe pure {
     return 0;
 }
 
-void writeAssocArrayValue(
+private void writeAssocArrayValue(
     ref AssocArray array,
     in long key,
     in long value,
@@ -1524,7 +1631,7 @@ void writeAssocArrayValue(
     array.values ~= value;
 }
 
-long functionPointerValue(in string name) @safe pure nothrow @nogc {
+private long functionPointerValue(in string name) @safe pure nothrow @nogc {
     long result = cast(long) 14_695_981_039_346_656_037UL;
     foreach (immutable char character; name)
         result = (result ^ cast(long) character) *
@@ -1533,7 +1640,7 @@ long functionPointerValue(in string name) @safe pure nothrow @nogc {
     return result == 0 ? 1 : result;
 }
 
-void appendArrayValues(
+private void appendArrayValues(
     ref ExecutionContext context,
     in size_t array,
     in long[] values,
@@ -1542,7 +1649,7 @@ void appendArrayValues(
         appendArrayValue(context, array, value);
 }
 
-void appendArrayValue(
+private void appendArrayValue(
     ref ExecutionContext context,
     in size_t array,
     in long value,
@@ -1552,7 +1659,7 @@ void appendArrayValue(
     updateSliceArrayAlias(context, array, index, value);
 }
 
-void updateSliceArrayAlias(
+private void updateSliceArrayAlias(
     ref ExecutionContext context,
     in size_t array,
     in size_t index,
@@ -1568,7 +1675,7 @@ void updateSliceArrayAlias(
     }
 }
 
-void writeArrayValue(
+private void writeArrayValue(
     ref long[][] arrays,
     in size_t array,
     in size_t index,
@@ -1588,7 +1695,7 @@ void writeArrayValue(
     arrays[array] ~= value;
 }
 
-void updateArrayAlias(
+private void updateArrayAlias(
     in long[] temporaries,
     in uint arrayTemporary,
     in uint indexTemporary,
@@ -1622,7 +1729,7 @@ void updateArrayAlias(
     }
 }
 
-size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
+private size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
     const value = readTemporaryValue(temporaries, temporary);
     if (value < 0)
         throw new Exception("IR: struct index out of range");
@@ -1630,7 +1737,7 @@ size_t structIndex(in long[] temporaries, in uint temporary) @safe pure {
     return cast(size_t) value;
 }
 
-void enforceTemporaryIndex(in ulong length, in uint index) @safe pure {
+private void enforceTemporaryIndex(in ulong length, in uint index) @safe pure {
     if (index >= length)
         throw new Exception("IR: temporary index out of range");
 }
