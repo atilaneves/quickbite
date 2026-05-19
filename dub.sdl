@@ -20,6 +20,8 @@ configuration "unittest" {
     sourcePaths "tests"
     includePaths "tests"
     versions "unitUnthreaded"
+    // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
+    // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
@@ -40,6 +42,8 @@ configuration "unittest-cov" {
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
     // here directly.
+    // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
+    // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"

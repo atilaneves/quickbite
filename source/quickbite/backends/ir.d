@@ -3,28 +3,28 @@ module quickbite.backends.ir;
 private:
 
 public final class IrExecutor : imported!"quickbite.executor".Executor {
-    public void runTests(in string source) {
+    public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
         auto parsed = parseModule(source);
         runParsedTests(parsed.module_);
     }
 
-    public void runTests(in string source, in string[] importPaths) {
+    public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
         auto parsed = parseModule(source, importPaths);
         runParsedTests(parsed.module_);
     }
 
-    public void runParsedTests(imported!"dmd.dmodule".Module module_) {
+    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
         import quickbite.frontend.compiler: lowerModule;
 
         const loweredModule = lowerModule(module_);
         executeUnitTests(loweredModule);
     }
 
-    public imported!"quickbite.executor".TestSummary runTestSummary(
+    public override imported!"quickbite.executor".TestSummary runTestSummary(
         in string source,
     ) {
         import quickbite.frontend.compiler: lowerModule, parseModule;

@@ -1,10 +1,11 @@
 module quickbite.backends.dmd_backend;
 
-// Pull dmd.lib into the link before the frontend library so the linker can
-// resolve the Library.factory and Library.setFilename references that
-// dmd.glue.generateCodeAndWrite makes when writeLibrary=true.  We always
-// pass writeLibrary=false, so these paths are unreachable at runtime, but
-// the symbols must be present for static linking.
+// Link-order forcing mechanism: this intentionally-unused import pulls
+// dmd.lib into the link before the frontend library so the linker can resolve
+// the Library.factory and Library.setFilename references that
+// dmd.glue.generateCodeAndWrite makes when writeLibrary=true.  We always pass
+// writeLibrary=false, so these paths are unreachable at runtime, but the
+// symbols must be present for static linking.
 import dmd.lib: Library;
 
 private:
@@ -26,7 +27,26 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
-        runParsedTests(parseModule(source, importPaths).module_);
+
+        auto module_ = parseModule(source, importPaths).module_;
+
+        try {
+            runParsedTests(module_);
+        } catch (Exception e) {
+            if (isUnsupportedImportedSourceModuleFailure(e.msg))
+                throw new Exception("DMD backend does not support imported source modules.");
+
+            throw e;
+        }
+    }
+
+    private static bool isUnsupportedImportedSourceModuleFailure(
+        in string message,
+    ) @safe pure {
+        import std.algorithm.searching: canFind, startsWith;
+
+        return message.startsWith("dlopen failed: ")
+            && message.canFind("undefined symbol: _D");
     }
 
     public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
@@ -40,7 +60,7 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
         compileAndRun(module_, linkFiles);
     }
 
-    public imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
+    public override imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
         import quickbite.executor: TestSummary;
         import quickbite.frontend.compiler: parseModule;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
@@ -48,12 +68,13 @@ public final class DmdBackend : imported!"quickbite.executor".Executor {
         auto module_ = parseModule(source).module_;
         TestSummary summary;
 
-        // Count total tests
-        foreachUnitTestDeclaration(module_, (_) { ++summary.total; });
+        bool hasTests;
+        foreachUnitTestDeclaration(module_, (_) { hasTests = true; });
 
-        if (summary.total == 0)
+        if (!hasTests)
             return summary;
 
+        summary.total = 1;
         try {
             compileAndRun(module_, linkFiles);
             summary.passed = summary.total;
@@ -121,11 +142,11 @@ private void generateObj(
     generateCodeAndWrite([module_], [], "", "", false, true, false, false, false);
 }
 
-private void link(in string objPath, in string soPath, in string[] linkFiles) {
+private void link(in string objPath, in string soPath, in string[] linkFiles) @safe {
     import std.process: execute;
     import std.conv: text;
 
-    auto command = [
+    auto command = [ // const fails: mutated via ~= below.
         "dmd", "-shared", "-fPIC",
     ];
     version (QuickbiteRuntimeLoadLibrary) {
@@ -183,7 +204,7 @@ private void loadAndRunTests(
 
 private void throwIfUnittestRunnerThrowableCaught(
     in bool unittestRunnerThrowableCaught,
-) {
+) @safe pure {
     if (!unittestRunnerThrowableCaught)
         return;
 

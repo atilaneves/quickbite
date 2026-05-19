@@ -111,23 +111,6 @@
 - Don't use unit-threaded assertions or imports inside `q{}` fixture strings;
   keep host-test dependencies out of code under test.
 
-- In strict TDD, when the first red test asks for a summary count, do not
-  implement real counting immediately. Return the smallest pre-canned
-  value that satisfies the current test, then add another approved test to
-  force a real implementation before refactoring.
-
-- In new unit-threaded tests, prefer `.should == expected` over
-  `.shouldEqual(expected)` unless the surrounding code specifically calls
-  for the older style.
-
-- Do not use unit-threaded assertions or imports inside fixture source
-  strings that quickbite executes. Keep host-test dependencies out of
-  code under test; use ordinary D constructs in `q{}` fixtures.
-
-- Do not use `throw new Exception` as a stand-in for a normal failing
-  unittest fixture unless exception handling itself is under test. Prefer
-  ordinary `assert` when the fixture is meant to represent user tests.
-
 - In `tests/ut/compiler_api.d`, use `shouldThrowWithMessage`, not naked
   `shouldThrow`, so tests verify the relevant diagnostic text.
 

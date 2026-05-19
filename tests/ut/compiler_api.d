@@ -103,6 +103,43 @@ unittest {
     }, ExecutorBackend.dmdBackend).shouldThrow;
 }
 
+@("runTests.dmdBackendRejectsImportedSourceModules")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+    import std.path: buildPath;
+    import std.file: mkdirRecurse, write;
+
+    const importPath = tempModuleDir("dmd-backend-imported-source");
+    mkdirRecurse(importPath);
+    write(
+        buildPath(importPath, "quickbite_dmd_backend_imported_source.d"),
+        q{
+            module quickbite_dmd_backend_imported_source;
+
+            int quickbiteImportedAnswer = 42;
+
+            int importedAnswer() {
+                return quickbiteImportedAnswer;
+            }
+        },
+    );
+
+    // The DMD backend currently compiles only the source module. Imported
+    // source modules would need transitive object generation/linking, so keep
+    // this explicitly unsupported until that backend grows that behavior.
+    runTests(q{
+        module quickbite_dmd_backend_regression.imported_source;
+
+        import quickbite_dmd_backend_imported_source;
+
+        unittest {
+            assert(importedAnswer == 42);
+        }
+    }, [importPath], ExecutorBackend.dmdBackend).shouldThrowWithMessage(
+        "DMD backend does not support imported source modules.",
+    );
+}
+
 @("runTests.runsAttributedThrowingUnittests")
 unittest {
     import quickbite: ExecutorBackend, runTests;
@@ -128,26 +165,30 @@ unittest {
     import std.traits: EnumMembers;
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
-        {
-            const summary = runTestSummary(q{
-                @("passes")
-                unittest {
-                    assert(1 == 1);
-                }
+        // This generic test covers backends that execute unittest blocks
+        // individually; the DMD backend is covered separately below.
+        static if (backend != ExecutorBackend.dmdBackend) {
+            {
+                const summary = runTestSummary(q{
+                    @("passes")
+                    unittest {
+                        assert(1 == 1);
+                    }
 
-                @("fails")
-                unittest {
-                    assert(1 == 2);
-                }
+                    @("fails")
+                    unittest {
+                        assert(1 == 2);
+                    }
 
-                unittest {
-                    assert(2 == 2);
-                }
-            }, backend);
+                    unittest {
+                        assert(2 == 2);
+                    }
+                }, backend);
 
-            summary.total.should == 3;
-            summary.passed.should == 2;
-            summary.failed.should == 1;
+                summary.total.should == 3;
+                summary.passed.should == 2;
+                summary.failed.should == 1;
+            }
         }
     }
 }
@@ -158,23 +199,81 @@ unittest {
     import std.traits: EnumMembers;
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
-        {
-            const summary = runTestSummary(q{
-                unittest {
-                    assert(1 == 1);
-                }
+        // DMD backend module-level reporting is tested separately below.
+        static if (backend != ExecutorBackend.dmdBackend) {
+            {
+                const summary = runTestSummary(q{
+                    unittest {
+                        assert(1 == 1);
+                    }
 
-                @("also passes")
-                unittest {
-                    assert(2 == 2);
-                }
-            }, backend);
+                    @("also passes")
+                    unittest {
+                        assert(2 == 2);
+                    }
+                }, backend);
 
-            summary.total.should == 2;
-            summary.passed.should == 2;
-            summary.failed.should == 0;
+                summary.total.should == 2;
+                summary.passed.should == 2;
+                summary.failed.should == 0;
+            }
         }
     }
+}
+
+@("runTestSummary.dmdBackendCountsPassingSourceModule")
+unittest {
+    import quickbite: ExecutorBackend, runTestSummary;
+
+    // DMD's generated __modtest runner exposes one result for the whole source
+    // module. Even with multiple passing unittest blocks, quickbite can only
+    // report one passing module for this backend.
+    const summary = runTestSummary(q{
+        module quickbite_dmd_backend_summary.passing_module;
+
+        unittest {
+            assert(1 == 1);
+        }
+
+        @("also passes")
+        unittest {
+            assert(2 == 2);
+        }
+    }, ExecutorBackend.dmdBackend);
+
+    summary.total.should == 1;
+    summary.passed.should == 1;
+    summary.failed.should == 0;
+}
+
+@("runTestSummary.dmdBackendCountsFailingSourceModule")
+unittest {
+    import quickbite: ExecutorBackend, runTestSummary;
+
+    // __modtest aborts the module on the first failing unittest and does not
+    // expose later block outcomes. The DMD backend therefore reports one
+    // failing source module, not one pass plus one failure plus one skipped
+    // block.
+    const summary = runTestSummary(q{
+        module quickbite_dmd_backend_summary.failing_module;
+
+        unittest {
+            assert(1 == 1);
+        }
+
+        @("fails")
+        unittest {
+            assert(1 == 2);
+        }
+
+        unittest {
+            assert(3 == 3);
+        }
+    }, ExecutorBackend.dmdBackend);
+
+    summary.total.should == 1;
+    summary.passed.should == 0;
+    summary.failed.should == 1;
 }
 
 @("parseModule.countsAttributedUnittests")
