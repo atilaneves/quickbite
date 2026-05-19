@@ -3480,10 +3480,20 @@ private struct BodyWalker {
             return tryReadInputRangeElements(comma.e2, elements, interpreter);
         }
 
+
         if (auto call = expression.isCallExp) {
             Value value;
             if (tryRunIota(call, value, interpreter))
                 return tryValueArray(value, elements);
+            // opSlice() with no args returns the same range: delegate to receiver.
+            if (call.f !is null &&
+                call.f.ident !is null &&
+                call.f.ident.toString == "opSlice" &&
+                (call.arguments is null || call.arguments.length == 0)) {
+                Expression receiver;
+                if (tryInputRangeCallReceiver(call, receiver))
+                    return tryReadInputRangeElements(receiver, elements, interpreter);
+            }
         }
 
         if (auto var = expression.isVarExp)
@@ -7244,6 +7254,23 @@ private struct BodyWalker {
             if (isScopeBufferRangeType(variable.type))
                 interpreter.scopeBufferBytes["ScopeBufferRange.sbuf"] =
                     (long[]).init;
+            // Intercept dec.value!T initialisers before tryReadInputRangeElements
+            // to prevent its catch-all from executing value!T as a side-effect
+            // and consuming the decoder's byte buffer prematurely.
+            if (variable._init !is null &&
+                variable._init.isExpInitializer !is null &&
+                isCerealedValueInitialiser(variable._init.isExpInitializer.exp)) {
+                Value[VarDeclaration] valueFields;
+                if (tryRunStructDeclarationDecerealiseValue(
+                    variable.type,
+                    variable._init.isExpInitializer.exp,
+                    valueFields,
+                    interpreter,
+                )) {
+                    structFields[variable] = valueFields;
+                    return Value(0L);
+                }
+            }
             if (variable._init !is null &&
                 variable._init.isExpInitializer !is null) {
                 long[] rangeElements;
@@ -9410,6 +9437,12 @@ private struct BodyWalker {
             return false;
         if (!isStructType(valueType))
             return false;
+        // Output ranges must be decoded via the dedicated path so that the
+        // payload bytes are appended to the global output variable rather than
+        // silently discarded by the struct-field deserializer.
+        if (isOutputRangeStructType(valueType) &&
+            tryRunOutputRangeDecerealiseValue(call, fields, interpreter))
+            return true;
 
         auto dotVar = call.e1.isDotVarExp;
         if (dotVar is null)
@@ -9452,12 +9485,27 @@ private struct BodyWalker {
         return callFunctionNamed(call, "value");
     }
 
+    // Returns true when expression is (or wraps) a dec.value!T cerealed call.
+    // Used to detect initialisers that must be handled before
+    // tryReadInputRangeElements to prevent side-effectful byte consumption.
+    private bool isCerealedValueInitialiser(Expression expression) {
+        if (auto construct = expression.isConstructExp)
+            return isCerealedValueInitialiser(construct.e2);
+        if (auto assign = expression.isAssignExp)
+            return isCerealedValueInitialiser(assign.e2);
+        if (auto blit = expression.isBlitExp)
+            return isCerealedValueInitialiser(blit.e2);
+        if (auto call = expression.isCallExp)
+            return isCerealedValueCall(call);
+        return false;
+    }
+
     private bool tryRunOutputRangeDecerealiseValue(
         CallExp call,
         out Value[VarDeclaration] fields,
         ref Interpreter interpreter,
     ) {
-        if (call.f.ident is null || call.f.ident.toString != "value")
+        if (call.f is null || call.f.ident is null || call.f.ident.toString != "value")
             return false;
         if (!isOutputRangeStructType(call.type))
             return false;
@@ -9863,12 +9911,12 @@ private struct BodyWalker {
         if (!isOutputRangeStructType(type))
             return false;
         if (bytes.length < 2)
-            throw new Exception("Not enough bytes left to decerealise output range.");
+            return false;
 
         const length = cast(size_t) readBigEndian(bytes[0 .. 2]);
         neededByteCount = 2 + length;
         if (bytes.length < neededByteCount)
-            throw new Exception("Not enough bytes left to decerealise output range.");
+            return false;
 
         appendOutputRangePayload(
             bytes[2 .. neededByteCount],
