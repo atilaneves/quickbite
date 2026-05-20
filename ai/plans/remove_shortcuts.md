@@ -112,4 +112,3 @@ When bridging is implemented:
 | File | Change |
 |---|---|
 | `source/quickbite/backends/tree_walking.d` | Add `HeapPtr` to `Value`; add heap table to `Interpreter`; handle `malloc`/`free`/`new`/pointer ops; remove all cerealed shortcuts |
-

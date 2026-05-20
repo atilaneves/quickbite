@@ -41,7 +41,618 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             unittest {
                 throw new Exception("boom");
             }
+        }, backend).shouldThrowWithMessage("boom");
+    }
+
+    @(backend.text ~ ".catchExceptionDoesNotCatchAssertFailure")
+    unittest {
+        runTests(q{
+            unittest {
+                try {
+                    assert(false);
+                } catch (Exception) {
+                }
+            }
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+    }
+
+    @(backend.text ~ ".catchExceptionCatchesThrownException")
+    unittest {
+        runTests(q{
+            unittest {
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                }
+            }
+        }, backend);
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".catchExceptionCatchesThrownExceptionFromCalledFunction")
+        unittest {
+            runTests(q{
+                void f() {
+                    throw new Exception("expected");
+                }
+
+                unittest {
+                    int value;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        value = 42;
+                    }
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesThrowAfterCalleeSideEffect")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void f() {
+                    marker = 1;
+                    throw new Exception("expected");
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    int caught;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesNestedBranchThrowFromCalledFunction")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void g(bool shouldThrow) {
+                    if (shouldThrow) {
+                        marker = 1;
+                        throw new Exception("expected");
+                    }
+
+                    marker = 2;
+                }
+
+                void f() {
+                    g(true);
+                    marker = 3;
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    g(false);
+                    assert(marker == 2);
+
+                    int caught;
+                    try {
+                        f;
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".catchExceptionCatchesRuntimeBranchThrowFromCalledFunction")
+        unittest {
+            runTests(q{
+                int marker;
+
+                void f(int value) {
+                    if (value == 1) {
+                        marker = 1;
+                        throw new Exception("expected");
+                    }
+
+                    marker = 2;
+                }
+
+                unittest {
+                    assert(marker == 0);
+
+                    int caught;
+                    int runtimeValue = caught + 1;
+                    try {
+                        f(runtimeValue);
+                    } catch (Exception) {
+                        caught = 1;
+                    }
+
+                    // Unlike earlier catch-call tests, runtime data selects
+                    // the branch, so lowering cannot prove the throw path
+                    // syntactically.
+                    assert(caught == 1);
+                    assert(marker == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(backend.text ~ ".throwPreservesExceptionMessage")
+    unittest {
+        expectRunTestsFailure(q{
+            unittest {
+                throw new Exception("domain failure");
+            }
+        }, backend, "domain failure");
+    }
+
+    @(backend.text ~ ".shouldThrowFailsWhenExpressionDoesNotThrow")
+    unittest {
+        import ut.dub_paths: dubImportPaths;
+
+        expectRunTestsFailure(q{
+            import unit_threaded;
+
+            unittest {
+                shouldThrow(1);
+            }
+        }, dubImportPaths, backend);
+    }
+
+    @(backend.text ~ ".shouldThrowWithMessageChecksMessage")
+    unittest {
+        import ut.dub_paths: dubImportPaths;
+
+        expectRunTestsFailure(q{
+            import unit_threaded;
+
+            void throwActual() {
+                throw new Exception("actual");
+            }
+
+            unittest {
+                shouldThrowWithMessage(throwActual, "expected");
+            }
+        }, dubImportPaths, backend);
+    }
+
+    @(backend.text ~ ".distinguishesFloatingPointValues")
+    unittest {
+        runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left != right);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".supportsContinue")
+    unittest {
+        runTests(q{
+            unittest {
+                int sum;
+                for (int i = 0; i < 4; ++i) {
+                    if (i == 2)
+                        continue;
+                    sum += i;
+                }
+                assert(sum == 4);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".supportsSwitch")
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 2;
+                int result;
+                switch (value) {
+                    case 1:
+                        result = 10;
+                        break;
+                    case 2:
+                        result = 20;
+                        break;
+                    default:
+                        result = 30;
+                        break;
+                }
+                assert(result == 20);
+            }
+        }, backend);
+    }
+
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        @(backend.text ~ ".finallyRunsAfterReturn")
+        unittest {
+            runTests(q{
+                int value;
+
+                int setAndReturn() {
+                    try {
+                        return 1;
+                    } finally {
+                        value = 42;
+                    }
+                }
+
+                unittest {
+                    assert(setAndReturn == 1);
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".finallyReturnCapturesValueBeforeFinally")
+        unittest {
+            runTests(q{
+                int value;
+
+                int readThenMutate() {
+                    try {
+                        return value;
+                    } finally {
+                        value = 2;
+                    }
+                }
+
+                unittest {
+                    value = 1;
+                    assert(readThenMutate == 1);
+                    assert(value == 2);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".finallyBranchReturnsCaptureValueBeforeFinally")
+        unittest {
+            runTests(q{
+                int value;
+
+                int readBranchThenMutate(bool chooseFirst) {
+                    try {
+                        if (chooseFirst)
+                            return value + 10;
+                        else
+                            return value + 20;
+                    } finally {
+                        value = 2;
+                    }
+                }
+
+                unittest {
+                    value = 1;
+                    assert(readBranchThenMutate(true) == 11);
+                    assert(value == 2);
+
+                    value = 3;
+                    assert(readBranchThenMutate(false) == 23);
+                    assert(value == 2);
+                }
+            }, backend);
+        }
+    }
+
+    @(backend.text ~ ".catchHandlerRuns")
+    unittest {
+        runTests(q{
+            unittest {
+                int value;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    value = 42;
+                }
+                assert(value == 42);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".evaluatesPow")
+    unittest {
+        runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 8.0);
+            }
+        }, backend);
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".evaluatesRuntimePowDoubleInputs")
+        unittest {
+            runTests(q{
+                import std.math: pow;
+
+                unittest {
+                    double base = 2.0;
+                    double exponent = 4.0;
+                    assert(pow(base, exponent) == 16.0);
+
+                    base = 9.0;
+                    exponent = 0.5;
+                    double root = pow(base, exponent);
+                    assert(root > 2.999);
+                    assert(root < 3.001);
+
+                    base = 4.0;
+                    exponent = -1.0;
+                    assert(pow(base, exponent) == 0.25);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".doesNotTreatUserNamedPowAsMathIntrinsic")
+        unittest {
+            runTests(q{
+                double pow(double base, double exponent) {
+                    return base + exponent;
+                }
+
+                unittest {
+                    double base = 2.0;
+                    double exponent = 4.0;
+                    assert(pow(base, exponent) == 6.0);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeSqrtInput")
+        unittest {
+            runTests(q{
+                import std.math: sqrt;
+
+                unittest {
+                    double input = 9.0;
+                    assert(sqrt(input) == 3.0);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesDifferentRuntimeSqrtInput")
+        unittest {
+            runTests(q{
+                import std.math: sqrt;
+
+                unittest {
+                    double input = 16.0;
+                    assert(sqrt(input) == 4.0);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeNonIntegerSqrtInput")
+        unittest {
+            runTests(q{
+                import std.math: sqrt;
+
+                unittest {
+                    double input = 2.25;
+                    assert(sqrt(input) == 1.5);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeNonPerfectSqrtInput")
+        unittest {
+            runTests(q{
+                import std.math: sqrt;
+
+                unittest {
+                    double input = 2.0;
+                    double result = sqrt(input);
+                    assert(result > 1.414);
+                    assert(result < 1.415);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeFabsDoubleInput")
+        unittest {
+            runTests(q{
+                import std.math: fabs;
+
+                unittest {
+                    double first = -3.5;
+                    double second = -12.25;
+                    assert(fabs(first) == 3.5);
+                    assert(fabs(second) == 12.25);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeFabsPositiveDoubleInput")
+        unittest {
+            runTests(q{
+                import std.math: fabs;
+
+                unittest {
+                    double input = 7.75;
+                    assert(fabs(input) == 7.75);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeIsNaNDoubleInput")
+        unittest {
+            runTests(q{
+                import std.math: isNaN;
+
+                unittest {
+                    double notANumber = double.nan;
+                    double finite = 21.0;
+
+                    assert(isNaN(notANumber));
+                    assert(!isNaN(finite));
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeIsInfinityDoubleInput")
+        unittest {
+            runTests(q{
+                import std.math: isInfinity;
+
+                unittest {
+                    double input = double.infinity;
+                    assert(isInfinity(input));
+
+                    input = -double.infinity;
+                    assert(isInfinity(input));
+
+                    input = double.max;
+                    assert(!isInfinity(input));
+
+                    input = double.nan;
+                    assert(!isInfinity(input));
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeSignbitDoubleInput")
+        unittest {
+            runTests(q{
+                import std.math: signbit;
+
+                unittest {
+                    double input = -0.0;
+                    assert(signbit(input) != 0);
+
+                    input = 0.0;
+                    assert(signbit(input) == 0);
+
+                    input = -12.25;
+                    assert(signbit(input) != 0);
+
+                    input = 12.25;
+                    assert(signbit(input) == 0);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".evaluatesRuntimeSignbitNanInput")
+        unittest {
+            runTests(q{
+                import std.math: signbit;
+
+                unittest {
+                    double input = -double.nan;
+                    assert(signbit(input) != 0);
+
+                    input = double.nan;
+                    assert(signbit(input) == 0);
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".doesNotTreatUserNamedIsNaNAsMathIntrinsic")
+        unittest {
+            runTests(q{
+                bool isNaN(double value) {
+                    return true;
+                }
+
+                unittest {
+                    double input = 21.0;
+                    assert(isNaN(input));
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".callsUserNamedIsNaNForNanInput")
+        unittest {
+            runTests(q{
+                bool isNaN(double value) {
+                    return false;
+                }
+
+                unittest {
+                    double input = double.nan;
+                    assert(!isNaN(input));
+                }
+            }, backend);
+        }
+
+        @(backend.text ~ ".doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics")
+        unittest {
+            runTests(q{
+                double sqrt(double value) {
+                    return value + 1.0;
+                }
+
+                double fabs(double value) {
+                    return value + 2.0;
+                }
+
+                unittest {
+                    double input = 9.0;
+                    assert(sqrt(input) == 10.0);
+                    assert(fabs(input) == 11.0);
+                }
+            }, backend);
+        }
+    }
+
+    @(backend.text ~ ".functionPointerHashCollisionDetected")
+    unittest {
+        runTests(q{
+            unittest {
+                // bAB and a_a produce the same Bernstein hash (602706).
+                static int bAB() {
+                    return 1;
+                }
+
+                static int a_a() {
+                    return 2;
+                }
+
+                int function() fp = &a_a;
+                assert(fp() == 2);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".nestedSliceWritesPropagateToOriginalArray")
+    unittest {
+        runTests(q{
+            unittest {
+                int[] a = [0, 1, 2, 3, 4];
+                int[] s = a[1 .. 4];
+                int[] s2 = s[0 .. 2];
+                s2[0] = 99;
+                assert(a[1] == 99);
+            }
+        }, backend);
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".nestedSliceAppendWritesThroughOuterSliceToOriginalArray")
+        unittest {
+            runTests(q{
+                unittest {
+                    int[] a = [0, 1, 2, 3, 4];
+                    int[] s = a[1 .. 3];
+                    int[] s2 = s[1 .. 2];
+                    s2 ~= 99;
+                    assert(a[3] == 99);
+                }
+            }, backend);
+        }
     }
 
     @(backend.text ~ ".localIntReturn")
@@ -1403,6 +2014,58 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }
         }, backend);
     }
+}
+
+@("treeWalking.unitThreadedCheckRunsPredicate")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    expectRunTestsFailure(q{
+        import unit_threaded;
+
+        unittest {
+            check!((int value) => false);
+        }
+    }, dubImportPaths, ExecutorBackend.treeWalking, "Property failed. Seed: 1. Input: 1");
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in ExecutorBackend backend,
+    in string expectedMessage,
+) {
+    string[] importPaths;
+    expectRunTestsFailure(source, importPaths, backend, expectedMessage);
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in string[] importPaths,
+    in ExecutorBackend backend,
+) {
+    bool threw;
+    try {
+        runTests(source, importPaths, backend);
+    } catch (Exception) {
+        threw = true;
+    }
+    threw.should == true;
+}
+
+private void expectRunTestsFailure(
+    in string source,
+    in string[] importPaths,
+    in ExecutorBackend backend,
+    in string expectedMessage,
+) {
+    bool threw;
+    try {
+        runTests(source, importPaths, backend);
+    } catch (Exception exception) {
+        threw = true;
+        exception.msg.should == expectedMessage;
+    }
+    threw.should == true;
 }
 
 static foreach (backend; EnumMembers!ExecutorBackend) {

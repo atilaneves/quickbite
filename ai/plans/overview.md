@@ -169,3 +169,12 @@ category across all backends.
 - Lives in `benchmarks/`; excluded from dub test.
 - Backend parity: same selected unittest must produce the same pass/fail
   result and the same user-facing diagnostic category across all backends.
+
+### Known issue: `-inline` disabled
+
+DMD's inliner hangs (>60 s, killed) when compiling `lowering.d` with
+`-inline` because the file is large (~8500 lines) and contains deep
+mutual recursion between `lowerExpression` and `lowerStatement`.  The
+benchmark build type `benchmark-opt` therefore omits `-inline`.  The
+fix is to split `lowering.d` into smaller modules; restore `-inline`
+(or switch back to `-b release`) once that is done.

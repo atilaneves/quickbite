@@ -97,6 +97,9 @@
 
 - Don't add `@trusted` without a specific justification.
 
+- When told not to use `@trusted`, don't add wrappers around unsafe DMD APIs.
+  Leave the caller unannotated or restructure the code instead.
+
 - When a PR replaces a process-spawning CLI call with a library call, don't
   satisfy review comments by hiding the same CLI call behind a library-shaped
   wrapper.
@@ -113,3 +116,7 @@
 
 - Don't use `throw new Exception` as a failing-test stand-in unless exception
   handling is under test; use `assert`.
+
+- DMD declaration helpers are type-specific. Don't call a `VarDeclaration`
+  helper such as `declarationName` with a `FuncDeclaration`; use the existing
+  function helper instead.

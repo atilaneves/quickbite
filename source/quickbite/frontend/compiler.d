@@ -153,15 +153,14 @@ final class Compiler {
         );
 
         ParsedModule parsed = dmdParseModule(fileName, source);
-        if (parsed.module_ !is null)
-            sourceCache[key] = parsed.module_;
-
         if (parsed.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
 
         parsed.module_.fullSemantic;
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
+
+        sourceCache[key] = parsed.module_;
 
         return parsed;
     }

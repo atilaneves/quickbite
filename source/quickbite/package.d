@@ -12,20 +12,7 @@ public void runTests(
     in string source,
     in ExecutorBackend backend = ExecutorBackend.ir,
 ) {
-    final switch (backend) {
-        case ExecutorBackend.ir:
-            import quickbite.backends.ir: IrExecutor;
-            (new IrExecutor).runTests(source);
-            return;
-        case ExecutorBackend.treeWalking:
-            import quickbite.backends.tree_walking: TreeWalkingExecutor;
-            (new TreeWalkingExecutor).runTests(source);
-            return;
-        case ExecutorBackend.dmdCtfe:
-            import quickbite.backends.dmd_ctfe: DmdCtfe;
-            (new DmdCtfe).runTests(source);
-            return;
-    }
+    executor(backend).runTests(source);
 }
 
 public void runTestsFromFile(
@@ -42,35 +29,28 @@ public void runTests(
     in string[] importPaths,
     in ExecutorBackend backend = ExecutorBackend.ir,
 ) {
-    final switch (backend) {
-        case ExecutorBackend.ir:
-            import quickbite.backends.ir: IrExecutor;
-            (new IrExecutor).runTests(source, importPaths);
-            return;
-        case ExecutorBackend.treeWalking:
-            import quickbite.backends.tree_walking: TreeWalkingExecutor;
-            (new TreeWalkingExecutor).runTests(source, importPaths);
-            return;
-        case ExecutorBackend.dmdCtfe:
-            import quickbite.backends.dmd_ctfe: DmdCtfe;
-            (new DmdCtfe).runTests(source, importPaths);
-            return;
-    }
+    executor(backend).runTests(source, importPaths);
 }
 
 public imported!"quickbite.executor".TestSummary runTestSummary(
     in string source,
     in ExecutorBackend backend = ExecutorBackend.ir,
 ) {
+    return executor(backend).runTestSummary(source);
+}
+
+private imported!"quickbite.executor".Executor executor(
+    in ExecutorBackend backend,
+) {
     final switch (backend) {
         case ExecutorBackend.ir:
             import quickbite.backends.ir: IrExecutor;
-            return (new IrExecutor).runTestSummary(source);
+            return new IrExecutor;
         case ExecutorBackend.treeWalking:
             import quickbite.backends.tree_walking: TreeWalkingExecutor;
-            return (new TreeWalkingExecutor).runTestSummary(source);
+            return new TreeWalkingExecutor;
         case ExecutorBackend.dmdCtfe:
             import quickbite.backends.dmd_ctfe: DmdCtfe;
-            return (new DmdCtfe).runTestSummary(source);
+            return new DmdCtfe;
     }
 }
