@@ -1191,11 +1191,22 @@ private InstructionEffect executeArraySliceInstruction(
     const upper = arrayIndex(temporaries, upperTemporary);
     context.arrays ~= context.arrays[array][lower .. upper];
     const slice = context.arrays.length - 1;
+    // Explicit type: auto keeps `array` const, but nested aliases rewrite this.
+    size_t sourceArray = array;
+    auto sourceLower = cast(long) lower; // Rewritten below for nested slices.
+    foreach (alias_; context.arrayAliases) {
+        if (alias_.array != array || !alias_.isSlice)
+            continue;
+
+        sourceArray = alias_.sourceArray;
+        sourceLower = alias_.key + cast(long) lower;
+        break;
+    }
     context.arrayAliases ~= ArrayAlias(
         slice,
-        array,
+        sourceArray,
         0,
-        cast(long) lower,
+        sourceLower,
         false,
         true,
     );

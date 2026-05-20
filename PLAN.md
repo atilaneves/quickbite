@@ -106,7 +106,9 @@ operations instead of lowering them as constants or no-ops.
 
 ## 7. Collision-free IR function pointer identity
 
-Remaining.
+Complete in commit `d6a62e1` (`Finish review cleanup and IR function
+ids`). Dense IR function pointer IDs and indirect-call dispatch coverage were
+added.
 
 Before editing tests, ask approval for an internal lowering regression proving
 function pointer values are collision-free IDs, not hashes of names.
@@ -116,7 +118,11 @@ use those IDs in IR indirect-call dispatch.
 
 ## 8. Nested slice alias writeback
 
-Remaining.
+Complete in the current uncommitted worktree. The nested slice append
+writeback red/green, implementation, and refactor steps are done.
+
+Verification reported for this item:
+- `dub test`: 503 passed.
 
 Before editing tests, ask approval for a slice-of-slice writeback regression if
 the current test is insufficient.
@@ -148,10 +154,12 @@ through call-argument propagation and write modified values back after calls.
 
 ## 11. Guard and semantic cleanup
 
-Remaining cleanup.
+Complete in commit `d6a62e1` (`Finish review cleanup and IR function
+ids`) for this review response. The remaining broad removal of cerealed and
+unit-threaded tree-walking shortcuts belongs to deferred follow-up if it is
+mentioned.
 
-These are review fixes that do not need new red behavior tests unless the
-implementer discovers an observable failing case:
+Completed review-response fixes:
 
 - Guard `isGroupedCerealArrayElementType` so `type !is null` is checked before
   scalar-byte-count calls.
@@ -165,9 +173,10 @@ implementer discovers an observable failing case:
 
 ## 12. Documentation comments
 
-Remaining comments.
+Complete in commit `d6a62e1` (`Finish review cleanup and IR function
+ids`).
 
-Add short code comments for:
+Added short code comments for:
 
 - The nested struct-copy invariant: nested field maps are propagated only for
   plain struct copies, not fresh literals or decerealise results.
@@ -185,14 +194,9 @@ response.
 
 ## Remaining handoff
 
-The next agents should continue with items 7, 8, 9, and 10 under the same TDD
+The next agents should continue with items 9 and 10 under the same TDD
 approval rule. Item 3 remains blocked by the explicit no-`@trusted` constraint.
-Item 11 is partially done: the null/type guard, struct-map `in` lookup,
-`opSlice` receiver check, and `call.f` guard are present, while the broader
-`expressionChars` semantic cleanup still needs review. Item 12 is partially
-done: comments exist for the nested struct-copy invariant and truncated
-payload fallback, while the byte-offset packing and
-`foreachUnitTestDeclaration` `nothrow` comments are still missing.
+Item 8 is green in the current uncommitted worktree.
 
 After the remaining behavior items and cleanup, run final `dub test` and
 `benchmarks/run.sh` before opening or updating the PR.

@@ -640,6 +640,21 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         }, backend);
     }
 
+    static if (backend == ExecutorBackend.ir) {
+        @(backend.text ~ ".nestedSliceAppendWritesThroughOuterSliceToOriginalArray")
+        unittest {
+            runTests(q{
+                unittest {
+                    int[] a = [0, 1, 2, 3, 4];
+                    int[] s = a[1 .. 3];
+                    int[] s2 = s[1 .. 2];
+                    s2 ~= 99;
+                    assert(a[3] == 99);
+                }
+            }, backend);
+        }
+    }
+
     @(backend.text ~ ".localIntReturn")
     unittest {
         runTests(q{
