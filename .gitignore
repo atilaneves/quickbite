@@ -9,6 +9,7 @@ quickbite.dll
 libquickbite.a
 quickbite.a
 quickbite.lib
+*.a
 quickbite-test-*
 *.exe
 *.pdb

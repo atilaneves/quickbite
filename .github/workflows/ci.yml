@@ -10,7 +10,7 @@ jobs:
           - ubuntu-24.04
           - macos-14
         dc:
-          - dmd-2.112.1
+          - dmd-2.112.0
 
     runs-on: ${{ matrix.os }}
     steps:

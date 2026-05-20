@@ -7868,7 +7868,8 @@ private imported!"dmd.statement".Statement[] compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
 ) @trusted {
     // `isCompoundStatement` returning this node guarantees `statements` is a
-    // valid DMD-owned pointer.
+    // valid DMD-owned pointer. Slicing avoids `@trusted` at every statement
+    // index access site.
     return (*compound.statements)[];
 }
 
