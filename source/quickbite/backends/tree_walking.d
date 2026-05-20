@@ -4056,14 +4056,8 @@ private struct BodyWalker {
         out Value value,
         ref Interpreter interpreter,
     ) {
-        if (call.f is null) {
-            import std.algorithm.searching: canFind;
-
-            if (!expressionChars(call.e1).canFind("canFind"))
-                return false;
-        } else if (call.f.ident is null || call.f.ident.toString != "canFind") {
+        if (!callFunctionNamed(call, "canFind"))
             return false;
-        }
 
         Value haystack;
         Value needle;
@@ -6139,10 +6133,7 @@ private struct BodyWalker {
         CallExp call,
         ref Interpreter interpreter,
     ) {
-        const isReset = call.f !is null &&
-            call.f.ident !is null &&
-            call.f.ident.toString == "reset";
-        if (!isReset && expressionChars(call.e1) != "reset")
+        if (!callFunctionNamed(call, "reset"))
             return false;
 
         VarDeclaration owner;
@@ -6302,13 +6293,11 @@ private struct BodyWalker {
         CallExp call,
         ref Interpreter interpreter,
     ) {
-        import std.string: endsWith;
-
         if (call.f.parameters !is null)
             return false;
         if (call.arguments is null || call.arguments.length != 1)
             return false;
-        if (!expressionChars(call.e1).endsWith(".this"))
+        if (call.f.isCtorDeclaration is null)
             return false;
 
         auto dotVar = call.e1.isDotVarExp;
@@ -7807,6 +7796,8 @@ private struct BodyWalker {
         ref Interpreter interpreter,
     ) {
         long[] elements;
+        // Byte-offset readers rely on this DMD field order and big-endian
+        // scalar packing when a struct literal is stored as raw cereal bytes.
         foreach (i, element; structLiteralElements(literal)) {
             if (element is null)
                 continue;
@@ -9308,7 +9299,10 @@ private struct BodyWalker {
             return false;
 
         if (auto owner = structCopySourceOwner(valueExpression)) {
-            structFields[field] = structFields[owner].dup;
+            if (auto sourceFields = owner in structFields)
+                structFields[field] = (*sourceFields).dup;
+            else
+                return false;
             assignStructField(fields, field, Value(0L));
             return true;
         }
@@ -9348,7 +9342,8 @@ private struct BodyWalker {
         if (tryStructArrayElementFields(expression, elementFields, interpreter))
             return elementFields;
         if (auto owner = structCopySourceOwner(expression))
-            return structFields[owner].dup;
+            if (auto fields = owner in structFields)
+                return (*fields).dup;
         if (auto call = expression.isCallExp) {
             Value[VarDeclaration] fields;
             if (tryRunOutputRangeDecerealiseValue(call, fields, interpreter))
@@ -10618,6 +10613,10 @@ private struct BodyWalker {
 
         if (auto template_ = expression.isTemplateExp)
             return templateDeclarationNamed(template_.td, name);
+        if (auto var = expression.isVarExp)
+            return identifierNamed(var.var.ident, name);
+        if (auto dotVar = expression.isDotVarExp)
+            return identifierNamed(dotVar.var.ident, name);
         if (auto dotTemplate = expression.isDotTemplateExp)
             return templateDeclarationNamed(dotTemplate.td, name);
         if (auto dotTemplate = expression.isDotTemplateInstanceExp)

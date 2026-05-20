@@ -88,6 +88,16 @@ struct Lowerer {
         loweredModule.functions ~= result;
     }
 
+    long functionPointerValue(imported!"dmd.func".FuncDeclaration function_) @safe {
+        ensureFunctionLowered(function_);
+        const name = functionName(function_);
+        foreach (index, loweredFunction; loweredModule.functions)
+            if (loweredFunction.name == name)
+                return (cast(long) index) + 1;
+
+        throw new Exception("Unsupported function pointer callee.");
+    }
+
     // DMD mangling distinguishes template instantiations and overloads.
     string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
         import dmd.mangle: mangleExact;
@@ -1960,11 +1970,10 @@ struct BodyLowerer {
     ) @safe {
         import quickbite.ir.instruction: ConstInt, Instruction;
 
-        lowerer.ensureFunctionLowered(function_);
         const destination = allocateTemporary;
         instructions ~= Instruction(ConstInt(
             destination,
-            stableIdentifierValue(lowerer.functionName(function_)),
+            lowerer.functionPointerValue(function_),
         ));
         return destination;
     }

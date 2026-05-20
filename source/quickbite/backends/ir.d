@@ -153,8 +153,8 @@ private long executeFunctionPointer(
     ref ExecutionContext context,
 ) @safe pure {
     // Current lowered modules are tiny; add an index when benchmarks show this.
-    foreach (function_; module_.functions) {
-        if (functionPointerValue(function_.name) == callee)
+    foreach (functionIndex, function_; module_.functions) {
+        if ((cast(long) functionIndex) + 1 == callee)
             return executeFunctionBody(
                 module_,
                 function_.instructions,
@@ -1674,15 +1674,6 @@ private void writeAssocArrayValue(
 
     array.keys ~= key;
     array.values ~= value;
-}
-
-private long functionPointerValue(in string name) @safe pure nothrow @nogc {
-    long result = cast(long) 14_695_981_039_346_656_037UL;
-    foreach (immutable char character; name)
-        result = (result ^ cast(long) character) *
-            cast(long) 1_099_511_628_211UL;
-
-    return result == 0 ? 1 : result;
 }
 
 private void appendArrayValues(

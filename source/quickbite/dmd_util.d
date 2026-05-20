@@ -2,6 +2,8 @@ module quickbite.dmd_util;
 
 private:
 
+// The visitor is caller supplied and may throw diagnostics, so this traversal
+// cannot promise nothrow.
 public void foreachUnitTestDeclaration(
     imported!"dmd.dmodule".Module module_,
     scope void delegate(imported!"dmd.declaration".UnitTestDeclaration) visit,
