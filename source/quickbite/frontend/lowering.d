@@ -377,7 +377,7 @@ struct BodyLowerer {
         if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
             return null;
 
-        auto literal = (*new_.arguments)[0].isStringExp;
+        auto literal = newArguments(new_)[0].isStringExp;
         if (literal is null)
             return null;
 
@@ -412,7 +412,7 @@ struct BodyLowerer {
             // Keep lowering-time return state from one path out of the other.
             hasReturn = savedHasReturn;
             const handlerStart = instructions.length;
-            lowerStatement((*tryCatch.catches)[0].handler, lowerer);
+            lowerStatement(tryCatchCatches(tryCatch)[0].handler, lowerer);
             const handlerLength = instructions.length - handlerStart;
             hasReturn = savedHasReturn;
 
@@ -7864,12 +7864,18 @@ private string parameterName(imported!"dmd.mtype".Parameter parameter) @trusted 
     return parameter.ident.toString.idup;
 }
 
-private ref auto compoundStatements(
+private imported!"dmd.statement".Statement[] compoundStatements(
     imported!"dmd.statement".CompoundStatement compound,
 ) @trusted {
     // `isCompoundStatement` returning this node guarantees `statements` is a
     // valid DMD-owned pointer.
-    return *compound.statements;
+    return (*compound.statements)[];
+}
+
+private imported!"dmd.statement".Catch[] tryCatchCatches(
+    imported!"dmd.statement".TryCatchStatement tryCatch,
+) @trusted {
+    return (*tryCatch.catches)[];
 }
 
 private ref auto functionParameters(
