@@ -50,20 +50,6 @@ private enum IntBinaryOp : char {
 Change the `op` parameter type to `IntBinaryOp` and use `final switch`.
 Update call sites to pass the enum member instead of a char literal.
 
-## 3. Safety attributes in `dmd_ctfe.d`
-
-Blocked. `runCtfe` and `ctfeFailed` cross the
-`@safe`/`@system` `ctfeFailureMessage` boundary, and the plan explicitly says
-not to add `@trusted` to `ctfeFailureMessage`,
-`directThrownExceptionMessage`, or `newExceptionMessage`. No changes were left
-for this item.
-
-`source/quickbite/backends/dmd_ctfe.d`:
-- `runCtfe` → add `@safe`
-- `ctfeFailed` → add `@safe`
-- Do NOT add `@trusted` to `ctfeFailureMessage`,
-  `directThrownExceptionMessage`, or `newExceptionMessage`.
-
 ## 4. IR catch across function calls
 
 Complete in recent commit `a9319d5` (`Support IR try/catch around calls`).
@@ -132,7 +118,21 @@ through nested slice chains propagate to the original backing array.
 
 ## 9. Cerealed length-width handling
 
-Remaining.
+Complete in the current uncommitted worktree. The red/green steps and
+refactor pass are done.
+
+Covered tests:
+
+- Explicit `ubyte` dynamic array.
+- Explicit `ubyte` assoc array.
+- Explicit `ubyte` grain assoc array.
+- Default `ushort` top-level decerealise array.
+- Explicit `uint` dynamic array.
+- Nested dynamic array explicit `ubyte`.
+- Direct `grain!uint(ref dynamic array)`.
+
+Verification reported for this item:
+- `dub test`: 510 passed.
 
 Before editing tests, ask approval for regressions showing that `grain` length
 type comes from the second template argument and that decode reads that exact
@@ -194,9 +194,8 @@ response.
 
 ## Remaining handoff
 
-The next agents should continue with items 9 and 10 under the same TDD
-approval rule. Item 3 remains blocked by the explicit no-`@trusted` constraint.
-Item 8 is green in the current uncommitted worktree.
+The next agents should continue with item 10 under the same TDD approval rule.
+Items 8 and 9 are green in the current uncommitted worktree.
 
 After the remaining behavior items and cleanup, run final `dub test` and
 `benchmarks/run.sh` before opening or updating the PR.

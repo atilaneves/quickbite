@@ -2,7 +2,7 @@ module ut.cerealed;
 
 private:
 
-import quickbite: ExecutorBackend, runTestsFromFile;
+import quickbite: ExecutorBackend, runTests, runTestsFromFile;
 import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
@@ -43,6 +43,132 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }
         }
     }
+}
+
+@("treeWalking.cerealed.valueArrayUsesExplicitUbyteLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([0, 0, 0, 1, 42]);
+            const value = dec.value!(ubyte[], ubyte);
+            assert(value.length == 0);
+            assert(dec.bytes.length == 4);
+            assert(dec.bytes[3] == 42);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.valueArrayUsesExplicitUintLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([0, 0, 0, 1, 42, 99]);
+            const value = dec.value!(ubyte[], uint);
+            assert(value.length == 1);
+            assert(value[0] == 42);
+            assert(dec.bytes.length == 1);
+            assert(dec.bytes[0] == 99);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.grainDynamicArrayUsesExplicitUintLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.cereal: grain;
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([0, 0, 0, 2, 42, 43, 99]);
+            ubyte[] value;
+            dec.grain!uint(value);
+            assert(value.length == 2);
+            assert(value[0] == 42);
+            assert(value[1] == 43);
+            assert(dec.bytes.length == 1);
+            assert(dec.bytes[0] == 99);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.valueNestedArrayUsesExplicitUbyteLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([1, 2, 42, 43, 99]);
+            const value = dec.value!(ubyte[][], ubyte);
+            assert(value.length == 1);
+            assert(value[0].length == 2);
+            assert(value[0][0] == 42);
+            assert(value[0][1] == 43);
+            assert(dec.bytes.length == 1);
+            assert(dec.bytes[0] == 99);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.decerealiseArrayDefaultsToUshortLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.decerealiser: decerealise;
+
+        unittest {
+            const value = decerealise!(ubyte[])([0, 0, 0, 1, 42]);
+            assert(value.length == 0);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.valueAssocArrayUsesExplicitUbyteLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([0, 0, 0, 1, 7, 9]);
+            const value = dec.value!(ubyte[ubyte], ubyte);
+            assert(value.length == 0);
+            assert(dec.bytes.length == 5);
+            assert(dec.bytes[4] == 9);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+}
+
+@("treeWalking.cerealed.grainAssocArrayUsesExplicitUbyteLengthWidth")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.cereal: grain;
+        import cerealed.decerealiser;
+
+        unittest {
+            auto dec = Decerealiser([0, 0, 0, 1, 7, 9]);
+            ubyte[ubyte] value;
+            dec.grain!ubyte(value);
+            assert(value.length == 0);
+            assert(dec.bytes.length == 5);
+            assert(dec.bytes[4] == 9);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
 }
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {

@@ -1092,6 +1092,8 @@ private struct BodyWalker {
                                     .values[keyIndex];
                         }
                     }
+            if (tryRunNestedArrayIndex(index, indexedValue, interpreter))
+                return indexedValue;
             if (auto var = index.e1.isVarExp)
                 if (auto varDecl = var.var.isVarDeclaration)
                     if (tryGetLocalValue(varDecl, localValue)) {
@@ -1126,6 +1128,12 @@ private struct BodyWalker {
                                     ).asArray[cast(size_t) i],
                                 );
                             }
+            try {
+                const i = runExpression(index.e2, interpreter).asLong;
+                return Value(runExpression(index.e1, interpreter)
+                    .asArray[cast(size_t) i]);
+            } catch (Exception) {
+            }
             unsupported;
         }
 
@@ -1186,6 +1194,8 @@ private struct BodyWalker {
                                 );
                             }
             if (len.e1.isCallExp)
+                return Value(cast(long) runExpression(len.e1, interpreter).asArray.length);
+            if (len.e1.isIndexExp)
                 return Value(cast(long) runExpression(len.e1, interpreter).asArray.length);
             if (auto dotVar = len.e1.isDotVarExp)
                 if (auto ptr = dotVar.e1.isPtrExp)
@@ -1323,6 +1333,41 @@ private struct BodyWalker {
 
         unsupported;
         assert(false);
+    }
+
+    private bool tryRunNestedArrayIndex(
+        IndexExp index,
+        out Value value,
+        ref Interpreter interpreter,
+    ) {
+        if (index.e1.type is null)
+            return false;
+
+        // auto: DMD Type nodes are mutable and helper APIs expect that type.
+        auto elementType = arrayElementType(index.e1.type);
+        if (!isLengthPrefixedArrayElementType(elementType))
+            return false;
+
+        const elementIndex = runExpression(index.e2, interpreter).asLong;
+        if (elementIndex < 0)
+            return false;
+
+        long[] array = runExpression(index.e1, interpreter).asArray;
+        size_t cursor;
+        foreach (i; 0 .. cast(size_t) elementIndex + 1) {
+            if (cursor >= array.length)
+                return false;
+            const length = nestedArrayLength(array[cursor]);
+            ++cursor;
+            if (length > array.length - cursor)
+                return false;
+            if (i == cast(size_t) elementIndex) {
+                value = Value(array[cursor .. cursor + length].dup);
+                return true;
+            }
+            cursor += length;
+        }
+        return false;
     }
 
     private bool tryRunPostExpression(
@@ -1597,8 +1642,14 @@ private struct BodyWalker {
             return value;
         if (tryRunDotVarInputRangeProperty(dotVar, value, interpreter))
             return value;
-        if (dotVarFieldNamed(dotVar, "length"))
+        if (dotVarFieldNamed(dotVar, "length")) {
+            try {
+                return Value(cast(long) runExpression(dotVar.e1, interpreter)
+                    .asArray.length);
+            } catch (Exception) {
+            }
             return Value(0L);
+        }
         if (tryRunDotVarKeys(dotVar, value, interpreter))
             return value;
         if (tryRunDotVarValues(dotVar, value, interpreter))
@@ -3761,7 +3812,7 @@ private struct BodyWalker {
         CallExp call,
         out size_t byteCount,
     ) {
-        import dmd.dtemplate: isType, isDsymbol, isExpression;
+        import dmd.dtemplate: isType;
 
         byteCount = 2;
 
@@ -4476,11 +4527,14 @@ private struct BodyWalker {
         auto owner = structFieldsOwner(dotVar.e1);
         if (owner is null)
             return false;
+        size_t lengthTypeByteCount;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
         return tryReadDecerealisedAssocArrayFromOwner(
             owner,
             call.type,
             value,
             interpreter,
+            lengthTypeByteCount,
         );
     }
 
@@ -4520,12 +4574,16 @@ private struct BodyWalker {
             varDecl.type.toBasetype.isTypeAArray is null)
             return false;
 
+        size_t lengthTypeByteCount;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
+
         Value value;
         if (!tryReadDecerealisedAssocArrayFromOwner(
             owner,
             varDecl.type,
             value,
             interpreter,
+            lengthTypeByteCount,
         ))
             return false;
 
@@ -4538,6 +4596,7 @@ private struct BodyWalker {
         Type type,
         out Value value,
         ref Interpreter interpreter,
+        in size_t lengthTypeByteCount = 0,
     ) {
         if (type is null)
             return false;
@@ -4567,6 +4626,7 @@ private struct BodyWalker {
             keyByteCount + valueByteCount,
             headerByteCount,
             length,
+            lengthTypeByteCount,
         ))
             return false;
 
@@ -4663,11 +4723,14 @@ private struct BodyWalker {
         long[] bytes = runExpression(callArguments(call)[0], interpreter).asArray;
         long[] elements;
         size_t neededByteCount;
+        size_t lengthTypeByteCount = 2;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
         if (!tryReadDecerealisedArrayElements(
             arrayElementType(call.type),
             bytes,
             elements,
             neededByteCount,
+            lengthTypeByteCount,
         ))
             return false;
         if (bytes.length < neededByteCount)
@@ -4691,7 +4754,14 @@ private struct BodyWalker {
 
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto elementType = arrayElementType(call.type);
-        return tryReadDecerealisedArrayFromOwner(owner, elementType, value);
+        size_t lengthTypeByteCount;
+        tryGetCerealGrainLengthTypeByteCount(call, lengthTypeByteCount);
+        return tryReadDecerealisedArrayFromOwner(
+            owner,
+            elementType,
+            value,
+            lengthTypeByteCount,
+        );
     }
 
     private bool tryRunArrayDecerealiseGrain(
@@ -4751,7 +4821,7 @@ private struct BodyWalker {
         VarDeclaration owner,
         Type elementType,
         out Value value,
-        in size_t lengthTypeByteCount = 2,
+        in size_t lengthTypeByteCount = 0,
     ) {
         Value[VarDeclaration] ownerFields = structFieldsValue(owner);
         auto bytesField = structFieldNamed(owner.type, "_bytes");
@@ -4847,7 +4917,7 @@ private struct BodyWalker {
         long[] bytes,
         out long[] elements,
         out size_t neededByteCount,
-        in size_t lengthTypeByteCount = 2,
+        in size_t lengthTypeByteCount = 0,
     ) {
         const elementByteCount = decerealisedScalarByteCount(elementType);
         if (elementByteCount != 0) {
@@ -4858,6 +4928,7 @@ private struct BodyWalker {
                 elementByteCount,
                 headerByteCount,
                 length,
+                lengthTypeByteCount,
             ))
                 return false;
 
@@ -4909,11 +4980,17 @@ private struct BodyWalker {
                 return false;
             }
         }
-        if (bytes.length < 2)
+        size_t headerByteCount;
+        size_t length;
+        if (!tryReadDecerealisedCollectionLength(
+            bytes,
+            0,
+            headerByteCount,
+            length,
+            lengthTypeByteCount,
+        ))
             return false;
-
-        const length = nestedArrayLength(readBigEndian(bytes[0 .. 2]));
-        size_t cursor = 2;
+        size_t cursor = headerByteCount;
         // auto: DMD Type nodes are mutable and helper APIs expect that type.
         auto nestedElementType = arrayElementType(elementType);
         foreach (_; 0 .. length) {
@@ -4924,6 +5001,7 @@ private struct BodyWalker {
                 bytes[cursor .. $],
                 nestedElements,
                 nestedByteCount,
+                lengthTypeByteCount,
             ))
                 return false;
             elements ~= cast(long) nestedElements.length;
@@ -11365,7 +11443,23 @@ private bool tryReadDecerealisedCollectionLength(
     in size_t elementByteCount,
     out size_t headerByteCount,
     out size_t length,
+    in size_t exactHeaderByteCount = 0,
 ) @safe {
+    if (exactHeaderByteCount != 0) {
+        if (bytes.length < exactHeaderByteCount)
+            return false;
+        const exactLength = cast(size_t) readBigEndian(
+            bytes[0 .. exactHeaderByteCount],
+        );
+        const neededByteCount =
+            exactHeaderByteCount + exactLength * elementByteCount;
+        if (bytes.length < neededByteCount)
+            return false;
+        headerByteCount = exactHeaderByteCount;
+        length = exactLength;
+        return true;
+    }
+
     foreach (candidateHeaderByteCount; [2, 4, 8, 1]) {
         if (bytes.length < candidateHeaderByteCount)
             continue;
