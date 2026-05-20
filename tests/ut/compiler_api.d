@@ -111,9 +111,9 @@ unittest {
                 }
             }, backend);
 
-            summary.total.should == 3;
-            summary.passed.should == 2;
-            summary.failed.should == 1;
+            summary.total.shouldEqual(3);
+            summary.passed.shouldEqual(2);
+            summary.failed.shouldEqual(1);
         }
     }
 }
@@ -136,9 +136,9 @@ unittest {
                 }
             }, backend);
 
-            summary.total.should == 2;
-            summary.passed.should == 2;
-            summary.failed.should == 0;
+            summary.total.shouldEqual(2);
+            summary.passed.shouldEqual(2);
+            summary.failed.shouldEqual(0);
         }
     }
 }
