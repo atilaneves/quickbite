@@ -48,7 +48,7 @@ private imported!"quickbite.executor".Executor executor(
             import quickbite.backends.ir: IrExecutor;
             return new IrExecutor;
         case ExecutorBackend.treeWalkingOld:
-            import quickbite.backends.tree_walking: TreeWalkingExecutorOld;
+            import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
             return new TreeWalkingExecutorOld;
         case ExecutorBackend.treeWalking:
             import quickbite.backends.tree_walking: TreeWalkingExecutor;
