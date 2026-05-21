@@ -65,3 +65,9 @@ configuration "benchmark" {
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"
 }
+
+// `-inline` causes DMD to hang on large lowering.d; omit it until the
+// file is split into smaller modules.
+buildType "benchmark-opt" {
+    buildOptions "optimize" "releaseMode" "noBoundsCheck"
+}

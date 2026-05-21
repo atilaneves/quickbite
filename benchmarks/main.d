@@ -71,7 +71,7 @@ int main(string[] args) {
     backends["ir"]          = new IrExecutor;
     backends["treeWalking"] = new TreeWalkingExecutor;
     backends["dmd-ctfe"]    = new DmdCtfe;
-    backends["dmd-backend"] = new DmdBackend(linkFiles);
+    backends["dmd-backend"] = new DmdBackend(linkFiles, importPaths);
 
     if (backendNames.length == 0)
         backendNames = ["ir", "treeWalking", "dmd-ctfe", "dmd-backend"];
