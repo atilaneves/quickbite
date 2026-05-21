@@ -5,6 +5,7 @@ private:
 version (QuickbiteDmdCodegen) {
     public enum ExecutorBackend {
         ir,
+        treeWalkingOld,
         treeWalking,
         dmdCtfe,
         dmdCodegen,
@@ -12,6 +13,7 @@ version (QuickbiteDmdCodegen) {
 } else {
     public enum ExecutorBackend {
         ir,
+        treeWalkingOld,
         treeWalking,
         dmdCtfe,
     }
@@ -48,13 +50,16 @@ public imported!"quickbite.executor".TestSummary runTestSummary(
     return executor(backend).runTestSummary(source);
 }
 
-private imported!"quickbite.executor".Executor executor(
+public imported!"quickbite.executor".Executor executor(
     in ExecutorBackend backend,
 ) {
     final switch (backend) {
         case ExecutorBackend.ir:
             import quickbite.backends.ir: IrExecutor;
             return new IrExecutor;
+        case ExecutorBackend.treeWalkingOld:
+            import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
+            return new TreeWalkingExecutorOld;
         case ExecutorBackend.treeWalking:
             import quickbite.backends.tree_walking: TreeWalkingExecutor;
             return new TreeWalkingExecutor;

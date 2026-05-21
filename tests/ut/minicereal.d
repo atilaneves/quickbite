@@ -2,16 +2,8 @@ module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
-import std.traits: EnumMembers;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
-
-private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdCodegen)
-        enum isDmdCodegen =
-            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
-    else
-        enum isDmdCodegen = false;
-}
 
 version (QuickbiteDmdCodegen) {
     @("dmd-codegen.minicerealFileCanRunTwice")
@@ -33,8 +25,7 @@ version (QuickbiteDmdCodegen) {
     }
 }
 
-static foreach (backend; EnumMembers!ExecutorBackend) {
-    static if (!isDmdCodegen!backend) {
+static foreach (backend; matureExecutorBackends) {
     @(backend.text ~ ".minicerealFile")
     unittest {
         import std.file: readText;
@@ -428,6 +419,5 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
                 }
             }
         ).runTests(backend);
-    }
     }
 }

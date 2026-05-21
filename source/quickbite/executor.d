@@ -14,3 +14,11 @@ public interface Executor {
     public TestSummary runTestSummary(in string source);
     public void runParsedTests(imported!"dmd.dmodule".Module module_);
 }
+
+public void runModulesTests(
+    Executor executor,
+    imported!"dmd.dmodule".Module[] modules,
+) {
+    foreach (module_; modules)
+        executor.runParsedTests(module_);
+}

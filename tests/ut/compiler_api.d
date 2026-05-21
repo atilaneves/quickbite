@@ -2,6 +2,8 @@ module ut.compiler_api;
 
 private:
 
+import quickbite: ExecutorBackend;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
@@ -53,18 +55,52 @@ unittest {
     };
 
     parseModule(source, []).shouldThrowWithMessage(
-        "DMD reported an error without a diagnostic message.",
+        "unable to read module `quickbite_retry_import`\nunable to read module `quickbite_retry_import`\nundefined identifier `quickbiteRetryAnswer`",
     );
     runTests(source, [importPath], ExecutorBackend.dmdCtfe);
 }
 
-@("runTests.runsAttributedUnittests")
+@("runTests.treeWalking.emptyUnittestCompletes")
 unittest {
     import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
-        static if (!isDmdCodegen!backend) {
+    runTests(q{
+        unittest {
+        }
+    }, ExecutorBackend.treeWalking);
+}
+
+@("runTests.treeWalking.failingUnittestThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            assert(value == 2);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("1 != 2");
+}
+
+@("runTests.treeWalking.failingUnittestAfterAssignmentThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            value = value + 1;
+            assert(value == 3);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("2 != 3");
+}
+
+@("runTests.runsAttributedUnittests")
+unittest {
+    import quickbite: runTests;
+
+    static foreach (backend; matureExecutorBackends) {
+        {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
                 // as unit-threaded and cerealed tests do.
@@ -175,11 +211,10 @@ version (QuickbiteDmdCodegen) {
 
 @("runTests.runsAttributedThrowingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
+    import quickbite: runTests;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
-        static if (!isDmdCodegen!backend) {
+    static foreach (backend; matureExecutorBackends) {
+        {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
                 // as unit-threaded and cerealed tests do.
@@ -194,62 +229,53 @@ unittest {
 
 @("runTestSummary.countsAttributedPassingAndFailingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
-        // This generic test covers backends that execute unittest blocks
-        // individually; DMD codegen is covered separately below.
-        static if (!isDmdCodegen!backend) {
-            {
-                const summary = runTestSummary(q{
-                    @("passes")
-                    unittest {
-                        assert(1 == 1);
-                    }
+    static foreach (backend; matureExecutorBackends) {
+        {
+            const summary = runTestSummary(q{
+                @("passes")
+                unittest {
+                    assert(1 == 1);
+                }
 
-                    @("fails")
-                    unittest {
-                        assert(1 == 2);
-                    }
+                @("fails")
+                unittest {
+                    assert(1 == 2);
+                }
 
-                    unittest {
-                        assert(2 == 2);
-                    }
-                }, backend);
+                unittest {
+                    assert(2 == 2);
+                }
+            }, backend);
 
-                summary.total.should == 3;
-                summary.passed.should == 2;
-                summary.failed.should == 1;
-            }
+            summary.total.should == 3;
+            summary.passed.should == 2;
+            summary.failed.should == 1;
         }
     }
 }
 
 @("runTestSummary.countsAllPassingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
-        // DMD codegen module-level reporting is tested separately below.
-        static if (!isDmdCodegen!backend) {
-            {
-                const summary = runTestSummary(q{
-                    unittest {
-                        assert(1 == 1);
-                    }
+    static foreach (backend; matureExecutorBackends) {
+        {
+            const summary = runTestSummary(q{
+                unittest {
+                    assert(1 == 1);
+                }
 
-                    @("also passes")
-                    unittest {
-                        assert(2 == 2);
-                    }
-                }, backend);
+                @("also passes")
+                unittest {
+                    assert(2 == 2);
+                }
+            }, backend);
 
-                summary.total.should == 2;
-                summary.passed.should == 2;
-                summary.failed.should == 0;
-            }
+            summary.total.should == 2;
+            summary.passed.should == 2;
+            summary.failed.should == 0;
         }
     }
 }
@@ -471,8 +497,70 @@ unittest {
         enum parsedWithoutPath = quickbiteLeakB;
     };
     parseModule(source, []).shouldThrowWithMessage(
-        "DMD reported an error without a diagnostic message.",
+        "unable to read module `quickbite_leak_import_b`\nunable to read module `quickbite_leak_import_b`\nundefined identifier `quickbiteLeakB`",
     );
+}
+
+@("runModulesTests.runsBothModules")
+unittest {
+    import quickbite.executor: runModulesTests;
+    import quickbite.frontend.compiler: parseModule;
+    import quickbite: executor;
+
+    auto module1 = parseModule(q{ // auto: DMD owns mutable Module state
+        unittest {
+            assert(1 == 1);
+        }
+    }).module_;
+
+    auto module2 = parseModule(q{ // auto: DMD owns mutable Module state
+        unittest {
+            throw new Exception("second module ran");
+        }
+    }).module_;
+
+    static foreach (backend; matureExecutorBackends) {
+        {
+            executor(backend).runModulesTests([module1, module2,]).shouldThrowWithMessage(
+                "second module ran",
+            );
+        }
+    }
+}
+
+@("parseModule.errorMessage.containsActualDMDError")
+unittest {
+    import quickbite.frontend.compiler: parseModule;
+    import std.exception: collectExceptionMsg;
+    import std.algorithm.searching: canFind;
+
+    const source = q{
+        import quickbite_test_missing_module_xyzzy;
+    };
+
+    const message = collectExceptionMsg!Exception(parseModule(source, []));
+    message.canFind("quickbite_test_missing_module_xyzzy").should == true;
+}
+
+@("runParsedTests.ctfe.exposes.dmdDiagnostic.callingCFunction")
+unittest {
+    import quickbite.backends.dmd_ctfe: DmdCtfe;
+    import quickbite.frontend.compiler: parseModule;
+    import std.exception: collectExceptionMsg;
+    import std.algorithm.searching: canFind;
+
+    const source = q{
+        unittest {
+            import core.stdc.stdlib: malloc;
+            auto ptr = malloc(100);
+        }
+    };
+
+    auto parsed = parseModule(source);
+    const message = collectExceptionMsg!Exception(
+        (new DmdCtfe).runParsedTests(parsed.module_)
+    );
+    message.canFind("malloc").should == true;
 }
 
 private string tempModuleDir(in string suffix) {

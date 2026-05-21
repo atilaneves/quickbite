@@ -81,10 +81,40 @@ final class Compiler {
         // Silence DMD's direct stderr printing; diagnostics are still captured
         // in the `diagnostics` array and surfaced via thrown exceptions.
         import dmd.console: Color;
-        import dmd.errors: DiagnosticHandler, diagnosticHandler;
+        import dmd.errors: diagnosticHandler;
         import dmd.location: SourceLoc;
         import core.stdc.stdarg: va_list;
-        diagnosticHandler = (const ref SourceLoc, Color, const(char)*, const(char)*, va_list, const(char)*, const(char)*) => true;
+        diagnosticHandler = (const ref SourceLoc loc, Color, const(char)* header, const(char)* fmt, va_list args, const(char)* p1, const(char)* p2) {
+            import dmd.errors: Diagnostic, ErrorKind, diagnostics;
+            import core.stdc.stdarg: va_copy, va_end;
+            import core.stdc.stdio: vsnprintf;
+            import core.stdc.string: strcmp;
+            import std.string: fromStringz;
+
+            if (!header || strcmp(header, "Error: ") != 0)
+                return true;
+
+            va_list copy;
+            va_copy(copy, args);
+            scope(exit) va_end(copy);
+
+            const size = vsnprintf(null, 0, fmt, args);
+            if (size <= 0) return true;
+
+            auto buf = new char[size + 1];
+            vsnprintf(buf.ptr, size + 1, fmt, copy);
+            string message = buf[0 .. size].idup;
+
+            if (p2) message = fromStringz(p2).idup ~ " " ~ message;
+            if (p1) message = fromStringz(p1).idup ~ " " ~ message;
+
+            diagnostics ~= Diagnostic(loc, message, ErrorKind.error);
+            return true;
+        };
+
+        // Disable the error limit so DMD never prints "error limit (N) reached"
+        // directly to stderr (a fprintf path that bypasses diagnosticHandler).
+        global.params.v.errorLimit = 0;
 
         global.params.useUnitTests = true;
         global.params.allInst = true;

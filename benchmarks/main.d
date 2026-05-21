@@ -5,6 +5,7 @@ import quickbite.backends.dmd_codegen: DmdCodegen;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
+import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
 import quickbite.executor: Executor;
 import quickbite.frontend.compiler: parseModule;
 
@@ -68,13 +69,14 @@ int main(string[] args) {
     printRunHeader(warmup, iterations);
 
     Executor[string] backends;
-    backends["ir"]          = new IrExecutor;
-    backends["treeWalking"] = new TreeWalkingExecutor;
-    backends["dmd-ctfe"]    = new DmdCtfe;
-    backends["dmd-codegen"] = new DmdCodegen(linkFiles, importPaths);
+    backends["ir"]             = new IrExecutor;
+    backends["treeWalkingOld"] = new TreeWalkingExecutorOld;
+    backends["treeWalking"]    = new TreeWalkingExecutor;
+    backends["dmd-ctfe"]       = new DmdCtfe;
+    backends["dmd-codegen"]    = new DmdCodegen(linkFiles, importPaths);
 
     if (backendNames.length == 0)
-        backendNames = ["ir", "treeWalking", "dmd-ctfe", "dmd-codegen"];
+        backendNames = ["ir", "treeWalkingOld", "dmd-ctfe"];
 
     foreach (name; backendNames)
         if (name !in backends)

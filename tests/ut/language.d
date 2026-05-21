@@ -5,19 +5,10 @@ private:
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
 import std.meta: AliasSeq;
-import std.traits: EnumMembers;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
-private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdCodegen)
-        enum isDmdCodegen =
-            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
-    else
-        enum isDmdCodegen = false;
-}
-
-static foreach (backend; EnumMembers!ExecutorBackend) {
-    static if (!isDmdCodegen!backend) {
+static foreach (backend; matureExecutorBackends) {
     @(backend.text ~ ".ok")
     unittest {
         runTests(q{
@@ -2023,10 +2014,9 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
             }
         }, backend);
     }
-    }
 }
 
-@("treeWalking.unitThreadedCheckRunsPredicate")
+@("treeWalkingOld.unitThreadedCheckRunsPredicate")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -2036,7 +2026,7 @@ unittest {
         unittest {
             check!((int value) => false);
         }
-    }, dubImportPaths, ExecutorBackend.treeWalking, "Property failed. Seed: 1. Input: 1");
+    }, dubImportPaths, ExecutorBackend.treeWalkingOld, "Property failed. Seed: 1. Input: 1");
 }
 
 private void expectRunTestsFailure(
@@ -2078,8 +2068,7 @@ private void expectRunTestsFailure(
     threw.should == true;
 }
 
-static foreach (backend; EnumMembers!ExecutorBackend) {
-    static if (!isDmdCodegen!backend) {
+static foreach (backend; matureExecutorBackends) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
         @(backend.text ~ ".integralType." ~ T.stringof)
         unittest {
@@ -2113,6 +2102,5 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
                 backend,
             );
         }
-    }
     }
 }
