@@ -4,7 +4,7 @@ private:
 
 import quickbite: ExecutorBackend, runTests, runTestsFromFile;
 import std.conv: text;
-import std.traits: EnumMembers;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 private immutable string[] testFileNames = [
@@ -29,7 +29,7 @@ private immutable string[] testFileNames = [
     "utils.d",
 ];
 
-static foreach (backend; EnumMembers!ExecutorBackend) {
+static foreach (backend; matureExecutorBackends) {
     static if (backend == ExecutorBackend.dmdCtfe) {
         @("dmdCtfe.cerealed.compile_time.d")
         unittest {
@@ -45,7 +45,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
     }
 }
 
-@("treeWalking.cerealed.valueArrayUsesExplicitUbyteLengthWidth")
+@("treeWalkingOld.cerealed.valueArrayUsesExplicitUbyteLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -59,10 +59,10 @@ unittest {
             assert(dec.bytes.length == 4);
             assert(dec.bytes[3] == 42);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.valueArrayUsesExplicitUintLengthWidth")
+@("treeWalkingOld.cerealed.valueArrayUsesExplicitUintLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -77,10 +77,10 @@ unittest {
             assert(dec.bytes.length == 1);
             assert(dec.bytes[0] == 99);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.grainDynamicArrayUsesExplicitUintLengthWidth")
+@("treeWalkingOld.cerealed.grainDynamicArrayUsesExplicitUintLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -98,10 +98,10 @@ unittest {
             assert(dec.bytes.length == 1);
             assert(dec.bytes[0] == 99);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.valueNestedArrayUsesExplicitUbyteLengthWidth")
+@("treeWalkingOld.cerealed.valueNestedArrayUsesExplicitUbyteLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -118,10 +118,10 @@ unittest {
             assert(dec.bytes.length == 1);
             assert(dec.bytes[0] == 99);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.decerealiseArrayDefaultsToUshortLengthWidth")
+@("treeWalkingOld.cerealed.decerealiseArrayDefaultsToUshortLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -132,10 +132,10 @@ unittest {
             const value = decerealise!(ubyte[])([0, 0, 0, 1, 42]);
             assert(value.length == 0);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.valueAssocArrayUsesExplicitUbyteLengthWidth")
+@("treeWalkingOld.cerealed.valueAssocArrayUsesExplicitUbyteLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -149,10 +149,10 @@ unittest {
             assert(dec.bytes.length == 5);
             assert(dec.bytes[4] == 9);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalking.cerealed.grainAssocArrayUsesExplicitUbyteLengthWidth")
+@("treeWalkingOld.cerealed.grainAssocArrayUsesExplicitUbyteLengthWidth")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -168,7 +168,7 @@ unittest {
             assert(dec.bytes.length == 5);
             assert(dec.bytes[4] == 9);
         }
-    }.runTests(dubImportPaths, ExecutorBackend.treeWalking);
+    }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
 private void runCerealedTest(ExecutorBackend backend, string fileName)() {

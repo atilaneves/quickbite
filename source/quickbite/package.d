@@ -4,6 +4,7 @@ private:
 
 public enum ExecutorBackend {
     ir,
+    treeWalkingOld,
     treeWalking,
     dmdCtfe,
 }
@@ -46,6 +47,9 @@ public imported!"quickbite.executor".Executor executor(
         case ExecutorBackend.ir:
             import quickbite.backends.ir: IrExecutor;
             return new IrExecutor;
+        case ExecutorBackend.treeWalkingOld:
+            import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
+            return new TreeWalkingExecutorOld;
         case ExecutorBackend.treeWalking:
             import quickbite.backends.tree_walking: TreeWalkingExecutor;
             return new TreeWalkingExecutor;

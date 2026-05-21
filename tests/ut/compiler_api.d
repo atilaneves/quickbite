@@ -2,6 +2,8 @@ module ut.compiler_api;
 
 private:
 
+import quickbite: ExecutorBackend;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 @("parseModule.withImportPaths")
@@ -50,12 +52,46 @@ unittest {
     runTests(source, [importPath], ExecutorBackend.dmdCtfe);
 }
 
-@("runTests.runsAttributedUnittests")
+@("runTests.treeWalking.emptyUnittestCompletes")
 unittest {
     import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    runTests(q{
+        unittest {
+        }
+    }, ExecutorBackend.treeWalking);
+}
+
+@("runTests.treeWalking.failingUnittestThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            assert(value == 2);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("1 != 2");
+}
+
+@("runTests.treeWalking.failingUnittestAfterAssignmentThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            value = value + 1;
+            assert(value == 3);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("2 != 3");
+}
+
+@("runTests.runsAttributedUnittests")
+unittest {
+    import quickbite: runTests;
+
+    static foreach (backend; matureExecutorBackends) {
         {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
@@ -71,10 +107,9 @@ unittest {
 
 @("runTests.runsAttributedThrowingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
+    import quickbite: runTests;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
@@ -90,10 +125,9 @@ unittest {
 
 @("runTestSummary.countsAttributedPassingAndFailingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             const summary = runTestSummary(q{
                 @("passes")
@@ -120,10 +154,9 @@ unittest {
 
 @("runTestSummary.countsAllPassingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             const summary = runTestSummary(q{
                 unittest {

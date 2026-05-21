@@ -23,6 +23,30 @@ new `TreeWalkingExecutor` class and a new `ExecutorBackend.treeWalking`
 value pointing to it. This is a refactoring step that should not change
 anything related to testing, the tests just need to pass.
 
+The new executor must be completely isolated from the old one. Do not
+introduce shared executor base classes or helper functions between
+`TreeWalkingExecutor` and `TreeWalkingExecutorOld`; duplicate entrypoint
+plumbing when needed.
+
+Keep the old and new tree walkers in different modules. Do not keep both
+implementations in `tree_walking.d` and compensate with prefixes such as
+`newTreeWalking...`. The new module should contain the new
+`TreeWalkingExecutor` and its directly needed execution state; the old
+module should contain `TreeWalkingExecutorOld` and old-only helpers.
+
+Current progress:
+
+1. `TreeWalkingExecutorOld` has been split from the public
+   `ExecutorBackend.treeWalking` entrypoint.
+2. The new tree walker can run an empty unittest.
+3. The new tree walker can report contextual integer equality failures
+   for simple local integer assertions, including an assignment before
+   the assertion.
+
+The next refactoring step is to split old and new tree walkers into
+separate modules and fold any new-walker execution state directly into
+the new executor shape.
+
 For each cerealed integration test that we run on all backends, we
 take the following steps:
 
