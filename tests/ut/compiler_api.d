@@ -52,6 +52,16 @@ unittest {
     runTests(source, [importPath], ExecutorBackend.dmdCtfe);
 }
 
+@("runTests.treeWalking.emptyUnittestCompletes")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+        }
+    }, ExecutorBackend.treeWalking);
+}
+
 @("runTests.runsAttributedUnittests")
 unittest {
     import quickbite: runTests;

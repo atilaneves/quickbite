@@ -51,7 +51,8 @@ private imported!"quickbite.executor".Executor executor(
             import quickbite.backends.tree_walking: TreeWalkingExecutorOld;
             return new TreeWalkingExecutorOld;
         case ExecutorBackend.treeWalking:
-            throw new Exception("TreeWalkingExecutor is not implemented.");
+            import quickbite.backends.tree_walking: TreeWalkingExecutor;
+            return new TreeWalkingExecutor;
         case ExecutorBackend.dmdCtfe:
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             return new DmdCtfe;

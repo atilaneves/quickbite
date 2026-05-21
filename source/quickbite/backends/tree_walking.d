@@ -123,6 +123,28 @@ private struct CallArgument {
     private bool isGlobalRef;
 }
 
+public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
+    import dmd.dmodule: Module;
+    import quickbite.executor: TestSummary;
+
+    public override void runTests(in string source) {
+    }
+
+    public override void runTests(in string source, in string[] importPaths) {
+    }
+
+    public override void runParsedTests(
+        Module module_,
+    ) {
+    }
+
+    public override TestSummary runTestSummary(
+        in string source,
+    ) {
+        return TestSummary.init;
+    }
+}
+
 public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Executor {
     import dmd.dmodule: Module;
     import quickbite.executor: TestSummary;
