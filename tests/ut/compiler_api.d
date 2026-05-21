@@ -45,7 +45,7 @@ unittest {
     };
 
     parseModule(source, []).shouldThrowWithMessage(
-        "DMD reported an error without a diagnostic message.",
+        "unable to read module `quickbite_retry_import`\nunable to read module `quickbite_retry_import`\nundefined identifier `quickbiteRetryAnswer`",
     );
     runTests(source, [importPath], ExecutorBackend.dmdCtfe);
 }
@@ -303,8 +303,71 @@ unittest {
         enum parsedWithoutPath = quickbiteLeakB;
     };
     parseModule(source, []).shouldThrowWithMessage(
-        "DMD reported an error without a diagnostic message.",
+        "unable to read module `quickbite_leak_import_b`\nunable to read module `quickbite_leak_import_b`\nundefined identifier `quickbiteLeakB`",
     );
+}
+
+@("runModulesTests.runsBothModules")
+unittest {
+    import quickbite.executor: runModulesTests;
+    import quickbite.frontend.compiler: parseModule;
+    import quickbite: ExecutorBackend, executor;
+    import std.traits: EnumMembers;
+
+    auto module1 = parseModule(q{ // auto: DMD owns mutable Module state
+        unittest {
+            assert(1 == 1);
+        }
+    }).module_;
+
+    auto module2 = parseModule(q{ // auto: DMD owns mutable Module state
+        unittest {
+            throw new Exception("second module ran");
+        }
+    }).module_;
+
+    static foreach (backend; EnumMembers!ExecutorBackend) {
+        {
+            executor(backend).runModulesTests([module1, module2,]).shouldThrowWithMessage(
+                "second module ran",
+            );
+        }
+    }
+}
+
+@("parseModule.errorMessage.containsActualDMDError")
+unittest {
+    import quickbite.frontend.compiler: parseModule;
+    import std.exception: collectExceptionMsg;
+    import std.algorithm.searching: canFind;
+
+    const source = q{
+        import quickbite_test_missing_module_xyzzy;
+    };
+
+    const message = collectExceptionMsg!Exception(parseModule(source, []));
+    message.canFind("quickbite_test_missing_module_xyzzy").should == true;
+}
+
+@("runParsedTests.ctfe.exposes.dmdDiagnostic.callingCFunction")
+unittest {
+    import quickbite.backends.dmd_ctfe: DmdCtfe;
+    import quickbite.frontend.compiler: parseModule;
+    import std.exception: collectExceptionMsg;
+    import std.algorithm.searching: canFind;
+
+    const source = q{
+        unittest {
+            import core.stdc.stdlib: malloc;
+            auto ptr = malloc(100);
+        }
+    };
+
+    auto parsed = parseModule(source);
+    const message = collectExceptionMsg!Exception(
+        (new DmdCtfe).runParsedTests(parsed.module_)
+    );
+    message.canFind("malloc").should == true;
 }
 
 private string tempModuleDir(in string suffix) {

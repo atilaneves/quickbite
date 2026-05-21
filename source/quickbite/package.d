@@ -39,7 +39,7 @@ public imported!"quickbite.executor".TestSummary runTestSummary(
     return executor(backend).runTestSummary(source);
 }
 
-private imported!"quickbite.executor".Executor executor(
+public imported!"quickbite.executor".Executor executor(
     in ExecutorBackend backend,
 ) {
     final switch (backend) {

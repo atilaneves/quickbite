@@ -67,6 +67,7 @@ private string ctfeFailureMessage(imported!"dmd.func".UnitTestDeclaration utd) {
     import dmd.errors: diagnostics;
     import dmd.expression: CallExp, VarExp;
     import dmd.func: FuncDeclaration;
+    import dmd.globals: global;
     import dmd.location: Loc;
     import dmd.mtype: Type;
 
@@ -83,7 +84,7 @@ private string ctfeFailureMessage(imported!"dmd.func".UnitTestDeclaration utd) {
     string failure;
     withCompilerLock(() {
         diagnostics.length = 0;
-        if (ctfeInterpret(callExp).isErrorExp !is null)
+        if (ctfeInterpret(callExp).isErrorExp !is null || global.errors != 0)
             failure = ctfeDiagnosticMessage;
     });
 
@@ -96,12 +97,20 @@ private string ctfeFailureMessage(imported!"dmd.func".UnitTestDeclaration utd) {
 
 private string ctfeDiagnosticMessage() {
     import dmd.errors: diagnostics, ErrorKind;
+    import std.string: startsWith;
 
     foreach (diagnostic; diagnostics) {
         if (diagnostic.kind != ErrorKind.error)
             continue;
         if (const message = thrownExceptionMessage(diagnostic.message))
             return message;
+    }
+
+    foreach (diagnostic; diagnostics) {
+        if (diagnostic.kind == ErrorKind.error) {
+            if (!diagnostic.message.startsWith("`assert"))
+                return diagnostic.message;
+        }
     }
 
     return "Unittest assertion failed.";
