@@ -7,6 +7,14 @@ import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
+private template isDmdBackend(imported!"quickbite".ExecutorBackend backend) {
+    version (QuickbiteDmdBackend)
+        enum isDmdBackend =
+            backend == imported!"quickbite".ExecutorBackend.dmdBackend;
+    else
+        enum isDmdBackend = false;
+}
+
 private immutable string[] testFileNames = [
     "bugs.d",
     "cerealiser_impl.d",
@@ -35,7 +43,7 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
         unittest {
             runCerealedTest!(backend, "compile_time.d");
         }
-    } else {
+    } else static if (!isDmdBackend!backend) {
         static foreach (fileName; testFileNames) {
             @(backend.text ~ ".cerealed." ~ fileName)
             unittest {

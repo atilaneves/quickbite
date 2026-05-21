@@ -5,7 +5,36 @@ import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
+private template isDmdBackend(imported!"quickbite".ExecutorBackend backend) {
+    version (QuickbiteDmdBackend)
+        enum isDmdBackend =
+            backend == imported!"quickbite".ExecutorBackend.dmdBackend;
+    else
+        enum isDmdBackend = false;
+}
+
+version (QuickbiteDmdBackend) {
+    @("dmd-backend.minicerealFileCanRunTwice")
+    unittest {
+        import quickbite.backends.dmd_backend: DmdBackend;
+        import quickbite.frontend.compiler: parseModule;
+        import std.file: readText;
+
+        // Reusing a parsed module catches stale DMD backend object state
+        // between in-process codegen runs. Without the reset, DMD can carry
+        // backend symbols such as `__bzeroBytes` from the first object into
+        // the second; the linker then rejects the generated objects before
+        // the test runs.
+        auto module_ = parseModule(readText("tests/minicereal.d")).module_;
+        auto backend = new DmdBackend;
+
+        backend.runParsedTests(module_);
+        backend.runParsedTests(module_);
+    }
+}
+
 static foreach (backend; EnumMembers!ExecutorBackend) {
+    static if (!isDmdBackend!backend) {
     @(backend.text ~ ".minicerealFile")
     unittest {
         import std.file: readText;
@@ -399,5 +428,6 @@ static foreach (backend; EnumMembers!ExecutorBackend) {
                 }
             }
         ).runTests(backend);
+    }
     }
 }

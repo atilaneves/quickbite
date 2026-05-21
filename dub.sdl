@@ -19,7 +19,22 @@ configuration "unittest" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
     includePaths "tests"
+    excludedSourceFiles "source/quickbite/backends/dmd_backend.d"
     versions "unitUnthreaded"
+
+    dependency "dmd:frontend" version="~>2.112.0"
+    dependency "unit-threaded" version="*"
+    dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
+}
+
+configuration "unittest-dmd-backend" {
+    targetType "executable"
+    targetName "ut-dmd-backend"
+
+    mainSourceFile "tests/main.d"
+    sourcePaths "tests"
+    includePaths "tests"
+    versions "unitUnthreaded" "QuickbiteDmdBackend"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
@@ -37,17 +52,14 @@ configuration "unittest-cov" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
     includePaths "tests"
+    excludedSourceFiles "source/quickbite/backends/dmd_backend.d"
     versions "unitUnthreaded"
 
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
     // here directly.
-    // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
-    // symbols; --allow-multiple-definition lets the linker accept either copy.
-    lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
-    dependency ":dmd-backend-vendor" version="*"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
 }
@@ -60,7 +72,7 @@ configuration "benchmark" {
     sourcePaths "benchmarks"
     includePaths "benchmarks"
     dflags "-defaultlib=libphobos2.so"
-    versions "QuickbiteRuntimeLoadLibrary"
+    versions "QuickbiteRuntimeLoadLibrary" "QuickbiteDmdBackend"
 
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"

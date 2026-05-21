@@ -1,13 +1,5 @@
 module quickbite.backends.dmd_backend;
 
-// Link-order forcing mechanism: this intentionally-unused import pulls
-// dmd.lib into the link before the frontend library so the linker can resolve
-// the Library.factory and Library.setFilename references that
-// dmd.glue.generateCodeAndWrite makes when writeLibrary=true.  We always pass
-// writeLibrary=false, so these paths are unreachable at runtime, but the
-// symbols must be present for static linking.
-import dmd.lib: Library;
-
 private:
 
 __gshared bool _backendInit;
@@ -144,18 +136,17 @@ private void compileAndRun(
     const idx = atomicFetchAdd(_tempCounter, 1u);
     const tmpDir = buildPath(tempDir, text("quickbite_dmd_", idx));
     mkdirRecurse(tmpDir);
-    // Temporarily kept for unresolved-symbol inspection while finishing green phase.
-    // scope(exit) rmdirRecurse(tmpDir);
+    scope(exit) rmdirRecurse(tmpDir);
 
-    const objPath = buildPath(tmpDir, "module.o");
-    const soPath  = buildPath(tmpDir, "module.so");
+    const soPath = buildPath(tmpDir, "module.so");
+    string[] objPaths;
 
     withCompilerLock(() {
         ensureBackendInit;
-        generateObj(module_, objPath, sourceImportPaths, idx);
+        objPaths = generateObjs(module_, tmpDir, sourceImportPaths, idx);
     });
 
-    link(objPath, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
+    link(objPaths, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
     loadAndRunTests(soPath, module_);
 }
 
@@ -239,12 +230,27 @@ private string[] libraryFiles(in string dir) @trusted {
     return ret;
 }
 
+// Link-order forcing mechanism: this intentionally-unused local import pulls
+// dmd.lib into the link before the frontend library so the linker can resolve
+// the Library.factory and Library.setFilename references that
+// dmd.glue.generateCodeAndWrite makes when writeLibrary=true. We always pass
+// writeLibrary=false, so these paths are unreachable at runtime, but the
+// symbols must be present for static linking.
+private void anchorDmdLibLinkOrder() @safe @nogc nothrow pure {
+    import dmd.lib: Library;
+
+    alias LinkAnchor = Library;
+    static assert(is(LinkAnchor));
+}
+
 private void ensureBackendInit() @trusted {
     import dmd.dmsc: backend_init;
     import dmd.dmdparams: DMDparams, PIC;
     import dmd.glue: ObjcGlue_initialize;
     import dmd.globals: global;
     import dmd.target: target;
+
+    anchorDmdLibLinkOrder;
 
     if (_backendInit)
         return;
@@ -256,24 +262,42 @@ private void ensureBackendInit() @trusted {
     _backendInit = true;
 }
 
-private void generateObj(
+private string[] generateObjs(
     imported!"dmd.dmodule".Module module_,
-    in string objPath,
+    in string tmpDir,
     in string[] sourceImportPaths,
     in uint idx,
 ) @trusted {
-    import dmd.glue: generateCodeAndWrite;
+    import dmd.glue: bzeroSymbol, generateCodeAndWrite;
     import dmd.globals: global;
     import dmd.root.filename: FileName;
+    import std.conv: text;
+    import std.path: buildPath;
 
     auto modules = collectSourceModules(module_, sourceImportPaths);
     modules ~= dmdBackendSupportModule(idx);
     semantic3Dependencies(modules);
     throwIfDmdErrors;
     resetObjState(modules);
-    module_.objfile = FileName(objPath);
-    generateCodeAndWrite(modules, [], "", "", false, true, true, false, false);
-    throwIfDmdErrors;
+
+    string[] objPaths;
+    foreach (moduleIdx, currentModule; modules) {
+        const objPath = buildPath(tmpDir, text("module_", moduleIdx, ".o"));
+        currentModule.objfile = FileName(objPath);
+        objPaths ~= objPath;
+    }
+
+    foreach (currentModule; modules) {
+        // DMD's backend keeps the generated zero-initializer helper in this
+        // process-global. If it points at a symbol from an earlier object,
+        // codegen can emit another `__bzeroBytes` with incompatible size and
+        // the linker rejects the object set before the unittest can run.
+        bzeroSymbol = null;
+        generateCodeAndWrite([currentModule], [], "", "", false, true, true, false, false);
+        throwIfDmdErrors;
+    }
+
+    return objPaths;
 }
 
 private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trusted {
@@ -284,8 +308,54 @@ private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trus
     const source = text(
         "module ", moduleName, ";\n",
         q{
-            import std.array: Appender;
-            import std.range: iota;
+            // The generated test objects reference a small set of Phobos and
+            // druntime template symbols by their ABI names. Importing the real
+            // modules here would instantiate weak template bodies in every
+            // in-process DMD backend run; DMD keeps enough object state alive
+            // that later links can then see duplicate or stale definitions.
+            //
+            // These declarations are the narrow link-time contract we need
+            // instead. If one is missing, `dmd -shared -L=-z -L=defs` fails
+            // the link with an undefined reference before `dlopen` can load
+            // the generated unittest library. The `pragma(mangle, ...)` names
+            // are the exact symbols emitted by the compiled tests.
+            struct SupportAppenderString {
+                void* data;
+            }
+
+            struct SupportIotaUbyte {
+                ubyte current;
+                ubyte end;
+            }
+
+            // Const delegate TypeInfo points at the mutable initializer by ABI
+            // name, but codegen does not always emit that mutable initializer
+            // in the generated modules. Without this declaration, the shared
+            // library has an unresolved TypeInfo back-reference at link time.
+            pragma(mangle, "_D25TypeInfo_DFNaNbNiNfMKxiZm6__initZ")
+            __gshared void*[3] intDelegateTypeInfoInit;
+
+            // These mutable array TypeInfo initializers are referenced by
+            // const-array TypeInfo. They are data symbols, not callable
+            // helpers, so a minimal storage declaration is enough to satisfy
+            // the link without pulling in druntime's full TypeInfo emission.
+            pragma(mangle, "_D13TypeInfo_AxAi6__initZ")
+            __gshared void*[3] constIntArrayTypeInfoInit;
+
+            pragma(mangle, "_D12TypeInfo_Axt6__initZ")
+            __gshared void*[3] constUshortArrayTypeInfoInit;
+
+            // AA construction for `int` keys calls druntime's templated hash
+            // helper by this exact ABI name. Importing `core.internal.newaa`
+            // would emit more templated support symbols; this shim keeps the
+            // dependency local and prevents an undefined `pure_hashOf!(int)`
+            // linker error.
+            pragma(mangle, "_D4core8internal5newaa__T11pure_hashOfTiZQqFNaNbNiNeMKxiZm")
+            ulong pureHashOfInt(scope ref const(int) value)
+                @safe @nogc nothrow pure
+            {
+                return cast(uint) value;
+            }
 
             pragma(mangle, "_D3std5array__T8AppenderTAiZQn4Data9__xtoHashFNbNeKxSQBzQBy__TQBvTQBpZQCdQBrZm")
             ulong appenderIntArrayDataHash(scope const(void)* value)
@@ -484,10 +554,10 @@ private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trus
             }
 
             pragma(mangle, "_D3std5array__TQjTSQr5range__T4iotaThThZQkFhhZ6ResultZQBwFNaNbNfQBuZAh")
-            ubyte[] arrayIotaUbyte(typeof(iota(cast(ubyte) 0, cast(ubyte) 0)) value)
+            ubyte[] arrayIotaUbyte(SupportIotaUbyte value)
             {
                 ubyte[] ret;
-                foreach (item; value)
+                foreach (item; value.current .. value.end)
                     ret ~= item;
                 return ret;
             }
@@ -690,9 +760,9 @@ private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trus
         q{
 
             pragma(mangle, "_D3std5range__T4iotaThZQiFNaNbNiNfhZSQBjQBi__TQBfThThZQBnFhhZ6Result")
-            auto iotaUbyte(ubyte end)
+            SupportIotaUbyte iotaUbyte(ubyte end)
             {
-                return iota(cast(ubyte) 0, end);
+                return SupportIotaUbyte(0, end);
             }
 
             pragma(mangle, "_D3std5range10primitives__T5frontTS5tests12static_array17__unittest_L27_C1FZ4UnitZQCdFNaNbNcNdNiNfNkMANgSQCsQCpQCeFZQBoZNgQs")
@@ -3165,13 +3235,13 @@ private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trus
             }
 
             pragma(mangle, "_D3std5range10primitives__T3putTSQBf5array__T8AppenderTAyaZQoTAuZQBmFNaNfKQBqQpZv")
-            void putAppenderStringWcharArray(ref Appender!string appender, wchar[] value)
+            void putAppenderStringWcharArray(ref SupportAppenderString appender, wchar[] value)
                 @safe pure
             {
             }
 
             pragma(mangle, "_D3std5range10primitives__T3putTSQBf5array__T8AppenderTAyaZQoTuZQBlFNaNfKQBpuZv")
-            void putAppenderStringWchar(ref Appender!string appender, wchar value)
+            void putAppenderStringWchar(ref SupportAppenderString appender, wchar value)
                 @safe pure
             {
             }
@@ -3402,13 +3472,13 @@ private void resetObjState(
         symbol.semanticRun = PASS.semantic3done;
 
     if (auto declaration = symbol.isDeclaration)
-        resetTypeObjState(declaration.type);
+        resetTypeObjState(declaration.type, root, seen, modules);
 
     if (auto variable = symbol.isVarDeclaration)
         resetInitializerObjState(variable._init, root, seen, modules);
 
     if (auto typeInfo = symbol.isTypeInfoDeclaration) {
-        resetTypeObjState(typeInfo.tinfo);
+        resetTypeObjState(typeInfo.tinfo, root, seen, modules);
         if (auto typeStruct = typeInfo.tinfo.isTypeStruct)
             resetObjState(typeStruct.sym, root, seen, modules);
     }
@@ -3505,36 +3575,36 @@ private void resetExpressionObjState(
         imported!"dmd.dmodule".Module[] modules;
 
         override void visit(Expression expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
         }
 
         override void visit(DeclarationExp expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
             resetObjState(expression.declaration, root, *seen, modules);
         }
 
         override void visit(DsymbolExp expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
             resetObjState(expression.s, root, *seen, modules);
         }
 
         override void visit(FuncExp expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
             resetObjState(expression.fd, root, *seen, modules);
         }
 
         override void visit(SymbolExp expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
             resetObjState(expression.var, root, *seen, modules);
         }
 
         override void visit(TypeidExp expression) {
-            resetTypeObjState(expression.type);
-            resetTypeObjState(isType(expression.obj));
+            resetTypeObjState(expression.type, root, *seen, modules);
+            resetTypeObjState(isType(expression.obj), root, *seen, modules);
         }
 
         override void visit(VarExp expression) {
-            resetTypeObjState(expression.type);
+            resetTypeObjState(expression.type, root, *seen, modules);
             resetObjState(expression.var, root, *seen, modules);
         }
     }
@@ -3674,12 +3744,19 @@ private void resetFunctionBodyObjState(
 
 private void resetBackendSymbol(void* csym) @trusted {
     import dmd.backend.cc: Symbol;
+    import dmd.backend.symbol: symbol_reset;
     import dmd.backend.symtab: SYMIDX;
 
     if (!csym)
         return;
 
-    (cast(Symbol*) csym).Ssymnum = SYMIDX.max;
+    auto symbol = cast(Symbol*) csym;
+    // DMD caches backend symbols on frontend declarations after object
+    // generation. Reusing those symbols in the next in-process codegen pass
+    // makes the backend believe it already owns an object-file symbol number,
+    // which can produce stale references or duplicate emitted definitions.
+    symbol_reset(*symbol);
+    symbol.Ssymnum = SYMIDX.max;
 }
 
 private void resetTypeObjState(imported!"dmd.mtype".Type type) @trusted {
@@ -3688,6 +3765,20 @@ private void resetTypeObjState(imported!"dmd.mtype".Type type) @trusted {
 
     bool[void*] seen;
     resetTypeObjState(type, seen);
+}
+
+private void resetTypeObjState(
+    imported!"dmd.mtype".Type type,
+    imported!"dmd.dmodule".Module root,
+    ref bool[void*] symbolsSeen,
+    imported!"dmd.dmodule".Module[] modules,
+) @trusted {
+    if (!type)
+        return;
+
+    bool[void*] typesSeen;
+    resetTypeObjState(type);
+    resetTypeAggregateInitializers(type, typesSeen);
 }
 
 private void resetTypeObjState(
@@ -3714,6 +3805,47 @@ private void resetTypeObjState(
     resetTypeObjState(type.nextOf, seen);
     if (auto associative = type.isTypeAArray)
         resetTypeObjState(associative.index, seen);
+}
+
+private void resetTypeAggregateInitializers(
+    imported!"dmd.mtype".Type type,
+    ref bool[void*] typesSeen,
+) @trusted {
+    if (!type)
+        return;
+
+    const key = cast(void*) type;
+    if (key in typesSeen)
+        return;
+
+    typesSeen[key] = true;
+
+    if (auto typeStruct = type.isTypeStruct)
+        resetBzeroInitializer(typeStruct.sym.sinit);
+    if (auto typeClass = type.isTypeClass)
+        resetBzeroInitializer(typeClass.sym.sinit);
+    if (auto typeEnum = type.isTypeEnum)
+        resetBzeroInitializer(typeEnum.sym.sinit);
+
+    resetTypeAggregateInitializers(type.nextOf, typesSeen);
+    if (auto associative = type.isTypeAArray)
+        resetTypeAggregateInitializers(associative.index, typesSeen);
+}
+
+private void resetBzeroInitializer(ref void* initializer) @trusted {
+    import core.stdc.string: strcmp;
+    import dmd.backend.cc: Symbol;
+
+    if (!initializer)
+        return;
+
+    auto symbol = cast(Symbol*) initializer;
+    // Aggregate default initializers can cache the backend's zero-fill helper.
+    // If the next generated object reuses that cached `__bzeroBytes`, the
+    // linker may see two weak symbols with different sizes and reject the
+    // shared library before the generated unittest can be loaded.
+    if (strcmp(symbol.Sident.ptr, "__bzeroBytes") == 0)
+        initializer = null;
 }
 
 private void resetObjState(
@@ -3936,9 +4068,6 @@ private bool shouldCompileImportedSource(
         if (module_.isUnitThreadedModule)
             return false;
 
-        if (importPath.linkFileForImportPath.length == 0)
-            throw new Exception("DMD backend does not support imported source modules.");
-
         return true;
     }
 
@@ -4054,7 +4183,7 @@ private void semantic3Dependencies(
     runDeferredSemantic3;
 }
 
-private void link(in string objPath, in string soPath, in string[] linkFiles) @safe {
+private void link(in string[] objPaths, in string soPath, in string[] linkFiles) @safe {
     import std.process: execute;
     import std.conv: text;
 
@@ -4067,8 +4196,8 @@ private void link(in string objPath, in string soPath, in string[] linkFiles) @s
     }
     command ~= [
         "-of=" ~ soPath,
-        objPath,
     ];
+    command ~= objPaths;
     command ~= linkFiles;
 
     const result = execute(command);
