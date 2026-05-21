@@ -44,6 +44,10 @@ Current progress:
    the assertion.
 4. Old and new tree walkers have been split into separate modules, with
    new-walker execution state folded directly into the new executor shape.
+5. Project-inspired cerealed tests now live in `ut.projects.cerealed`.
+   They include `ExecutorBackend.treeWalking`, but those entries bail
+   out for now. Follow-up PRs should remove the bail-outs one behavior
+   at a time and implement the missing new tree walker support.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:
