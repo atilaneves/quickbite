@@ -8,6 +8,7 @@ __gshared size_t _loadedHandlesCapacity;
 __gshared size_t _loadedHandlesLength;
 __gshared void** _loadedHandles;
 __gshared uint _tempCounter;
+__gshared imported!"dmd.dtemplate".TemplateInstance[void*] _templateNextByInstance;
 
 extern (C) private void closeLoadedHandlesAtExit() @trusted {
     import core.sys.posix.dlfcn: dlclose;
@@ -136,7 +137,8 @@ private void compileAndRun(
     const idx = atomicFetchAdd(_tempCounter, 1u);
     const tmpDir = buildPath(tempDir, text("quickbite_dmd_", idx));
     mkdirRecurse(tmpDir);
-    scope(exit) rmdirRecurse(tmpDir);
+    // Temporarily preserved while diagnosing cross-fixture DMD-codegen links.
+    // scope(exit) rmdirRecurse(tmpDir);
 
     const soPath = buildPath(tmpDir, "module.so");
     string[] objPaths;
@@ -212,6 +214,19 @@ private string linkFileForImportPath(in string importPath) @safe {
     return "";
 }
 
+private string[] codegenSourceImportPaths(in string[] importPaths) @safe {
+    string[] ret;
+
+    foreach (importPath; importPaths) {
+        if (importPath.linkFileForImportPath.length != 0)
+            continue;
+
+        ret ~= importPath;
+    }
+
+    return ret;
+}
+
 private string[] libraryFiles(in string dir) @trusted {
     import std.algorithm.sorting: sort;
     import std.array: array;
@@ -274,7 +289,7 @@ private string[] generateObjs(
     import std.conv: text;
     import std.path: buildPath;
 
-    auto modules = collectSourceModules(module_, sourceImportPaths);
+    auto modules = collectSourceModules(module_, sourceImportPaths.codegenSourceImportPaths);
     modules ~= dmdCodegenSupportModule(idx);
     semantic3Dependencies(modules);
     throwIfDmdErrors;
@@ -287,6 +302,9 @@ private string[] generateObjs(
         objPaths ~= objPath;
     }
 
+    const allInst = global.params.allInst;
+    scope(exit) global.params.allInst = allInst;
+    global.params.allInst = true;
     foreach (currentModule; modules) {
         // DMD's backend keeps the generated zero-initializer helper in this
         // process-global. If it points at a symbol from an earlier object,
@@ -298,6 +316,31 @@ private string[] generateObjs(
     }
 
     return objPaths;
+}
+
+private void generateObjectFiles(imported!"dmd.dmodule".Module[] modules) @trusted {
+    import dmd.glue: generateCodeAndWrite;
+
+    enum noPrebuiltObjectsOrLibraries = (const(char)*[]).init;
+    enum noLibraryName = "";
+    enum currentObjectDirectory = "";
+    enum writeObjectFiles = true;
+    enum doNotWriteLibrary = false;
+    enum oneObjectFilePerModule = false;
+    enum doNotSplitSymbolsIntoSeparateObjects = false;
+    enum doNotPrintCodegenProgress = false;
+
+    generateCodeAndWrite(
+        modules,
+        noPrebuiltObjectsOrLibraries,
+        noLibraryName,
+        currentObjectDirectory,
+        doNotWriteLibrary,
+        writeObjectFiles,
+        oneObjectFilePerModule,
+        doNotSplitSymbolsIntoSeparateObjects,
+        doNotPrintCodegenProgress,
+    );
 }
 
 private imported!"dmd.dmodule".Module dmdCodegenSupportModule(in uint idx) @trusted {
@@ -3504,16 +3547,29 @@ private void resetObjState(
         resetObjState(struct_.xhash, root, seen, modules);
     }
 
-    if (auto templateInstance = symbol.isTemplateInstance)
+    if (auto templateInstance = symbol.isTemplateInstance) {
+        templateInstance.restoreTemplateNext;
         templateInstance.makeRootTemplateInstance(root, modules);
+    }
 
     if (auto module_ = symbol.isModule)
         resetObjState(module_.decldefs, root, seen, modules);
+
+    if (auto attribute = symbol.isAttribDeclaration)
+        if (attribute.isStorageClassDeclaration
+            || attribute.isVisibilityDeclaration
+            || attribute.isStaticIfDeclaration)
+            resetObjState(attribute.decl, root, seen, modules);
 
     if (auto scopeSymbol = symbol.isScopeDsymbol)
         resetObjState(scopeSymbol.members, root, seen, modules);
 
     if (auto function_ = symbol.isFuncDeclaration) {
+        function_.skipCodegen = false;
+        if (auto literal = function_.isFuncLiteralDeclaration)
+            literal.deferToObj = false;
+        if (auto unitTest = function_.isUnitTestDeclaration)
+            unitTest.deferredNested.setDim(0);
         resetObjState(function_.vthis, root, seen, modules);
         resetObjState(function_.v_arguments, root, seen, modules);
         resetObjState(function_.v_argptr, root, seen, modules);
@@ -3866,19 +3922,53 @@ private void makeRootTemplateInstance(
 ) @trusted {
     if (templateInstance.isUnitThreadedTemplateInstance)
         return;
-    if (!templateInstance.canRootTemplateInstance(modules))
+    if (!templateInstance.canRootTemplateInstance(modules)
+        && !templateInstance.wasInstantiatedByCurrentCodegenModule(modules)
+        && !templateInstance.isAlwaysCodegenTemplateInstance)
         return;
 
     templateInstance.minst = root;
+    templateInstance.appendToCurrentRoot(root);
 
     if (auto primary = templateInstance.inst) {
+        primary.restoreTemplateNext;
         if (primary.isUnitThreadedTemplateInstance)
             return;
-        if (!primary.canRootTemplateInstance(modules))
+        if (!primary.canRootTemplateInstance(modules)
+            && !primary.wasInstantiatedByCurrentCodegenModule(modules)
+            && !primary.isAlwaysCodegenTemplateInstance)
             return;
 
         primary.minst = root;
+        primary.appendToCurrentRoot(root);
     }
+}
+
+private void appendToCurrentRoot(
+    imported!"dmd.dtemplate".TemplateInstance templateInstance,
+    imported!"dmd.dmodule".Module root,
+) @trusted {
+    if (templateInstance.isTemplateMixin)
+        return;
+    if (templateInstance.memberOf is root)
+        return;
+
+    root.members.push(templateInstance);
+    templateInstance.memberOf = root;
+}
+
+private void restoreTemplateNext(
+    imported!"dmd.dtemplate".TemplateInstance templateInstance,
+) @trusted {
+    const key = cast(void*) templateInstance;
+    if (templateInstance.tnext) {
+        if (key !in _templateNextByInstance)
+            _templateNextByInstance[key] = templateInstance.tnext;
+        return;
+    }
+
+    if (auto next = key in _templateNextByInstance)
+        templateInstance.tnext = *next;
 }
 
 private bool canRootTemplateInstance(
@@ -3893,6 +3983,23 @@ private bool canRootTemplateInstance(
 
     return templateInstance.minst.isCurrentCodegenModule(modules)
         || templateInstance.minst.isBackendRuntimeSupportModule;
+}
+
+private bool wasInstantiatedByCurrentCodegenModule(
+    imported!"dmd.dtemplate".TemplateInstance templateInstance,
+    imported!"dmd.dmodule".Module[] modules,
+) @trusted {
+    return templateInstance.minst
+        && templateInstance.minst.isCurrentCodegenModule(modules);
+}
+
+private bool isAlwaysCodegenTemplateInstance(
+    imported!"dmd.dtemplate".TemplateInstance templateInstance,
+) @trusted {
+    import dmd.id: Id;
+
+    return templateInstance.inst
+        && templateInstance.inst.name == Id._d_arrayliteralTX;
 }
 
 private bool referencesNonCurrentSourceModule(
@@ -4198,7 +4305,11 @@ private void link(in string[] objPaths, in string soPath, in string[] linkFiles)
         "-of=" ~ soPath,
     ];
     command ~= objPaths;
+    if (linkFiles.length != 0)
+        command ~= "-L=--start-group";
     command ~= linkFiles;
+    if (linkFiles.length != 0)
+        command ~= "-L=--end-group";
 
     const result = execute(command);
     if (result.status != 0)

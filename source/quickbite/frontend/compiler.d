@@ -87,6 +87,7 @@ final class Compiler {
         diagnosticHandler = (const ref SourceLoc, Color, const(char)*, const(char)*, va_list, const(char)*, const(char)*) => true;
 
         global.params.useUnitTests = true;
+        global.params.allInst = true;
         global.errors = 0;
         global.warnings = 0;
         diagnostics.length = 0;

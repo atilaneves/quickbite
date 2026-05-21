@@ -151,6 +151,26 @@ version (QuickbiteDmdCodegen) {
             }
         }, [importPath], ExecutorBackend.dmdCodegen);
     }
+
+    @("runTests.dmdCodegenRunsAssociativeArrayLiteral")
+    unittest {
+        import quickbite: ExecutorBackend, runTests;
+
+        // Associative-array literals instantiate druntime template support
+        // that normal DMD codegen must emit into the generated object set. In
+        // Quickbite's long-lived DMD process, an earlier semantic pass can
+        // leave the shared template cache looking as if that support belongs
+        // to a non-root module; without DMD's linkability-focused codegen mode,
+        // the generated unittest keeps unresolved references and dlopen fails.
+        runTests(q{
+            module quickbite_dmd_codegen_regression.associative_array_literal;
+
+            unittest {
+                auto map = [5: 105];
+                assert(map[5] == 105);
+            }
+        }, ExecutorBackend.dmdCodegen);
+    }
 }
 
 @("runTests.runsAttributedThrowingUnittests")

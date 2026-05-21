@@ -99,11 +99,11 @@ int main(string[] args) {
                 } catch (Exception e) {
                     stderr.writefln(
                         "skipping %s %s: %s",
-                        displayName, name, firstLine(e.msg),
+                        displayName, name, e.msg,
                     );
                 }
             } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", displayName, firstLine(e.msg));
+                stderr.writefln("skipping %s: %s", displayName, e.msg);
             }
             writeln;
         }
