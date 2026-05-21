@@ -2,10 +2,10 @@ module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
-import std.traits: EnumMembers;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
-static foreach (backend; EnumMembers!ExecutorBackend) {
+static foreach (backend; matureExecutorBackends) {
     @(backend.text ~ ".minicerealFile")
     unittest {
         import std.file: readText;

@@ -23,6 +23,11 @@ new `TreeWalkingExecutor` class and a new `ExecutorBackend.treeWalking`
 value pointing to it. This is a refactoring step that should not change
 anything related to testing, the tests just need to pass.
 
+The new executor must be completely isolated from the old one. Do not
+introduce shared executor base classes or helper functions between
+`TreeWalkingExecutor` and `TreeWalkingExecutorOld`; duplicate entrypoint
+plumbing when needed.
+
 For each cerealed integration test that we run on all backends, we
 take the following steps:
 

@@ -123,7 +123,7 @@ private struct CallArgument {
     private bool isGlobalRef;
 }
 
-public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
+public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Executor {
     import dmd.dmodule: Module;
     import quickbite.executor: TestSummary;
 

@@ -2,6 +2,8 @@ module ut.compiler_api;
 
 private:
 
+import quickbite: ExecutorBackend;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 @("parseModule.withImportPaths")
@@ -52,10 +54,9 @@ unittest {
 
 @("runTests.runsAttributedUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
+    import quickbite: runTests;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
@@ -71,10 +72,9 @@ unittest {
 
 @("runTests.runsAttributedThrowingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTests;
-    import std.traits: EnumMembers;
+    import quickbite: runTests;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
@@ -90,10 +90,9 @@ unittest {
 
 @("runTestSummary.countsAttributedPassingAndFailingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             const summary = runTestSummary(q{
                 @("passes")
@@ -120,10 +119,9 @@ unittest {
 
 @("runTestSummary.countsAllPassingUnittests")
 unittest {
-    import quickbite: ExecutorBackend, runTestSummary;
-    import std.traits: EnumMembers;
+    import quickbite: runTestSummary;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             const summary = runTestSummary(q{
                 unittest {
