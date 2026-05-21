@@ -1,4 +1,4 @@
-module quickbite.backends.dmd_backend;
+module quickbite.backends.dmd_codegen;
 
 private:
 
@@ -32,7 +32,7 @@ private void keepLoadedHandle(void* handle) @trusted {
         const newSize = newCapacity * (void*).sizeof;
         auto loadedHandles = cast(void**) realloc(_loadedHandles, newSize);
         if (!loadedHandles)
-            throw new Exception("Failed to remember DMD backend shared library handle.");
+            throw new Exception("Failed to remember DMD codegen shared library handle.");
 
         _loadedHandles = loadedHandles;
         _loadedHandlesCapacity = newCapacity;
@@ -52,7 +52,7 @@ private void registerLoadedHandlesCleanup() @trusted {
     _loadedHandlesCleanupRegistered = true;
 }
 
-public final class DmdBackend : imported!"quickbite.executor".Executor {
+public final class DmdCodegen : imported!"quickbite.executor".Executor {
     private string[] linkFiles;
     private string[] sourceImportPaths;
 
@@ -275,7 +275,7 @@ private string[] generateObjs(
     import std.path: buildPath;
 
     auto modules = collectSourceModules(module_, sourceImportPaths);
-    modules ~= dmdBackendSupportModule(idx);
+    modules ~= dmdCodegenSupportModule(idx);
     semantic3Dependencies(modules);
     throwIfDmdErrors;
     resetObjState(modules);
@@ -300,18 +300,18 @@ private string[] generateObjs(
     return objPaths;
 }
 
-private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trusted {
+private imported!"dmd.dmodule".Module dmdCodegenSupportModule(in uint idx) @trusted {
     import dmd.frontend: parseModule;
     import std.conv: text;
 
-    const moduleName = text("quickbite_dmd_backend_support_", idx);
+    const moduleName = text("quickbite_dmd_codegen_support_", idx);
     const source = text(
         "module ", moduleName, ";\n",
         q{
             // The generated test objects reference a small set of Phobos and
             // druntime template symbols by their ABI names. Importing the real
             // modules here would instantiate weak template bodies in every
-            // in-process DMD backend run; DMD keeps enough object state alive
+            // in-process DMD codegen run; DMD keeps enough object state alive
             // that later links can then see duplicate or stale definitions.
             //
             // These declarations are the narrow link-time contract we need
@@ -3331,7 +3331,7 @@ private imported!"dmd.dmodule".Module dmdBackendSupportModule(in uint idx) @trus
 
     auto parsed = parseModule(moduleName ~ ".d", source);
     if (parsed.diagnostics.hasErrors)
-        throw new Exception("DMD backend support module failed to parse.");
+        throw new Exception("DMD codegen support module failed to parse.");
 
     return parsed.module_;
 }
@@ -3341,7 +3341,7 @@ private string nestedNestedTypeInfoInitDefinitions(in uint maxIdx) @safe {
 
     string ret;
     foreach (idx; 0 .. maxIdx + 1) {
-        const moduleName = text("quickbite_dmd_backend_support_", idx);
+        const moduleName = text("quickbite_dmd_codegen_support_", idx);
         ret ~= text(
             "pragma(mangle, \"", nestedNestedBucketArrayTypeInfoInitMangle(moduleName), "\")\n",
             "__gshared ubyte[1] nestedNestedBucketTypeInfoInit_", idx, ";\n",
@@ -3358,7 +3358,7 @@ private string nestedNestedAaLengthDefinitions(in uint maxIdx) @safe {
 
     string ret;
     foreach (idx; 0 .. maxIdx + 1) {
-        const moduleName = text("quickbite_dmd_backend_support_", idx);
+        const moduleName = text("quickbite_dmd_codegen_support_", idx);
         ret ~= text(
             "pragma(mangle, \"", nestedNestedAaLengthMangle(moduleName), "\")\n",
             "size_t nestedNestedAaLength_", idx, "()\n",
@@ -3949,7 +3949,7 @@ private void throwIfDmdErrors() @trusted {
         .array;
 
     if (messages.length == 0)
-        throw new Exception("DMD backend code generation failed without a diagnostic message.");
+        throw new Exception("DMD codegen failed without a diagnostic message.");
 
     throw new Exception(messages.join("\n"));
 }

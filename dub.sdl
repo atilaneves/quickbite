@@ -19,7 +19,7 @@ configuration "unittest" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
     includePaths "tests"
-    versions "unitUnthreaded" "QuickbiteDmdBackend"
+    versions "unitUnthreaded" "QuickbiteDmdCodegen"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
@@ -37,7 +37,7 @@ configuration "unittest-cov" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
     includePaths "tests"
-    versions "unitUnthreaded" "QuickbiteDmdBackend"
+    versions "unitUnthreaded" "QuickbiteDmdCodegen"
 
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
@@ -60,7 +60,7 @@ configuration "benchmark" {
     sourcePaths "benchmarks"
     includePaths "benchmarks"
     dflags "-defaultlib=libphobos2.so"
-    versions "QuickbiteRuntimeLoadLibrary" "QuickbiteDmdBackend"
+    versions "QuickbiteRuntimeLoadLibrary" "QuickbiteDmdCodegen"
 
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"

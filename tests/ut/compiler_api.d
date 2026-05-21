@@ -4,12 +4,12 @@ private:
 
 import unit_threaded;
 
-private template isDmdBackend(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdBackend)
-        enum isDmdBackend =
-            backend == imported!"quickbite".ExecutorBackend.dmdBackend;
+private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
+    version (QuickbiteDmdCodegen)
+        enum isDmdCodegen =
+            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
     else
-        enum isDmdBackend = false;
+        enum isDmdCodegen = false;
 }
 
 @("parseModule.withImportPaths")
@@ -64,7 +64,7 @@ unittest {
     import std.traits: EnumMembers;
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
-        static if (!isDmdBackend!backend) {
+        static if (!isDmdCodegen!backend) {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
                 // as unit-threaded and cerealed tests do.
@@ -77,63 +77,63 @@ unittest {
     }
 }
 
-version (QuickbiteDmdBackend) {
-    @("runTests.dmdBackendRunsFailingPackageModuleUnittest")
+version (QuickbiteDmdCodegen) {
+    @("runTests.dmdCodegenRunsFailingPackageModuleUnittest")
     unittest {
         import quickbite: ExecutorBackend, runTests;
 
-        // The DMD backend looks up the generated __modtest symbol by module
+        // DMD codegen looks up the generated __modtest symbol by module
         // name; dotted module names catch silently-skipped unittests there.
         runTests(q{
-            module quickbite_dmd_backend_regression.package_module;
+            module quickbite_dmd_codegen_regression.package_module;
 
             unittest {
                 assert(1 == 2, "Unittest assertion failed.");
             }
-        }, ExecutorBackend.dmdBackend).shouldThrowWithMessage(
+        }, ExecutorBackend.dmdCodegen).shouldThrowWithMessage(
             "Unittest assertion failed.",
         );
     }
 
-    @("runTests.dmdBackendCatchesAssertWithoutMessage")
+    @("runTests.dmdCodegenCatchesAssertWithoutMessage")
     unittest {
         import quickbite: ExecutorBackend, runTests;
 
         // A bare assert (no message) calls _d_unittestp in the D runtime, which
         // is a different code path from assert(cond, "msg"). This test confirms
-        // that the dmd backend catches the resulting AssertError rather than
+        // that DMD codegen catches the resulting AssertError rather than
         // letting it abort the process.
         runTests(q{
-            module quickbite_dmd_backend_regression.assert_no_message;
+            module quickbite_dmd_codegen_regression.assert_no_message;
 
             unittest {
                 assert(1 == 2);
             }
-        }, ExecutorBackend.dmdBackend).shouldThrow;
+        }, ExecutorBackend.dmdCodegen).shouldThrow;
     }
 
-    @("runTests.dmdBackendRunsImportedSourceModules")
+    @("runTests.dmdCodegenRunsImportedSourceModules")
     unittest {
         import quickbite: ExecutorBackend, runTests;
         import std.path: buildPath;
         import std.file: mkdirRecurse, write;
 
-        const importPath = tempModuleDir("dmd-backend-imported-source");
+        const importPath = tempModuleDir("dmd-codegen-imported-source");
         mkdirRecurse(importPath);
         write(
-            buildPath(importPath, "quickbite_dmd_backend_imported_leaf.d"),
+            buildPath(importPath, "quickbite_dmd_codegen_imported_leaf.d"),
             q{
-                module quickbite_dmd_backend_imported_leaf;
+                module quickbite_dmd_codegen_imported_leaf;
 
                 int quickbiteImportedAnswer = 42;
             },
         );
         write(
-            buildPath(importPath, "quickbite_dmd_backend_imported_source.d"),
+            buildPath(importPath, "quickbite_dmd_codegen_imported_source.d"),
             q{
-                module quickbite_dmd_backend_imported_source;
+                module quickbite_dmd_codegen_imported_source;
 
-                import quickbite_dmd_backend_imported_leaf;
+                import quickbite_dmd_codegen_imported_leaf;
 
                 int importedAnswer() {
                     return quickbiteImportedAnswer;
@@ -142,14 +142,14 @@ version (QuickbiteDmdBackend) {
         );
 
         runTests(q{
-            module quickbite_dmd_backend_regression.imported_source;
+            module quickbite_dmd_codegen_regression.imported_source;
 
-            import quickbite_dmd_backend_imported_source;
+            import quickbite_dmd_codegen_imported_source;
 
             unittest {
                 assert(importedAnswer == 42);
             }
-        }, [importPath], ExecutorBackend.dmdBackend);
+        }, [importPath], ExecutorBackend.dmdCodegen);
     }
 }
 
@@ -159,7 +159,7 @@ unittest {
     import std.traits: EnumMembers;
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
-        static if (!isDmdBackend!backend) {
+        static if (!isDmdCodegen!backend) {
             runTests(q{
                 // The UDA makes DMD wrap the unittest in an AttribDeclaration,
                 // as unit-threaded and cerealed tests do.
@@ -179,8 +179,8 @@ unittest {
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
         // This generic test covers backends that execute unittest blocks
-        // individually; the DMD backend is covered separately below.
-        static if (!isDmdBackend!backend) {
+        // individually; DMD codegen is covered separately below.
+        static if (!isDmdCodegen!backend) {
             {
                 const summary = runTestSummary(q{
                     @("passes")
@@ -212,8 +212,8 @@ unittest {
     import std.traits: EnumMembers;
 
     static foreach (backend; EnumMembers!ExecutorBackend) {
-        // DMD backend module-level reporting is tested separately below.
-        static if (!isDmdBackend!backend) {
+        // DMD codegen module-level reporting is tested separately below.
+        static if (!isDmdCodegen!backend) {
             {
                 const summary = runTestSummary(q{
                     unittest {
@@ -234,16 +234,16 @@ unittest {
     }
 }
 
-version (QuickbiteDmdBackend) {
-    @("runTestSummary.dmdBackendCountsPassingSourceModule")
+version (QuickbiteDmdCodegen) {
+    @("runTestSummary.dmdCodegenCountsPassingSourceModule")
     unittest {
         import quickbite: ExecutorBackend, runTestSummary;
 
         // DMD's generated __modtest runner exposes one result for the whole
         // source module. Even with multiple passing unittest blocks, quickbite
-        // can only report one passing module for this backend.
+        // can only report one passing module for DMD codegen.
         const summary = runTestSummary(q{
-            module quickbite_dmd_backend_summary.passing_module;
+            module quickbite_dmd_codegen_summary.passing_module;
 
             unittest {
                 assert(1 == 1);
@@ -253,23 +253,23 @@ version (QuickbiteDmdBackend) {
             unittest {
                 assert(2 == 2);
             }
-        }, ExecutorBackend.dmdBackend);
+        }, ExecutorBackend.dmdCodegen);
 
         summary.total.should == 1;
         summary.passed.should == 1;
         summary.failed.should == 0;
     }
 
-    @("runTestSummary.dmdBackendCountsFailingSourceModule")
+    @("runTestSummary.dmdCodegenCountsFailingSourceModule")
     unittest {
         import quickbite: ExecutorBackend, runTestSummary;
 
         // __modtest aborts the module on the first failing unittest and does
-        // not expose later block outcomes. The DMD backend therefore reports
+        // not expose later block outcomes. DMD codegen therefore reports
         // one failing source module, not one pass plus one failure plus one
         // skipped block.
         const summary = runTestSummary(q{
-            module quickbite_dmd_backend_summary.failing_module;
+            module quickbite_dmd_codegen_summary.failing_module;
 
             unittest {
                 assert(1 == 1);
@@ -283,7 +283,7 @@ version (QuickbiteDmdBackend) {
             unittest {
                 assert(3 == 3);
             }
-        }, ExecutorBackend.dmdBackend);
+        }, ExecutorBackend.dmdCodegen);
 
         summary.total.should == 1;
         summary.passed.should == 0;

@@ -1,7 +1,7 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends.dmd_backend: DmdBackend;
+import quickbite.backends.dmd_codegen: DmdCodegen;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
@@ -71,10 +71,10 @@ int main(string[] args) {
     backends["ir"]          = new IrExecutor;
     backends["treeWalking"] = new TreeWalkingExecutor;
     backends["dmd-ctfe"]    = new DmdCtfe;
-    backends["dmd-backend"] = new DmdBackend(linkFiles, importPaths);
+    backends["dmd-codegen"] = new DmdCodegen(linkFiles, importPaths);
 
     if (backendNames.length == 0)
-        backendNames = ["ir", "treeWalking", "dmd-ctfe", "dmd-backend"];
+        backendNames = ["ir", "treeWalking", "dmd-ctfe", "dmd-codegen"];
 
     foreach (name; backendNames)
         if (name !in backends)

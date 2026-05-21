@@ -1,5 +1,5 @@
 // Minimal stub for dmd.lib to satisfy linker references from dmd.glue.
-// generateCodeAndWrite only uses Library when writeLibrary=true; the DmdBackend
+// generateCodeAndWrite only uses Library when writeLibrary=true; DmdCodegen
 // always passes writeLibrary=false, so these methods are unreachable at runtime.
 module dmd.lib;
 

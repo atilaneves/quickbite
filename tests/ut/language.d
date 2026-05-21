@@ -8,16 +8,16 @@ import std.meta: AliasSeq;
 import std.traits: EnumMembers;
 import unit_threaded;
 
-private template isDmdBackend(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdBackend)
-        enum isDmdBackend =
-            backend == imported!"quickbite".ExecutorBackend.dmdBackend;
+private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
+    version (QuickbiteDmdCodegen)
+        enum isDmdCodegen =
+            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
     else
-        enum isDmdBackend = false;
+        enum isDmdCodegen = false;
 }
 
 static foreach (backend; EnumMembers!ExecutorBackend) {
-    static if (!isDmdBackend!backend) {
+    static if (!isDmdCodegen!backend) {
     @(backend.text ~ ".ok")
     unittest {
         runTests(q{
@@ -2079,7 +2079,7 @@ private void expectRunTestsFailure(
 }
 
 static foreach (backend; EnumMembers!ExecutorBackend) {
-    static if (!isDmdBackend!backend) {
+    static if (!isDmdCodegen!backend) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
         @(backend.text ~ ".integralType." ~ T.stringof)
         unittest {
