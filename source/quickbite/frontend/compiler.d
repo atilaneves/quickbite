@@ -117,6 +117,7 @@ final class Compiler {
         global.params.v.errorLimit = 0;
 
         global.params.useUnitTests = true;
+        global.params.allInst = true;
         global.errors = 0;
         global.warnings = 0;
         diagnostics.length = 0;

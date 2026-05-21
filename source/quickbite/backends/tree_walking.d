@@ -24,7 +24,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     public override void runParsedTests(
         Module module_,
     ) {
-        import quickbite.dmd_util: foreachUnitTestDeclaration;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
             runTest(unitTest);

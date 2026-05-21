@@ -1,9 +1,11 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
+import quickbite.backends.dmd_codegen: DmdCodegen;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
+import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
 import quickbite.executor: Executor;
 import quickbite.frontend.compiler: parseModule;
 
@@ -22,21 +24,22 @@ int main(string[] args) {
     size_t warmup     = defaultWarmup;
     size_t iterations = defaultIterations;
     string[] importPaths;
+    string[] linkFiles;
+    string[] backendNames;
     string dubPkg;
-    bool noDmd;
 
     auto info = getopt(
         args,
         "warmup",       "untimed iterations before sampling",          &warmup,
         "iterations",   "timed iterations per measurement",            &iterations,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
+        "backend",      "backend to measure (repeatable)",             &backendNames,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
-        "no-dmd",       "omit the dmd subprocess row",                 &noDmd,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--dub=NAME] [--no-dmd]"
+            ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME]"
             ~ " [<module.d> ...]",
             info.options,
         );
@@ -46,11 +49,10 @@ int main(string[] args) {
     string[] fixtures = args[1 .. $].dup;
 
     if (dubPkg.length > 0) {
-        const dubInfo = resolveDubPkg(dubPkg);
+        auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
+        linkFiles   ~= dubInfo.linkFiles;
         fixtures    ~= dubInfo.fixtures;
-        // dmd -run cannot link against a package's precompiled deps.
-        noDmd = true;
     }
 
     if (fixtures.length == 0)
@@ -67,37 +69,23 @@ int main(string[] args) {
     printRunHeader(warmup, iterations);
 
     Executor[string] backends;
-    backends["ir"]          = new IrExecutor;
-    backends["treeWalking"] = new TreeWalkingExecutor;
-    backends["dmd-ctfe"]    = new DmdCtfe;
+    backends["ir"]             = new IrExecutor;
+    backends["treeWalkingOld"] = new TreeWalkingExecutorOld;
+    backends["treeWalking"]    = new TreeWalkingExecutor;
+    backends["dmd-ctfe"]       = new DmdCtfe;
+    backends["dmd-codegen"]    = new DmdCodegen(linkFiles, importPaths);
+
+    if (backendNames.length == 0)
+        backendNames = ["ir", "treeWalkingOld", "dmd-ctfe"];
+
+    foreach (name; backendNames)
+        if (name !in backends)
+            throw new Exception("unknown backend: " ~ name);
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
-    if (dubPkg.length > 0) {
-        import dmd.dmodule: Module;
-        import quickbite.executor: runModulesTests;
-
-        Module[] modules;
-        foreach (path; fixtures) {
-            try {
-                modules ~= parseModule(readText(path), importPaths).module_;
-            } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", moduleDisplayName(path, importPaths), e.msg);
-            }
-        }
-        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-            auto executor = backends[name];
-            try {
-                printRow(
-                    dubPkg, name, warmup, iterations,
-                    () => executor.runModulesTests(modules),
-                );
-            } catch (Exception e) {
-                writefln("%-32s %-14s  n/a: %s", dubPkg, name, e.msg);
-            }
-        }
-        writeln;
-    } else {
+    foreach (name; backendNames) {
+        auto executor = backends[name];
         foreach (path; fixtures) {
             const source      = readText(path);
             const displayName = moduleDisplayName(path, importPaths);
@@ -105,37 +93,17 @@ int main(string[] args) {
                 auto parsed  = parseModule(source, importPaths);
                 auto module_ = parsed.module_;
 
-                foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-                    auto executor = backends[name];
+                try {
                     printRow(
                         displayName, name, warmup, iterations,
                         () => executor.runParsedTests(module_),
                     );
-                }
-            } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", displayName, e.msg);
-            }
-            writeln;
-        }
-    }
-
-    if (!noDmd) {
-        writeln;
-        writeln("== full edit-to-result (includes parse + semantic; dmd via subprocess) ==");
-        printHeader;
-        foreach (path; fixtures) {
-            const source      = readText(path);
-            const displayName = moduleDisplayName(path, importPaths);
-
-            try {
-                foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-                    auto executor = backends[name];
-                    printRow(
-                        displayName, name, warmup, iterations,
-                        () => executor.runTests(source, importPaths),
+                } catch (Exception e) {
+                    stderr.writefln(
+                        "skipping %s %s: %s",
+                        displayName, name, e.msg,
                     );
                 }
-                printRow(displayName, "dmd", warmup, iterations, () => runDmd(path, importPaths));
             } catch (Exception e) {
                 stderr.writefln("skipping %s: %s", displayName, e.msg);
             }
@@ -144,6 +112,14 @@ int main(string[] args) {
     }
 
     return 0;
+}
+
+string firstLine(in string message) {
+    import std.string: lineSplitter;
+
+    foreach (line; message.lineSplitter)
+        return line.idup;
+    return "";
 }
 
 string moduleDisplayName(in string path, in string[] importPaths) {
@@ -162,6 +138,7 @@ string moduleDisplayName(in string path, in string[] importPaths) {
 
 struct DubInfo {
     string[] importPaths;
+    string[] linkFiles;
     string[] fixtures;
 }
 
@@ -176,25 +153,49 @@ DubInfo resolveDubPkg(in string name) {
 
     const pkgDir = findPkgDir(name);
     // Prefer the unittest config so test-only deps (e.g. unit-threaded) are included.
-    auto descResult = execute(
+    auto importPathResult = execute(
         ["dub", "describe", "--config=unittest", "--data=import-paths", "--data-list"],
         null, Config.none, size_t.max,
         pkgDir,
     );
-    if (descResult.status != 0)
-        descResult = execute(
+    if (importPathResult.status != 0)
+        importPathResult = execute(
             ["dub", "describe", "--data=import-paths", "--data-list"],
             null, Config.none, size_t.max,
             pkgDir,
         );
-    if (descResult.status != 0)
-        throw new Exception("dub describe failed for " ~ name ~ ": " ~ descResult.output);
+    if (importPathResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ importPathResult.output);
 
-    auto importPaths = descResult.output
+    auto importPaths = importPathResult.output
         .splitLines
         .map!(l => l.strip)
         .filter!(l => l.length > 0)
         .array;
+
+    auto linkFileResult = execute(
+        ["dub", "describe", "--config=unittest", "--data=linker-files", "--data-list"],
+        null, Config.none, size_t.max,
+        pkgDir,
+    );
+    if (linkFileResult.status != 0)
+        linkFileResult = execute(
+            ["dub", "describe", "--data=linker-files", "--data-list"],
+            null, Config.none, size_t.max,
+            pkgDir,
+        );
+    if (linkFileResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ linkFileResult.output);
+
+    auto linkFiles = linkFileResult.output
+        .splitLines
+        .map!(l => l.strip)
+        .filter!(l => l.length > 0)
+        .array;
+
+    const rootLibrary = buildPath(pkgDir, "bin", "lib" ~ name ~ ".a");
+    if (rootLibrary.exists)
+        linkFiles = rootLibrary ~ linkFiles;
 
     const testsDir = buildPath(pkgDir, "tests");
     if (!testsDir.exists)
@@ -207,7 +208,7 @@ DubInfo resolveDubPkg(in string name) {
         .array;
     fixtures.sort;
 
-    return DubInfo(importPaths, fixtures);
+    return DubInfo(importPaths, linkFiles, fixtures);
 }
 
 bool isTestRunnerFile(in string basename) {
@@ -313,13 +314,6 @@ void printRunHeader(in size_t warmup, in size_t iterations) {
     if (commit.status == 0)
         writefln("commit:      %s", commit.output.strip);
 
-    const dmdVer = execute(["dmd", "--version"]);
-    if (dmdVer.status == 0)
-        writefln(
-            "dmd (subprocess): %s",
-            dmdVer.output.until('\n').array.text.strip,
-        );
-
     writefln("cpu:         %s", processor.strip);
 
     enum governor = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor";
@@ -343,20 +337,4 @@ string buildFlagsSummary() {
     debug flags ~= "-debug";
 
     return flags.join(" ");
-}
-
-void runDmd(in string path, in string[] importPaths = []) {
-    import std.algorithm.iteration: map;
-    import std.array: array, join;
-    import std.conv: text;
-    import std.process: execute;
-
-    const iFlags = importPaths.map!(p => "-I" ~ p).array;
-    const args   = ["dmd", "-unittest", "-main"] ~ iFlags ~ ["-run", path];
-    const result = execute(args);
-    if (result.status != 0)
-        throw new Exception(text(
-            "`", args.join(" "), "` failed (status ", result.status, "):\n",
-            result.output,
-        ));
 }

@@ -114,6 +114,12 @@
 - Don't use unit-threaded assertions or imports inside `q{}` fixture strings;
   keep host-test dependencies out of code under test.
 
+- In `tests/ut/compiler_api.d`, use `shouldThrowWithMessage`, not naked
+  `shouldThrow`, so tests verify the relevant diagnostic text.
+
+- Do not mark helpers that mutate `__gshared` state as `@safe`; D rejects
+  direct `__gshared` access from `@safe` functions.
+
 - Don't use `throw new Exception` as a failing-test stand-in unless exception
   handling is under test; use `assert`.
 

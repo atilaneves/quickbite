@@ -11,8 +11,8 @@ public struct TestSummary {
 public interface Executor {
     public void runTests(in string source);
     public void runTests(in string source, in string[] importPaths);
-    public void runParsedTests(imported!"dmd.dmodule".Module module_);
     public TestSummary runTestSummary(in string source);
+    public void runParsedTests(imported!"dmd.dmodule".Module module_);
 }
 
 public void runModulesTests(

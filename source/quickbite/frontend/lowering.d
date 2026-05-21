@@ -21,7 +21,7 @@ struct Lowerer {
         if (sourceModule.members is null)
             return loweredModule;
 
-        import quickbite.dmd_util: foreachUnitTestDeclaration;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
         foreachUnitTestDeclaration(sourceModule, (unitTest) {
             loweredModule.tests ~= lowerTest(unitTest);
         });

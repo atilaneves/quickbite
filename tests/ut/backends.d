@@ -9,3 +9,9 @@ public enum matureExecutorBackends = [
     ExecutorBackend.treeWalkingOld,
     ExecutorBackend.dmdCtfe,
 ];
+
+public bool experimentalBackendTestsEnabled() {
+    import std.process: environment;
+
+    return environment.get("QUICKBITE_EXPERIMENTAL_BACKEND_TESTS").length != 0;
+}

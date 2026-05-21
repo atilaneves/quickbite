@@ -3,6 +3,15 @@ description "Bytecode VM for the D programming language"
 copyright "Copyright © 2026, atila"
 license "BSL-1.0"
 
+// When bumping dmd:frontend, re-run scripts/vendor-dmd-backend.sh to
+// keep vendor/dmd-backend/ in sync with the new version.
+subPackage {
+    name "dmd-backend-vendor"
+    targetType "sourceLibrary"
+    sourcePaths "vendor/dmd-backend"
+    importPaths "vendor/dmd-backend"
+}
+
 configuration "unittest" {
     targetType "executable"
     targetName "ut"
@@ -11,8 +20,12 @@ configuration "unittest" {
     sourcePaths "tests"
     includePaths "tests"
     versions "unitUnthreaded"
+    // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
+    // symbols; --allow-multiple-definition lets the linker accept either copy.
+    lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
+    dependency ":dmd-backend-vendor" version="*"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
 }
@@ -29,9 +42,12 @@ configuration "unittest-cov" {
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
     // here directly.
+    // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
+    // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
+    dependency ":dmd-backend-vendor" version="*"
     dependency "unit-threaded" version="*"
     dependency "cerealed" repository="git+https://github.com/atilaneves/cerealed.git" version="3340ea8b1881588c30f7f363f3dec0d5d13ec372"
 }
@@ -43,8 +59,11 @@ configuration "benchmark" {
     mainSourceFile "benchmarks/main.d"
     sourcePaths "benchmarks"
     includePaths "benchmarks"
+    dflags "-defaultlib=libphobos2.so"
+    versions "QuickbiteRuntimeLoadLibrary"
 
     dependency "dmd:frontend" version="~>2.112.0"
+    dependency ":dmd-backend-vendor" version="*"
 }
 
 // `-inline` causes DMD to hang on large lowering.d; omit it until the

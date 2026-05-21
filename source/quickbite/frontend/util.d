@@ -1,4 +1,4 @@
-module quickbite.dmd_util;
+module quickbite.frontend.util;
 
 private:
 

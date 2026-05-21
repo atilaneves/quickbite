@@ -2,8 +2,28 @@ module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
-import ut.backends: matureExecutorBackends;
+import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
 import unit_threaded;
+
+@("dmd-codegen.minicerealFileCanRunTwice")
+unittest {
+    if (experimentalBackendTestsEnabled) {
+        import quickbite.backends.dmd_codegen: DmdCodegen;
+        import quickbite.frontend.compiler: parseModule;
+        import std.file: readText;
+
+        // Reusing a parsed module catches stale DMD codegen object state
+        // between in-process codegen runs. Without the reset, DMD can carry
+        // backend symbols such as `__bzeroBytes` from the first object into
+        // the second; the linker then rejects the generated objects before
+        // the test runs.
+        auto module_ = parseModule(readText("tests/minicereal.d")).module_;
+        auto backend = new DmdCodegen;
+
+        backend.runParsedTests(module_);
+        backend.runParsedTests(module_);
+    }
+}
 
 static foreach (backend; matureExecutorBackends) {
     @(backend.text ~ ".minicerealFile")
