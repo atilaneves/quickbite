@@ -42,10 +42,8 @@ Current progress:
 3. The new tree walker can report contextual integer equality failures
    for simple local integer assertions, including an assignment before
    the assertion.
-
-The next refactoring step is to split old and new tree walkers into
-separate modules and fold any new-walker execution state directly into
-the new executor shape.
+4. Old and new tree walkers have been split into separate modules, with
+   new-walker execution state folded directly into the new executor shape.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:
