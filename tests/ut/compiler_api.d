@@ -3,16 +3,8 @@ module ut.compiler_api;
 private:
 
 import quickbite: ExecutorBackend;
-import ut.backends: matureExecutorBackends;
+import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
 import unit_threaded;
-
-private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdCodegen)
-        enum isDmdCodegen =
-            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
-    else
-        enum isDmdCodegen = false;
-}
 
 @("parseModule.withImportPaths")
 unittest {
@@ -113,9 +105,9 @@ unittest {
     }
 }
 
-version (QuickbiteDmdCodegen) {
-    @("runTests.dmdCodegenRunsFailingPackageModuleUnittest")
-    unittest {
+@("runTests.dmdCodegenRunsFailingPackageModuleUnittest")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
 
         // DMD codegen looks up the generated __modtest symbol by module
@@ -130,9 +122,11 @@ version (QuickbiteDmdCodegen) {
             "Unittest assertion failed.",
         );
     }
+}
 
-    @("runTests.dmdCodegenCatchesAssertWithoutMessage")
-    unittest {
+@("runTests.dmdCodegenCatchesAssertWithoutMessage")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
 
         // A bare assert (no message) calls _d_unittestp in the D runtime, which
@@ -147,9 +141,11 @@ version (QuickbiteDmdCodegen) {
             }
         }, ExecutorBackend.dmdCodegen).shouldThrow;
     }
+}
 
-    @("runTests.dmdCodegenRunsImportedSourceModules")
-    unittest {
+@("runTests.dmdCodegenRunsImportedSourceModules")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
         import std.path: buildPath;
         import std.file: mkdirRecurse, write;
@@ -187,9 +183,11 @@ version (QuickbiteDmdCodegen) {
             }
         }, [importPath], ExecutorBackend.dmdCodegen);
     }
+}
 
-    @("runTests.dmdCodegenRunsAssociativeArrayLiteral")
-    unittest {
+@("runTests.dmdCodegenRunsAssociativeArrayLiteral")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
 
         // Associative-array literals instantiate druntime template support
@@ -280,9 +278,9 @@ unittest {
     }
 }
 
-version (QuickbiteDmdCodegen) {
-    @("runTestSummary.dmdCodegenCountsPassingSourceModule")
-    unittest {
+@("runTestSummary.dmdCodegenCountsPassingSourceModule")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTestSummary;
 
         // DMD's generated __modtest runner exposes one result for the whole
@@ -305,9 +303,11 @@ version (QuickbiteDmdCodegen) {
         summary.passed.should == 1;
         summary.failed.should == 0;
     }
+}
 
-    @("runTestSummary.dmdCodegenCountsFailingSourceModule")
-    unittest {
+@("runTestSummary.dmdCodegenCountsFailingSourceModule")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTestSummary;
 
         // __modtest aborts the module on the first failing unittest and does

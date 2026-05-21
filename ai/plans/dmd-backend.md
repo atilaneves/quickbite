@@ -52,14 +52,12 @@ Result:
 
 Important post-merge test-suite note:
 
-- Keeping `QuickbiteDmdCodegen` in the default unittest configs made the merged
-  suite fail on the known cross-fixture DMD global-state bug. Failures included
-  unresolved `tests.bugs.Pair.__xtoHash` and `core.internal.newaa` symbols in
-  the DMD-codegen focused tests.
-- To satisfy the immediate goal of a green default suite after merging
-  `master`, `dub.sdl` now leaves `QuickbiteDmdCodegen` out of `unittest` and
-  `unittest-cov`. Re-enable those configs only after the DMD-codegen
-  cross-fixture isolation bug is fixed.
+- DMD-codegen is always available in the build. Do not hide it behind
+  `version (QuickbiteDmdCodegen)` unless the backend prevents the project from
+  compiling or linking.
+- Default test and benchmark selection is runtime policy. Broad tests iterate
+  over `matureExecutorBackends`; known-broken DMD-codegen focused tests run only
+  when `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS` is set.
 - Benchmarks now treat `treeWalking` and `dmd-codegen` as experimental
   backends. The default benchmark list is `ir`, `treeWalkingOld`, and
   `dmd-ctfe`; experimental backends remain opt-in via `--backend=treeWalking`

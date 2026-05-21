@@ -60,7 +60,7 @@ configuration "benchmark" {
     sourcePaths "benchmarks"
     includePaths "benchmarks"
     dflags "-defaultlib=libphobos2.so"
-    versions "QuickbiteRuntimeLoadLibrary" "QuickbiteDmdCodegen"
+    versions "QuickbiteRuntimeLoadLibrary"
 
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"

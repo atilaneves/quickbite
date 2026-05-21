@@ -7,14 +7,6 @@ import std.conv: text;
 import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
-private template isDmdCodegen(imported!"quickbite".ExecutorBackend backend) {
-    version (QuickbiteDmdCodegen)
-        enum isDmdCodegen =
-            backend == imported!"quickbite".ExecutorBackend.dmdCodegen;
-    else
-        enum isDmdCodegen = false;
-}
-
 private immutable string[] testFileNames = [
     "bugs.d",
     "cerealiser_impl.d",
@@ -43,7 +35,7 @@ static foreach (backend; matureExecutorBackends) {
         unittest {
             runCerealedTest!(backend, "compile_time.d");
         }
-    } else static if (!isDmdCodegen!backend) {
+    } else {
         static foreach (fileName; testFileNames) {
             @(backend.text ~ ".cerealed." ~ fileName)
             unittest {

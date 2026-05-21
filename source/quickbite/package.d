@@ -2,21 +2,12 @@ module quickbite;
 
 private:
 
-version (QuickbiteDmdCodegen) {
-    public enum ExecutorBackend {
-        ir,
-        treeWalkingOld,
-        treeWalking,
-        dmdCtfe,
-        dmdCodegen,
-    }
-} else {
-    public enum ExecutorBackend {
-        ir,
-        treeWalkingOld,
-        treeWalking,
-        dmdCtfe,
-    }
+public enum ExecutorBackend {
+    ir,
+    treeWalkingOld,
+    treeWalking,
+    dmdCtfe,
+    dmdCodegen,
 }
 
 public void runTests(
@@ -66,10 +57,8 @@ public imported!"quickbite.executor".Executor executor(
         case ExecutorBackend.dmdCtfe:
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             return new DmdCtfe;
-        version (QuickbiteDmdCodegen) {
-            case ExecutorBackend.dmdCodegen:
-                import quickbite.backends.dmd_codegen: DmdCodegen;
-                return new DmdCodegen;
-        }
+        case ExecutorBackend.dmdCodegen:
+            import quickbite.backends.dmd_codegen: DmdCodegen;
+            return new DmdCodegen;
     }
 }

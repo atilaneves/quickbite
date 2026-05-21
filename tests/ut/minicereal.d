@@ -2,12 +2,12 @@ module ut.minicereal;
 
 import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
-import ut.backends: matureExecutorBackends;
+import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
 import unit_threaded;
 
-version (QuickbiteDmdCodegen) {
-    @("dmd-codegen.minicerealFileCanRunTwice")
-    unittest {
+@("dmd-codegen.minicerealFileCanRunTwice")
+unittest {
+    if (experimentalBackendTestsEnabled) {
         import quickbite.backends.dmd_codegen: DmdCodegen;
         import quickbite.frontend.compiler: parseModule;
         import std.file: readText;
