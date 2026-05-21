@@ -73,24 +73,50 @@ int main(string[] args) {
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
-    foreach (path; fixtures) {
-        const source      = readText(path);
-        const displayName = moduleDisplayName(path, importPaths);
-        try {
-            auto parsed  = parseModule(source, importPaths);
-            auto module_ = parsed.module_;
+    if (dubPkg.length > 0) {
+        import dmd.dmodule: Module;
+        import quickbite.executor: runModulesTests;
 
-            foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
-                auto executor = backends[name];
-                printRow(
-                    displayName, name, warmup, iterations,
-                    () => executor.runParsedTests(module_),
-                );
+        Module[] modules;
+        foreach (path; fixtures) {
+            try {
+                modules ~= parseModule(readText(path), importPaths).module_;
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", moduleDisplayName(path, importPaths), e.msg);
             }
-        } catch (Exception e) {
-            stderr.writefln("skipping %s: %s", displayName, e.msg);
+        }
+        foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+            auto executor = backends[name];
+            try {
+                printRow(
+                    dubPkg, name, warmup, iterations,
+                    () => executor.runModulesTests(modules),
+                );
+            } catch (Exception e) {
+                writefln("%-32s %-14s  n/a: %s", dubPkg, name, e.msg);
+            }
         }
         writeln;
+    } else {
+        foreach (path; fixtures) {
+            const source      = readText(path);
+            const displayName = moduleDisplayName(path, importPaths);
+            try {
+                auto parsed  = parseModule(source, importPaths);
+                auto module_ = parsed.module_;
+
+                foreach (name; ["ir", "treeWalking", "dmd-ctfe"]) {
+                    auto executor = backends[name];
+                    printRow(
+                        displayName, name, warmup, iterations,
+                        () => executor.runParsedTests(module_),
+                    );
+                }
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", displayName, e.msg);
+            }
+            writeln;
+        }
     }
 
     if (!noDmd) {
