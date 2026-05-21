@@ -6,5 +6,6 @@ int main(string[] args) {
         "ut.language",
         "ut.minicereal",
         "ut.cerealed",
+        "ut.projects.cerealed",
     );
 }

@@ -344,8 +344,7 @@ unittest {
 unittest {
     import quickbite.executor: runModulesTests;
     import quickbite.frontend.compiler: parseModule;
-    import quickbite: ExecutorBackend, executor;
-    import std.traits: EnumMembers;
+    import quickbite: executor;
 
     auto module1 = parseModule(q{ // auto: DMD owns mutable Module state
         unittest {
@@ -359,7 +358,7 @@ unittest {
         }
     }).module_;
 
-    static foreach (backend; EnumMembers!ExecutorBackend) {
+    static foreach (backend; matureExecutorBackends) {
         {
             executor(backend).runModulesTests([module1, module2,]).shouldThrowWithMessage(
                 "second module ran",
