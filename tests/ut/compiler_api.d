@@ -62,6 +62,31 @@ unittest {
     }, ExecutorBackend.treeWalking);
 }
 
+@("runTests.treeWalking.failingUnittestThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            assert(value == 2);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("1 != 2");
+}
+
+@("runTests.treeWalking.failingUnittestAfterAssignmentThrows")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int value = 1;
+            value = value + 1;
+            assert(value == 3);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("2 != 3");
+}
+
 @("runTests.runsAttributedUnittests")
 unittest {
     import quickbite: runTests;
