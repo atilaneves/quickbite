@@ -32,8 +32,8 @@ Coordination note:
 - `master` has been merged into this branch.
 - The merged default suite is green with DMD-codegen tests excluded from the
   default `unittest` and `unittest-cov` configs.
-- DMD-codegen remains enabled for the benchmark config; benchmark work is still
-  follow-up.
+- DMD-codegen is always available in the build, but remains opt-in for
+  benchmark and focused test execution; benchmark work is still follow-up.
 
 The latest checked state is green for the default test suite, but the
 DMD-codegen implementation still contains diagnostic/WIP edits. Do not treat the
@@ -47,7 +47,7 @@ dub test
 
 Result:
 
-- 516 tests run.
+- 535 tests run.
 - 0 failed.
 
 Important post-merge test-suite note:
