@@ -47,8 +47,7 @@ dub test
 
 Result:
 
-- 535 tests run.
-- 0 failed.
+- Passed.
 
 Important post-merge test-suite note:
 
