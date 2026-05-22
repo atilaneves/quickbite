@@ -2104,6 +2104,164 @@ private void expectRunTestsFailure(
     threw.should == true;
 }
 
+static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking]) {
+    @(backend.text ~ ".arrayLiteralElements")
+    unittest {
+        runTests(q{
+            unittest {
+                int[] arr = [1, 2];
+                assert(arr[0] == 1);
+                assert(arr[1] == 2);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".arrayLiteralVariableElements")
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 10;
+                int b = 20;
+                int[] arr = [a, b];
+                assert(arr[0] == 10);
+                assert(arr[1] == 20);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".subtraction")
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 5;
+                int b = a - 3;
+                assert(b == 2);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".subtractionDifferentValues")
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 10;
+                int b = a - 7;
+                assert(b == 3);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".freeFunctionCallWithReturn")
+    unittest {
+        runTests(q{
+            int add(int a, int b) {
+                return a + b;
+            }
+
+            unittest {
+                int result = add(1, 2);
+                assert(result == 3);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".freeFunctionCallWithReturnDifferentValues")
+    unittest {
+        runTests(q{
+            int sub(int a, int b) {
+                return a - b;
+            }
+
+            unittest {
+                int result = sub(10, 3);
+                assert(result == 7);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".freeFunctionCallWithArrayParam")
+    unittest {
+        runTests(q{
+            int firstElement(int[] arr) {
+                return arr[0];
+            }
+
+            unittest {
+                int[] arr = [42];
+                int result = firstElement(arr);
+                assert(result == 42);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".freeFunctionCallWithArrayParamSecondElement")
+    unittest {
+        runTests(q{
+            int secondElement(int[] arr) {
+                return arr[1];
+            }
+
+            unittest {
+                int[] arr = [10, 20];
+                int result = secondElement(arr);
+                assert(result == 20);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".preIncrement")
+    unittest {
+        runTests(q{
+            unittest {
+                int x = 5;
+                ++x;
+                assert(x == 6);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".preIncrementDifferentValue")
+    unittest {
+        runTests(q{
+            unittest {
+                int x = 10;
+                ++x;
+                assert(x == 11);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".refParamWriteback")
+    unittest {
+        runTests(q{
+            void increment(ref int x) {
+                x += 1;
+            }
+
+            unittest {
+                int value = 5;
+                increment(value);
+                assert(value == 6);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".refParamWritebackDifferentValue")
+    unittest {
+        runTests(q{
+            void increment(ref int x) {
+                x += 1;
+            }
+
+            unittest {
+                int value = 10;
+                increment(value);
+                assert(value == 11);
+            }
+        }, backend);
+    }
+}
+
 static foreach (backend; matureExecutorBackends) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
         @(backend.text ~ ".integralType." ~ T.stringof)

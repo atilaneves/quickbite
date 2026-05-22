@@ -30,9 +30,6 @@ static foreach (backend; projectBackends) {
 
     @(backend.text ~ ".projects.cerealed.refCursorReadAdvancesPosition")
     unittest {
-        if (backend.bailsOutNewTreeWalker)
-            return;
-
         q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 const value = bytes[position];
