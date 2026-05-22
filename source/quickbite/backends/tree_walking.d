@@ -8,6 +8,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     import quickbite.executor: TestSummary;
 
     private long[VarDeclaration] locals;
+    private long[][VarDeclaration][VarDeclaration] structArrays;
+    private VarDeclaration currentThis;
 
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
@@ -33,6 +35,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         locals = null;
+        structArrays = null;
+        currentThis = null;
         runStatement(unitTest.fbody);
     }
 
@@ -111,6 +115,21 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto cast_ = expression.isCastExp)
             return runExpression(cast_.e1);
 
+        if (auto call = expression.isCallExp)
+            return runCallExpression(call);
+
+        if (auto catAssign = expression.isCatAssignExp)
+            return runCatAssignExpression(catAssign);
+
+        if (auto catElemAssign = expression.isCatElemAssignExp)
+            return runCatAssignExpression(catElemAssign);
+
+        if (auto arrayLength = expression.isArrayLengthExp)
+            return runArrayExpression(arrayLength.e1).length;
+
+        if (auto index = expression.isIndexExp)
+            return runArrayExpression(index.e1)[runExpression(index.e2)];
+
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expression.op));
     }
@@ -147,6 +166,92 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         const value = runExpression(assign.e2);
         locals[variable] = value;
         return value;
+    }
+
+    private long runCallExpression(imported!"dmd.expression".CallExp call) {
+        auto dotVar = call.e1.isDotVarExp;
+        if (dotVar is null) {
+            import std.conv: text;
+            throw new Exception(text("Unsupported call: e1 op=", call.e1.op));
+        }
+
+        auto instanceVar = dotVar.e1.isVarExp;
+        if (instanceVar is null) {
+            import std.conv: text;
+            throw new Exception(text("Unsupported call target: e1 op=", dotVar.e1.op));
+        }
+
+        auto instanceDecl = instanceVar.var.isVarDeclaration;
+        if (instanceDecl is null)
+            throw new Exception("Unsupported call: instance is not a VarDeclaration.");
+
+        auto func = dotVar.var.isFuncDeclaration;
+        if (func is null)
+            throw new Exception("Unsupported call: not a FuncDeclaration.");
+
+        long[] argValues;
+        if (call.arguments !is null)
+            foreach (arg; *call.arguments)
+                argValues ~= runExpression(arg);
+
+        auto savedLocals = locals.dup;
+        auto savedThis = currentThis;
+        locals = null;
+        currentThis = instanceDecl;
+
+        if (func.parameters !is null)
+            foreach (i, param; *func.parameters)
+                if (i < argValues.length)
+                    locals[param] = argValues[i];
+
+        runStatement(func.fbody);
+
+        locals = savedLocals.dup;
+        currentThis = savedThis;
+        return 0;
+    }
+
+    private long runCatAssignExpression(
+        imported!"dmd.expression".BinExp catAssign,
+    ) {
+        auto dotVar = catAssign.e1.isDotVarExp;
+        if (dotVar is null) {
+            import std.conv: text;
+            throw new Exception(text("Unsupported ~=: e1 op=", catAssign.e1.op));
+        }
+
+        if (dotVar.e1.isThisExp is null) {
+            import std.conv: text;
+            throw new Exception(text("Unsupported ~=: dotVar.e1 op=", dotVar.e1.op));
+        }
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null || currentThis is null)
+            throw new Exception("Unsupported ~=: no struct context.");
+
+        structArrays[currentThis][field] ~= runExpression(catAssign.e2);
+        return 0;
+    }
+
+    private long[] runArrayExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto instanceVar = dotVar.e1.isVarExp)
+                if (auto instanceDecl = instanceVar.var.isVarDeclaration)
+                    if (auto field = dotVar.var.isVarDeclaration)
+                        if (auto entry = instanceDecl in structArrays)
+                            if (auto arr = field in *entry)
+                                return *arr;
+
+        if (auto dotVar = expression.isDotVarExp)
+            if (auto instanceVar = dotVar.e1.isVarExp)
+                if (auto instanceDecl = instanceVar.var.isVarDeclaration)
+                    if (auto field = dotVar.var.isVarDeclaration)
+                        return [];
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported array expression: ", expression.op));
     }
 
     private long runAssertExpression(
