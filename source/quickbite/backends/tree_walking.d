@@ -90,6 +90,18 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
 
+        if (auto addAssign = expression.isAddAssignExp) {
+            auto lhs = addAssign.e1;
+            if (auto cast_ = lhs.isCastExp)
+                lhs = cast_.e1;
+            if (auto var = lhs.isVarExp)
+                if (auto variable = var.var.isVarDeclaration) {
+                    const value = runExpression(addAssign.e1) + runExpression(addAssign.e2);
+                    locals[variable] = value;
+                    return value;
+                }
+        }
+
         if (auto equal = expression.isEqualExp)
             return runExpression(equal.e1) == runExpression(equal.e2);
 
@@ -118,6 +130,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             initializer = assign.e2;
         else if (auto construct = initializer.isConstructExp)
             initializer = construct.e2;
+        else if (auto blit = initializer.isBlitExp)
+            initializer = blit.e2;
 
         const value = runExpression(initializer);
         locals[variable] = value;
