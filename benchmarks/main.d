@@ -86,7 +86,15 @@ int main(string[] args) {
     // backend's codegen starts.  Backends that walk Module.amodules (e.g.
     // dmd-codegen) then see all fixture modules regardless of run order.
     foreach (path; fixtures) {
-        try { parseModule(readText(path), importPaths); } catch (Exception) {}
+        try {
+            parseModule(readText(path), importPaths);
+        } catch (Exception e) {
+            throw new Exception(
+                "failed to pre-parse " ~ moduleDisplayName(path, importPaths)
+                ~ ": " ~ e.msg,
+                e,
+            );
+        }
     }
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");

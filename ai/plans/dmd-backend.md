@@ -27,6 +27,25 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-22 update after testing `dmd-codegen` as mature:
+
+- The cerealed benchmark command with `--iterations=2` passes when
+  `dmd-codegen` is selected explicitly.
+- `dmd-codegen` was tried in `matureExecutorBackends` and in the default
+  benchmark backend list, then backed out so this PR can stay mergeable.
+- First maturity-run failure: cerealed files run one at a time in the unit
+  suite, while DMD codegen needs sibling parsed test modules available for
+  cross-file symbols. A test-local pre-parse experiment moved those tests
+  forward, but it was not kept because the broader maturity run still failed.
+- Remaining maturity blocker: a negative compiler API test leaves
+  `snippet_30.parsedWithoutPath` in DMD global semantic state. Later
+  `dmd-codegen` tests call `runDeferredSemantic*`, which reprocesses that bad
+  symbol and turns many unrelated tests into cascaded failures. A simple
+  deferred-queue filter by failed module did not remove the stale diagnostic.
+- Next maturity work: isolate DMD global state between failed parses and later
+  codegen runs, or make `dmd-codegen` use a batch/session boundary that only
+  includes modules from the current run and their valid dependencies.
+
 Coordination note:
 
 - `master` has been merged into this branch.
@@ -55,12 +74,11 @@ Important post-merge test-suite note:
   `version (QuickbiteDmdCodegen)` unless the backend prevents the project from
   compiling or linking.
 - Default test and benchmark selection is runtime policy. Broad tests iterate
-  over `matureExecutorBackends`; known-broken DMD-codegen focused tests run only
-  when `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS` is set.
-- Benchmarks now treat `treeWalking` and `dmd-codegen` as experimental
-  backends. The default benchmark list is `ir`, `treeWalkingOld`, and
-  `dmd-ctfe`; experimental backends remain opt-in via `--backend=treeWalking`
-  or `--backend=dmd-codegen`.
+  over `matureExecutorBackends`.
+- Benchmarks treat `treeWalking` and `dmd-codegen` as opt-in backends. The
+  default benchmark list is `ir`, `treeWalkingOld`, and `dmd-ctfe`; opt-in
+  backends remain available via `--backend=treeWalking` or
+  `--backend=dmd-codegen`.
 
 What works now:
 
