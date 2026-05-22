@@ -1026,6 +1026,17 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
+    @(backend.text ~ ".ubyteAddAssignWrapsOnStore")
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 0);
+            }
+        }, backend);
+    }
+
     @(backend.text ~ ".ubyteArrayAppendAssign")
     unittest {
         runTests(q{
@@ -1887,6 +1898,31 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 Writer writer;
                 writer.put(cast(ubyte) 42);
+                assert(writer.bytes.length == 1);
+                assert(writer.bytes[0] == 42);
+            }
+        }, backend);
+    }
+
+    @(backend.text ~ ".structMethodCallsStructMethod")
+    unittest {
+        runTests(q{
+            struct Writer {
+                ubyte[] bytes;
+
+                void write(ubyte value) {
+                    append(value);
+                }
+
+                void append(ubyte value) {
+                    bytes ~= value;
+                }
+            }
+
+            unittest {
+                Writer writer;
+                writer.write(42);
+
                 assert(writer.bytes.length == 1);
                 assert(writer.bytes[0] == 42);
             }
