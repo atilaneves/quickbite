@@ -82,6 +82,13 @@ int main(string[] args) {
         if (name !in backends)
             throw new Exception("unknown backend: " ~ name);
 
+    // Pre-parse all fixtures so every module is in Module.amodules before any
+    // backend's codegen starts.  Backends that walk Module.amodules (e.g.
+    // dmd-codegen) then see all fixture modules regardless of run order.
+    foreach (path; fixtures) {
+        try { parseModule(readText(path), importPaths); } catch (Exception) {}
+    }
+
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (name; backendNames) {
@@ -101,7 +108,7 @@ int main(string[] args) {
                 } catch (Exception e) {
                     stderr.writefln(
                         "skipping %s %s: %s",
-                        displayName, name, e.msg,
+                        displayName, name, e.msg.firstLine,
                     );
                 }
             } catch (Exception e) {
