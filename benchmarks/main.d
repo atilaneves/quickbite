@@ -82,25 +82,13 @@ int main(string[] args) {
         if (name !in backends)
             throw new Exception("unknown backend: " ~ name);
 
-    // Pre-parse all fixtures so every module is in Module.amodules before any
-    // backend's codegen starts.  Backends that walk Module.amodules (e.g.
-    // dmd-codegen) then see all fixture modules regardless of run order.
-    foreach (path; fixtures) {
-        try {
-            parseModule(readText(path), importPaths);
-        } catch (Exception e) {
-            throw new Exception(
-                "failed to pre-parse " ~ moduleDisplayName(path, importPaths)
-                ~ ": " ~ e.msg,
-                e,
-            );
-        }
-    }
-
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (name; backendNames) {
         auto executor = backends[name];
+        if (name == "dmd-codegen")
+            populateDmdCodegenModuleSet(fixtures, importPaths);
+
         foreach (path; fixtures) {
             const source      = readText(path);
             const displayName = moduleDisplayName(path, importPaths);
@@ -127,6 +115,25 @@ int main(string[] args) {
     }
 
     return 0;
+}
+
+void populateDmdCodegenModuleSet(in string[] fixtures, in string[] importPaths) {
+    import std.file: readText;
+
+    // DMD-codegen walks Module.amodules, so parse every fixture before the
+    // first timed run of this backend.  Other benchmark backends keep their
+    // existing per-fixture parse/skip behaviour.
+    foreach (path; fixtures) {
+        try {
+            parseModule(readText(path), importPaths);
+        } catch (Exception e) {
+            throw new Exception(
+                "failed to pre-parse " ~ moduleDisplayName(path, importPaths)
+                ~ ": " ~ e.msg,
+                e,
+            );
+        }
+    }
 }
 
 string firstLine(in string message) {

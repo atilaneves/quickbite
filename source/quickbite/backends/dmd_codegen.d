@@ -4235,11 +4235,6 @@ private bool isGlobalBackendRuntimeSupportModule(imported!"dmd.dmodule".Module m
         || name == "core.lifetime";
 }
 
-private bool isDmdCodegenSupportModule(in char[] moduleName) @safe {
-    import std.algorithm.searching: startsWith;
-    return moduleName.startsWith("quickbite_dmd_codegen_support_");
-}
-
 private bool isUnaccumulatedSnippetSourceFile(
     imported!"dmd.dmodule".Module module_,
 ) @trusted {
@@ -4353,17 +4348,11 @@ private void semantic3Dependencies(
     import dmd.semantic2: semantic2;
     import dmd.semantic3: semantic3;
 
-    // Mark every known module as its own root before running any deferred
-    // semantic passes.  runDeferredSemantic* calls appendToModuleMember which
-    // uses importedFrom to determine root ownership; if only the fixture
-    // modules are marked root, deferred template instances from other modules
-    // get placed into the fixture's members instead of their own.
-    //
-    // Exception: support stub modules (quickbite_dmd_codegen_support_*) must
-    // NOT be roots.  Their pragma(mangle) stubs exist only to satisfy link
-    // requirements; if they are roots, needsCodegen walks the tnext sibling
-    // chain and prefers their stub instances over the real instances generated
-    // from the correct fixture modules, emitting the wrong type specialisation.
+    // Mark every known module as its own root before running deferred semantic
+    // passes.  runDeferredSemantic* calls appendToModuleMember which uses
+    // importedFrom to determine root ownership; if only fixture modules are
+    // marked root, deferred template instances from other modules get placed
+    // into the fixture's members instead of their own.
     foreach (m; Module.amodules)
         m.importedFrom = m;
 
