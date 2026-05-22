@@ -46,16 +46,17 @@ int main(string[] args) {
         return 0;
     }
 
-    string[] fixtures = args[1 .. $].dup;
+    string[] fixtures    = args[1 .. $].dup;
+    string[] dubFixtures;
 
     if (dubPkg.length > 0) {
         auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         linkFiles   ~= dubInfo.linkFiles;
-        fixtures    ~= dubInfo.fixtures;
+        dubFixtures  = dubInfo.fixtures;
     }
 
-    if (fixtures.length == 0)
+    if (fixtures.length == 0 && dubFixtures.length == 0)
         fixtures = ["tests/minicereal.d"];
 
     if (!isOptimisedBuild) {
@@ -76,7 +77,9 @@ int main(string[] args) {
     backends["dmd-codegen"]    = new DmdCodegen(linkFiles, importPaths);
 
     if (backendNames.length == 0)
-        backendNames = ["ir", "treeWalkingOld", "dmd-ctfe"];
+        backendNames = dubFixtures.length > 0
+            ? ["ir", "treeWalkingOld"]
+            : ["ir", "treeWalkingOld", "dmd-ctfe"];
 
     foreach (name; backendNames)
         if (name !in backends)
@@ -106,6 +109,35 @@ int main(string[] args) {
                 }
             } catch (Exception e) {
                 stderr.writefln("skipping %s: %s", displayName, e.msg);
+            }
+            writeln;
+        }
+    }
+
+    if (dubFixtures.length > 0) {
+        import dmd.dmodule: Module;
+        import quickbite.executor: runModulesTests;
+
+        Module[] dubModules;
+        foreach (path; dubFixtures) {
+            try {
+                dubModules ~= parseModule(readText(path), importPaths).module_;
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", path, e.msg);
+            }
+        }
+
+        if (dubModules.length > 0) {
+            foreach (name; backendNames) {
+                auto executor = backends[name];
+                try {
+                    printRow(
+                        dubPkg, name, warmup, iterations,
+                        () => runModulesTests(executor, dubModules),
+                    );
+                } catch (Exception e) {
+                    stderr.writefln("skipping %s %s: %s", dubPkg, name, e.msg);
+                }
             }
             writeln;
         }
