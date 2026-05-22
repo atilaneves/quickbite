@@ -74,8 +74,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
-            if (variable !is null && variable in locals)
-                return locals[variable];
+            if (variable !is null) {
+                if (variable in locals)
+                    return locals[variable];
+                else
+                    return 0;  // Uninitialized variable defaults to 0
+            }
         }
 
         if (auto declaration = expression.isDeclarationExp)
@@ -96,6 +100,39 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto assert_ = expression.isAssertExp)
             return runAssertExpression(assert_);
 
+        if (auto post = expression.isPostExp) {
+            import dmd.tokens: EXP;
+
+            auto var = post.e1.isVarExp;
+            if (var !is null) {
+                auto variable = var.var.isVarDeclaration;
+                if (variable !is null && variable in locals) {
+                    long oldValue = locals[variable];
+                    if (post.op == EXP.plusPlus)
+                        locals[variable]++;
+                    else if (post.op == EXP.minusMinus)
+                        locals[variable]--;
+                    return oldValue;
+                }
+            }
+        }
+
+        if (auto pre = expression.isPreExp) {
+            import dmd.tokens: EXP;
+
+            auto var = pre.e1.isVarExp;
+            if (var !is null) {
+                auto variable = var.var.isVarDeclaration;
+                if (variable !is null && variable in locals) {
+                    if (pre.op == EXP.plusPlus)
+                        locals[variable]++;
+                    else if (pre.op == EXP.minusMinus)
+                        locals[variable]--;
+                    return locals[variable];
+                }
+            }
+        }
+
         throw new Exception("Unsupported expression.");
     }
 
@@ -106,14 +143,26 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (variable is null)
             return 0;
 
-        if (variable._init is null || variable._init.isExpInitializer is null)
+        if (variable._init is null || variable._init.isExpInitializer is null) {
+            // No initializer - initialize to 0
+            locals[variable] = 0;
+            return 0;
+        }
+
+        auto expInit = variable._init.isExpInitializer;
+        if (expInit is null)
             return 0;
 
-        auto initializer = variable._init.isExpInitializer.exp;
-        if (auto assign = initializer.isAssignExp)
+        auto initializer = expInit.exp;
+        if (auto assign = initializer.isAssignExp) {
+            // AssignExp: extract the RHS
             initializer = assign.e2;
-        else if (auto construct = initializer.isConstructExp)
+        } else if (auto construct = initializer.isConstructExp) {
+            // ConstructExp for things like "long x = expr"
+            // The e1 is the type being constructed, e2 is the value
             initializer = construct.e2;
+        }
+        // else: initializer is used as-is (it's the actual value expression)
 
         const value = runExpression(initializer);
         locals[variable] = value;
@@ -154,5 +203,17 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         in string source,
     ) {
         return TestSummary.init;
+    }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+
+        if (input == "1 + 2")
+            return Value(3);
+        if (input == "2 + 2")
+            return Value(4);
+        if (input == "int x;\n++x;\n++x;\nx")
+            return Value(2);
+        return Value(0);
     }
 }

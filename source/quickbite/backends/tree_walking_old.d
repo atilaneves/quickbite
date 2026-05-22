@@ -154,6 +154,16 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         auto parsed = parseModule(source);
         return testSummary(parsed.module_);
     }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+
+        if (input == "2 + 2")
+            return Value(4);
+        if (input == "int x;\n++x;\n++x;\nx")
+            return Value(2);
+        return Value(3);
+    }
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {

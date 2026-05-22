@@ -1,5 +1,72 @@
 # Plan: REPL
 
+## Handoff (2026-05-22)
+
+### What is done
+
+- `Value` struct added to `source/quickbite/executor.d`. Wraps
+  `std.variant.Variant`; constructor normalises all integral types to
+  `long` so `Value(3)` (int) and `Value(3L)` compare equal.
+- `eval(in string input) -> Value` added to the `Executor` interface
+  and stubbed on all five backends.
+- `tests/ut/repl.d` — three tests parameterised over all backends:
+  `add0` (`"1 + 2"` → `Value(3)`), `add1` (`"2 + 2"` → `Value(4)`),
+  `multiCell` (`"int x;\n++x;\n++x;\nx"` → `Value(2)`). All pass.
+
+### What is fake
+
+The `eval` implementations on all five backends are hardcoded fakes:
+
+```d
+if (input == "2 + 2") return Value(4);
+if (input == "int x;\n++x;\n++x;\nx") return Value(2);
+return Value(3);
+```
+
+These must be replaced with real evaluation.
+
+### How to implement real eval
+
+Wrap the input in a function that captures the last expression:
+
+```d
+const lastNl = input.lastIndexOf('\n');
+const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
+```
+
+Parse `source`, walk/execute the function body. For the
+tree-walking backends, run all statements via `runStatement`
+then call `runExpression` on `__r`'s initializer. For the CTFE
+backends (`dmd_ctfe`, `dmd_codegen`), follow the `VarExp` /
+`CallExp` / `ctfeInterpret` pattern already in
+`ctfeFailureMessage`. For the IR backend, `lowerModule` then
+call `executeFunction("f", ...)`.
+
+### Important: use a stronger model for the implementer
+
+The `tdd-implementer` agent defaults to Haiku, which cannot
+navigate the DMD AST API and repeatedly falls back to fakes.
+For the eval implementation step, override the model to Sonnet:
+
+```
+Agent(subagent_type: "tdd-implementer", model: "sonnet", ...)
+```
+
+### What comes next after real eval
+
+1. Implement `isComplete(in string input) -> bool` on `Executor`
+   (the REPL loop calls this to decide whether to show `> ` or
+   `... `).
+2. Build the REPL executable: `repl/main.d`, line-input module,
+   `dub.sdl` `repl` configuration.
+3. The REPL accumulates all prior cell inputs and passes the full
+   accumulated source to `eval` on each new cell. No `context`
+   parameter — the full accumulated source is the input.
+
+---
+
 ## Context
 
 Quickbite can already parse and execute D code through multiple backends.
@@ -50,8 +117,8 @@ with the buffered text after each submitted D input atom. Like Python,
 only a frontend-recognized incomplete input shows the continuation prompt
 and reads another input atom. Invalid D input is a diagnostic, not an
 incomplete input. The loop must not decide D completeness with
-delimiter-counting or other string heuristics. Once `eval` returns any
-tag other than `incomplete`, the loop prints the result or diagnostic.
+delimiter-counting or other string heuristics. The loop calls `isComplete` after each atom; only when complete does
+it call `eval` and print the result or diagnostic.
 
 The interactive loop catches `Exception`s from `eval` and prints
 diagnostics. User code failures are REPL results, not process failures.
@@ -94,28 +161,25 @@ replay.
 
 Do not use `Executor.runTests` directly for result-producing cells. That
 API returns `void`, and Quickbite currently has no stdout-capture or
-expression-value channel. Add an `eval` method to the `Executor`
-interface following the Python `runsource` / GHCi model: it accepts the
-current session context and the buffered input so far, and returns a
-discriminated union with three cases:
+expression-value channel. Two methods are added to the `Executor`
+interface in `source/quickbite/executor.d`:
 
-- `incomplete` — the input is a valid but unfinished D fragment; the
-  loop shows `... ` and reads another line
-- `void_` — the cell ran to completion with no display value
-- `value(string display)` — the cell produced a displayable result
+- `isComplete(in string input) -> bool` — returns whether `input` is
+  a syntactically complete D fragment. The REPL loop calls this after
+  each submitted atom to decide whether to show `... ` or evaluate.
+- `eval(in string input) -> Value` — evaluates `input` and returns the
+  result. `input` is the full accumulated session source (all prior
+  cells concatenated with the current cell). The REPL never passes a
+  separate context parameter; it builds the full source itself. `Value`
+  is a D value: the actual typed result of an expression (integral
+  types normalised to `long`), or void for statements and declarations.
 
-Expression values are displayed with D's normal string conversion:
-`std.conv.text(value)`. Statements and declarations that produce no
-display value return `void_`.
+The REPL loop displays expression results by calling
+`std.conv.text(value)` on the `Value`; `eval` never produces strings.
+Syntax errors and runtime failures are reported by thrown `Exception`s.
 
-This collapses completeness checking and evaluation into one call. The
-loop never inspects D syntax itself: it calls `eval` with the buffered
-D input and branches on the returned tag. Syntax errors and runtime
-failures are reported by thrown `Exception`s.
-
-`eval` owns D cell completeness checks, evaluation, and session-context
-updates. The interactive loop owns prompts, line buffering,
-colon-command dispatch, and printing returned values or diagnostics.
+The interactive loop owns prompts, line buffering, colon-command
+dispatch, and printing returned values or diagnostics.
 
 ### Backend Selection
 
