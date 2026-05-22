@@ -1,29 +1,48 @@
 # Plan: REPL
 
-## Handoff (2026-05-22)
+## Handoff (2026-05-22, updated)
 
 ### What is done
 
-- `Value` struct added to `source/quickbite/executor.d`. Wraps
-  `std.variant.Variant`; constructor normalises all integral types to
-  `long` so `Value(3)` (int) and `Value(3L)` compare equal.
-- `eval(in string input) -> Value` added to the `Executor` interface
-  and stubbed on all five backends.
-- `tests/ut/repl.d` — three tests parameterised over all backends:
-  `add0` (`"1 + 2"` → `Value(3)`), `add1` (`"2 + 2"` → `Value(4)`),
-  `multiCell` (`"int x;\n++x;\n++x;\nx"` → `Value(2)`). All pass.
+- `Value` struct in `source/quickbite/executor.d` redesigned to use
+  `SumType!(bool, byte, ubyte, short, ushort, int, uint, long, ulong)`.
+  Each D integral type is preserved exactly — no normalisation to `long`.
+  `Value(3u) != Value(3L)`, `Value(3) != Value(3L)`, etc.
+- `eval(in string input) -> Value` implemented on four backends:
+  - `treeWalking`: wraps input as `void f() { <prior> auto __r =
+    <last>; }`, parses via DMD frontend, walks AST with existing
+    `runStatement`/`runExpression`, returns `Value(cast(int) result)`.
+    Also added subtract, multiply, divide, cast, blit, addAssign, and
+    minAssign handlers to `runExpression`.
+  - `treeWalkingOld`: same wrapping strategy, delegates to internal
+    `Interpreter.executeFunction`.
+  - `dmdCtfe`: wraps as `auto f() { return <last>; }`, finds `f`,
+    builds a `VarExp`/`CallExp`, calls `ctfeInterpret`, extracts
+    `getInteger()`.
+  - `ir`: wraps as `auto f() { return <last>; }\nunittest { f(); }`,
+    lowers via `lowerModule`, executes via `executeFunction`.
+  - `dmdCodegen`: throws `Exception("eval not yet implemented for
+    dmdCodegen")`. A separate worktree is implementing this backend
+    more broadly; `eval` will be added there.
+- `tests/ut/repl.d` — five eval tests parameterised over the four
+  implemented backends (`dmdCodegen` excluded via `static if`):
+  `add0`, `add1`, `add2`, `arithmetic` (five runtime cases covering
+  +, -, *, /), `multiCell`. 560 tests, all pass.
 
 ### What is fake
 
-The `eval` implementations on all five backends are hardcoded fakes:
+Nothing is fake. All four active `eval` implementations are real.
 
-```d
-if (input == "2 + 2") return Value(4);
-if (input == "int x;\n++x;\n++x;\nx") return Value(2);
-return Value(3);
-```
+### What comes next
 
-These must be replaced with real evaluation.
+1. Implement `isComplete(in string input) -> bool` on `Executor`
+   (the REPL loop calls this to decide whether to show `> ` or
+   `... `).
+2. Build the REPL executable: `repl/main.d`, line-input module,
+   `dub.sdl` `repl` configuration.
+3. The REPL accumulates all prior cell inputs and passes the full
+   accumulated source to `eval` on each new cell. No `context`
+   parameter — the full accumulated source is the input.
 
 ### How to implement real eval
 

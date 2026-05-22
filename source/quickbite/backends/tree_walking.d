@@ -94,6 +94,47 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
 
+        if (auto sub = expression.isMinExp)
+            return runExpression(sub.e1) - runExpression(sub.e2);
+
+        if (auto mul = expression.isMulExp)
+            return runExpression(mul.e1) * runExpression(mul.e2);
+
+        if (auto div = expression.isDivExp)
+            return runExpression(div.e1) / runExpression(div.e2);
+
+        if (auto cast_ = expression.isCastExp)
+            return runExpression(cast_.e1);
+
+        if (auto blit = expression.isBlitExp)
+            return runExpression(blit.e2);
+
+        if (auto addAssign = expression.isAddAssignExp) {
+            auto var = addAssign.e1.isVarExp;
+            if (var !is null) {
+                auto variable = var.var.isVarDeclaration;
+                if (variable !is null) {
+                    const val = runExpression(addAssign.e2);
+                    const result = (variable in locals ? locals[variable] : 0L) + val;
+                    locals[variable] = result;
+                    return result;
+                }
+            }
+        }
+
+        if (auto minAssign = expression.isMinAssignExp) {
+            auto var = minAssign.e1.isVarExp;
+            if (var !is null) {
+                auto variable = var.var.isVarDeclaration;
+                if (variable !is null) {
+                    const val = runExpression(minAssign.e2);
+                    const result = (variable in locals ? locals[variable] : 0L) - val;
+                    locals[variable] = result;
+                    return result;
+                }
+            }
+        }
+
         if (auto equal = expression.isEqualExp)
             return runExpression(equal.e1) == runExpression(equal.e2);
 
@@ -133,7 +174,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             }
         }
 
-        throw new Exception("Unsupported expression.");
+        import std.conv: text;
+        throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
     private long runDeclarationExpression(
@@ -207,13 +249,38 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
+        import quickbite.frontend.compiler: parseModule;
+        import dmd.declaration: VarDeclaration;
+        import dmd.func: FuncDeclaration;
+        import std.string: lastIndexOf;
 
-        if (input == "1 + 2")
-            return Value(3);
-        if (input == "2 + 2")
-            return Value(4);
-        if (input == "int x;\n++x;\n++x;\nx")
-            return Value(2);
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        locals = null;
+        runStatement(f.fbody);
+
+        foreach (decl, value; locals) {
+            if (decl.ident.toString == "__r")
+                return Value(cast(int) value);
+        }
+
         return Value(0);
     }
 }

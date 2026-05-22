@@ -3,14 +3,17 @@ module quickbite.executor;
 private:
 
 public struct Value {
-    private imported!"std.variant".Variant data;
+    private alias Data = imported!"std.sumtype".SumType!(
+        bool,
+        byte, ubyte,
+        short, ushort,
+        int, uint,
+        long, ulong,
+    );
+    private Data data;
 
-    public this(T)(auto ref T value) {
-        import std.traits: isIntegral;
-        static if (isIntegral!T)
-            data = cast(long) value;
-        else
-            data = value;
+    public this(T)(in T value) {
+        data = Data(value);
     }
 
     public bool opEquals(in Value other) const {

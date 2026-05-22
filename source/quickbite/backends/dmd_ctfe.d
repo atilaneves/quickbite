@@ -33,12 +33,52 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
+        import quickbite.frontend.compiler: parseModule, withCompilerLock;
+        import dmd.arraytypes: Expressions;
+        import dmd.dinterpret: ctfeInterpret;
+        import dmd.errors: diagnostics;
+        import dmd.expression: CallExp, VarExp;
+        import dmd.func: FuncDeclaration;
+        import dmd.location: Loc;
+        import dmd.mtype: TypeFunction;
+        import std.string: lastIndexOf;
 
-        if (input == "2 + 2")
-            return Value(4);
-        if (input == "int x;\n++x;\n++x;\nx")
-            return Value(2);
-        return Value(3);
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        FuncDeclaration fd = f;
+        auto varExp = new VarExp(Loc.initial, fd);
+        varExp.type = fd.type;
+        auto callExp = new CallExp(Loc.initial, varExp, new Expressions);
+        auto tf = cast(TypeFunction) fd.type;
+        callExp.type = tf.next;
+        callExp.f = fd;
+
+        long result;
+        withCompilerLock(() {
+            diagnostics.length = 0;
+            auto r = ctfeInterpret(callExp);
+            if (auto intExp = r.isIntegerExp)
+                result = cast(long) intExp.getInteger;
+        });
+
+        return Value(cast(int) result);
     }
 }
 
