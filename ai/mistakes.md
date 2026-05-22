@@ -127,5 +127,5 @@
   helper such as `declarationName` with a `FuncDeclaration`; use the existing
   function helper instead.
 
-- Follow the Github section of AGENTS.md: open new PRs in the browser, not
-  via `gh pr create`.
+- Follow the Github section of AGENTS.md: after `gh pr create`, open the
+  resulting PR URL in the browser.
