@@ -96,7 +96,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto assert_ = expression.isAssertExp)
             return runAssertExpression(assert_);
 
-        throw new Exception("Unsupported expression.");
+        if (auto cast_ = expression.isCastExp)
+            return runExpression(cast_.e1);
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
     private long runDeclarationExpression(

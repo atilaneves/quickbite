@@ -7,9 +7,6 @@ import ut.projects;
 static foreach (backend; projectBackends) {
     @(backend.text ~ ".projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte")
     unittest {
-        if (backend.bailsOutNewTreeWalker)
-            return;
-
         q{
             struct Writer {
                 ubyte[] bytes;
