@@ -27,6 +27,50 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after PR 39 review fixes:
+
+- Worktree: `worktrees/dmd-codegen-ram-continue`.
+- Branch: `dmd-codegen-ram-continue`.
+- Review found that zero-initialized TLS globals live in `.tbss`, an
+  `SHT_NOBITS` section. The RAM image allocator already zero-fills via
+  `mmap`, so copying bytes from the object-file offset for these sections can
+  copy unrelated object metadata over the variable's zero initializer.
+- Added the focused RAM test:
+  `ut.backends.parity.zeroInitializedModuleIntRead.dmdCodegenRam`.
+- Initial red result:
+  `Program exited with code -11`.
+- RAM section copying now skips `SHT_NOBITS` sections so their allocated image
+  storage remains zero-filled.
+- Review also found that skipping every `__tls_get_addr` `PC32`/`PLT32`
+  relocation was too broad; only the call paired with a relaxed TLSGD sequence
+  should be skipped.
+- Added the focused RAM test:
+  `ut.backends.parity.userDefinedTlsGetAddrCall.dmdCodegenRam`.
+- Initial red result:
+  `Program exited with code -11`.
+- RAM relocation application now records the exact call relocation addresses
+  paired with TLSGD relaxations and skips only those addresses.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.zeroInitializedModuleIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.userDefinedTlsGetAddrCall.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <21 RAM tests>
+
+  21 test(s) run, 0 failed.
+
+  dub test
+  752 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after RAM TLSGD slice:
 
 - Worktree: `worktrees/dmd-codegen-ram-continue`.

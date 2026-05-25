@@ -2392,6 +2392,46 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("zeroInitializedModuleIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value;
+
+                int answer() {
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("userDefinedTlsGetAddrCall.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                __gshared int calls;
+
+                extern(C) void __tls_get_addr() {
+                    calls = 41;
+                }
+
+                void answer() {
+                    __tls_get_addr();
+                }
+
+                unittest {
+                    calls = 1;
+                    answer();
+                    assert(calls == 41);
+                }
+            }, backend);
+        }
+    }
+
     @(text("intAddition.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {

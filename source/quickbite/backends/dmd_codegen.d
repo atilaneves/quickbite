@@ -4967,6 +4967,9 @@ private void copySections(ref RamExecutableImage image) @trusted {
             auto destination = cast(void*) (
                 image.baseAddress + objectPlacement.sections[idx].address
             );
+            if (section.isNoBits)
+                continue;
+
             const bytes = objectPlacement.bytes.elf64SectionBytes(section);
             if (bytes.length == 0)
                 continue;
@@ -5061,6 +5064,13 @@ private ulong relocationTargetAddress(
 }
 
 private void applyRelocations(ref RamExecutableImage image) @trusted {
+    bool[ulong] tlsGdCallRelocationAddresses;
+    foreach (relocation; image.relocations)
+        if (relocation.type == X86_64Relocation.tlsGd)
+            tlsGdCallRelocationAddresses[
+                relocation.ramTlsGdCallRelocationAddress
+            ] = true;
+
     foreach (relocation; image.relocations) {
         switch (relocation.type) with (X86_64Relocation) {
             case none:
@@ -5074,7 +5084,7 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
 
             case pc32:
             case plt32:
-                if (relocation.symbolName == "__tls_get_addr")
+                if (relocation.patchAddress in tlsGdCallRelocationAddresses)
                     break;
 
                 relocation.patchAddress.writeRam32(
@@ -5105,6 +5115,12 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
                 ));
         }
     }
+}
+
+private ulong ramTlsGdCallRelocationAddress(
+    in RamResolvedRelocation relocation,
+) @safe pure nothrow {
+    return relocation.patchAddress + 8;
 }
 
 private void patchRamTlsGd(in RamResolvedRelocation relocation) @trusted {
@@ -5386,6 +5402,11 @@ private struct Elf64Section {
         return (flags & shfAlloc) != 0
             && (flags & shfExecinstr) == 0
             && ((flags & shfWrite) != 0 || size != 0);
+    }
+
+    private bool isNoBits() const @safe pure nothrow {
+        enum shtNoBits = 8;
+        return type == shtNoBits;
     }
 }
 
