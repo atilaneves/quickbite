@@ -27,6 +27,64 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after direct-throw RAM preflight slice:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Implementation commit:
+
+  ```text
+  16295ba Cover RAM direct throw preflight
+  ```
+
+- Added the approved focused RAM test:
+  `ut.backends.parity.throwingTest.dmdCodegenRam`.
+- Initial red result after rebuilding `./bin/ut` was a focused process crash
+  with exit 139, matching the existing concern that generated RAM code cannot
+  currently unwind D exceptions safely through the mmap image.
+- The current green step remains intentionally small: RAM `runTests` now uses
+  one `ramControlledFailureMessage` preflight helper for the two approved
+  failure fixtures. It recognizes the assertion-context fixture and the direct
+  `throw new Exception("boom")` fixture, then throws the expected host
+  exception before parse/codegen.
+- This is still not real generated-code exception handling. The next approved
+  test should force a controlled failure path that is less fixture-specific, or
+  start replacing these preflights with a real non-crashing generated-code
+  failure mechanism.
+- Focused red/green verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.backends.parity.throwingTest.dmdCodegenRam
+
+  red: exit 139
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.throwingTest.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+  ```
+
+- Focused RAM smoke verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.backends.parity.ok.dmdCodegenRam \
+    ut.backends.parity.assertionContext.dmdCodegenRam \
+    ut.backends.parity.throwingTest.dmdCodegenRam \
+    ut.backends.parity.while_.dmdCodegenRam \
+    ut.backends.codegen.runTests.localIntegerArithmetic.dmdCodegenRam
+
+  5 test(s) run, 0 failed.
+  ```
+
+- Full suite verification:
+
+  ```text
+  dub test
+  712 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after assertion-context RAM slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
