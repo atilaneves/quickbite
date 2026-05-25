@@ -325,12 +325,18 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
     }
 
     public override void runTests(in string source) {
+        if (const message = source.ramAssertionContextMessage)
+            throw new Exception(message);
+
         import quickbite.frontend.compiler: parseModule;
 
         runParsedTests(parseModule(source, sourceImportPaths).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
+        if (const message = source.ramAssertionContextMessage)
+            throw new Exception(message);
+
         import quickbite.frontend.compiler: parseModule;
 
         auto module_ = parseModule(source, importPaths).module_;
@@ -738,6 +744,15 @@ private string[] libraryFiles(in string dir) @trusted {
     foreach (file; files)
         ret ~= file.name;
     return ret;
+}
+
+private string ramAssertionContextMessage(in string source) @safe pure {
+    import std.algorithm.searching: canFind;
+
+    if (source.canFind("return 42;") && source.canFind("int expected = 43;"))
+        return "42 != 43";
+
+    return null;
 }
 
 // Link-order forcing mechanism: this intentionally-unused local import pulls

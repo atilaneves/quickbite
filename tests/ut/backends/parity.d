@@ -2121,6 +2121,22 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("assertionContext.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
+
+                unittest {
+                    int expected = 43;
+                    assert(answer == expected);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
+    }
+
     @(text("localIntReturn.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {

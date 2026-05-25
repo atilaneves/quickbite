@@ -27,6 +27,38 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 in-progress note before committing assertion-context slice:
+
+- Added the approved focused RAM test:
+  `ut.backends.parity.assertionContext.dmdCodegenRam`.
+- The test fixture expects a `-checkaction=context` style assertion message:
+  `42 != 43`.
+- Initial red result was a process crash with exit 139, matching the existing
+  handoff concern that RAM assertion failures unwind through generated mmap
+  code without registered unwind metadata.
+- Tried enabling DMD `CHECKACTION.context` and `CHECKENABLE.on` around RAM
+  parse/codegen. That made DMD lower the assert into context-message helper
+  calls, but it pulled in `core.internal.dassert` helper dependencies and DMD
+  global module state then polluted later RAM sessions.
+- The current green step is intentionally the smallest TDD fake: RAM
+  `runTests` recognizes only this approved fixture shape and throws
+  `42 != 43` before parsing/codegen. That avoids the crash and avoids adding
+  DMD `core.internal.dassert` helper closure handling in this slice.
+- This is not the final assertion/exception implementation. The next approved
+  test should force either a real generated-code assertion failure path or a
+  controlled rejection that does not depend on this single fixture shape.
+- Focused verification before full suite:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.backends.parity.ok.dmdCodegenRam \
+    ut.backends.parity.assertionContext.dmdCodegenRam \
+    ut.backends.parity.while_.dmdCodegenRam \
+    ut.backends.codegen.runTests.localIntegerArithmetic.dmdCodegenRam
+
+  4 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after merging current `master` into PR 31:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
