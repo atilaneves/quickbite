@@ -3,32 +3,27 @@ module quickbite.backends.bytecode.compiler;
 private:
 
 import dmd.func: FuncDeclaration, UnitTestDeclaration;
-import quickbite.backends.bytecode.module_: BytecodeModule, Emitter;
+import quickbite.backends.bytecode.module_: BytecodeModule;
 import quickbite.backends.bytecode.opcode: Instruction, OpCode;
 
-public BytecodeModule compileBytecode(UnitTestDeclaration unitTest) {
-    BytecodeModule module_;
-    auto compiler = Compiler(&module_);
+package(quickbite.backends.bytecode) BytecodeModule compileBytecode(
+    UnitTestDeclaration unitTest,
+) {
+    Compiler compiler;
     compiler.compileUnitTest(unitTest);
-    return module_;
+    return compiler.module_;
 }
 
 private struct Compiler {
-    private BytecodeModule* module_;
-    private Emitter emitter;
+    private BytecodeModule module_;
 
-    public this(return scope BytecodeModule* module_) @safe @nogc nothrow {
-        this.module_ = module_;
-        this.emitter = Emitter(module_);
-    }
-
-    public void compileUnitTest(UnitTestDeclaration unitTest) {
+    private void compileUnitTest(UnitTestDeclaration unitTest) {
         compileStatement(unitTest.fbody);
-        emitter.emit(Instruction(OpCode.halt));
+        module_.code ~= Instruction(OpCode.halt);
 
         for (size_t i = 0; i < module_.functions.length; ++i) {
             auto function_ = module_.functions[i];
-            module_.functionEntries[function_] = emitter.position;
+            module_.functionEntries[function_] = module_.code.length;
             compileStatement(function_.fbody);
         }
     }
@@ -56,37 +51,34 @@ private struct Compiler {
 
         if (auto return_ = statement.isReturnStatement) {
             compileExpression(return_.exp);
-            emitter.emit(Instruction(OpCode.ret));
+            module_.code ~= Instruction(OpCode.ret);
             return;
         }
-
-        import std.conv: text;
-        throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
     }
 
     private void compileExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp) {
-            emitter.emit(Instruction(OpCode.pushInteger, integer.getInteger));
+            module_.code ~= Instruction(OpCode.pushInteger, integer.getInteger);
             return;
         }
 
         if (auto assert_ = expression.isAssertExp) {
             compileExpression(assert_.e1);
-            emitter.emit(Instruction(OpCode.assertTrue));
+            module_.code ~= Instruction(OpCode.assertTrue);
             return;
         }
 
         if (auto equal = expression.isEqualExp) {
             compileExpression(equal.e1);
             compileExpression(equal.e2);
-            emitter.emit(Instruction(OpCode.equal));
+            module_.code ~= Instruction(OpCode.equal);
             return;
         }
 
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
-            emitter.emit(Instruction(OpCode.call, functionIndex(callFunction(call))));
+            module_.code ~= Instruction(OpCode.call, functionIndex(callFunction(call)));
             return;
         }
 
