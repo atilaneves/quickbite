@@ -10,6 +10,10 @@ public enum matureExecutorBackends = [
     ExecutorBackend.dmdCtfe,
 ];
 
+public enum dmdCodegenRamExecutorBackends = [
+    ExecutorBackend.dmdCodegenRam,
+];
+
 public bool experimentalBackendTestsEnabled() {
     import std.process: environment;
 

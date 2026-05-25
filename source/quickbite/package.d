@@ -8,6 +8,7 @@ public enum ExecutorBackend {
     treeWalking,
     dmdCtfe,
     dmdCodegen,
+    dmdCodegenRam,
 }
 
 public void runTests(
@@ -60,5 +61,8 @@ public imported!"quickbite.executor".Executor executor(
         case ExecutorBackend.dmdCodegen:
             import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
             return new DmdCodegenSharedLib;
+        case ExecutorBackend.dmdCodegenRam:
+            import quickbite.backends.dmd_codegen: DmdCodegenRam;
+            return new DmdCodegenRam;
     }
 }

@@ -3,7 +3,11 @@ module ut.compiler_api;
 private:
 
 import quickbite: ExecutorBackend;
-import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
+import std.conv: text;
+import ut.backends:
+    dmdCodegenRamExecutorBackends,
+    experimentalBackendTestsEnabled,
+    matureExecutorBackends;
 import unit_threaded;
 
 @("parseModule.withImportPaths")
@@ -39,6 +43,27 @@ unittest {
     import ut.dub_paths: dubImportPaths, cerealTestsDir;
 
     runTestsFromFile(cerealTestsDir ~ "/utils.d", dubImportPaths, ExecutorBackend.dmdCtfe);
+}
+
+static foreach (backend; dmdCodegenRamExecutorBackends) {
+    @("runTests.localIntegerArithmetic." ~ backend.text)
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            import quickbite: runTests;
+
+            runTests(q{
+                int input() {
+                    return 40;
+                }
+
+                unittest {
+                    int value = input;
+                    value += 2;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
 }
 
 @("runTests.importPathsRetryAfterFailure")
