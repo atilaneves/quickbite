@@ -27,24 +27,26 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 handoff after RAM relocation diagnostic slice:
+2026-05-25 handoff after RAM ready-relocation diagnostic slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
 - Branch: `dmd-codegen-ram`.
 - Current head:
 
   ```text
-  50dd43e Add DMD codegen RAM link diagnostics
+  Report DMD codegen ready relocations
   ```
 
 - The RAM object diagnostics slice was committed as `c3806d9`.
 - The RAM link-image diagnostics slice was committed as `50dd43e`.
-- The worktree has an uncommitted RAM relocation diagnostic slice:
-  - `source/quickbite/backends/dmd_codegen.d`
-  - `ai/plans/dmd-backend.md`
+- The RAM relocation classification slice was committed as `fb916b2`.
+- The RAM ready-relocation diagnostic slice was committed as
+  `Report DMD codegen ready relocations`.
 - Recent commits:
   - `c3806d9 Add DMD codegen RAM object diagnostics`
   - `50dd43e Add DMD codegen RAM link diagnostics`
+  - `fb916b2 Classify DMD codegen RAM relocations`
+  - `Report DMD codegen ready relocations`
 - Current source state:
   - `runCodegenSession` resolves the generated unittest entrypoint before
     choosing an execution path.
@@ -72,16 +74,31 @@ tried, what happened, and why the result was insufficient.
     relocations from `GeneratedObject.bytes`.
   - The diagnostic output reports per-object section/symbol/relocation counts
     and an aggregate summary of executable sections, data sections, defined
-    symbols, unique undefined symbols, relocations, relocation types, and
-    unresolved external symbol names.
-  - The uncommitted slice adds a non-executing `RamLinkImage` model that places
-    allocated executable/data sections at virtual offsets, builds a generated
-    defined-symbol table, counts duplicate generated definitions, and classifies
-    remaining undefined symbols only as `external` or `linker_sentinel`.
-  - The latest uncommitted slice records each relocation's target symbol index
-    and target symbol section index, then classifies relocation targets as
+    symbols, unique undefined symbols, relocations, relocation types, ready
+    relocation types, and unresolved external symbol names.
+  - The RAM link-image slice added a non-executing `RamLinkImage` model that
+    places allocated executable/data sections at virtual offsets, builds a
+    generated defined-symbol table, counts duplicate generated definitions, and
+    classifies remaining undefined symbols only as `external` or
+    `linker_sentinel`.
+  - The RAM relocation slice records each relocation's target symbol index and
+    target symbol section index, then classifies relocation targets as
     `object_defined`, `section_relative`, `external`, `linker_sentinel`,
     `anonymous_external`, or `missing_symbol`.
+  - The RAM ready-relocation slice also records each relocation's
+    source section index and target symbol value. `RamLinkImage` now caches
+    per-object section placements, maps `object_defined` and `section_relative`
+    relocation records to concrete virtual patch and target addresses, and
+    reports:
+    - `ready_relocations` in the aggregate diagnostic line.
+    - `ready_relocation_type` counts by ELF relocation type.
+    - In verbose mode only, the first 32 ready relocation records with type,
+      patch address, target address, target class, symbol, and addend.
+    - In verbose mode only, a `ready_relocation_omitted` count for the
+      remaining records.
+  - `QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1` now prints summary diagnostics.
+    Use `QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=verbose` for per-object,
+    per-ready-relocation, and unresolved-symbol detail.
   - A previous attempt used `dlsym(null, symbol)` to classify current-process
     symbols. It printed useful data but then aborted during D runtime shutdown
     with:
@@ -112,6 +129,7 @@ tried, what happened, and why the result was insufficient.
   quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
   data_sections=162 defined_symbols=2173 undefined_symbols=74
   relocations=1642 text_bytes=24480 data_bytes=24237 duplicate_symbols=44
+  ready_relocations=1268
   quickbite dmd-codegen RAM external_classification: kind=external count=92
   quickbite dmd-codegen RAM external_classification: kind=linker_sentinel count=27
   quickbite dmd-codegen RAM relocation_classification: kind=external count=354
@@ -122,12 +140,16 @@ tried, what happened, and why the result was insufficient.
   quickbite dmd-codegen RAM relocation_type: type=2 count=909
   quickbite dmd-codegen RAM relocation_type: type=4 count=398
   quickbite dmd-codegen RAM relocation_type: type=9 count=49
-  quickbite dmd-codegen RAM unresolved_symbol: _GLOBAL_OFFSET_TABLE_
-  quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
-  data_sections=162 defined_symbols=2173 undefined_symbols=74
-  relocations=1642
+  quickbite dmd-codegen RAM ready_relocation_type: type=1 count=128
+  quickbite dmd-codegen RAM ready_relocation_type: type=2 count=889
+  quickbite dmd-codegen RAM ready_relocation_type: type=4 count=207
+  quickbite dmd-codegen RAM ready_relocation_type: type=9 count=44
   1 test(s) run, 0 failed.
   ```
+
+  Note: with the latest source edit, the per-object lines, ready-relocation
+  examples, and unresolved-symbol lines only print when
+  `QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=verbose`.
 
   ```sh
   env QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1 \
@@ -147,6 +169,57 @@ tried, what happened, and why the result was insufficient.
   update generated config under `~/.dub`; rerunning with filesystem approval
   succeeded.
 
+  A full cerealed benchmark run with RAM diagnostics enabled was attempted:
+
+  ```sh
+  env QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1 \
+    ./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen \
+    --dub cerealed
+  ```
+
+  The first sandboxed attempt failed because Dub needed to update generated
+  files under `~/.dub`; the approved rerun built and started. The diagnostics
+  were too verbose to be useful for a full run, and the run was abandoned after
+  the first aggregate cerealed diagnostic repeated in the tool output for
+  several minutes. No benchmark row was captured from that diagnostic-enabled
+  run. The useful partial aggregate was:
+
+  ```text
+  quickbite dmd-codegen RAM diagnostic: objects=33 executable_sections=7713
+  data_sections=1077 defined_symbols=25836 undefined_symbols=644
+  relocations=41920 text_bytes=979656 data_bytes=344582
+  duplicate_symbols=639 ready_relocations=34767
+  relocation_classification external=7087 linker_sentinel=66
+  relocation_classification object_defined=18078 section_relative=16689
+  ready_relocation_type 1=1540 2=16668 4=14794 9=1738 19=27
+  ```
+
+  After reducing the diagnostic volume, another full cerealed diagnostic run
+  was attempted with `--iterations=2`, then stopped and repeated with
+  `--iterations=1`:
+
+  ```sh
+  env QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1 \
+    ./benchmarks/run.sh --warmup=1 --iterations=1 --backend=dmd-codegen \
+    --dub cerealed
+  ```
+
+  The summary diagnostics were compact and stable, with no per-object,
+  per-ready-relocation, or unresolved-symbol detail. The run was still stopped
+  before a benchmark row because full cerealed remains slow even with one timed
+  iteration. The repeated aggregate was:
+
+  ```text
+  quickbite dmd-codegen RAM diagnostic: objects=33 executable_sections=7713
+  data_sections=1077 defined_symbols=25836 undefined_symbols=644
+  relocations=41920 text_bytes=979656 data_bytes=344582
+  duplicate_symbols=639 ready_relocations=34767
+  external_classification external=371 linker_sentinel=92
+  relocation_classification external=7087 linker_sentinel=66
+  relocation_classification object_defined=18078 section_relative=16689
+  ready_relocation_type 1=1540 2=16668 4=14794 9=1738 19=27
+  ```
+
   ```sh
   ./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen \
     --dub cerealed
@@ -160,12 +233,12 @@ tried, what happened, and why the result was insufficient.
 
 Next recommended step:
 
-- Commit this diagnostics slice if the diff looks acceptable.
-- Extend `RamLinkImage` toward a real resolver model without executing code:
-  map `object_defined` and `section_relative` relocation records to concrete
-  virtual addresses and report relocation type/address pairs that are ready for
-  patching. Keep external and linker-sentinel relocations diagnostic-only until
-  there is an explicit resolver model for them.
+- Keep external and linker-sentinel relocations diagnostic-only until there is
+  an explicit resolver model for them.
+- Use `--iterations=1` for follow-up cerealed benchmark checks unless a longer
+  timing sample is specifically needed.
+- Start the next RAM executor slice from a small benchmark fixture, not full
+  cerealed.
 - Keep `sharedLibrary` as the fallback until a RAM executor can run the
   smallest benchmark slice.
 - Do not add or modify tests without explicit approval.

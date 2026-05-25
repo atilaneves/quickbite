@@ -378,11 +378,20 @@ private void maybeReportRamObjectDiagnostics(in GeneratedObject[] objects) @trus
 }
 
 private bool ramObjectDiagnosticsEnabled() @trusted {
+    const value = ramObjectDiagnosticsValue;
+    return value.length != 0 && value != "0";
+}
+
+private bool verboseRamObjectDiagnosticsEnabled() @trusted {
+    return ramObjectDiagnosticsValue == "verbose";
+}
+
+private string ramObjectDiagnosticsValue() @trusted {
     import core.stdc.stdlib: getenv;
     import std.string: fromStringz;
 
     auto value = getenv("QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS");
-    return value && value.fromStringz.length != 0 && value.fromStringz != "0";
+    return value ? value.fromStringz.idup : null;
 }
 
 private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
@@ -390,6 +399,7 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
     import std.array: array;
     import std.stdio: stderr;
 
+    const verbose = verboseRamObjectDiagnosticsEnabled;
     const linkImage = objects.ramLinkImage;
     size_t executableSections;
     size_t dataSections;
@@ -400,13 +410,14 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
 
     foreach (object_; objects) {
         const image = object_.elf64ObjectImage;
-        stderr.writefln(
-            "quickbite dmd-codegen object: %s sections=%s symbols=%s relocations=%s",
-            object_.path,
-            image.sections.length,
-            image.symbols.length,
-            image.relocations.length,
-        );
+        if (verbose)
+            stderr.writefln(
+                "quickbite dmd-codegen object: %s sections=%s symbols=%s relocations=%s",
+                object_.path,
+                image.sections.length,
+                image.symbols.length,
+                image.relocations.length,
+            );
 
         foreach (section; image.sections) {
             if (section.isExecutableAllocSection)
@@ -430,7 +441,7 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
     }
 
     stderr.writefln(
-        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s text_bytes=%s data_bytes=%s duplicate_symbols=%s",
+        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s text_bytes=%s data_bytes=%s duplicate_symbols=%s ready_relocations=%s",
         objects.length,
         executableSections,
         dataSections,
@@ -440,6 +451,7 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
         linkImage.textSize,
         linkImage.dataSize,
         linkImage.duplicateSymbols,
+        linkImage.readyRelocations.length,
     );
 
     foreach (classification; linkImage.externalClassifications.byKey.array.sort)
@@ -463,11 +475,42 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
             relocationTypes[type],
         );
 
+    foreach (type; linkImage.readyRelocationTypes.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation_type: type=%s count=%s",
+            type,
+            linkImage.readyRelocationTypes[type],
+        );
+
+    if (!verbose)
+        return;
+
+    foreach (idx, relocation; linkImage.readyRelocations[0 .. linkImage.readyRelocations.length.limitedTo(32)])
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation: idx=%s type=%s patch_address=0x%x target_address=0x%x target_class=%s symbol=%s addend=%s",
+            idx,
+            relocation.type,
+            relocation.patchAddress,
+            relocation.targetAddress,
+            relocation.targetClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+    if (linkImage.readyRelocations.length > 32)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation_omitted: count=%s",
+            linkImage.readyRelocations.length - 32,
+        );
+
     foreach (symbol; undefinedSymbols.byKey.array.sort)
         stderr.writefln(
             "quickbite dmd-codegen RAM unresolved_symbol: %s",
             symbol,
         );
+}
+
+private size_t limitedTo(in size_t value, in size_t maximum) @safe pure nothrow {
+    return value < maximum ? value : maximum;
 }
 
 private string[] withInferredLinkFiles(
@@ -4756,10 +4799,12 @@ private struct Elf64Symbol {
 
 private struct Elf64Relocation {
     string sectionName;
+    uint sectionIndex;
     ulong offset;
     uint type;
     size_t symbolIndex;
     ushort symbolSectionIndex;
+    ulong symbolValue;
     string symbolName;
     long addend;
 }
@@ -4777,14 +4822,32 @@ private struct RamLinkImage {
     size_t duplicateSymbols;
     size_t[string] externalClassifications;
     size_t[string] relocationClassifications;
+    size_t[uint] readyRelocationTypes;
+    RamReadyRelocation[] readyRelocations;
+}
+
+private struct RamObjectPlacement {
+    Elf64ObjectImage objectImage;
+    RamSectionPlacement[] sections;
+}
+
+private struct RamReadyRelocation {
+    uint type;
+    ulong patchAddress;
+    ulong targetAddress;
+    string targetClass;
+    string symbolName;
+    long addend;
 }
 
 private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
     RamLinkImage image;
+    RamObjectPlacement[] objectPlacements;
 
     foreach (object_; objects) {
-        const objectImage = object_.elf64ObjectImage;
-        const placements = objectImage.sectionPlacements(image.textSize, image.dataSize);
+        auto objectImage = object_.elf64ObjectImage; // mutable copy stored for the second pass.
+        auto placements = objectImage.sectionPlacements(image.textSize, image.dataSize);
+        objectPlacements ~= RamObjectPlacement(objectImage, placements);
         foreach (symbol; objectImage.symbols) {
             if (symbol.name.length == 0 || symbol.isUndefined)
                 continue;
@@ -4804,9 +4867,8 @@ private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
         }
     }
 
-    foreach (object_; objects) {
-        const objectImage = object_.elf64ObjectImage;
-        foreach (symbol; objectImage.symbols) {
+    foreach (objectPlacement; objectPlacements) {
+        foreach (symbol; objectPlacement.objectImage.symbols) {
             if (!symbol.isUndefined || symbol.name.length == 0)
                 continue;
             if (symbol.name in image.definedSymbols)
@@ -4815,10 +4877,24 @@ private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
             ++image.externalClassifications[symbol.name.externalSymbolClass];
         }
 
-        foreach (relocation; objectImage.relocations)
-            ++image.relocationClassifications[
-                image.relocationClass(objectImage, relocation)
-            ];
+        foreach (relocation; objectPlacement.objectImage.relocations) {
+            const relocationClass = image.relocationClass(
+                objectPlacement.objectImage,
+                relocation,
+            );
+            ++image.relocationClassifications[relocationClass];
+
+            const readyRelocation = image.readyRelocation(
+                objectPlacement.sections,
+                relocation,
+                relocationClass,
+            );
+            if (readyRelocation.targetClass.length == 0)
+                continue;
+
+            ++image.readyRelocationTypes[readyRelocation.type];
+            image.readyRelocations ~= readyRelocation;
+        }
     }
 
     return image;
@@ -4832,6 +4908,12 @@ private string relocationClass(
     if (relocation.symbolSectionIndex == shnMissing)
         return "missing_symbol";
 
+    if (relocation.symbolSectionIndex != shnUndef
+        && objectImage.sections.hasElf64Section(relocation.symbolSectionIndex))
+        return relocation.symbolName.length == 0
+            ? "section_relative"
+            : "object_defined";
+
     if (relocation.symbolName.length != 0) {
         if (relocation.symbolName in image.definedSymbols)
             return "object_defined";
@@ -4839,11 +4921,53 @@ private string relocationClass(
         return relocation.symbolName.externalSymbolClass;
     }
 
-    if (relocation.symbolSectionIndex != shnUndef
-        && objectImage.sections.hasElf64Section(relocation.symbolSectionIndex))
-        return "section_relative";
-
     return "anonymous_external";
+}
+
+private RamReadyRelocation readyRelocation(
+    in RamLinkImage image,
+    in RamSectionPlacement[] placements,
+    in Elf64Relocation relocation,
+    in string relocationClass,
+) @safe {
+    if (!placements.hasPlacedSection(relocation.sectionIndex))
+        return RamReadyRelocation.init;
+
+    const patchAddress = placements[relocation.sectionIndex].address + relocation.offset;
+    if (relocation.symbolSectionIndex != shnUndef
+        && placements.hasPlacedSection(relocation.symbolSectionIndex))
+        return RamReadyRelocation(
+            relocation.type,
+            patchAddress,
+            placements[relocation.symbolSectionIndex].address
+                + relocation.symbolValue
+                + cast(ulong) relocation.addend,
+            relocationClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+
+    if (relocation.symbolName.length == 0)
+        return RamReadyRelocation.init;
+
+    if (const targetAddress = relocation.symbolName in image.definedSymbols)
+        return RamReadyRelocation(
+            relocation.type,
+            patchAddress,
+            *targetAddress + cast(ulong) relocation.addend,
+            relocationClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+
+    return RamReadyRelocation.init;
+}
+
+private bool hasPlacedSection(
+    in RamSectionPlacement[] placements,
+    in uint sectionIndex,
+) @safe pure nothrow {
+    return sectionIndex < placements.length && placements[sectionIndex].placed;
 }
 
 private struct RamSectionPlacement {
@@ -5015,16 +5139,20 @@ private Elf64Relocation[] elf64Relocations(
         const symbolIndex = cast(size_t) (info >> 32);
         string symbolName;
         ushort symbolSectionIndex = shnMissing;
+        ulong symbolValue;
         if (symbolIndex < symbols.length) {
             symbolName = symbols[symbolIndex].name;
             symbolSectionIndex = symbols[symbolIndex].sectionIndex;
+            symbolValue = symbols[symbolIndex].value;
         }
         relocations ~= Elf64Relocation(
             sectionName,
+            section.info,
             relocation.readElf64(0),
             cast(uint) info,
             symbolIndex,
             symbolSectionIndex,
+            symbolValue,
             symbolName,
             section.type == shtRela
                 ? cast(long) relocation.readElf64(16)
