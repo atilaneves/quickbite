@@ -61,6 +61,7 @@ private struct CodegenExecution {
     private void run() @trusted {
         final switch (kind) with (CodegenExecutionKind) {
             case sharedLibrary:
+                maybeReportRamObjectDiagnostics(objects);
                 runSharedLibraryBridge(
                     objects.paths,
                     soPath,
@@ -367,6 +368,88 @@ private string[] paths(in GeneratedObject[] objects) @safe {
     foreach (object_; objects)
         ret ~= object_.path;
     return ret;
+}
+
+private void maybeReportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
+    if (!ramObjectDiagnosticsEnabled)
+        return;
+
+    reportRamObjectDiagnostics(objects);
+}
+
+private bool ramObjectDiagnosticsEnabled() @trusted {
+    import core.stdc.stdlib: getenv;
+    import std.string: fromStringz;
+
+    auto value = getenv("QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS");
+    return value && value.fromStringz.length != 0 && value.fromStringz != "0";
+}
+
+private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
+    import std.algorithm.sorting: sort;
+    import std.array: array;
+    import std.stdio: stderr;
+
+    size_t executableSections;
+    size_t dataSections;
+    size_t definedSymbols;
+    bool[string] undefinedSymbols;
+    size_t[uint] relocationTypes;
+    size_t relocations;
+
+    foreach (object_; objects) {
+        const image = object_.elf64ObjectImage;
+        stderr.writefln(
+            "quickbite dmd-codegen object: %s sections=%s symbols=%s relocations=%s",
+            object_.path,
+            image.sections.length,
+            image.symbols.length,
+            image.relocations.length,
+        );
+
+        foreach (section; image.sections) {
+            if (section.isExecutableAllocSection)
+                ++executableSections;
+            else if (section.isDataAllocSection)
+                ++dataSections;
+        }
+
+        foreach (symbol; image.symbols) {
+            if (symbol.isUndefined) {
+                if (symbol.name.length != 0)
+                    undefinedSymbols[symbol.name] = true;
+            } else {
+                ++definedSymbols;
+            }
+        }
+
+        relocations += image.relocations.length;
+        foreach (relocation; image.relocations)
+            ++relocationTypes[relocation.type];
+    }
+
+    stderr.writefln(
+        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s",
+        objects.length,
+        executableSections,
+        dataSections,
+        definedSymbols,
+        undefinedSymbols.length,
+        relocations,
+    );
+
+    foreach (type; relocationTypes.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM relocation_type: type=%s count=%s",
+            type,
+            relocationTypes[type],
+        );
+
+    foreach (symbol; undefinedSymbols.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM unresolved_symbol: %s",
+            symbol,
+        );
 }
 
 private string[] withInferredLinkFiles(
@@ -4607,12 +4690,62 @@ private string objectFileUnittestEntrypoint(in ubyte[] bytes) @trusted pure {
 
 private enum elf64SymbolSize = 24;
 
+private enum shnUndef = 0;
+
 private struct Elf64Section {
+    string name;
+    uint nameOffset;
     uint type;
+    ulong flags;
     ulong offset;
     ulong size;
     uint link;
+    uint info;
     ulong entrySize;
+
+    private bool isExecutableAllocSection() const @safe pure nothrow {
+        enum shfAlloc = 2;
+        enum shfExecinstr = 4;
+        return (flags & shfAlloc) != 0
+            && (flags & shfExecinstr) != 0
+            && size != 0;
+    }
+
+    private bool isDataAllocSection() const @safe pure nothrow {
+        enum shfWrite = 1;
+        enum shfAlloc = 2;
+        enum shfExecinstr = 4;
+        return (flags & shfAlloc) != 0
+            && (flags & shfExecinstr) == 0
+            && ((flags & shfWrite) != 0 || size != 0);
+    }
+}
+
+private struct Elf64Symbol {
+    string name;
+    ubyte binding;
+    ubyte type;
+    ushort sectionIndex;
+    ulong value;
+    ulong size;
+
+    private bool isUndefined() const @safe pure nothrow {
+        return sectionIndex == shnUndef;
+    }
+}
+
+private struct Elf64Relocation {
+    string sectionName;
+    ulong offset;
+    uint type;
+    string symbolName;
+    long addend;
+}
+
+private struct Elf64ObjectImage {
+    Elf64Section[] sections;
+    Elf64Symbol[] symbols;
+    Elf64Relocation[] relocations;
 }
 
 private bool isElf64LittleEndianObject(in ubyte[] bytes) @safe pure nothrow {
@@ -4630,6 +4763,7 @@ private Elf64Section[] elf64Sections(in ubyte[] bytes) @safe pure {
     const sectionOffset = cast(size_t) bytes.readElf64(40);
     const sectionEntrySize = cast(size_t) bytes.readElf16(58);
     const sectionCount = cast(size_t) bytes.readElf16(60);
+    const sectionNamesIndex = cast(size_t) bytes.readElf16(62);
 
     Elf64Section[] sections;
     foreach (idx; 0 .. sectionCount) {
@@ -4638,15 +4772,129 @@ private Elf64Section[] elf64Sections(in ubyte[] bytes) @safe pure {
             break;
 
         sections ~= Elf64Section(
+            null,
+            bytes.readElf32(offset),
             bytes.readElf32(offset + 4),
+            bytes.readElf64(offset + 8),
             bytes.readElf64(offset + 24),
             bytes.readElf64(offset + 32),
             bytes.readElf32(offset + 40),
+            bytes.readElf32(offset + 44),
             bytes.readElf64(offset + 56),
         );
     }
 
+    if (!sections.hasElf64Section(cast(uint) sectionNamesIndex))
+        return sections;
+
+    const sectionNames = bytes.elf64SectionBytes(sections[sectionNamesIndex]);
+    foreach (ref section; sections)
+        section.name = sectionNames.elfString(section.nameOffset);
+
     return sections;
+}
+
+private Elf64ObjectImage elf64ObjectImage(in GeneratedObject object_) @trusted pure {
+    return object_.bytes.elf64ObjectImage;
+}
+
+private Elf64ObjectImage elf64ObjectImage(in ubyte[] bytes) @trusted pure {
+    if (!bytes.isElf64LittleEndianObject)
+        return Elf64ObjectImage.init;
+
+    auto sections = bytes.elf64Sections;
+    Elf64Symbol[] symbols;
+    Elf64Relocation[] relocations;
+
+    foreach (section; sections) {
+        enum shtSymtab = 2;
+        enum shtRela = 4;
+        enum shtRel = 9;
+
+        if (section.type == shtSymtab)
+            symbols ~= bytes.elf64Symbols(sections, section);
+        else if (section.type == shtRela || section.type == shtRel)
+            relocations ~= bytes.elf64Relocations(sections, section);
+    }
+
+    return Elf64ObjectImage(sections, symbols, relocations);
+}
+
+private Elf64Symbol[] elf64Symbols(
+    in ubyte[] bytes,
+    in Elf64Section[] sections,
+    in Elf64Section section,
+) @trusted pure {
+    if (section.entrySize < elf64SymbolSize)
+        return null;
+    if (!sections.hasElf64Section(section.link))
+        return null;
+
+    const stringTable = bytes.elf64SectionBytes(sections[section.link]);
+    const symbolTable = bytes.elf64SectionBytes(section);
+    Elf64Symbol[] symbols;
+    for (
+        size_t offset;
+        offset + elf64SymbolSize <= symbolTable.length;
+        offset += section.entrySize
+    ) {
+        const symbol = symbolTable[offset .. offset + elf64SymbolSize];
+        const info = symbol[4];
+        symbols ~= Elf64Symbol(
+            stringTable.elfString(symbol.readElf32(0)).idup,
+            cast(ubyte) (info >> 4),
+            cast(ubyte) (info & 0xf),
+            symbol.readElf16(6),
+            symbol.readElf64(8),
+            symbol.readElf64(16),
+        );
+    }
+
+    return symbols;
+}
+
+private Elf64Relocation[] elf64Relocations(
+    in ubyte[] bytes,
+    in Elf64Section[] sections,
+    in Elf64Section section,
+) @trusted pure {
+    enum shtRela = 4;
+    const relocationSize = section.entrySize != 0
+        ? cast(size_t) section.entrySize
+        : section.type == shtRela ? 24 : 16;
+    if (!sections.hasElf64Section(section.link) || relocationSize < 16)
+        return null;
+
+    const symbols = bytes.elf64Symbols(sections, sections[section.link]);
+    const relocationTable = bytes.elf64SectionBytes(section);
+    const sectionName = sections.hasElf64Section(section.info)
+        ? sections[section.info].name
+        : null;
+
+    Elf64Relocation[] relocations;
+    for (
+        size_t offset;
+        offset + relocationSize <= relocationTable.length;
+        offset += relocationSize
+    ) {
+        const relocation = relocationTable[offset .. offset + relocationSize];
+        const info = relocation.readElf64(8);
+        const symbolIndex = cast(size_t) (info >> 32);
+        const symbolName = symbolIndex < symbols.length
+            ? symbols[symbolIndex].name
+            : null;
+        relocations ~= Elf64Relocation(
+            sectionName,
+            relocation.readElf64(0),
+            cast(uint) info,
+            symbolName,
+            section.type == shtRela
+                ? cast(long) relocation.readElf64(16)
+                : 0,
+        );
+    }
+
+    return relocations;
 }
 
 private bool hasElf64Section(

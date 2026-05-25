@@ -27,20 +27,27 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 handoff after generated-object boundary:
+2026-05-25 handoff after RAM object diagnostics slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
 - Branch: `dmd-codegen-ram`.
 - Current head:
 
   ```text
-  35e5317 Add DMD codegen execution adapter
+  2cb0519 Store generated DMD objects in codegen sessions
   ```
 
-- The execution-adapter slice was committed as `35e5317`.
-- The worktree now has one uncommitted implementation slice:
+- The worktree has an uncommitted diagnostics slice:
   - `source/quickbite/backends/dmd_codegen.d`
-- Current source diff summary:
+  - `ai/plans/dmd-backend.md`
+- Recent commits:
+  - `35e5317 Add DMD codegen execution adapter`
+  - `2cb0519 Store generated DMD objects in codegen sessions`
+- Current source state:
+  - `runCodegenSession` resolves the generated unittest entrypoint before
+    choosing an execution path.
+  - `CodegenExecution` is the Quickbite-owned execution replacement point.
+    It currently has one implementation: the existing shared-library bridge.
   - `CodegenSession` now carries `GeneratedObject[]` instead of only object
     paths.
   - `GeneratedObject` stores the generated object path plus the object bytes
@@ -51,6 +58,20 @@ tried, what happened, and why the result was insufficient.
     for the current `dmd -shared` fallback.
   - The generated `__modtest` entrypoint resolver now scans bytes already held
     by `GeneratedObject`; it no longer opens the object file itself.
+  - `CodegenExecution.sharedLibrary` optionally runs a diagnostics-only RAM
+    object parser before falling back to the existing shared-library bridge.
+    Enable it with:
+
+    ```sh
+    QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1
+    ```
+
+  - The parser builds a Quickbite-owned view of ELF64 sections, symbols, and
+    relocations from `GeneratedObject.bytes`.
+  - The diagnostic output reports per-object section/symbol/relocation counts
+    and an aggregate summary of executable sections, data sections, defined
+    symbols, unique undefined symbols, relocations, relocation types, and
+    unresolved external symbol names.
   - This still writes object files, links `module.so`, loads it, and calls the
     generated unittest entrypoint through `dlsym`.
 
@@ -62,29 +83,63 @@ tried, what happened, and why the result was insufficient.
   ```
 
   ```sh
-  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
-    ut.compiler_api.runTests.runsFailingPackageModuleUnittest.dmdCodegen \
-    ut.compiler_api.runTestSummary.countsPassingSourceModule.dmdCodegen \
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 \
+    QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1 ./bin/ut \
     ut.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
   ```text
-  3 test(s) run, 0 failed.
+  quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
+  data_sections=162 defined_symbols=2173 undefined_symbols=74
+  relocations=1642
+  quickbite dmd-codegen RAM relocation_type: type=1 count=286
+  quickbite dmd-codegen RAM relocation_type: type=2 count=909
+  quickbite dmd-codegen RAM relocation_type: type=4 count=398
+  quickbite dmd-codegen RAM relocation_type: type=9 count=49
+  quickbite dmd-codegen RAM unresolved_symbol: _GLOBAL_OFFSET_TABLE_
+  quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
+  data_sections=162 defined_symbols=2173 undefined_symbols=74
+  relocations=1642
+  1 test(s) run, 0 failed.
   ```
 
   ```sh
-  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  env QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS=1 \
+    ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
   ```
 
-  It printed a `minicereal` / `dmd-codegen` row. As before, the first attempt
-  in the sandbox failed because Dub needed to update generated config under
-  `~/.dub`; rerunning with filesystem approval succeeded.
+  It printed diagnostics for the benchmark's accumulated generated objects and
+  a `minicereal` / `dmd-codegen` row. The aggregate benchmark diagnostics were:
+
+  ```text
+  quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
+  data_sections=162 defined_symbols=2163 undefined_symbols=74
+  relocations=1642
+  ```
+
+  As before, the first attempt in the sandbox failed because Dub needed to
+  update generated config under `~/.dub`; rerunning with filesystem approval
+  succeeded.
+
+  ```sh
+  ./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen \
+    --dub cerealed
+  ```
+
+  It printed a `cerealed` / `dmd-codegen` row:
+
+  ```text
+  cerealed  dmd-codegen  14678.206 ms  15742.985 ms  1505.826 ms
+  ```
 
 Next recommended step:
 
-- Commit the generated-object boundary slice if the diff looks acceptable.
-- Then start a RAM object-image model behind `CodegenExecution`, using the
-  generated object bytes already stored in `GeneratedObject`.
+- Commit this diagnostics slice if the diff looks acceptable.
+- Start modelling a RAM link image from the diagnostics: place allocated
+  executable/data sections, build a defined-symbol address table, and classify
+  unresolved externals into current-process symbols, linked-archive symbols,
+  and unsupported linker-provided sentinels such as `__start_minfo` and
+  `__stop_minfo`.
 - Keep `sharedLibrary` as the fallback until a RAM executor can run the
   smallest benchmark slice.
 - Do not add or modify tests without explicit approval.
