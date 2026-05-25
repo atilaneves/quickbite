@@ -79,12 +79,11 @@ tried, what happened, and why the result was insufficient.
   the whole dynamic-array parity block to RAM. The source was narrowed afterward
   so only `localDynamicArrayAppend` is newly promoted in this slice. Rerun the
   focused RAM test and `dub test` before committing.
-- The current WIP also contains a static-symbol fallback in
-  `externalSymbolAddress` that reads the host executable's ELF symbol table.
-  Reconsider this before committing. It was added while investigating the
-  unresolved `rt.profilegc.accumulate` path, but the preferred direction is
-  RAM-image reachability and local stubs, not host-linker dependence or broader
-  host executable symbol scraping.
+- Removed the static-symbol fallback in `externalSymbolAddress` that read the
+  host executable's ELF symbol table. It could resolve non-callable absolute or
+  file symbols and turn an unresolved external into an invalid RAM jump target.
+  Keep following the preferred direction of RAM-image reachability and local
+  stubs instead of broader host executable symbol scraping.
 
 2026-05-25 handoff after PR 39 review fixes:
 

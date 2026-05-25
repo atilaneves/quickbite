@@ -5367,50 +5367,7 @@ private ulong externalSymbolAddress(in string symbol) @trusted {
     if (address)
         return cast(ulong) address;
 
-    if (const selfAddress = symbol.selfExecutableSymbolAddress)
-        return selfAddress;
-
     throw new Exception(text("DMD codegen RAM unresolved external symbol: ", symbol));
-}
-
-private ulong selfExecutableSymbolAddress(in string symbol) @trusted {
-    import core.sys.posix.dlfcn: Dl_info, dladdr;
-    import std.file: read;
-    import std.string: fromStringz;
-
-    Dl_info info;
-    if (dladdr(cast(const(void)*) &externalSymbolAddress, &info) == 0)
-        return 0;
-    if (!info.dli_fbase || !info.dli_fname)
-        return 0;
-
-    const bytes = cast(const(ubyte)[]) read(info.dli_fname.fromStringz);
-    const elfType = bytes.readElf16(16);
-    enum elfTypeExecutable = 2;
-    enum elfTypeShared = 3;
-    if (!bytes.isElf64LittleEndian || (
-            elfType != elfTypeExecutable
-            && elfType != elfTypeShared
-        ))
-        return 0;
-
-    const sections = bytes.elf64Sections;
-    foreach (section; sections) {
-        enum shtSymtab = 2;
-        enum shtDynsym = 11;
-        if (section.type != shtSymtab && section.type != shtDynsym)
-            continue;
-
-        foreach (candidate; bytes.elf64Symbols(sections, section))
-            if (candidate.name == symbol && !candidate.isUndefined) {
-                const base = elfType == elfTypeShared
-                    ? cast(ulong) info.dli_fbase
-                    : 0;
-                return base + candidate.value;
-            }
-    }
-
-    return 0;
 }
 
 private void* allocateRamImage(in size_t size) @trusted {
