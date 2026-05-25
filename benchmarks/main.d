@@ -1,6 +1,7 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
+import quickbite.benchmarks: moduleDisplayName, populateDmdCodegenModuleSet;
 import quickbite.backends.dmd_codegen: DmdCodegen;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
@@ -89,6 +90,9 @@ int main(string[] args) {
     printHeader;
     foreach (name; backendNames) {
         auto executor = backends[name];
+        if (name == "dmd-codegen")
+            populateDmdCodegenModuleSet(fixtures, importPaths);
+
         foreach (path; fixtures) {
             const source      = readText(path);
             const displayName = moduleDisplayName(path, importPaths);
@@ -104,7 +108,7 @@ int main(string[] args) {
                 } catch (Exception e) {
                     stderr.writefln(
                         "skipping %s %s: %s",
-                        displayName, name, e.msg,
+                        displayName, name, e.msg.firstLine,
                     );
                 }
             } catch (Exception e) {
@@ -152,20 +156,6 @@ string firstLine(in string message) {
     foreach (line; message.lineSplitter)
         return line.idup;
     return "";
-}
-
-string moduleDisplayName(in string path, in string[] importPaths) {
-    import std.algorithm.searching: startsWith;
-    import std.path: absolutePath, baseName, buildNormalizedPath, relativePath, stripExtension;
-    import std.string: replace;
-
-    const absPath = path.absolutePath.buildNormalizedPath;
-    foreach (ip; importPaths) {
-        const rel = absPath.relativePath(ip.absolutePath.buildNormalizedPath);
-        if (!rel.startsWith(".."))
-            return rel.stripExtension.replace("/", ".").replace("\\", ".");
-    }
-    return absPath.baseName.stripExtension;
 }
 
 struct DubInfo {

@@ -27,6 +27,72 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 merge-readiness update:
+
+- This branch is acceptable to merge as an experimental `dmd-codegen` foothold,
+  not as a correctness-complete or benchmark-complete backend.
+- Keep `dmd-codegen` opt-in. Do not add it to `matureExecutorBackends`, the
+  default benchmark backend list, or any correctness-sensitive comparison until
+  the known limitations below are addressed.
+- The current shared-library execution bridge is temporary. Future work is
+  expected to execute generated code without producing and loading a `.so`, so
+  do not spend large effort perfecting shared-library-specific symbol
+  workarounds unless they block near-term backend development.
+- The accumulated-object approach is accepted only as a bridge to make the
+  cerealed benchmark produce rows. It deliberately trades clean isolation and
+  clean per-fixture timing for progress on the backend.
+
+Known limitations accepted for this merge:
+
+- `_accumulatedObjPaths` and `--allow-multiple-definition` can make one
+  in-process `dmd-codegen` run reuse symbols from an earlier run when two
+  different parsed sources have the same module name. In the current
+  shared-library path, `loadAndRunTests` looks up only the module-name-derived
+  `__modtest` symbol, so this can produce stale-code false results. Treat this
+  as a shared-library bridge limitation, not as a property the final backend may
+  keep.
+- `dmd-codegen` benchmark rows are order-dependent. The benchmark pre-parses all
+  fixtures, codegen walks `Module.amodules`, and later rows link against objects
+  accumulated from earlier rows. The rows are useful as a smoke signal that all
+  fixtures can run, but they are not clean per-fixture latency measurements.
+- Negative compiler API tests can still leave stale DMD global semantic state
+  that cascades into later `dmd-codegen` runs. This is why the backend must stay
+  out of the mature/default test path.
+
+Post-merge handoff for the next agent:
+
+1. Preserve the opt-in backend contract while merging. If merge conflicts touch
+   benchmark defaults or `matureExecutorBackends`, keep `dmd-codegen` excluded.
+2. After merge, record the accepted limitations in the PR or follow-up issue so
+   later benchmark numbers are not mistaken for clean latency data.
+3. The next substantial backend step should be a session/batch boundary that
+   owns the DMD module set for a run, or the planned in-RAM execution path that
+   removes the shared-library bridge. Either direction should aim to delete
+   `_accumulatedObjPaths`, `--allow-multiple-definition`, and module-name-only
+   symbol reuse.
+4. Before promoting `dmd-codegen`, add tests that prove two different same-named
+   source snippets in one process do not reuse stale generated code, and that a
+   failed parse/codegen run cannot poison later valid runs.
+
+2026-05-22 update after testing `dmd-codegen` as mature:
+
+- The cerealed benchmark command with `--iterations=2` passes when
+  `dmd-codegen` is selected explicitly.
+- `dmd-codegen` was tried in `matureExecutorBackends` and in the default
+  benchmark backend list, then backed out so this PR can stay mergeable.
+- First maturity-run failure: cerealed files run one at a time in the unit
+  suite, while DMD codegen needs sibling parsed test modules available for
+  cross-file symbols. A test-local pre-parse experiment moved those tests
+  forward, but it was not kept because the broader maturity run still failed.
+- Remaining maturity blocker: a negative compiler API test leaves
+  `snippet_30.parsedWithoutPath` in DMD global semantic state. Later
+  `dmd-codegen` tests call `runDeferredSemantic*`, which reprocesses that bad
+  symbol and turns many unrelated tests into cascaded failures. A simple
+  deferred-queue filter by failed module did not remove the stale diagnostic.
+- Next maturity work: isolate DMD global state between failed parses and later
+  codegen runs, or make `dmd-codegen` use a batch/session boundary that only
+  includes modules from the current run and their valid dependencies.
+
 Coordination note:
 
 - `master` has been merged into this branch.
@@ -55,12 +121,11 @@ Important post-merge test-suite note:
   `version (QuickbiteDmdCodegen)` unless the backend prevents the project from
   compiling or linking.
 - Default test and benchmark selection is runtime policy. Broad tests iterate
-  over `matureExecutorBackends`; known-broken DMD-codegen focused tests run only
-  when `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS` is set.
-- Benchmarks now treat `treeWalking` and `dmd-codegen` as experimental
-  backends. The default benchmark list is `ir`, `treeWalkingOld`, and
-  `dmd-ctfe`; experimental backends remain opt-in via `--backend=treeWalking`
-  or `--backend=dmd-codegen`.
+  over `matureExecutorBackends`.
+- Benchmarks treat `treeWalking` and `dmd-codegen` as opt-in backends. The
+  default benchmark list is `ir`, `treeWalkingOld`, and `dmd-ctfe`; opt-in
+  backends remain available via `--backend=treeWalking` or
+  `--backend=dmd-codegen`.
 
 What works now:
 
@@ -1388,6 +1453,115 @@ Conclusion:
 - The next blocker is stale prior-fixture typeinfo/template state being pulled
   into later fixture object generation. This suggests the root-member append
   needs sharper eligibility, cleanup, or isolation before it can be kept.
+
+### Root Cause Of `_d_arrayliteralTX!(Pair)` Stale TypeInfo
+
+Investigation via `nm -C` on preserved temp dirs confirmed: the `isAlwaysCodegenTemplateInstance`
+guard was using `referencesNonCurrentSourceModule` (string matching on
+`toChars` short names like `Pair`, not the full `tests.bugs.Pair`) to
+decide whether `_d_arrayliteralTX!(Pair)` should be re-rooted for
+`cerealiser_impl`. The guard returned false (no module name found in
+the short name), so the instance was re-rooted. That caused DMD to
+emit a TypeInfo for `tests.bugs.Pair` that referenced `__xtoHash` /
+`__xopEquals` as undefined symbols.
+
+### All-Modules Approach (Current Direction)
+
+After the user suggested: "walk all modules and ignore rootness", the
+strategy changed to:
+
+1. **Pre-parse all fixtures upfront** (`benchmarks/main.d` now has
+   a pre-parse loop before the benchmark run loop) so all fixture
+   modules are in `Module.amodules` before any codegen starts.
+2. **Codegen over all non-archive, non-unit-threaded modules**:
+   - All fixture modules (identified by `snippet_N.d` filenames, i.e.
+     `isQuickbiteFixtureModule`)
+   - All backend runtime support modules (from `fixtureModules` which
+     calls `collectBackendRuntimeSupportModules`)
+   - The support stub module (`dmdCodegenSupportModule(idx)`) — kept
+     for now because it provides specific TypeInfo/delegate stubs
+   - Archive-backed library modules (cerealed src, unit-threaded)
+     are excluded to avoid duplicate strong symbols
+3. **All modules are marked root** before deferred semantic passes so
+   template instances stay owned by their originating modules.
+4. **Support stub module is excluded from `importedFrom = module_`
+   marking** via `isDmdCodegenSupportModule` to prevent its
+   `NestedNested` stubs from winning `tnext`-chain `needsCodegen`
+   decisions over real fixture-generated instances.
+5. **`resetObjState` removed `makeRootTemplateInstance`** — no more
+   re-rooting; template instances stay where `appendToModuleMember`
+   originally placed them.
+
+Current state with this approach:
+
+- `bugs` produces a timing row.
+- All later cerealed fixtures skip with:
+  ```text
+  initializer for TypeInfo_FKS8cerealed10cerealiser__T14CerealiserImplTS3std5array__T8AppenderTAhZQnZQBvC6ObjectZv
+  ```
+  This is the mutable TypeInfo initializer for a delegate type
+  `void(ref CerealiserImpl!(Appender), Object)` used by cerealed's
+  `registerChildClass`. The support stub module was previously
+  providing this; without it in a compatible position, it is
+  missing after the first fixture run.
+
+Open diagnosis:
+
+- The stale TypeInfo issue: after the first codegen run, the
+  TypeInfoDeclaration for the delegate type has `semanticRun =
+  PASS.obj` but is NOT in any module's `members` list (it is created
+  lazily during codegen by `genTypeInfo`). `resetTypeObjState`
+  clears `typeInfo.csym` and `typeInfo.semanticRun` WHEN the type is
+  visited, but the type is not reachable from the current traversal.
+  On the second fixture run, `toObjFile(stale_ti)` sees
+  `semanticRun >= PASS.obj` and skips emission.
+- Investigation with `nm` confirmed `TypeInfo_FK...` is defined in
+  bugs run's `module_0.o` but is `U` (undefined) in all objects for
+  subsequent fixture runs.
+- `resetTypeObjState` was extended to traverse function parameter
+  types and reset `typeInfo.semanticRun`, but the diagnostic showed
+  the type is still not being visited with a stale TypeInfo.
+
+Temporary merge resolution — accumulated objects:
+
+Rather than fixing the TypeInfo re-emission path before this merge, the
+temporary bridge fix is to accumulate ALL generated object files across fixture
+runs and link every new fixture against the full accumulated set.
+
+`_accumulatedObjPaths` is a process-global list. Each `compileAndRun`
+appends the new objects and passes the full list to `link`. Duplicate
+strong symbols (e.g. `ModuleInfo`) arise because the all-modules
+codegen regenerates every fixture module on every run; these are
+handled with `--allow-multiple-definition`. TypeInfo initialiser
+symbols are weak-object (V), so duplicates are resolved silently by
+the linker already.
+
+Temp dirs are kept for the process lifetime (registered with
+`removeTempDirsAtExit`). The growing `.so` size and link time are accepted for
+the experimental backend because this shared-library bridge is not the intended
+long-term execution path.
+
+This is intentionally not a final correctness model:
+
+- Duplicate strong symbols are currently hidden with
+  `--allow-multiple-definition`. If two different snippets have the same module
+  name, the dynamic lookup of `module.__modtest` can resolve to stale code from
+  an earlier generated object.
+- The benchmark harness now gets rows for all cerealed fixtures, but the
+  dmd-codegen rows include cross-fixture pre-parse/codegen/link effects and
+  should not be used as clean per-fixture latency data.
+- The follow-up work should remove the need for accumulated objects by isolating
+  DMD global state per run, introducing an explicit backend session boundary, or
+  replacing the shared-library bridge with the planned in-RAM execution path.
+
+Verified:
+
+```sh
+./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen --dub cerealed
+```
+
+All 19 cerealed fixtures produce timing rows. Full test suite
+(`dub test`) passes.
 
 ## Plan Location
 
