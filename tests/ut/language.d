@@ -2191,6 +2191,55 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("structMethodPostIncrementsSizeTField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Cursor {
+                size_t position;
+
+                size_t read() {
+                    return position++;
+                }
+            }
+
+            unittest {
+                Cursor cursor;
+                size_t start = 1;
+                cursor.position = start;
+
+                assert(cursor.read == start);
+                assert(cursor.position == start + 1);
+            }
+        }, backend);
+    }
+
+    @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Reader {
+                ubyte[] bytes;
+                size_t position;
+
+                ubyte read() {
+                    return bytes[position++];
+                }
+            }
+
+            unittest {
+                Reader reader;
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                reader.bytes = [first, second];
+                reader.position = reader.bytes.length - 1;
+
+                const value = reader.read;
+
+                assert(value == second);
+                assert(reader.position == reader.bytes.length);
+            }
+        }, backend);
+    }
+
     @("rightShift." ~ backend.text)
     unittest {
         runTests(q{
