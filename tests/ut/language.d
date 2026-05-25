@@ -2204,6 +2204,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intBitwiseOr.bytecode")
+unittest {
+    runTests(q{
+        int mask() {
+            return 0x02;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // bitwise OR before bytecode sees it.
+            return 0x28 | mask;
+        }
+
+        unittest {
+            assert(answer == 0x2a);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;

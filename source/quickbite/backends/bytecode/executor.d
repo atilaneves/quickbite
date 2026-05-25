@@ -109,6 +109,10 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack.executeBinaryArithmetic!((left, right) => left << right);
                 ++ip;
                 break;
+            case OpCode.bitwiseOr:
+                stack.executeBinaryArithmetic!((left, right) => left | right);
+                ++ip;
+                break;
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
