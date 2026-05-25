@@ -79,7 +79,7 @@ PR 23 adds the first bytecode backend slice:
   being silently ignored.
 - `runTestSummary` counts bytecode unittest blocks by compiling and executing
   each block independently.
-- The focused public behaviour is covered by `ut.language.ok.bytecode`.
+- The focused public behaviour is covered through `ut.backends.parity`.
 
 The first slice deliberately keeps the bytecode representation simple. It still
 writes `Instruction` values directly while the opcode set is tiny; introduce an
@@ -90,21 +90,21 @@ emitter when the next behaviours make raw writes start spreading.
 Branch `bytecode-int-addition` grows the bytecode backend through the covered
 integer binary-op parity fixtures:
 
-- addition: `ut.language.intAddition.bytecode`
-- subtraction: `ut.language.intSubtraction.bytecode`
-- multiplication: `ut.language.intMultiplication.bytecode`
-- division: `ut.language.intDivision.bytecode`
-- modulo: `ut.language.intModulo.bytecode`
-- right shift: `ut.language.intShiftRight.bytecode`
-- left shift: `ut.language.intShiftLeft.bytecode`
-- bitwise OR: `ut.language.intBitwiseOr.bytecode`
-- bitwise AND: `ut.language.intBitwiseAnd.bytecode`
-- bitwise XOR: `ut.language.intBitwiseXor.bytecode`
-- less than: `ut.language.intLessThan.bytecode`
-- less or equal: `ut.language.intLessOrEqual.bytecode`
-- greater than: `ut.language.intGreaterThan.bytecode`
-- greater or equal: `ut.language.intGreaterOrEqual.bytecode`
-- not equal: `ut.language.intNotEqual.bytecode`
+- addition: `ut.backends.parity.intAddition.bytecode`
+- subtraction: `ut.backends.parity.intSubtraction.bytecode`
+- multiplication: `ut.backends.parity.intMultiplication.bytecode`
+- division: `ut.backends.parity.intDivision.bytecode`
+- modulo: `ut.backends.parity.intModulo.bytecode`
+- right shift: `ut.backends.parity.intShiftRight.bytecode`
+- left shift: `ut.backends.parity.intShiftLeft.bytecode`
+- bitwise OR: `ut.backends.parity.intBitwiseOr.bytecode`
+- bitwise AND: `ut.backends.parity.intBitwiseAnd.bytecode`
+- bitwise XOR: `ut.backends.parity.intBitwiseXor.bytecode`
+- less than: `ut.backends.parity.intLessThan.bytecode`
+- less or equal: `ut.backends.parity.intLessOrEqual.bytecode`
+- greater than: `ut.backends.parity.intGreaterThan.bytecode`
+- greater or equal: `ut.backends.parity.intGreaterOrEqual.bytecode`
+- not equal: `ut.backends.parity.intNotEqual.bytecode`
 
 Each fixture keeps one operand runtime-shaped with a zero-argument helper
 function so DMD does not constant-fold the target expression before bytecode
@@ -120,28 +120,28 @@ Implementation notes:
 Verification on this branch:
 
 - focused binary-op set:
-  `dub test -- ut.language.intAddition.bytecode
-  ut.language.intSubtraction.bytecode
-  ut.language.intMultiplication.bytecode
-  ut.language.intDivision.bytecode
-  ut.language.intModulo.bytecode
-  ut.language.intShiftRight.bytecode
-  ut.language.intShiftLeft.bytecode
-  ut.language.intBitwiseOr.bytecode
-  ut.language.intBitwiseAnd.bytecode
-  ut.language.intBitwiseXor.bytecode
-  ut.language.intLessThan.bytecode
-  ut.language.intLessOrEqual.bytecode
-  ut.language.intGreaterThan.bytecode
-  ut.language.intGreaterOrEqual.bytecode
-  ut.language.intNotEqual.bytecode`
+  `dub test -- ut.backends.parity.intAddition.bytecode
+  ut.backends.parity.intSubtraction.bytecode
+  ut.backends.parity.intMultiplication.bytecode
+  ut.backends.parity.intDivision.bytecode
+  ut.backends.parity.intModulo.bytecode
+  ut.backends.parity.intShiftRight.bytecode
+  ut.backends.parity.intShiftLeft.bytecode
+  ut.backends.parity.intBitwiseOr.bytecode
+  ut.backends.parity.intBitwiseAnd.bytecode
+  ut.backends.parity.intBitwiseXor.bytecode
+  ut.backends.parity.intLessThan.bytecode
+  ut.backends.parity.intLessOrEqual.bytecode
+  ut.backends.parity.intGreaterThan.bytecode
+  ut.backends.parity.intGreaterOrEqual.bytecode
+  ut.backends.parity.intNotEqual.bytecode`
 - full suite: `dub test`
 
 Next recommended slice: integer unary operations. Start with one approved
-fixture, such as `ut.language.intUnaryMinus.bytecode`, and keep unary
-complement separate unless it is explicitly approved. Stop before locals,
-parameters, branches, or typed values unless those behaviours are explicitly
-approved.
+fixture, such as `ut.backends.parity.intUnaryMinus.bytecode`, and keep
+unary complement separate unless it is explicitly approved. Stop before
+locals, parameters, branches, or typed values unless those behaviours are
+explicitly approved.
 
 ## Design Constraints From Review
 
