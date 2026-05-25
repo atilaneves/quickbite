@@ -84,3 +84,10 @@ Never delete test code to make tests pass.
 
 - Label PR comments as from an agent (identify which one).
 - Open new PRs in the browser.
+
+## CI
+
+The repo is private for now, which is causing Github Actions failures
+due to billing issues. CI is not currently checking anything we can't
+and don't do locally, so ignore its failures for as long as the repo
+is private.
