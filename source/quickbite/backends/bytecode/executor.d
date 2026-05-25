@@ -2,6 +2,12 @@ module quickbite.backends.bytecode.executor;
 
 private:
 
+private class AssertionFailure : Exception {
+    public this(in string message) @safe pure {
+        super(message);
+    }
+}
+
 public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
@@ -81,18 +87,13 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack ~= left == right;
                 ++ip;
                 break;
-            case OpCode.assertTrue:
-                if (!stack.popValue)
-                    throw new Exception("Unittest assertion failed.");
-                ++ip;
-                break;
             case OpCode.assertEqual:
                 const right = stack.popValue;
                 const left = stack.popValue;
                 if (left != right) {
                     import std.conv: text;
 
-                    throw new Exception(text(left, " != ", right));
+                    throw new AssertionFailure(text(left, " != ", right));
                 }
                 ++ip;
                 break;

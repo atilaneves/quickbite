@@ -75,7 +75,8 @@ private struct Compiler {
             }
 
             compileExpression(assert_.e1);
-            module_.code ~= Instruction(OpCode.assertTrue);
+            module_.code ~= Instruction(OpCode.pushInteger, 1);
+            module_.code ~= Instruction(OpCode.assertEqual);
             return;
         }
 
