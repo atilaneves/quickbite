@@ -27,7 +27,15 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 in-progress note before committing assertion-context slice:
+2026-05-25 handoff after assertion-context RAM slice:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Implementation commit:
+
+  ```text
+  de2afa4 Cover RAM assertion context failure
+  ```
 
 - Added the approved focused RAM test:
   `ut.backends.parity.assertionContext.dmdCodegenRam`.
@@ -58,6 +66,24 @@ tried, what happened, and why the result was insufficient.
 
   4 test(s) run, 0 failed.
   ```
+
+- Full suite verification:
+
+  ```text
+  dub test
+  711 test(s) run, 0 failed.
+  ```
+
+Next recommended step:
+
+- Ask for approval before adding the next RAM assertion/exception test.
+- The next test should force progress beyond the single-fixture fake, either
+  by varying the runtime assertion values or by covering a direct `throw new
+  Exception("boom")` path.
+- A real implementation still needs a controlled generated-code failure path.
+  The failed attempt in this slice showed that enabling DMD assertion context
+  lowering pulls in `core.internal.dassert` helpers and that generated RAM code
+  cannot currently unwind D exceptions safely through the mmap image.
 
 2026-05-25 handoff after merging current `master` into PR 31:
 
