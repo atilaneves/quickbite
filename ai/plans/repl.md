@@ -29,9 +29,13 @@
   `add0`, `add1`, `add2`, `arithmetic` (five runtime cases covering
   +, -, *, /), `multiCell`. 560 tests, all pass.
 - `dub.sdl` has a `repl` configuration that builds `bin/repl`.
-- `repl/main.d` is a minimal executable that reads all stdin lines,
-  runs them through the shared loop, and writes returned expression
-  values to stdout.
+- `repl/main.d` is now an interactive executable:
+  - no args starts a REPL with banner `Quickbite REPL` and prompt `> `;
+  - `-c <code>` evaluates code silently, following Python's precedent
+    that command mode has no implicit expression display;
+  - `Exception`s from `eval` are printed as diagnostics and the REPL
+    continues;
+  - `Error`s are printed and terminate the process with status 1.
 - `source/quickbite/repl.d` exposes `runReplLoop`, which currently:
   - takes a real `Executor`;
   - evaluates each input atom independently;
@@ -40,23 +44,44 @@
 - `Value.toString` exists for displaying integral and bool values.
 - Binary integration tests have already proven basic executable wiring.
   Do not add more subprocess coverage for REPL behavior.
-- `tests/ut/repl.d` has the first unit-level REPL loop test:
-  `repl.loop.evaluatesExpressionCellsUntilQuit`. It uses the real IR
-  executor, passes `["1", "2", ":q"]` to `runReplLoop`, and expects
-  `["1", "2"]`.
-- Last verification: `dub test` passed with 562 tests.
+- `tests/ut/repl.d` still has older binary smoke tests. Do not add more.
+  New REPL behavior must be unit-tested through `runReplLoop` or smaller
+  helpers.
+- Commits of note in `worktree-repl`:
+  - `c21acf4 Make REPL interactive`
+  - `1ddfa37 Keep REPL alive after diagnostics`
+  - `f0a63d7 Avoid subprocess REPL tests`
+  - `9aa1f4d Revert "Persist REPL declaration cells"`
+- Last verification before this handoff edit: `dub test` passed with 564
+  tests before reverting the bad declaration shortcut. Rerun `dub test`
+  after this handoff update.
 
 ### What is fake
 
 - The REPL loop is still intentionally minimal. It does not yet handle
-  prompts, diagnostics, command-mode execution, backend selection,
-  completeness, or stateful session accumulation.
-- `repl/main.d` buffers stdin into an array before running the loop.
-  This is acceptable for the current tests but should be replaced by a
-  streaming line-input abstraction when prompts/completeness are added.
+  backend selection, completeness, continuation prompts, or stateful
+  session accumulation.
+- `repl/main.d` reads lines directly from `stdin`. It should be replaced
+  by the planned line-input abstraction before adding serious interactive
+  editing behavior.
 - Expression cells are evaluated independently. Statement/declaration
   cells and no-result values are not supported yet.
 - `dmdCodegen.eval` is still not implemented.
+
+### Bad approach reverted
+
+- Commit `7c352ce Persist REPL declaration cells` was reverted by
+  `9aa1f4d` because it made `runReplLoop` inspect user D code with a
+  semicolon heuristic.
+- Do not reintroduce delimiter-counting, suffix checks such as
+  `endsWith(";")`, or other poor-man parsing in the REPL loop.
+- Do not use exceptions for normal REPL control flow. Exceptions are for
+  diagnostics/failures after the frontend/eval layer has been asked a
+  well-defined question, not for deciding whether input is an expression
+  or a statement.
+- The REPL loop must not decide D syntax. Classification, completeness,
+  and expression-vs-statement/declaration handling belong behind the
+  frontend/`Executor` API.
 
 ### What comes next
 
@@ -68,36 +93,54 @@ supporting helpers, using real executors and no `executeShell`,
 
 Recommended next approved test:
 
-1. A unit test for `:quit` as the long-form quit command:
-   `runReplLoop(executor(ExecutorBackend.ir), ["1", ":quit", "2"])`
-   returns `["1"]`.
+1. Add an API-level unit test for a structured REPL eval result, not a
+   binary/process test. The desired behavior is equivalent to:
+   `["int x;", "x", ":q"]` displays only `["0"]`, but the production
+   design must not make `runReplLoop` parse D. First introduce the
+   structured API that can express no-display cells.
 
-After that, likely next slices are:
+The next implementation slice should be:
+
+1. Replace `Executor.eval(in string input) -> Value` with, or add beside
+   it, a structured REPL result type:
+   `incomplete | void_ | value(Value)`.
+2. Move cell classification and completeness into the frontend/eval
+   implementation. The REPL loop submits buffered D text and branches
+   only on that structured result.
+3. Teach at least the IR backend to execute a complete declaration cell
+   as `void_` and preserve it in the accumulated transcript for later
+   expression cells.
+4. Only after that, add the `int x;` then `x` unit test and make it pass.
+
+Later slices:
 
 1. Backend selection parsing shared with benchmark tooling.
-2. Command-mode execution (`-c`) with no implicit echo.
-3. Session accumulation across cells.
-4. `Value` support for D `void` / no-result cells.
-5. Parsed completeness status, not string heuristics.
+2. Proper parsed completeness status and continuation prompt.
+3. Session accumulation across all cell kinds.
+4. `Value` support for D `void` / no-result cells if not already covered
+   by the structured REPL result.
 
-### How to implement real eval
+### How to implement the next eval API
 
-Wrap the input in a function that captures the last expression:
+Do not continue the old "split by last newline and wrap the last line as an
+expression" design. That approach cannot correctly support declarations,
+imports, aliases, multi-line constructs, or incomplete input.
 
-```d
-const lastNl = input.lastIndexOf('\n');
-const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
-const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
-const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
-```
+The next implementation should add a frontend-owned REPL cell API. It should
+parse the accumulated session source plus the current buffered cell and return
+a structured result:
 
-Parse `source`, walk/execute the function body. For the
-tree-walking backends, run all statements via `runStatement`
-then call `runExpression` on `__r`'s initializer. For the CTFE
-backends (`dmd_ctfe`, `dmd_codegen`), follow the `VarExp` /
-`CallExp` / `ctfeInterpret` pattern already in
-`ctfeFailureMessage`. For the IR backend, `lowerModule` then
-call `executeFunction("f", ...)`.
+- `incomplete` when the frontend recognizes a valid but unfinished D fragment;
+- `void_` when a complete statement/declaration/import/alias cell ran without
+  a display value;
+- `value(Value)` when a complete expression cell produced a display value.
+
+The REPL loop should only branch on that result. It should not inspect
+delimiters, keywords, braces, or semicolons in user code.
+
+For a first backend slice, implement the structured API for IR only. Reuse the
+existing parser/lowering path, but keep the expression-vs-declaration decision
+inside the frontend/eval layer where the parsed AST is available.
 
 ### Important: use a stronger model for the implementer
 
@@ -109,16 +152,13 @@ For the eval implementation step, override the model to Sonnet:
 Agent(subagent_type: "tdd-implementer", model: "sonnet", ...)
 ```
 
-### What comes next after real eval
+### What comes next after structured eval
 
-1. Implement `isComplete(in string input) -> bool` on `Executor`
-   (the REPL loop calls this to decide whether to show `> ` or
-   `... `).
-2. Build the REPL executable: `repl/main.d`, line-input module,
-   `dub.sdl` `repl` configuration.
-3. The REPL accumulates all prior cell inputs and passes the full
-   accumulated source to `eval` on each new cell. No `context`
-   parameter — the full accumulated source is the input.
+1. Wire continuation prompts to the structured `incomplete` result.
+2. Move `repl/main.d` onto the planned line-input abstraction.
+3. Add backend selection parsing shared with benchmark tooling.
+4. Add backend replay/switching only after transcript replay works through
+   the structured API.
 
 ---
 
@@ -172,8 +212,9 @@ with the buffered text after each submitted D input atom. Like Python,
 only a frontend-recognized incomplete input shows the continuation prompt
 and reads another input atom. Invalid D input is a diagnostic, not an
 incomplete input. The loop must not decide D completeness with
-delimiter-counting or other string heuristics. The loop calls `isComplete` after each atom; only when complete does
-it call `eval` and print the result or diagnostic.
+delimiter-counting or other string heuristics. The loop calls
+`isComplete` after each atom; only when complete does it call `eval` and
+print the result or diagnostic.
 
 The interactive loop catches `Exception`s from `eval` and prints
 diagnostics. User code failures are REPL results, not process failures.
