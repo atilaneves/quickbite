@@ -2052,6 +2052,19 @@ static foreach (backend; matureExecutorBackends) {
     }
 }
 
+@("ok.bytecode")
+unittest {
+    runTests(q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
