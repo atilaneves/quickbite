@@ -109,6 +109,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     }
 
     private long runExpression(imported!"dmd.expression".Expression expression) {
+        if (auto comma = expression.isCommaExp) {
+            runExpression(comma.e1);
+            return runExpression(comma.e2);
+        }
+
         if (auto integer = expression.isIntegerExp)
             return integer.getInteger;
 
@@ -117,6 +122,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             if (variable !is null && variable in locals)
                 return locals[variable];
         }
+
+        if (expression.isThisExp !is null)
+            return 0;
 
         if (auto dotVar = expression.isDotVarExp) {
             long value;
@@ -132,6 +140,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto construct = expression.isConstructExp)
             return runAssignExpression(construct);
+
+        if (auto blit = expression.isBlitExp)
+            return runAssignExpression(blit);
 
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
@@ -353,16 +364,29 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (dotVar is null)
             return false;
 
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        if (dotVar.e1.isThisExp !is null && currentThis !is null) {
+            long[] array;
+            if (tryRunArrayExpression(assign.e2, array)) {
+                structArrays[currentThis][field] = array;
+                value = 0;
+                return true;
+            }
+
+            value = runExpression(assign.e2);
+            structScalars[currentThis][field] = value;
+            return true;
+        }
+
         auto instance = dotVar.e1.isVarExp;
         if (instance is null)
             return false;
 
         auto instanceDecl = instance.var.isVarDeclaration;
         if (instanceDecl is null)
-            return false;
-
-        auto field = dotVar.var.isVarDeclaration;
-        if (field is null)
             return false;
 
         if (auto arrayLit = assign.e2.isArrayLiteralExp) {
@@ -424,43 +448,64 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             throw new Exception(text("Unsupported call: e1 op=", call.e1.op));
         }
 
-        auto instanceVar = dotVar.e1.isVarExp;
-        if (instanceVar is null) {
+        VarDeclaration instanceDecl;
+        if (auto instanceVar = dotVar.e1.isVarExp)
+            instanceDecl = instanceVar.var.isVarDeclaration;
+        else if (dotVar.e1.isThisExp !is null)
+            instanceDecl = currentThis;
+
+        if (instanceDecl is null) {
             import std.conv: text;
             throw new Exception(text("Unsupported call target: e1 op=", dotVar.e1.op));
         }
-
-        auto instanceDecl = instanceVar.var.isVarDeclaration;
-        if (instanceDecl is null)
-            throw new Exception("Unsupported call: instance is not a VarDeclaration.");
 
         auto func = dotVar.var.isFuncDeclaration;
         if (func is null)
             throw new Exception("Unsupported call: not a FuncDeclaration.");
 
-        long[] argValues;
+        struct ArgValue {
+            long scalar;
+            long[] array;
+            bool isArray;
+        }
+
+        ArgValue[] args;
         if (call.arguments !is null)
-            foreach (arg; *call.arguments)
-                argValues ~= runExpression(arg);
+            foreach (arg; *call.arguments) {
+                if (auto varExp = arg.isVarExp)
+                    if (auto varDecl = varExp.var.isVarDeclaration)
+                        if (auto arr = varDecl in localArrays) {
+                            args ~= ArgValue(0, *arr, true);
+                            continue;
+                        }
+                args ~= ArgValue(runExpression(arg));
+            }
 
         auto savedLocals = locals.dup;
+        auto savedLocalArrays = localArrays.dup;
         auto savedThis = currentThis;
         auto savedDidReturn = didReturn;
         auto savedReturnValue = returnValue;
         locals = null;
+        localArrays = null;
         currentThis = instanceDecl;
         didReturn = false;
         returnValue = 0;
 
         if (func.parameters !is null)
-            foreach (i, param; *func.parameters)
-                if (i < argValues.length)
-                    locals[param] = argValues[i];
+            foreach (i, param; *func.parameters) {
+                if (i >= args.length) continue;
+                if (args[i].isArray)
+                    localArrays[param] = args[i].array;
+                else
+                    locals[param] = args[i].scalar;
+            }
 
         runStatement(func.fbody);
         const result = returnValue;
 
         locals = savedLocals;
+        localArrays = savedLocalArrays;
         currentThis = savedThis;
         didReturn = savedDidReturn;
         returnValue = savedReturnValue;
@@ -566,26 +611,41 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long[] runArrayExpression(
         imported!"dmd.expression".Expression expression,
     ) {
+        long[] value;
+        if (tryRunArrayExpression(expression, value))
+            return value;
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported array expression: ", expression.op));
+    }
+
+    private bool tryRunArrayExpression(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
         if (auto var = expression.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
                 if (auto arr = variable in localArrays)
-                    return *arr;
+                    return arrayValue(*arr, value);
 
-        long[] value;
         if (structArrayExpressionValue(expression, value))
-            return value;
+            return true;
 
         if (thisStructArrayExpressionValue(expression, value))
-            return value;
+            return true;
 
         if (auto dotVar = expression.isDotVarExp)
             if (auto instanceVar = dotVar.e1.isVarExp)
                 if (auto instanceDecl = instanceVar.var.isVarDeclaration)
                     if (auto field = dotVar.var.isVarDeclaration)
-                        return [];
+                        return arrayValue([], value);
 
-        import std.conv: text;
-        throw new Exception(text("Unsupported array expression: ", expression.op));
+        return false;
+    }
+
+    private bool arrayValue(in long[] source, out long[] value) {
+        value = source.dup;
+        return true;
     }
 
     private bool structArrayExpressionValue(

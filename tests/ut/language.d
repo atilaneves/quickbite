@@ -2192,6 +2192,35 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("structConstructorStoresDynamicArrayParameter." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                int[] values;
+
+                this(int[] input) {
+                    store(input);
+                }
+
+                void store(int[] input) {
+                    values = input;
+                }
+            }
+
+            unittest {
+                int first = 40;
+                int second = first + 2;
+                int[] input = [first, second];
+
+                auto box = Box(input);
+
+                assert(box.values.length == input.length);
+                assert(box.values[0] == first);
+                assert(box.values[1] == second);
+            }
+        }, backend);
+    }
+
     @("postIncrementSizeTIndex." ~ backend.text)
     unittest {
         runTests(q{
