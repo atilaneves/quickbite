@@ -3,42 +3,49 @@ module ut.repl;
 private:
 
 import quickbite: ExecutorBackend, executor;
+import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 @("repl.loop.evaluatesExpressionCellsUntilQuit")
 unittest {
     import quickbite.repl: runReplLoop;
 
-    auto output = runReplLoop(
-        executor(ExecutorBackend.ir),
-        ["1", "2", ":q"],
-    );
+    foreach (backend; matureExecutorBackends) {
+        const output = runReplLoop(
+            executor(backend),
+            ["1", "2", ":q"],
+        );
 
-    output.should == ["1", "2"];
+        output.should == ["1", "2"];
+    }
 }
 
 @("repl.loop.declarationCellsPersistWithoutDisplay")
 unittest {
     import quickbite.repl: runReplLoop;
 
-    auto output = runReplLoop(
-        executor(ExecutorBackend.ir),
-        ["int x;", "x", ":q"],
-    );
+    foreach (backend; matureExecutorBackends) {
+        const output = runReplLoop(
+            executor(backend),
+            ["int x;", "x", ":q"],
+        );
 
-    output.should == ["0"];
+        output.should == ["0"];
+    }
 }
 
 @("repl.loop.expressionSideEffectsPersist")
 unittest {
     import quickbite.repl: runReplLoop;
 
-    auto output = runReplLoop(
-        executor(ExecutorBackend.ir),
-        ["int x;", "x++", "x", ":q"],
-    );
+    foreach (backend; matureExecutorBackends) {
+        const output = runReplLoop(
+            executor(backend),
+            ["int x;", "x++", "x", ":q"],
+        );
 
-    output.should == ["0", "1"];
+        output.should == ["0", "1"];
+    }
 }
 
 @("repl.binary.cEvaluatesExpressionCellSilently")

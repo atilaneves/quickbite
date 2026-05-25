@@ -43,11 +43,11 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
         return fallbackEvalExecutor.eval(input);
     }
 
-    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+    public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
-        return fallbackEvalExecutor.evalReplCell(transcript, input);
+        fallbackEvalExecutor.runVoidReplCell(transcript, input);
     }
 
     private imported!"quickbite.executor".Executor fallbackEvalExecutor() {
