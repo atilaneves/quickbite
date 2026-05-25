@@ -8,6 +8,11 @@ private:
 
 import std.conv: text;
 import std.meta: AliasSeq;
+import ut.backends:
+    dmdCodegenRamExecutorBackends,
+    experimentalBackendTestsEnabled,
+    matureExecutorBackends;
+import unit_threaded;
 
 
 static foreach (backend; matureExecutorBackends ~ [
@@ -459,37 +464,43 @@ private void expectBackendFailure(
 static foreach (backend; matureExecutorBackends) {
     @("ok." ~ backend.text)
     unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
 
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
     }
 
     @("oops." ~ backend.text)
     unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
 
-            unittest {
-                assert(answer == 43);
-            }
-        }, backend).shouldThrowWithMessage("42 != 43");
+                unittest {
+                    assert(answer == 43);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
     }
 
     @("throwingTest." ~ backend.text)
     unittest {
-        runTests(q{
-            unittest {
-                throw new Exception("boom");
-            }
-        }, backend).shouldThrowWithMessage("boom");
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    throw new Exception("boom");
+                }
+            }, backend).shouldThrowWithMessage("boom");
+        }
     }
 
     static if (backend != ExecutorBackend.treeWalkingOld) {
@@ -2407,6 +2418,326 @@ private void expectRunTestsFailure(
     threw.should == true;
 }
 
+static foreach (backend; dmdCodegenRamExecutorBackends) {
+    @(text("ok.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("assertionContext.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
+
+                unittest {
+                    int expected = 43;
+                    assert(answer == expected);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
+    }
+
+    @(text("throwingTest.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    throw new Exception("boom");
+                }
+            }, backend).shouldThrowWithMessage("boom");
+        }
+    }
+
+    @(text("localIntReturn.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value() {
+                    int ret = 42;
+                    return ret;
+                }
+
+                unittest {
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("__gsharedIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                __gshared int value = 41;
+
+                int answer() {
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("moduleIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value = 41;
+
+                int answer() {
+                    // Unlike __gshared, default module variables are D TLS.
+                    // The RAM backend must handle DMD's TLS relocation path
+                    // instead of only the normal global/GOT access shape.
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("zeroInitializedModuleIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value;
+
+                int answer() {
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("userDefinedTlsGetAddrCall.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                __gshared int calls;
+
+                extern(C) void __tls_get_addr() {
+                    calls = 41;
+                }
+
+                void answer() {
+                    __tls_get_addr();
+                }
+
+                unittest {
+                    calls = 1;
+                    answer();
+                    assert(calls == 41);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intAddition.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 40;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value + 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intSubtraction.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 44;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value - 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intMultiplication.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 21;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value * 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intDivision.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 84;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value / 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intModulo.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 44;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value % 43 == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intBitwiseAnd.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value = 0x2f;
+                    assert((value & 0x2a) == 0x2a);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intBitwiseOr.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value = 0x28;
+                    assert((value | 0x02) == 0x2a);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intGreaterThan.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(input > 41);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("logicalAnd.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(input > 41 && input < 43);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("functionParameter.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int identity(int value) {
+                    return value;
+                }
+
+                unittest {
+                    assert(identity(42) == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("ifElse.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 1;
+                }
+
+                unittest {
+                    int value;
+                    if (input == 1)
+                        value = 42;
+                    else
+                        value = 7;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("while_.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value;
+                    while (value < 42)
+                        value += 7;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+}
+
 static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking]) {
     @("arrayLiteralElements." ~ backend.text)
     unittest {
@@ -2537,6 +2868,157 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
 
                 assert(tail.length == 1);
                 assert(tail[0] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+
+                const result = identity(values);
+
+                assert(result.length == 2);
+                assert(result[0] == first);
+                assert(result[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArraySliceReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] tail(ubyte[] values, size_t start, size_t stop) {
+                return values[start .. stop];
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                size_t start = 1;
+                size_t stop = values.length;
+
+                const result = tail(values, start, stop);
+
+                assert(result.length == 1);
+                assert(result[0] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayReturnValueIndexesCallResult." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+
+                assert(identity(values)[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayStructFieldReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                ubyte[] get() {
+                    return values;
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                auto box = Box(values);
+
+                const result = box.get;
+
+                assert(result.length == 2);
+                assert(result[0] == first);
+                assert(result[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayReturnValueAssignsStructField." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                void set(ubyte[] input) {
+                    values = identity(input);
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                ubyte[] replacement = [second, first];
+                auto box = Box(values);
+
+                box.set(replacement);
+
+                assert(box.values.length == 2);
+                assert(box.values[0] == second);
+                assert(box.values[1] == first);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayStructFieldReturnValueIndexesCallResult." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                ubyte[] get() {
+                    return values;
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                auto box = Box(values);
+
+                assert(box.get[1] == second);
             }
         }, backend);
     }

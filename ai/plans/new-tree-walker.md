@@ -77,13 +77,48 @@ Current progress:
     reading the slice length, and indexing the resulting slice. The array
     helpers have also been renamed from `runArrayExpression` to
     `evalArrayExpression` terminology.
+13. The current branch adds `Value`-based expression, local, argument, and
+    return storage to the new tree walker for scalar and dynamic array values.
+    The focused language tests are `dynamicArrayReturnValue`,
+    `dynamicArraySliceReturnValue`, and
+    `dynamicArrayReturnValueIndexesCallResult`, covering dynamic arrays
+    returned from functions, slice expressions returned from functions, and
+    direct indexing of an array-returning call result.
+14. The branch has been merged with current `master` after the test
+    reorganisation. The dynamic array return tests now live in
+    `tests/ut/backend_parity.d`. The review follow-up to reuse the public
+    `quickbite.executor.Value` has been applied: `Value` now carries `long[]`
+    payloads, and `TreeWalkingExecutor` uses that shared type instead of a
+    private backend-only union.
+15. PR review cleanup removed the private tree-walker `asLong` wrapper so
+    scalar extraction now uses `Value.asLong` directly. The array index helper
+    is now named `asArrayIndex`, keeping the `long` to `size_t` conversion
+    localized and explicit. The non-throwing dynamic-array probe is now named
+    `tryGetArray`, distinct from the throwing `Value.asLongArray` accessor.
+16. The branch has been merged with current `master` again after the backend
+    test module reorganisation. `dub test` now passes with 707 tests and 0
+    failures.
+17. PR review follow-up added `dynamicArrayStructFieldReturnValue`, covering a
+    struct method returning an array field through an assigned call result. The
+    new tree walker now treats array-valued `DotVarExp` expressions as
+    `Value(long[])`, matching the existing scalar field path. Review cleanup
+    also removed unused duplicate REPL parser helpers from
+    `source/quickbite/backends/tree_walking.d`. `dub test` now passes with 711
+    tests and 0 failures.
+18. PR review follow-up added
+    `dynamicArrayReturnValueAssignsStructField` and
+    `dynamicArrayStructFieldReturnValueIndexesCallResult`. Before the fix, the
+    focused tree-walking tests failed with `Expected scalar, got array.` and
+    `Unsupported array expression: call`, respectively. The new tree walker now
+    stores array-valued call results into struct fields and indexes call
+    results based on the executed `Value` instead of a syntactic return-shape
+    whitelist. `dub test` now passes with 731 tests and 0 failures.
 
 Handoff note for the next agent: this branch already contains one PR worth of
-work. It adds the focused `dynamicArraySliceFromRuntimeBounds` language
-coverage and implements dynamic array slices with runtime lower and upper
-bounds in the new tree walker. `dub test` passed with 647 tests and 0 failures
-after these changes. Do not start another slice on this branch; hand it off
-as-is unless review asks for more changes.
+work. It adds shared-`Value` dynamic array return support for the new tree
+walker. The latest `dub test` passed with 731 tests and 0 failures. Do not
+start another slice on this branch; hand it off as-is unless review asks for
+more changes.
 
 After this branch is merged, continue with the next
 `ut.backends.projects.cerealed` bailout or red project-inspired fixture. Do not

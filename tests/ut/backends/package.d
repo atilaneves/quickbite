@@ -16,6 +16,10 @@ public enum matureExecutorBackends = [
     ExecutorBackend.dmdCtfe,
 ];
 
+public enum dmdCodegenRamExecutorBackends = [
+    ExecutorBackend.dmdCodegenRam,
+];
+
 public enum evalBackends = [
     ExecutorBackend.ir,
     ExecutorBackend.treeWalkingOld,

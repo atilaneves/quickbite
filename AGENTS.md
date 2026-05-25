@@ -63,6 +63,11 @@ Test behaviours, not implementations.
 - Do not use exceptions for control flow.
 - Use `with` in `switch`/`final switch` with enums for more readability.
 
+## Code organisation
+
+* Backends should not import each other, they must be completely
+  isolated.
+
 # Testing
 
 Run `dub test` after every editing session.
