@@ -1,3 +1,3 @@
 module ut;
 
-import unit_threaded;
+public import unit_threaded;
