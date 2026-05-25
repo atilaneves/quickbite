@@ -4859,9 +4859,10 @@ private void runRamImage(
     in GeneratedObject[] objects,
     in string entrypoint,
 ) @trusted {
-    auto image = objects.ramExecutableImage;
+    auto image = objects.ramExecutableImage(entrypoint);
     scope(exit) image.release;
     image.copySections;
+    image.writePltStubs;
     image.resolveRelocations;
     image.applyRelocations;
     image.makeExecutable;
@@ -4873,9 +4874,16 @@ private struct RamExecutableImage {
     size_t memorySize;
     ulong nextAddress;
     ulong[string] definedSymbols;
+    RamDefinedSymbol[string] definedSymbolLocations;
     ulong[RamGotSlotKey] gotSlotOffsets;
+    ulong[string] pltStubOffsets;
     RamExecutableObjectPlacement[] objectPlacements;
     RamResolvedRelocation[] relocations;
+}
+
+private struct RamDefinedSymbol {
+    size_t objectIndex;
+    ushort sectionIndex;
 }
 
 private struct RamGotSlotKey {
@@ -4899,7 +4907,10 @@ private struct RamResolvedRelocation {
     long addend;
 }
 
-private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @trusted {
+private RamExecutableImage ramExecutableImage(
+    in GeneratedObject[] objects,
+    in string entrypoint,
+) @trusted {
     RamExecutableImage image;
 
     foreach (object_; objects) {
@@ -4912,7 +4923,10 @@ private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @tru
         );
     }
 
+    image.collectDefinedSymbolLocations;
+    image.markReachableSections(entrypoint);
     image.reserveGotSlots;
+    image.reservePltStubs;
     image.memorySize = cast(size_t) image.nextAddress.alignUp(pageSize);
     if (image.memorySize == 0)
         throw new Exception("DMD codegen RAM image has no allocated sections.");
@@ -4934,12 +4948,29 @@ private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @tru
     return image;
 }
 
+private void collectDefinedSymbolLocations(ref RamExecutableImage image) @safe {
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
+        foreach (symbol; objectPlacement.objectImage.symbols) {
+            if (symbol.name.length == 0 || symbol.isUndefined)
+                continue;
+            if (!objectPlacement.sections.hasPlacedSection(symbol.sectionIndex))
+                continue;
+            if (symbol.name !in image.definedSymbolLocations)
+                image.definedSymbolLocations[symbol.name] = RamDefinedSymbol(
+                    objectIndex,
+                    symbol.sectionIndex,
+                );
+        }
+}
+
 private void reserveGotSlots(ref RamExecutableImage image) @safe {
     foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (relocation; objectPlacement.objectImage.relocations) {
             if (relocation.type != X86_64Relocation.gotPcRel)
                 continue;
             if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
+                continue;
+            if (!image.isReachableSection(objectIndex, relocation.sectionIndex))
                 continue;
             auto slotKey = relocation.gotSlotKey( // AA lookup needs a mutable key.
                 objectIndex,
@@ -4956,12 +4987,38 @@ private void reserveGotSlots(ref RamExecutableImage image) @safe {
         }
 }
 
+private void reservePltStubs(ref RamExecutableImage image) @safe {
+    enum stubSize = 16;
+
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
+        foreach (relocation; objectPlacement.objectImage.relocations) {
+            if (relocation.type != X86_64Relocation.plt32)
+                continue;
+            if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
+                continue;
+            if (!image.isReachableSection(objectIndex, relocation.sectionIndex))
+                continue;
+            if (relocation.symbolName.length == 0)
+                continue;
+            if (relocation.symbolName in image.definedSymbolLocations)
+                continue;
+            if (relocation.symbolName in image.pltStubOffsets)
+                continue;
+
+            image.nextAddress = image.nextAddress.alignUp(16);
+            image.pltStubOffsets[relocation.symbolName] = image.nextAddress;
+            image.nextAddress += stubSize;
+        }
+}
+
 private void copySections(ref RamExecutableImage image) @trusted {
     import core.stdc.string: memcpy;
 
-    foreach (objectPlacement; image.objectPlacements)
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (idx, section; objectPlacement.objectImage.sections) {
             if (!objectPlacement.sections[idx].placed)
+                continue;
+            if (!image.isReachableSection(objectIndex, idx))
                 continue;
 
             auto destination = cast(void*) (
@@ -4978,13 +5035,29 @@ private void copySections(ref RamExecutableImage image) @trusted {
         }
 }
 
+private void writePltStubs(ref RamExecutableImage image) @trusted {
+    foreach (symbol, offset; image.pltStubOffsets) {
+        const stubAddress = image.baseAddress + offset;
+        auto bytes = cast(ubyte*) stubAddress;
+        bytes[0] = 0x48;
+        bytes[1] = 0xb8;
+        (stubAddress + 2).writeRam64(symbol.externalSymbolAddress);
+        bytes[10] = 0xff;
+        bytes[11] = 0xe0;
+        foreach (idx; 12 .. 16)
+            bytes[idx] = 0x90;
+    }
+}
+
 private void resolveRelocations(ref RamExecutableImage image) @trusted {
     foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (relocation; objectPlacement.objectImage.relocations) {
             if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
                 continue;
+            if (!image.isReachableSection(objectIndex, relocation.sectionIndex))
+                continue;
 
-            const targetAddress = image.relocationTargetAddress(
+            const targetAddress = image.resolvedRelocationTargetAddress(
                 objectPlacement,
                 relocation,
             );
@@ -5006,6 +5079,92 @@ private void resolveRelocations(ref RamExecutableImage image) @trusted {
                 relocation.addend,
             );
         }
+}
+
+private ulong resolvedRelocationTargetAddress(
+    ref RamExecutableImage image,
+    in RamExecutableObjectPlacement objectPlacement,
+    in Elf64Relocation relocation,
+) @trusted {
+    if (relocation.type == X86_64Relocation.plt32)
+        if (const offset = relocation.symbolName in image.pltStubOffsets)
+            return image.baseAddress + *offset;
+
+    return image.relocationTargetAddress(objectPlacement, relocation);
+}
+
+private void markReachableSections(
+    ref RamExecutableImage image,
+    in string entrypoint,
+) @safe {
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
+        foreach (symbol; objectPlacement.objectImage.symbols)
+            if (symbol.name == entrypoint)
+                image.markReachableSection(objectIndex, symbol.sectionIndex);
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        foreach (objectIndex, objectPlacement; image.objectPlacements)
+            foreach (relocation; objectPlacement.objectImage.relocations) {
+                if (!image.isReachableSection(objectIndex, relocation.sectionIndex))
+                    continue;
+
+                changed = image.markReachableRelocationTarget(
+                    objectIndex,
+                    relocation,
+                ) || changed;
+            }
+    }
+}
+
+private bool markReachableRelocationTarget(
+    ref RamExecutableImage image,
+    in size_t objectIndex,
+    in Elf64Relocation relocation,
+) @safe {
+    const objectPlacement = image.objectPlacements[objectIndex];
+    if (relocation.symbolSectionIndex != shnUndef
+        && objectPlacement.sections.hasPlacedSection(relocation.symbolSectionIndex))
+        return image.markReachableSection(objectIndex, relocation.symbolSectionIndex);
+
+    if (const location = relocation.symbolName in image.definedSymbolLocations)
+        return image.markReachableSection(
+            location.objectIndex,
+            location.sectionIndex,
+        );
+
+    return false;
+}
+
+private bool markReachableSection(
+    ref RamExecutableImage image,
+    in size_t objectIndex,
+    in ushort sectionIndex,
+) @safe {
+    if (objectIndex >= image.objectPlacements.length)
+        return false;
+
+    auto sections = image.objectPlacements[objectIndex].sections;
+    if (!sections.hasPlacedSection(sectionIndex))
+        return false;
+    if (sections[sectionIndex].reachable)
+        return false;
+
+    image.objectPlacements[objectIndex].sections[sectionIndex].reachable = true;
+    return true;
+}
+
+private bool isReachableSection(
+    in RamExecutableImage image,
+    in size_t objectIndex,
+    in size_t sectionIndex,
+) @safe {
+    if (objectIndex >= image.objectPlacements.length)
+        return false;
+
+    const sections = image.objectPlacements[objectIndex].sections;
+    return sectionIndex < sections.length && sections[sectionIndex].reachable;
 }
 
 private ulong gotSlotAddress(
@@ -5205,10 +5364,53 @@ private ulong externalSymbolAddress(in string symbol) @trusted {
         return 0;
 
     auto address = dlsym(null, symbol.toStringz);
-    if (!address)
-        throw new Exception(text("DMD codegen RAM unresolved external symbol: ", symbol));
+    if (address)
+        return cast(ulong) address;
 
-    return cast(ulong) address;
+    if (const selfAddress = symbol.selfExecutableSymbolAddress)
+        return selfAddress;
+
+    throw new Exception(text("DMD codegen RAM unresolved external symbol: ", symbol));
+}
+
+private ulong selfExecutableSymbolAddress(in string symbol) @trusted {
+    import core.sys.posix.dlfcn: Dl_info, dladdr;
+    import std.file: read;
+    import std.string: fromStringz;
+
+    Dl_info info;
+    if (dladdr(cast(const(void)*) &externalSymbolAddress, &info) == 0)
+        return 0;
+    if (!info.dli_fbase || !info.dli_fname)
+        return 0;
+
+    const bytes = cast(const(ubyte)[]) read(info.dli_fname.fromStringz);
+    const elfType = bytes.readElf16(16);
+    enum elfTypeExecutable = 2;
+    enum elfTypeShared = 3;
+    if (!bytes.isElf64LittleEndian || (
+            elfType != elfTypeExecutable
+            && elfType != elfTypeShared
+        ))
+        return 0;
+
+    const sections = bytes.elf64Sections;
+    foreach (section; sections) {
+        enum shtSymtab = 2;
+        enum shtDynsym = 11;
+        if (section.type != shtSymtab && section.type != shtDynsym)
+            continue;
+
+        foreach (candidate; bytes.elf64Symbols(sections, section))
+            if (candidate.name == symbol && !candidate.isUndefined) {
+                const base = elfType == elfTypeShared
+                    ? cast(ulong) info.dli_fbase
+                    : 0;
+                return base + candidate.value;
+            }
+    }
+
+    return 0;
 }
 
 private void* allocateRamImage(in size_t size) @trusted {
@@ -5258,7 +5460,7 @@ private RamSectionPlacement[] executableSectionPlacements(
         RamSectionPlacement placement;
         if (section.isPlacedAllocSection) {
             nextAddress = nextAddress.alignUp(section.addressAlign);
-            placement = RamSectionPlacement(true, nextAddress);
+            placement = RamSectionPlacement(true, false, nextAddress);
             nextAddress += section.size;
         }
         ret ~= placement;
@@ -5598,6 +5800,7 @@ private bool hasPlacedSection(
 
 private struct RamSectionPlacement {
     bool placed;
+    bool reachable;
     ulong address;
 }
 
@@ -5610,10 +5813,10 @@ private RamSectionPlacement[] sectionPlacements(
     foreach (section; objectImage.sections) {
         RamSectionPlacement placement;
         if (section.isExecutableAllocSection) {
-            placement = RamSectionPlacement(true, textSize);
+            placement = RamSectionPlacement(true, false, textSize);
             textSize += section.size;
         } else if (section.isDataAllocSection) {
-            placement = RamSectionPlacement(true, dataSize);
+            placement = RamSectionPlacement(true, false, dataSize);
             dataSize += section.size;
         }
         ret ~= placement;
@@ -5632,14 +5835,18 @@ private string externalSymbolClass(in string symbol) @trusted {
 }
 
 private bool isElf64LittleEndianObject(in ubyte[] bytes) @safe pure nothrow {
+    enum elfTypeRelocatable = 1;
+    return bytes.isElf64LittleEndian
+        && bytes.readElf16(16) == elfTypeRelocatable;
+}
+
+private bool isElf64LittleEndian(in ubyte[] bytes) @safe pure nothrow {
     enum elfClass64 = 2;
     enum elfDataLittleEndian = 1;
-    enum elfTypeRelocatable = 1;
     return bytes.length >= 64
         && bytes[0 .. 4] == [0x7f, 'E', 'L', 'F']
         && bytes[4] == elfClass64
-        && bytes[5] == elfDataLittleEndian
-        && bytes.readElf16(16) == elfTypeRelocatable;
+        && bytes[5] == elfDataLittleEndian;
 }
 
 private Elf64Section[] elf64Sections(in ubyte[] bytes) @safe pure {
