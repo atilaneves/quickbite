@@ -229,8 +229,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         auto savedLocals = locals.dup;
         auto savedThis = currentThis;
+        auto savedDidReturn = didReturn;
+        auto savedReturnValue = returnValue;
         locals = null;
         currentThis = instanceDecl;
+        didReturn = false;
+        returnValue = 0;
 
         if (func.parameters !is null)
             foreach (i, param; *func.parameters)
@@ -238,10 +242,13 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                     locals[param] = argValues[i];
 
         runStatement(func.fbody);
+        const result = returnValue;
 
         locals = savedLocals;
         currentThis = savedThis;
-        return 0;
+        didReturn = savedDidReturn;
+        returnValue = savedReturnValue;
+        return result;
     }
 
     private long runFreeFunctionCall(

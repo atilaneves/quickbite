@@ -2262,6 +2262,23 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
     }
 }
 
+@("treeWalking.structMethodReturnDoesNotSkipCallerStatements")
+unittest {
+    runTests(q{
+        struct Worker {
+            void stop() {
+                return;
+            }
+        }
+
+        unittest {
+            Worker worker;
+            worker.stop;
+            assert(false);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 static foreach (backend; matureExecutorBackends) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
         @(backend.text ~ ".integralType." ~ T.stringof)
