@@ -98,7 +98,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (for_._init !is null)
             runStatement(for_._init);
 
-        while (for_.condition is null || asLong(runExpression(for_.condition))) {
+        while (for_.condition is null || runExpression(for_.condition).asLong) {
             runStatement(for_._body);
             if (didReturn) return;
             if (for_.increment !is null)
@@ -147,20 +147,31 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return runAssignExpression(blit);
 
         if (auto add = expression.isAddExp)
-            return Value(asLong(runExpression(add.e1)) + asLong(runExpression(add.e2)));
+            return Value(
+                runExpression(add.e1).asLong + runExpression(add.e2).asLong,
+            );
 
         if (auto sub = expression.isMinExp)
-            return Value(asLong(runExpression(sub.e1)) - asLong(runExpression(sub.e2)));
+            return Value(
+                runExpression(sub.e1).asLong - runExpression(sub.e2).asLong,
+            );
 
         if (auto mul = expression.isMulExp)
-            return Value(asLong(runExpression(mul.e1)) * asLong(runExpression(mul.e2)));
+            return Value(
+                runExpression(mul.e1).asLong * runExpression(mul.e2).asLong,
+            );
 
         if (auto div = expression.isDivExp)
-            return Value(asLong(runExpression(div.e1)) / asLong(runExpression(div.e2)));
+            return Value(
+                runExpression(div.e1).asLong / runExpression(div.e2).asLong,
+            );
 
         if (isRightShiftExpression(expression)) {
             auto binary = expression.isBinExp;
-            return Value(asLong(runExpression(binary.e1)) >> asLong(runExpression(binary.e2)));
+            return Value(
+                runExpression(binary.e1).asLong >>
+                    runExpression(binary.e2).asLong,
+            );
         }
 
         if (auto addAssign = expression.isAddAssignExp)
@@ -174,13 +185,13 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 return runPostMutationExpression(post);
 
         if (auto equal = expression.isEqualExp)
-            return Value(asLong(runExpression(equal.e1)) ==
-                asLong(runExpression(equal.e2)) ? 1L : 0L);
+            return Value(runExpression(equal.e1).asLong ==
+                runExpression(equal.e2).asLong ? 1L : 0L);
 
         if (isLessThanExpression(expression)) {
             auto binary = expression.isBinExp;
-            return Value(asLong(runExpression(binary.e1)) <
-                asLong(runExpression(binary.e2)) ? 1L : 0L);
+            return Value(runExpression(binary.e1).asLong <
+                runExpression(binary.e2).asLong ? 1L : 0L);
         }
 
         if (auto assert_ = expression.isAssertExp)
@@ -211,7 +222,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto index = expression.isIndexExp)
             return Value(evalArrayExpression(index.e1)[
-                asIndex(runExpression(index.e2))
+                asArrayIndex(runExpression(index.e2))
             ]);
 
         import std.conv: text;
@@ -227,8 +238,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             lhs = cast_.e1;
         if (auto var = lhs.isVarExp)
             if (auto variable = var.var.isVarDeclaration) {
-                const value = asLong(runExpression(assign.e1))
-                    + sign * asLong(runExpression(assign.e2));
+                const value = runExpression(assign.e1).asLong
+                    + sign * runExpression(assign.e2).asLong;
                 locals[variable] = Value(value);
                 return value;
             }
@@ -257,7 +268,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return Value(oldValue);
         }
 
-        const oldValue = asLong(runExpression(post.e1));
+        const oldValue = runExpression(post.e1).asLong;
         locals[variable] = Value(coerceIntegerToType(
             oldValue + mutationStep(post.op),
             variable.type,
@@ -303,7 +314,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         auto variable = var.var.isVarDeclaration;
         const value = coerceIntegerToType(
-            asLong(runExpression(pre.e1)) + mutationStep(pre.op),
+            runExpression(pre.e1).asLong + mutationStep(pre.op),
             variable.type,
         );
         locals[variable] = Value(value);
@@ -454,7 +465,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 return true;
             }
 
-            value = asLong(runExpression(assign.e2));
+            value = runExpression(assign.e2).asLong;
             structScalars[currentThis][field] = value;
             return true;
         }
@@ -473,7 +484,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return true;
         }
 
-        value = asLong(runExpression(assign.e2));
+        value = runExpression(assign.e2).asLong;
         structScalars[instanceDecl][field] = value;
         return true;
     }
@@ -484,7 +495,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         long[] elements;
         if (arrayLit.elements !is null)
             foreach (elem; *arrayLit.elements)
-                elements ~= asLong(runExpression(elem));
+                elements ~= runExpression(elem).asLong;
         return elements;
     }
 
@@ -636,9 +647,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto var = catAssign.e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration) {
                 long[] array;
-                if (!tryAsArray(locals[variable], array))
+                if (!tryGetArray(locals[variable], array))
                     throw new Exception("Unsupported ~=: expected array lhs.");
-                array ~= asLong(runExpression(catAssign.e2));
+                array ~= runExpression(catAssign.e2).asLong;
                 locals[variable] = Value(array);
                 return Value(0L);
             }
@@ -658,7 +669,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (field is null || currentThis is null)
             throw new Exception("Unsupported ~=: no struct context.");
 
-        structArrays[currentThis][field] ~= asLong(runExpression(catAssign.e2));
+        structArrays[currentThis][field] ~= runExpression(catAssign.e2).asLong;
         return Value(0L);
     }
 
@@ -709,7 +720,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (!callReturnsSupportedArrayExpression(call))
             return false;
 
-        return tryAsArray(runCallExpression(call), value);
+        return tryGetArray(runCallExpression(call), value);
     }
 
     private bool callReturnsSupportedArrayExpression(
@@ -798,8 +809,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return false;
 
         const array = evalArrayExpression(slice.e1);
-        const lower = asIndex(runExpression(slice.lwr));
-        const upper = asIndex(runExpression(slice.upr));
+        const lower = asArrayIndex(runExpression(slice.lwr));
+        const upper = asArrayIndex(runExpression(slice.upr));
         value = array[lower .. upper].dup;
         return true;
     }
@@ -821,7 +832,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return false;
 
         long[] array;
-        if (!tryAsArray(*stored, array))
+        if (!tryGetArray(*stored, array))
             return false;
 
         return arrayValue(array, value);
@@ -913,16 +924,16 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long runAssertExpression(
         imported!"dmd.expression".AssertExp assert_,
     ) {
-        if (asLong(runExpression(assert_.e1)))
+        if (runExpression(assert_.e1).asLong)
             return 1;
 
         if (auto equal = assert_.e1.isEqualExp) {
             import std.conv: text;
 
             throw new Exception(text(
-                asLong(runExpression(equal.e1)),
+                runExpression(equal.e1).asLong,
                 " != ",
-                asLong(runExpression(equal.e2)),
+                runExpression(equal.e2).asLong,
             ));
         }
 
@@ -966,7 +977,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         foreach (decl, value; locals) {
             if (decl.ident.toString == "__r")
-                return Value(cast(int) asLong(value));
+                return Value(cast(int) value.asLong);
         }
 
         return Value(0);
@@ -1007,15 +1018,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         returnValue = Value(0L);
     }
 
-    private long asLong(Value value) {
-        return value.asLong;
+    private size_t asArrayIndex(Value value) {
+        return cast(size_t) value.asLong;
     }
 
-    private size_t asIndex(Value value) {
-        return cast(size_t) asLong(value);
-    }
-
-    private bool tryAsArray(Value value, out long[] array) {
+    private bool tryGetArray(Value value, out long[] array) {
         if (!value.isLongArray)
             return false;
 
