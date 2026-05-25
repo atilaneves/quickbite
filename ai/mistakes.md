@@ -140,3 +140,7 @@
 - Don't change vendored code for convenience. If a wrapper or helper is needed,
   add Quickbite-owned code instead, and re-vendor to verify vendor files stay
   clean.
+
+- Backend diagnostics should report mechanically-derived facts. Don't classify
+  external symbols with hardcoded "known symbol" lists, and don't probe the
+  process loader from diagnostics just to guess symbol availability.

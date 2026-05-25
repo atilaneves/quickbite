@@ -390,6 +390,7 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
     import std.array: array;
     import std.stdio: stderr;
 
+    const linkImage = objects.ramLinkImage;
     size_t executableSections;
     size_t dataSections;
     size_t definedSymbols;
@@ -429,14 +430,24 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
     }
 
     stderr.writefln(
-        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s",
+        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s text_bytes=%s data_bytes=%s duplicate_symbols=%s",
         objects.length,
         executableSections,
         dataSections,
         definedSymbols,
         undefinedSymbols.length,
         relocations,
+        linkImage.textSize,
+        linkImage.dataSize,
+        linkImage.duplicateSymbols,
     );
+
+    foreach (classification; linkImage.externalClassifications.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM external_classification: kind=%s count=%s",
+            classification,
+            linkImage.externalClassifications[classification],
+        );
 
     foreach (type; relocationTypes.byKey.array.sort)
         stderr.writefln(
@@ -4746,6 +4757,89 @@ private struct Elf64ObjectImage {
     Elf64Section[] sections;
     Elf64Symbol[] symbols;
     Elf64Relocation[] relocations;
+}
+
+private struct RamLinkImage {
+    ulong textSize;
+    ulong dataSize;
+    ulong[string] definedSymbols;
+    size_t duplicateSymbols;
+    size_t[string] externalClassifications;
+}
+
+private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
+    RamLinkImage image;
+
+    foreach (object_; objects) {
+        const objectImage = object_.elf64ObjectImage;
+        const placements = objectImage.sectionPlacements(image.textSize, image.dataSize);
+        foreach (symbol; objectImage.symbols) {
+            if (symbol.name.length == 0 || symbol.isUndefined)
+                continue;
+            if (!objectImage.sections.hasElf64Section(symbol.sectionIndex))
+                continue;
+
+            const placement = placements[symbol.sectionIndex];
+            if (!placement.placed)
+                continue;
+
+            const address = placement.address + symbol.value;
+            if (symbol.name in image.definedSymbols) {
+                ++image.duplicateSymbols;
+            } else {
+                image.definedSymbols[symbol.name] = address;
+            }
+        }
+    }
+
+    foreach (object_; objects) {
+        const objectImage = object_.elf64ObjectImage;
+        foreach (symbol; objectImage.symbols) {
+            if (!symbol.isUndefined || symbol.name.length == 0)
+                continue;
+            if (symbol.name in image.definedSymbols)
+                continue;
+
+            ++image.externalClassifications[symbol.name.externalSymbolClass];
+        }
+    }
+
+    return image;
+}
+
+private struct RamSectionPlacement {
+    bool placed;
+    ulong address;
+}
+
+private RamSectionPlacement[] sectionPlacements(
+    in Elf64ObjectImage objectImage,
+    ref ulong textSize,
+    ref ulong dataSize,
+) @safe {
+    RamSectionPlacement[] ret;
+    foreach (section; objectImage.sections) {
+        RamSectionPlacement placement;
+        if (section.isExecutableAllocSection) {
+            placement = RamSectionPlacement(true, textSize);
+            textSize += section.size;
+        } else if (section.isDataAllocSection) {
+            placement = RamSectionPlacement(true, dataSize);
+            dataSize += section.size;
+        }
+        ret ~= placement;
+    }
+
+    return ret;
+}
+
+private string externalSymbolClass(in string symbol) @trusted {
+    if (symbol == "_GLOBAL_OFFSET_TABLE_"
+        || symbol == "__start_minfo"
+        || symbol == "__stop_minfo")
+        return "linker_sentinel";
+
+    return "external";
 }
 
 private bool isElf64LittleEndianObject(in ubyte[] bytes) @safe pure nothrow {

@@ -27,22 +27,24 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 handoff after RAM object diagnostics slice:
+2026-05-25 handoff after RAM link-image diagnostic slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
 - Branch: `dmd-codegen-ram`.
 - Current head:
 
   ```text
-  2cb0519 Store generated DMD objects in codegen sessions
+  c3806d9 Add DMD codegen RAM object diagnostics
   ```
 
-- The worktree has an uncommitted diagnostics slice:
+- The RAM object diagnostics slice was committed as `c3806d9`.
+- The worktree has an uncommitted RAM link-image diagnostic slice:
   - `source/quickbite/backends/dmd_codegen.d`
+  - `ai/mistakes.md`
   - `ai/plans/dmd-backend.md`
 - Recent commits:
-  - `35e5317 Add DMD codegen execution adapter`
   - `2cb0519 Store generated DMD objects in codegen sessions`
+  - `c3806d9 Add DMD codegen RAM object diagnostics`
 - Current source state:
   - `runCodegenSession` resolves the generated unittest entrypoint before
     choosing an execution path.
@@ -72,6 +74,20 @@ tried, what happened, and why the result was insufficient.
     and an aggregate summary of executable sections, data sections, defined
     symbols, unique undefined symbols, relocations, relocation types, and
     unresolved external symbol names.
+  - The uncommitted slice adds a non-executing `RamLinkImage` model that places
+    allocated executable/data sections at virtual offsets, builds a generated
+    defined-symbol table, counts duplicate generated definitions, and classifies
+    remaining undefined symbols only as `external` or `linker_sentinel`.
+  - A previous attempt used `dlsym(null, symbol)` to classify current-process
+    symbols. It printed useful data but then aborted during D runtime shutdown
+    with:
+
+    ```text
+    DSO being unregistered isn't current last one.
+    ```
+
+    That probe was removed. Diagnostics should not mutate or perturb loader
+    state, and hardcoded known-symbol lists are not a valid resolver model.
   - This still writes object files, links `module.so`, loads it, and calls the
     generated unittest entrypoint through `dlsym`.
 
@@ -91,7 +107,9 @@ tried, what happened, and why the result was insufficient.
   ```text
   quickbite dmd-codegen RAM diagnostic: objects=10 executable_sections=613
   data_sections=162 defined_symbols=2173 undefined_symbols=74
-  relocations=1642
+  relocations=1642 text_bytes=24480 data_bytes=24237 duplicate_symbols=44
+  quickbite dmd-codegen RAM external_classification: kind=external count=92
+  quickbite dmd-codegen RAM external_classification: kind=linker_sentinel count=27
   quickbite dmd-codegen RAM relocation_type: type=1 count=286
   quickbite dmd-codegen RAM relocation_type: type=2 count=909
   quickbite dmd-codegen RAM relocation_type: type=4 count=398
@@ -135,11 +153,10 @@ tried, what happened, and why the result was insufficient.
 Next recommended step:
 
 - Commit this diagnostics slice if the diff looks acceptable.
-- Start modelling a RAM link image from the diagnostics: place allocated
-  executable/data sections, build a defined-symbol address table, and classify
-  unresolved externals into current-process symbols, linked-archive symbols,
-  and unsupported linker-provided sentinels such as `__start_minfo` and
-  `__stop_minfo`.
+- Extend `RamLinkImage` toward a real resolver model without executing code:
+  collect relocation sites by target section, resolve object-defined symbols
+  through the generated defined-symbol table, and report which relocation
+  records still need external or linker-sentinel handling.
 - Keep `sharedLibrary` as the fallback until a RAM executor can run the
   smallest benchmark slice.
 - Do not add or modify tests without explicit approval.
