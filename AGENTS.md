@@ -95,3 +95,8 @@ The repo is private for now, which is causing Github Actions failures
 due to billing issues. CI is not currently checking anything we can't
 and don't do locally, so ignore its failures for as long as the repo
 is private.
+
+## Reviews
+
+Present review findings one by one for discussion and approval. This
+applies to reviewing code or plans.
