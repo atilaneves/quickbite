@@ -153,6 +153,7 @@ struct BodyLowerer {
     private StaticArrayAlias[] pendingRefStaticArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
+    private string[string] stringLiteralLocals;
     private bool[string] arrayValueNames;
     private bool[VarDeclaration] lazyParameters;
     private bool[string] lazyParameterNames;
@@ -393,14 +394,110 @@ struct BodyLowerer {
         if (expression is null)
             return null;
 
+        if (const message = stringLiteralInitializerMessage(expression))
+            return message;
+
         auto literal = expression.isStringExp;
         if (literal is null)
-            return expressionChars(expression);
+            return null;
 
+        return stringLiteralMessage(literal);
+    }
+
+    private string stringLiteralMessage(
+        imported!"dmd.expression".StringExp literal,
+    ) @safe {
         char[] message;
         foreach (index; 0 .. stringLiteralLength(literal))
             message ~= cast(char) stringLiteralCodeUnit(literal, index);
         return message.idup;
+    }
+
+    private string stringLiteralInitializerMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto cast_ = expression.isCastExp)
+            return stringLiteralInitializerMessage(cast_.e1);
+
+        auto variable = expression.isVarExp;
+        if (variable is null) {
+            import std.string: endsWith;
+
+            const chars = expressionChars(expression);
+            foreach (name, message; stringLiteralLocals)
+                if (chars.endsWith(name))
+                    return message;
+            return null;
+        }
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null || declaration._init is null)
+            return null;
+
+        if (const message = declarationName(declaration) in stringLiteralLocals)
+            return *message;
+
+        auto initializer = declaration._init.isExpInitializer;
+        if (initializer is null)
+            return null;
+
+        const message = stringLiteralExpressionMessage(initializer.exp);
+        if (message is null)
+            return null;
+
+        return message;
+    }
+
+    private string stringLiteralExpressionMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto literal = expression.isStringExp)
+            return stringLiteralMessage(literal);
+
+        if (auto cast_ = expression.isCastExp)
+            return stringLiteralExpressionMessage(cast_.e1);
+
+        if (auto blit = expression.isBlitExp)
+            return stringLiteralExpressionMessage(blit.e2);
+
+        return null;
+    }
+
+    private string assertMessage(imported!"dmd.expression".AssertExp assert_) @safe {
+        if (assert_.msg !is null)
+            return assertMessage(assert_.msg);
+
+        if (isLiteralFalse(assert_.e1))
+            return currentFunctionName == "<unittest>"
+                ? "unittest failure"
+                : "Assertion failure";
+
+        if (isLogicalExpression(assert_.e1)) {
+            import std.conv: text;
+
+            return text("`assert(", expressionChars(assert_.e1), ")` failed");
+        }
+
+        return null;
+    }
+
+    private bool isLogicalExpression(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        import dmd.tokens: EXP;
+
+        auto logical = expression.isLogicalExp;
+        return logical !is null &&
+            (logical.op == EXP.andAnd || logical.op == EXP.orOr);
+    }
+
+    private bool isLiteralFalse(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto integer = expression.isIntegerExp)
+            return integerValue(integer) == 0;
+
+        return false;
     }
 
     private bool tryLowerRuntimeTryCatch(
@@ -1355,8 +1452,12 @@ struct BodyLowerer {
             uint left;
             uint right;
             Operation comparison;
-            bool arrayContext;
-            const message = assertMessage(assert_.msg);
+            const message = assertMessage(assert_);
+            const hasMessageValue = assert_.msg !is null && message is null;
+            uint messageValue;
+            if (hasMessageValue)
+                messageValue = lowerExpression(assert_.msg, lowerer);
+
             if (tryLowerAssertComparison(
                 assert_.e1,
                 lowerer,
@@ -1364,28 +1465,29 @@ struct BodyLowerer {
                 left,
                 right,
                 comparison,
-                arrayContext,
             )) {
-                instructions ~= Instruction(arrayContext
-                    ? Assert_.userArrayComparisonAssert(
-                        condition,
-                        message,
-                        left,
-                        right,
-                        comparison,
-                    )
-                    : Assert_.userComparisonAssert(
-                        condition,
-                        message,
-                        left,
-                        right,
-                        comparison,
-                    ));
+                auto instruction = Assert_.userComparisonAssert(
+                    condition,
+                    message,
+                    left,
+                    right,
+                    comparison,
+                );
+                if (hasMessageValue) {
+                    instruction.hasMessageValue = true;
+                    instruction.messageValue = messageValue;
+                }
+                instructions ~= Instruction(instruction);
                 return condition;
             }
 
             condition = lowerExpression(assert_.e1, lowerer);
-            instructions ~= Instruction(Assert_.userAssert(condition, message));
+            auto instruction = Assert_.userAssert(condition, message);
+            if (hasMessageValue) {
+                instruction.hasMessageValue = true;
+                instruction.messageValue = messageValue;
+            }
+            instructions ~= Instruction(instruction);
             return condition;
         }
 
@@ -1760,11 +1862,9 @@ struct BodyLowerer {
         out uint left,
         out uint right,
         out imported!"quickbite.ir.instruction".Operation operation,
-        out bool arrayContext,
     ) @safe {
         import dmd.tokens: EXP;
 
-        arrayContext = false;
         if (auto equal = expression.isEqualExp) {
             if (equal.lowering !is null)
                 return false;
@@ -1777,7 +1877,6 @@ struct BodyLowerer {
                 operation = equal.op == EXP.notEqual
                     ? imported!"quickbite.ir.instruction".Operation.notEqual
                     : imported!"quickbite.ir.instruction".Operation.equal;
-                arrayContext = true;
                 const equalResult = allocateTemporary;
                 instructions ~= Instruction(ArrayEqual(
                     equalResult,
@@ -4535,6 +4634,10 @@ struct BodyLowerer {
                     rememberLocalTemporary(variable, value);
                     return value;
                 }
+
+                if (const message = stringLiteralExpressionMessage(initializer.exp))
+                    stringLiteralLocals[declarationName(variable)] =
+                        message;
 
                 const value = lowerInitializerExpression(initializer.exp, lowerer);
                 rememberLocalTemporary(variable, value);

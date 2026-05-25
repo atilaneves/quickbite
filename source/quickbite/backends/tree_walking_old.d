@@ -788,12 +788,8 @@ private struct BodyWalker {
         if (auto identity = expression.isIdentityExp)
             return runIdentityExpression(identity, interpreter);
 
-        if (auto assert_ = expression.isAssertExp) {
-            const cond = runExpression(assert_.e1, interpreter).asLong;
-            if (!cond)
-                throw new Exception(assertFailureMessage(assert_, interpreter));
-            return Value(cond);
-        }
+        if (auto assert_ = expression.isAssertExp)
+            return runAssertExpression(assert_, interpreter);
 
         if (auto decl = expression.isDeclarationExp)
             return runDeclarationExpression(decl, interpreter);
@@ -7338,6 +7334,34 @@ private struct BodyWalker {
         if (equal.op == EXP.notEqual)
             return Value(left != right ? 1L : 0L);
         return Value(left == right ? 1L : 0L);
+    }
+
+    private Value runAssertExpression(
+        imported!"dmd.expression".AssertExp assert_,
+        ref Interpreter interpreter,
+    ) {
+        if (auto equal = assert_.e1.isEqualExp) {
+            import dmd.tokens: EXP;
+            import std.conv: text;
+
+            const left = runExpression(equal.e1, interpreter);
+            const right = runExpression(equal.e2, interpreter);
+            const cond = equal.op == EXP.notEqual
+                ? left != right
+                : left == right;
+            if (!cond) {
+                if (assert_.msg !is null)
+                    throw new Exception(assertMessage(assert_.msg));
+                const operator = equal.op == EXP.notEqual ? "==" : "!=";
+                throw new Exception(text(left, " ", operator, " ", right));
+            }
+            return Value(cond ? 1L : 0L);
+        }
+
+        const cond = runExpression(assert_.e1, interpreter).asLong;
+        if (!cond)
+            throw new Exception(assertFailureMessage(assert_, interpreter));
+        return Value(cond);
     }
 
     private string assertFailureMessage(

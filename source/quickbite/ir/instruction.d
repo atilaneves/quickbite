@@ -127,9 +127,10 @@ public struct Assert_ {
 
     uint condition;
     string message;
+    bool hasMessageValue;
+    uint messageValue;
     AssertionMessageMode messageMode;
     bool hasComparisonContext;
-    bool hasArrayContext;
     uint left;
     uint right;
     Operation comparison;
@@ -166,23 +167,6 @@ public struct Assert_ {
         return assert_;
     }
 
-    public static Assert_ userArrayComparisonAssert(
-        in uint condition,
-        in string message,
-        in uint left,
-        in uint right,
-        in Operation comparison,
-    ) @safe pure {
-        auto assert_ = userComparisonAssert(
-            condition,
-            message,
-            left,
-            right,
-            comparison,
-        );
-        assert_.hasArrayContext = true;
-        return assert_;
-    }
 }
 
 public struct ArrayLiteral {

@@ -152,3 +152,7 @@
 - Don't propose adding or enabling dependency-backed tests for new tree walker
   TDD slices; extract dependency-free language or project-inspired tests
   instead.
+
+- Don't add backend-specific workarounds to make tests pass. A backend either
+  implements the language behaviour properly enough for the test, or it should
+  be left out of that test.

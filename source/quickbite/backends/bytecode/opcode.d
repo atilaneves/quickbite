@@ -21,7 +21,7 @@ public enum OpCode : ubyte {
     lessOrEqual,
     greaterThan,
     greaterOrEqual,
-    assertEqual,
+    setAssertMessage,
     assertCompare,
     assertTrue,
     ret,

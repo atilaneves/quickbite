@@ -39,20 +39,14 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
-        return fallbackEvalExecutor.eval(input);
+        throw new Exception("eval not yet implemented for bytecode");
     }
 
     public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
-        fallbackEvalExecutor.runVoidReplCell(transcript, input);
-    }
-
-    private imported!"quickbite.executor".Executor fallbackEvalExecutor() {
-        import quickbite.backends.tree_walking: TreeWalkingExecutor;
-
-        return new TreeWalkingExecutor;
+        throw new Exception("eval not yet implemented for bytecode");
     }
 }
 
@@ -82,6 +76,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
 
     long[] stack;
     size_t[] returnAddresses;
+    string explicitAssertMessage;
     size_t ip;
 
     while (ip < module_.code.length) {
@@ -163,21 +158,10 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack.executeBinaryOperation!((left, right) => left >= right);
                 ++ip;
                 break;
-            case OpCode.assertEqual:
-                const right = stack.popValue;
-                const left = stack.popValue;
-                if (left != right) {
-                    import quickbite.unittest_assertions:
-                        AssertionMessageMode,
-                        failedAssertionMessage;
-
-                    throw new AssertionFailure(failedAssertionMessage(
-                        AssertionMessageMode.context,
-                        left,
-                        right,
-                        "==",
-                    ));
-                }
+            case OpCode.setAssertMessage:
+                explicitAssertMessage = module_.assertMessages[
+                    cast(size_t) instruction.operand
+                ];
                 ++ip;
                 break;
             case OpCode.assertCompare:
@@ -185,6 +169,9 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 const left = stack.popValue;
                 const comparison = cast(OpCode) instruction.operand;
                 if (!comparisonHolds(left, right, comparison)) {
+                    if (explicitAssertMessage !is null)
+                        throw new AssertionFailure(explicitAssertMessage);
+
                     import quickbite.unittest_assertions:
                         AssertionMessageMode,
                         failedAssertionMessage;
@@ -196,11 +183,15 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                         comparisonOperator(comparison),
                     ));
                 }
+                explicitAssertMessage = null;
                 ++ip;
                 break;
             case OpCode.assertTrue:
                 const value = stack.popValue;
                 if (!value) {
+                    if (explicitAssertMessage !is null)
+                        throw new AssertionFailure(explicitAssertMessage);
+
                     import quickbite.unittest_assertions:
                         AssertionMessageMode,
                         failedAssertionMessage;
@@ -209,6 +200,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                         AssertionMessageMode.context,
                     ));
                 }
+                explicitAssertMessage = null;
                 ++ip;
                 break;
             case OpCode.ret:
@@ -240,6 +232,7 @@ private bool comparisonHolds(
             return left > right;
         case greaterOrEqual:
             return left >= right;
+        case setAssertMessage:
         case pushInteger:
         case call:
         case add:
@@ -252,7 +245,6 @@ private bool comparisonHolds(
         case bitwiseOr:
         case bitwiseAnd:
         case bitwiseXor:
-        case assertEqual:
         case assertCompare:
         case assertTrue:
         case ret:
@@ -279,6 +271,7 @@ private string comparisonOperator(
             return ">";
         case greaterOrEqual:
             return ">=";
+        case setAssertMessage:
         case pushInteger:
         case call:
         case add:
@@ -291,7 +284,6 @@ private string comparisonOperator(
         case bitwiseOr:
         case bitwiseAnd:
         case bitwiseXor:
-        case assertEqual:
         case assertCompare:
         case assertTrue:
         case ret:

@@ -160,6 +160,14 @@ Once multiple backends exist, add backend parity tests: same analyzed
 execution unit, same pass/fail result, same user-facing diagnostic
 category across all backends.
 
+## Future Enhancements
+
+IR currently stores most runtime values as `long`, which is not rich enough to
+format every DMD-compatible assertion-context message.  To include IR in the
+array-comparison and boolean-comparison diagnostic parity tests, carry enough D
+value type information through lowering and execution to distinguish bool,
+char, high-bit unsigned values, arrays, and other non-`long` values.
+
 ## Benchmarking Harness
 
 - Measure wall time of the re-parse + re-execute path (the hot loop).

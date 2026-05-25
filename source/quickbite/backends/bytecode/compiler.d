@@ -67,6 +67,9 @@ private struct Compiler {
         }
 
         if (auto assert_ = expression.isAssertExp) {
+            if (assert_.msg !is null)
+                compileAssertMessage(assert_.msg);
+
             OpCode comparison;
             if (assertComparison(assert_.e1, comparison)) {
                 auto binary = assert_.e1.isBinExp;
@@ -113,8 +116,16 @@ private struct Compiler {
         module_.code ~= Instruction(OpCode.assertTrue);
     }
 
-    private void compileAssertEqual() {
-        module_.code ~= Instruction(OpCode.assertEqual);
+    private void compileAssertMessage(imported!"dmd.expression".Expression expression) {
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            throw new Exception("Unsupported bytecode assert message.");
+
+        module_.assertMessages ~= literal.peekString.idup;
+        module_.code ~= Instruction(
+            OpCode.setAssertMessage,
+            cast(long) module_.assertMessages.length - 1,
+        );
     }
 
     private bool assertComparison(

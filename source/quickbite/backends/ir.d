@@ -745,22 +745,15 @@ private string assertionFailureMessage(
     if (instruction.message.length != 0)
         return instruction.message;
 
+    if (instruction.hasMessageValue)
+        return arrayMessage(context.arrays[
+            arrayIndex(temporaries, instruction.messageValue)
+        ]);
+
     import quickbite.unittest_assertions: failedAssertionMessage;
 
     if (!instruction.hasComparisonContext)
-        return failedAssertionMessage(instruction.messageMode);
-
-    if (instruction.hasArrayContext) {
-        import std.conv: text;
-
-        return text(
-            context.arrays[arrayIndex(temporaries, instruction.left)],
-            " ",
-            assertionInverseOperator(instruction.comparison),
-            " ",
-            context.arrays[arrayIndex(temporaries, instruction.right)],
-        );
-    }
+        return "false != true";
 
     return failedAssertionMessage(
         instruction.messageMode,
@@ -768,6 +761,13 @@ private string assertionFailureMessage(
         readTemporaryValue(temporaries, instruction.right),
         assertionOperator(instruction.comparison),
     );
+}
+
+private string arrayMessage(in long[] values) @safe pure {
+    char[] message;
+    foreach (value; values)
+        message ~= cast(char) value;
+    return message.idup;
 }
 
 private string assertionInverseOperator(
