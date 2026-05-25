@@ -90,6 +90,11 @@
   expression cells, delegates expression cells to `eval(transcript ~ input)`,
   and runs statement/declaration cells through:
   `unittest { auto f() { <transcript><input> } f(); }`.
+- `runReplLoop` behavior tests now run across all `matureExecutorBackends`.
+  The shared REPL cell classifier lives in
+  `source/quickbite/frontend/repl.d`, and `ir`, `treeWalkingOld`, and
+  `dmdCtfe` all classify expression cells before deciding whether to return a
+  displayed value or run a void/declaration cell.
 - `repl/main.d` has been rewired to call `evalReplCell` and maintain the same
   transcript state as `runReplLoop`. The previous interactive executable still
   called `active.eval(line)`, which is why manual input such as `int x;` kept
@@ -119,8 +124,6 @@
   minimal transcript strategy and should later move behind a structured
   frontend-owned session representation.
 - `incomplete` exists in the API but is not actually implemented yet.
-- Non-IR real eval backends only have compatibility `evalReplCell` stubs that
-  call `eval(transcript ~ input)` and return `value`.
 - `bytecode.eval` and `bytecode.evalReplCell` delegate to `treeWalking`;
   replacing that shim with real bytecode evaluation is separate bytecode work.
 - `dmdCodegen.eval` is still not implemented.
@@ -158,12 +161,12 @@ backends.
 These are the agreed follow-ups from review. Use strict TDD: present the
 test first and wait for approval before editing tests.
 
-1. Run REPL loop tests across every mature backend.
+1. Done: run REPL loop tests across every mature backend.
    - Import `matureExecutorBackends` from `ut.backends`.
    - Cover `runReplLoop` behavior with every mature backend, not only
      `ExecutorBackend.ir`.
-   - This should expose the current non-IR `evalReplCell` compatibility
-     stubs that always return `value`.
+   - This exposed and replaced the non-IR `evalReplCell` compatibility stubs
+     that always returned `value`.
 2. Preserve evaluated integral result types.
    - `Value` preserves distinct integral types, but every `eval` currently
      returns `Value(cast(int) result)`.

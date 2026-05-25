@@ -198,8 +198,22 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         in string input,
     ) {
         import quickbite.executor: Repl;
+        import quickbite.frontend.repl: isExpressionCell;
 
-        return Repl.CellResult.value_(eval(transcript ~ input));
+        if (isExpressionCell(input))
+            return Repl.CellResult.value_(eval(transcript ~ input));
+
+        runVoidReplCell(transcript, input);
+        return Repl.CellResult.void_;
+    }
+
+    private void runVoidReplCell(in string transcript, in string input) {
+        import quickbite.frontend.compiler: parseModule;
+
+        const source =
+            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
+
+        runParsedTests(parseModule(source).module_);
     }
 }
 
