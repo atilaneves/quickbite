@@ -27,6 +27,53 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 merge-readiness update:
+
+- This branch is acceptable to merge as an experimental `dmd-codegen` foothold,
+  not as a correctness-complete or benchmark-complete backend.
+- Keep `dmd-codegen` opt-in. Do not add it to `matureExecutorBackends`, the
+  default benchmark backend list, or any correctness-sensitive comparison until
+  the known limitations below are addressed.
+- The current shared-library execution bridge is temporary. Future work is
+  expected to execute generated code without producing and loading a `.so`, so
+  do not spend large effort perfecting shared-library-specific symbol
+  workarounds unless they block near-term backend development.
+- The accumulated-object approach is accepted only as a bridge to make the
+  cerealed benchmark produce rows. It deliberately trades clean isolation and
+  clean per-fixture timing for progress on the backend.
+
+Known limitations accepted for this merge:
+
+- `_accumulatedObjPaths` and `--allow-multiple-definition` can make one
+  in-process `dmd-codegen` run reuse symbols from an earlier run when two
+  different parsed sources have the same module name. In the current
+  shared-library path, `loadAndRunTests` looks up only the module-name-derived
+  `__modtest` symbol, so this can produce stale-code false results. Treat this
+  as a shared-library bridge limitation, not as a property the final backend may
+  keep.
+- `dmd-codegen` benchmark rows are order-dependent. The benchmark pre-parses all
+  fixtures, codegen walks `Module.amodules`, and later rows link against objects
+  accumulated from earlier rows. The rows are useful as a smoke signal that all
+  fixtures can run, but they are not clean per-fixture latency measurements.
+- Negative compiler API tests can still leave stale DMD global semantic state
+  that cascades into later `dmd-codegen` runs. This is why the backend must stay
+  out of the mature/default test path.
+
+Post-merge handoff for the next agent:
+
+1. Preserve the opt-in backend contract while merging. If merge conflicts touch
+   benchmark defaults or `matureExecutorBackends`, keep `dmd-codegen` excluded.
+2. After merge, record the accepted limitations in the PR or follow-up issue so
+   later benchmark numbers are not mistaken for clean latency data.
+3. The next substantial backend step should be a session/batch boundary that
+   owns the DMD module set for a run, or the planned in-RAM execution path that
+   removes the shared-library bridge. Either direction should aim to delete
+   `_accumulatedObjPaths`, `--allow-multiple-definition`, and module-name-only
+   symbol reuse.
+4. Before promoting `dmd-codegen`, add tests that prove two different same-named
+   source snippets in one process do not reuse stale generated code, and that a
+   failed parse/codegen run cannot poison later valid runs.
+
 2026-05-22 update after testing `dmd-codegen` as mature:
 
 - The cerealed benchmark command with `--iterations=2` passes when
@@ -1475,11 +1522,11 @@ Open diagnosis:
   types and reset `typeInfo.semanticRun`, but the diagnostic showed
   the type is still not being visited with a stale TypeInfo.
 
-Resolution — accumulated objects:
+Temporary merge resolution — accumulated objects:
 
-Rather than fixing the TypeInfo re-emission path, the fix is to
-accumulate ALL generated object files across fixture runs and link
-every new fixture against the full accumulated set.
+Rather than fixing the TypeInfo re-emission path before this merge, the
+temporary bridge fix is to accumulate ALL generated object files across fixture
+runs and link every new fixture against the full accumulated set.
 
 `_accumulatedObjPaths` is a process-global list. Each `compileAndRun`
 appends the new objects and passes the full list to `link`. Duplicate
@@ -1490,9 +1537,22 @@ symbols are weak-object (V), so duplicates are resolved silently by
 the linker already.
 
 Temp dirs are kept for the process lifetime (registered with
-`removeTempDirsAtExit`). The growing `.so` size and link time are
-accepted; both will improve or disappear when the in-RAM execution
-path replaces the shared-library bridge.
+`removeTempDirsAtExit`). The growing `.so` size and link time are accepted for
+the experimental backend because this shared-library bridge is not the intended
+long-term execution path.
+
+This is intentionally not a final correctness model:
+
+- Duplicate strong symbols are currently hidden with
+  `--allow-multiple-definition`. If two different snippets have the same module
+  name, the dynamic lookup of `module.__modtest` can resolve to stale code from
+  an earlier generated object.
+- The benchmark harness now gets rows for all cerealed fixtures, but the
+  dmd-codegen rows include cross-fixture pre-parse/codegen/link effects and
+  should not be used as clean per-fixture latency data.
+- The follow-up work should remove the need for accumulated objects by isolating
+  DMD global state per run, introducing an explicit backend session boundary, or
+  replacing the shared-library bridge with the planned in-RAM execution path.
 
 Verified:
 
