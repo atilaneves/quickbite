@@ -283,4 +283,13 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         return Value(0);
     }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.executor: Repl;
+
+        return Repl.CellResult.value_(eval(transcript ~ input));
+    }
 }

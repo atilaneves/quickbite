@@ -20,6 +20,30 @@ unittest {
     output.should == ["1", "2"];
 }
 
+@("repl.loop.declarationCellsPersistWithoutDisplay")
+unittest {
+    import quickbite.repl: runReplLoop;
+
+    auto output = runReplLoop(
+        executor(ExecutorBackend.ir),
+        ["int x;", "x", ":q"],
+    );
+
+    output.should == ["0"];
+}
+
+@("repl.loop.expressionSideEffectsPersist")
+unittest {
+    import quickbite.repl: runReplLoop;
+
+    auto output = runReplLoop(
+        executor(ExecutorBackend.ir),
+        ["int x;", "x++", "x", ":q"],
+    );
+
+    output.should == ["0", "1"];
+}
+
 @("repl.binary.cEvaluatesExpressionCellSilently")
 unittest {
     import std.process: execute;
@@ -47,7 +71,9 @@ unittest {
         output ~= line.idup ~ "\n";
 
     wait(repl.pid).should == 0;
-    output.canFind("unexpected identifier `x` in declarator").should == true;
+    output.canFind(
+        "semicolon needed to end declaration of `x` instead of `}`",
+    ).should == true;
     output.canFind("> 1\n>").should == true;
 }
 

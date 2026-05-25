@@ -192,6 +192,15 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
 
         return Value(cast(int) longResult);
     }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.executor: Repl;
+
+        return Repl.CellResult.value_(eval(transcript ~ input));
+    }
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {

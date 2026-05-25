@@ -80,6 +80,15 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 
         return Value(cast(int) result);
     }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.executor: Repl;
+
+        return Repl.CellResult.value_(eval(transcript ~ input));
+    }
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(

@@ -1,6 +1,6 @@
 # Plan: REPL
 
-## Handoff (2026-05-25)
+## Handoff (2026-05-25, in-progress worktree)
 
 ### What is done
 
@@ -47,14 +47,46 @@
 - `tests/ut/repl.d` still has older binary smoke tests. Do not add more.
   New REPL behavior must be unit-tested through `runReplLoop` or smaller
   helpers.
+- The next approved `runReplLoop` test has already been added:
+  `["int x;", "x", ":q"]` should display only `["0"]`. It was approved
+  before editing and originally failed red against the old `eval` API.
+- `source/quickbite/executor.d` now has a structured REPL API:
+  `Repl.CellResult` with `Repl.CellStatus.incomplete`, `void_`, and `value`.
+  `Executor` now exposes
+  `evalReplCell(in string transcript, in string input)`.
+- `source/quickbite/repl.d` now keeps a transcript and branches only on
+  `Repl.CellStatus`. The `with` around the status switch is intentional.
+  Do not use `with` for tiny one-off blocks, but keep it for these switches
+  so enum names stay short.
+- Value cells are now replayed into the transcript as generated local
+  declarations, e.g. `auto __quickbite_repl_value_N = x++;`. This keeps
+  expression side effects visible to later cells without triggering DMD's
+  "no effect" diagnostic for plain literal expressions.
+- The IR backend has an initial `evalReplCell` implementation. It classifies
+  expression cells, delegates expression cells to `eval(transcript ~ input)`,
+  and runs statement/declaration cells through:
+  `unittest { auto f() { <transcript><input> } f(); }`.
+- `repl/main.d` has been rewired to call `evalReplCell` and maintain the same
+  transcript state as `runReplLoop`. The previous interactive executable still
+  called `active.eval(line)`, which is why manual input such as `int x;` kept
+  failing even after the unit-loop work.
+- `source/quickbite/frontend/compiler.d` initializes DMD identifier character
+  lookup tables. This fixed a segfault hit when the REPL used a raw DMD
+  `Parser` for cell classification.
 - Commits of note in `worktree-repl`:
   - `c21acf4 Make REPL interactive`
   - `1ddfa37 Keep REPL alive after diagnostics`
   - `f0a63d7 Avoid subprocess REPL tests`
   - `9aa1f4d Revert "Persist REPL declaration cells"`
-- Last verification before this handoff edit: `dub test` passed with 564
-  tests before reverting the bad declaration shortcut. Rerun `dub test`
-  after this handoff update.
+- Last known green state during this in-progress edit: `dub test` passed with
+  564 tests after adding the approved declaration persistence test and the
+  first structured API wiring. That was before the latest parser-classifier
+  change described below.
+- `ParseStatementFlags` is imported from `dmd.parse`, which is where the
+  local DMD package exports it.
+- Verification after this update: focused REPL loop tests pass, the manual
+  `int x; x; x++; x` smoke test prints `0`, `0`, `1`, and the remaining PR
+  gate is a full `dub test` plus `benchmarks/run.sh`.
 
 ### What is fake
 
@@ -64,8 +96,12 @@
 - `repl/main.d` reads lines directly from `stdin`. It should be replaced
   by the planned line-input abstraction before adding serious interactive
   editing behavior.
-- Expression cells are evaluated independently. Statement/declaration
-  cells and no-result values are not supported yet.
+- Value cells are appended as generated local declarations. This is still a
+  minimal transcript strategy and should later move behind a structured
+  frontend-owned session representation.
+- `incomplete` exists in the API but is not actually implemented yet.
+- Non-IR backends only have compatibility `evalReplCell` stubs that call
+  `eval(transcript ~ input)` and return `value`.
 - `dmdCodegen.eval` is still not implemented.
 
 ### Bad approach reverted
@@ -82,6 +118,9 @@
 - The REPL loop must not decide D syntax. Classification, completeness,
   and expression-vs-statement/declaration handling belong behind the
   frontend/`Executor` API.
+- Do not leave the binary on a different evaluation path than the unit REPL
+  loop. The interactive executable must keep using the same structured cell
+  API or manual testing will not match unit behavior.
 
 ### What comes next
 
@@ -91,44 +130,34 @@ REPL behavior must be driven by unit tests around `runReplLoop` and
 supporting helpers, using real executors and no `executeShell`,
 `execute`, `pipeProcess`, or similar per-test process spawning.
 
-Recommended next approved test:
+Immediate continuation after this PR:
 
-1. Add an API-level unit test for a structured REPL eval result, not a
-   binary/process test. The desired behavior is equivalent to:
-   `["int x;", "x", ":q"]` displays only `["0"]`, but the production
-   design must not make `runReplLoop` parse D. First introduce the
-   structured API that can express no-display cells.
-
-The next implementation slice should be:
-
-1. Replace `Executor.eval(in string input) -> Value` with, or add beside
-   it, a structured REPL result type:
-   `incomplete | void_ | value(Value)`.
-2. Move cell classification and completeness into the frontend/eval
-   implementation. The REPL loop submits buffered D text and branches
-   only on that structured result.
-3. Teach at least the IR backend to execute a complete declaration cell
-   as `void_` and preserve it in the accumulated transcript for later
-   expression cells.
-4. Only after that, add the `int x;` then `x` unit test and make it pass.
+1. Implement real parsed `incomplete` status and continuation prompts.
+2. Move `repl/main.d` onto the planned line-input abstraction.
+3. Add backend selection parsing shared with benchmark tooling.
+4. Add backend replay/switching only after transcript replay works through
+   the structured API.
 
 Later slices:
 
-1. Backend selection parsing shared with benchmark tooling.
-2. Proper parsed completeness status and continuation prompt.
-3. Session accumulation across all cell kinds.
-4. `Value` support for D `void` / no-result cells if not already covered
-   by the structured REPL result.
+1. Implement real parsed `incomplete` status and continuation prompts.
+2. Fix session accumulation for all cell kinds, including expression history
+   that later cells can refer to without breaking expression wrapping.
+3. Move `repl/main.d` onto the planned line-input abstraction.
+4. Backend selection parsing shared with benchmark tooling.
+5. Implement structured REPL cells for non-IR backends.
+6. `Value` support for more D result types as tests require.
 
-### How to implement the next eval API
+### Structured eval direction
 
 Do not continue the old "split by last newline and wrap the last line as an
 expression" design. That approach cannot correctly support declarations,
 imports, aliases, multi-line constructs, or incomplete input.
 
-The next implementation should add a frontend-owned REPL cell API. It should
-parse the accumulated session source plus the current buffered cell and return
-a structured result:
+The current worktree has started this by adding `Executor.evalReplCell` and
+`Repl.CellResult`. Continue moving the implementation toward a frontend-owned
+REPL cell API that parses the accumulated session source plus the current
+buffered cell and returns a structured result:
 
 - `incomplete` when the frontend recognizes a valid but unfinished D fragment;
 - `void_` when a complete statement/declaration/import/alias cell ran without
@@ -138,9 +167,9 @@ a structured result:
 The REPL loop should only branch on that result. It should not inspect
 delimiters, keywords, braces, or semicolons in user code.
 
-For a first backend slice, implement the structured API for IR only. Reuse the
-existing parser/lowering path, but keep the expression-vs-declaration decision
-inside the frontend/eval layer where the parsed AST is available.
+The first backend slice is in progress for IR. Reuse the existing
+parser/lowering path, but keep the expression-vs-declaration decision inside
+the frontend/eval layer where the parsed AST is available.
 
 ### Important: use a stronger model for the implementer
 
