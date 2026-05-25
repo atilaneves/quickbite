@@ -72,10 +72,21 @@ Current progress:
 11. The unsupported array-expression diagnostic from `runArrayExpression` is
     covered by `runTests.unsupportedArrayExpressionReportsExpressionKind`.
 
-Handoff note for the next agent: continue with the next
-`ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
-subagents and orchestrate the TDD loop below instead of doing the next
-implementation slice inline in the main thread.
+Handoff note for the next agent: this branch already contains one PR worth of
+work. It enables
+`projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte.treeWalking`, adds
+the focused `structConstructorStoresDynamicArrayParameter` language coverage,
+flattens the reviewed "arrow" control flow in `TreeWalkingExecutor`, and covers
+the unsupported array-expression diagnostic with
+`runTests.unsupportedArrayExpressionReportsExpressionKind`. `dub test` passed
+with 642 tests and 0 failures after these changes. Do not start another
+cerealed slice on this branch; hand it off as-is unless review asks for more
+changes.
+
+After this branch is merged, continue with the next `ut.projects.cerealed`
+bailout or red project-inspired fixture. Spawn subagents and orchestrate the
+TDD loop below instead of doing the next implementation slice inline in the
+main thread.
 
 Before starting another slice, check whether the current branch already
 contains one PR worth of work: a coherent behavior increment, its focused
