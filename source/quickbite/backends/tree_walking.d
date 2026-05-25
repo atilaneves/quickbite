@@ -151,6 +151,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 }
         }
 
+        if (auto post = expression.isPostExp)
+            if (isPostIncrementExpression(post))
+                return runPostIncrementExpression(post);
+
         if (auto equal = expression.isEqualExp)
             return runExpression(equal.e1) == runExpression(equal.e2);
 
@@ -182,6 +186,27 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expression.op));
+    }
+
+    private long runPostIncrementExpression(
+        imported!"dmd.expression".PostExp post,
+    ) {
+        auto var = post.e1.isVarExp;
+        if (var is null || var.var.isVarDeclaration is null)
+            throw new Exception("Unsupported post expression.");
+
+        auto variable = var.var.isVarDeclaration;
+        const oldValue = runExpression(post.e1);
+        locals[variable] = coerceIntegerToType(oldValue + 1, variable.type);
+        return oldValue;
+    }
+
+    private bool isPostIncrementExpression(
+        imported!"dmd.expression".PostExp post,
+    ) {
+        import dmd.tokens: EXP;
+
+        return post.op == EXP.plusPlus;
     }
 
     private bool isLessThanExpression(
