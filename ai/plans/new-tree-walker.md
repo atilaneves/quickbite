@@ -49,13 +49,19 @@ Current progress:
    out for now. Follow-up PRs should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
 6. The `projects.cerealed.templateLengthPrefixUsesRequestedWidth`
-   `treeWalking` bailout has been removed on branch
-   `new-tree-walker-template-length`. The new walker now covers the
+   `treeWalking` entry now runs on `master`. The new walker covers the
    extracted behaviours needed by that fixture: uninitialised dynamic
    array length, lowered range `foreach` as `ForStatement`, signed
    less-than, local dynamic array append, ref dynamic array append
    writeback, right shift, multiplication, and runtime `ubyte` cast
-   truncation. `dub test` passed for this branch.
+   truncation.
+7. The `projects.cerealed.postIncrementCursorReadAdvancesPosition`
+   `treeWalking` entry now runs on `master`. The new walker supports
+   `size_t` post-increment index reads through `ref` parameters.
+8. The struct cursor read slice from PR 25 is merged on `master`. The new
+   walker supports the extracted behaviours for struct methods that
+   post-increment scalar fields and read array fields through
+   `bytes[position++]`.
 
 Handoff note for the next agent: continue with the next
 `ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
