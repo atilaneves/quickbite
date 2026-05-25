@@ -419,10 +419,14 @@ private void runCodegenSession(
     in CodegenExecutionKind executionKind,
 ) @trusted {
     const entrypoint = session.unittestEntrypoint;
-    const objects = session.accumulatedSharedLibraryObjects;
     auto execution = executionKind == CodegenExecutionKind.ram
-        ? CodegenExecution.ram(objects, entrypoint)
-        : CodegenExecution.sharedLibrary(objects, soPath, linkFiles, entrypoint);
+        ? CodegenExecution.ram(session.objects, entrypoint)
+        : CodegenExecution.sharedLibrary(
+            session.accumulatedSharedLibraryObjects,
+            soPath,
+            linkFiles,
+            entrypoint,
+        );
     execution.run;
 }
 
