@@ -103,6 +103,12 @@ private struct Compiler {
             return;
         }
 
+        if (isGreaterThanExpression(expression)) {
+            auto greaterThan = expression.isBinExp;
+            compileBinaryExpression(greaterThan.e1, greaterThan.e2, OpCode.greaterThan);
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileBinaryExpression(add.e1, add.e2, OpCode.add);
             return;
@@ -178,6 +184,14 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.lessOrEqual;
+    }
+
+    private bool isGreaterThanExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.greaterThan;
     }
 
     private void compileBinaryExpression(

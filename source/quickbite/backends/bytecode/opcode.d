@@ -18,6 +18,7 @@ public enum OpCode : ubyte {
     equal,
     lessThan,
     lessOrEqual,
+    greaterThan,
     assertEqual,
     ret,
     halt,
