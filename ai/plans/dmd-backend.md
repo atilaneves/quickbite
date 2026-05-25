@@ -295,10 +295,10 @@ Use:
 
 ## Approved Test
 
-The approved DMD-codegen-only regression in `tests/ut/compiler_api.d` is:
+The approved DMD-codegen-only regression in `tests/ut/backends/package.d` is:
 
 ```d
-@("runTests.dmdCodegenRunsAssociativeArrayLiteral")
+@("runTests.runsAssociativeArrayLiteral")
 ```
 
 It was added for this source shape:
@@ -317,8 +317,8 @@ The original failure was a load/link failure with unresolved
 
 Current uncommitted edits:
 
-- `tests/ut/compiler_api.d`
-  - Adds `runTests.dmdCodegenRunsAssociativeArrayLiteral`.
+- `tests/ut/backends/package.d`
+  - Adds `runTests.runsAssociativeArrayLiteral`.
   - Why: approved regression for DMD-codegen emitting associative-array
     template support instead of leaving unresolved `core.internal.newaa`
     symbols.
@@ -572,10 +572,10 @@ Result:
 - Four tests failed:
 
   ```text
-  ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral
-  ut.compiler_api.runTests.dmdCodegenRunsFailingPackageModuleUnittest
-  ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules
-  ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+  ut.backends.runTests.runsAssociativeArrayLiteral
+  ut.backends.runTests.runsFailingPackageModuleUnittest
+  ut.backends.runTests.runsImportedSourceModules
+  ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - Representative failures:
@@ -668,12 +668,12 @@ Result:
 
   ```sh
   dub test --config=unittest -- \
-    ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral
+    ut.backends.runTests.runsAssociativeArrayLiteral
 
   dub test --config=unittest -- \
-    ut.compiler_api.runTestSummary.dmdCodegenCountsPassingSourceModule \
-    ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules \
-    ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+    ut.backends.runTestSummary.countsPassingSourceModule \
+    ut.backends.runTests.runsImportedSourceModules \
+    ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - The cerealed benchmark still failed.
@@ -830,9 +830,9 @@ Result:
 
   ```sh
   dub test --config=unittest -- \
-    ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral \
-    ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules \
-    ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+    ut.backends.runTests.runsAssociativeArrayLiteral \
+    ut.backends.runTests.runsImportedSourceModules \
+    ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - The real cerealed benchmark still skipped every fixture with unresolved
@@ -1085,9 +1085,9 @@ Result:
 
   ```sh
   dub test --config=unittest -- \
-    ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral \
-    ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules \
-    ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+    ut.backends.runTests.runsAssociativeArrayLiteral \
+    ut.backends.runTests.runsImportedSourceModules \
+    ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - The goal command still skipped every cerealed fixture.
@@ -1226,9 +1226,9 @@ Result:
 
   ```sh
   dub test --config=unittest -- \
-    ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral \
-    ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules \
-    ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+    ut.backends.runTests.runsAssociativeArrayLiteral \
+    ut.backends.runTests.runsImportedSourceModules \
+    ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - The goal command now prints a timing row for `bugs`:
@@ -1312,10 +1312,10 @@ Result:
 - Four tests failed:
 
   ```text
-  ut.compiler_api.runTests.dmdCodegenRunsAssociativeArrayLiteral
-  ut.compiler_api.runTests.dmdCodegenRunsFailingPackageModuleUnittest
-  ut.compiler_api.runTests.dmdCodegenRunsImportedSourceModules
-  ut.minicereal.dmd-codegen.minicerealFileCanRunTwice
+  ut.backends.runTests.runsAssociativeArrayLiteral
+  ut.backends.runTests.runsFailingPackageModuleUnittest
+  ut.backends.runTests.runsImportedSourceModules
+  ut.backends.minicereal.minicerealFileCanRunTwice.dmdCodegen
   ```
 
 - The first failure was:

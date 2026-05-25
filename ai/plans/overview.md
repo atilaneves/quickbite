@@ -121,8 +121,8 @@ All minicereal unittest blocks pass on all three current backends.
 
 ## Real Cerealed Tests
 
-`tests/ut/cerealed.d` runs all 19 cerealed test files against every
-`ExecutorBackend` member. The benchmarking harness lives in `benchmarks/`
+`tests/ut/backends/deps/cerealed.d` runs all 19 cerealed test files against
+every `ExecutorBackend` member. The benchmarking harness lives in `benchmarks/`
 and accepts `--import-path` flags so cerealed tests can be timed.
 
 ## Implementation Phases
