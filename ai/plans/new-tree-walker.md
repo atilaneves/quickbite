@@ -77,13 +77,19 @@ Current progress:
     reading the slice length, and indexing the resulting slice. The array
     helpers have also been renamed from `runArrayExpression` to
     `evalArrayExpression` terminology.
+13. The current branch adds `Value`-based expression, local, argument, and
+    return storage to the new tree walker for scalar and dynamic array values.
+    The focused language tests are `dynamicArrayReturnValue`,
+    `dynamicArraySliceReturnValue`, and
+    `dynamicArrayReturnValueIndexesCallResult`, covering dynamic arrays
+    returned from functions, slice expressions returned from functions, and
+    direct indexing of an array-returning call result.
 
 Handoff note for the next agent: this branch already contains one PR worth of
-work. It adds the focused `dynamicArraySliceFromRuntimeBounds` language
-coverage and implements dynamic array slices with runtime lower and upper
-bounds in the new tree walker. `dub test` passed with 647 tests and 0 failures
-after these changes. Do not start another slice on this branch; hand it off
-as-is unless review asks for more changes.
+work. It adds `Value`-based dynamic array return support for the new tree
+walker. `dub test` passed with 659 tests and 0 failures after these changes.
+Do not start another slice on this branch; hand it off as-is unless review asks
+for more changes.
 
 After this branch is merged, continue with the next `ut.projects.cerealed`
 bailout or red project-inspired fixture. Do not add or enable new tests that

@@ -2257,6 +2257,66 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("dynamicArrayReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+
+                const result = identity(values);
+
+                assert(result.length == 2);
+                assert(result[0] == first);
+                assert(result[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArraySliceReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] tail(ubyte[] values, size_t start, size_t stop) {
+                return values[start .. stop];
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                size_t start = 1;
+                size_t stop = values.length;
+
+                const result = tail(values, start, stop);
+
+                assert(result.length == 1);
+                assert(result[0] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayReturnValueIndexesCallResult." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+
+                assert(identity(values)[1] == second);
+            }
+        }, backend);
+    }
+
     @("postIncrementSizeTIndex." ~ backend.text)
     unittest {
         runTests(q{
