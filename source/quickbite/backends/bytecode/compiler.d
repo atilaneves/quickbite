@@ -127,6 +127,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto bitwiseAnd = expression.isAndExp) {
+            compileBinaryExpression(bitwiseAnd.e1, bitwiseAnd.e2, OpCode.bitwiseAnd);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");

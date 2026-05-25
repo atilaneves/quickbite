@@ -2223,6 +2223,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intBitwiseAnd.bytecode")
+unittest {
+    runTests(q{
+        int mask() {
+            return 0x2f;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // bitwise AND before bytecode sees it.
+            return mask & 0x3a;
+        }
+
+        unittest {
+            assert(answer == 0x2a);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
