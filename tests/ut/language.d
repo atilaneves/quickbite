@@ -2208,17 +2208,17 @@ unittest {
 unittest {
     runTests(q{
         int mask() {
-            return 0x02;
+            return 0x06;
         }
 
         int answer() {
             // Keep one operand runtime-shaped so DMD does not constant-fold the
             // bitwise OR before bytecode sees it.
-            return 0x28 | mask;
+            return 0x2a | mask;
         }
 
         unittest {
-            assert(answer == 0x2a);
+            assert(answer == 0x2e);
         }
     }, ExecutorBackend.bytecode);
 }
@@ -2276,6 +2276,21 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intLessThanOops.bytecode")
+unittest {
+    runTests(q{
+        int bound() {
+            return 42;
+        }
+
+        unittest {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // comparison before bytecode sees it.
+            assert(42 < bound);
+        }
+    }, ExecutorBackend.bytecode).shouldThrowWithMessage("0 != 1");
+}
+
 @("intLessOrEqual.bytecode")
 unittest {
     runTests(q{
@@ -2306,6 +2321,21 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intGreaterThanOops.bytecode")
+unittest {
+    runTests(q{
+        int bound() {
+            return 42;
+        }
+
+        unittest {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // comparison before bytecode sees it.
+            assert(42 > bound);
+        }
+    }, ExecutorBackend.bytecode).shouldThrowWithMessage("0 != 1");
+}
+
 @("intGreaterOrEqual.bytecode")
 unittest {
     runTests(q{
@@ -2332,6 +2362,19 @@ unittest {
             // Keep one operand runtime-shaped so DMD does not constant-fold the
             // comparison before bytecode sees it.
             assert(43 != bound);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
+@("assertNonzeroIntCondition.bytecode")
+unittest {
+    runTests(q{
+        int mask() {
+            return 2;
+        }
+
+        unittest {
+            assert(0x28 | mask);
         }
     }, ExecutorBackend.bytecode);
 }

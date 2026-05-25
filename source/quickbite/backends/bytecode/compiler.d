@@ -111,6 +111,8 @@ private struct Compiler {
     }
 
     private void compileAssertCondition() {
+        module_.code ~= Instruction(OpCode.pushInteger, 0);
+        module_.code ~= Instruction(OpCode.notEqual);
         module_.code ~= Instruction(OpCode.pushInteger, 1);
         compileAssertEqual;
     }
