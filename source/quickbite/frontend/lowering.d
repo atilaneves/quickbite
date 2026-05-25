@@ -147,6 +147,8 @@ struct BodyLowerer {
 
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
+    private imported!"quickbite.ir.instruction".UnaryOperation[VarDeclaration]
+        pointerReadBitcasts;
     private ArrayElementAlias[VarDeclaration] arrayElementAliases;
     private ArrayElementAlias[string] arrayElementAliasesByName;
     private ArrayElementAlias[] pendingRefArrayWritebacks;
@@ -1022,10 +1024,12 @@ struct BodyLowerer {
         }
 
         if (auto real_ = expression.isRealExp) {
+            import quickbite.executor: Value;
+
             const destination = allocateTemporary;
             instructions ~= Instruction(ConstInt(
                 destination,
-                realLiteralValue(real_),
+                realLiteralRuntimeValue(real_),
             ));
             return destination;
         }
@@ -1606,8 +1610,21 @@ struct BodyLowerer {
         // Pointer dereference: *ptr. Peel off the * — the temp that ptr
         // holds already IS the temp index of the pointed-to variable, so
         // reading/passing it is the same as reading/passing the inner expr.
-        if (auto ptr = expression.isPtrExp)
+        if (auto ptr = expression.isPtrExp) {
+            const bitcast = tryLowerFloatingBitcastPointerRead(ptr, lowerer);
+            if (!bitcast.isNull)
+                return bitcast.get;
+
+            if (auto variable = ptr.e1.isVarExp)
+                if (auto var = variable.var.isVarDeclaration)
+                    if (auto operation = var in pointerReadBitcasts)
+                        return lowerUnaryPointerReadBitcast(
+                            lowerExpression(ptr.e1, lowerer),
+                            *operation,
+                        ).get;
+
             return lowerExpression(ptr.e1, lowerer);
+        }
 
         if (auto new_ = expression.isNewExp)
             return lowerNewExpression(new_, lowerer);
@@ -2261,6 +2278,7 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction: ConstInt, Instruction;
+        import quickbite.executor: Value;
 
         // auto: DMD expression downcast helpers return mutable AST nodes.
         auto base = callArguments(call)[0].isRealExp;
@@ -2278,9 +2296,43 @@ struct BodyLowerer {
         result = allocateTemporary;
         instructions ~= Instruction(ConstInt(
             result,
-            doubleLiteralValue(8.0),
+            Value(8.0),
         ));
         return true;
+    }
+
+    imported!"std.typecons".Nullable!uint tryLowerFloatingBitcastPointerRead(
+        imported!"dmd.expression".PtrExp pointer,
+        ref Lowerer lowerer,
+    ) @safe {
+        auto cast_ = pointer.e1.isCastExp;
+        if (cast_ is null || !typeIsPointer(cast_.to))
+            return typeof(return).init;
+
+        auto address = cast_.e1.isAddrExp;
+        if (address is null || !typeIsFloating(address.e1.type))
+            return typeof(return).init;
+
+        const operation = pointerReadBitcastOperation(cast_.to, pointer.e1);
+        if (operation.isNull)
+            return typeof(return).init;
+
+        return lowerUnaryPointerReadBitcast(
+            lowerExpression(address.e1, lowerer),
+            operation.get,
+        );
+    }
+
+    imported!"std.typecons".Nullable!uint lowerUnaryPointerReadBitcast(
+        in uint source,
+        in imported!"quickbite.ir.instruction".UnaryOperation operation,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, UnaryOp;
+        import std.typecons: nullable;
+
+        const destination = allocateTemporary;
+        instructions ~= Instruction(UnaryOp(destination, source, operation));
+        return (cast(uint) destination).nullable;
     }
 
     uint lowerStructEqualityExpression(
@@ -4631,6 +4683,12 @@ struct BodyLowerer {
                         return value;
                     }
                     const value = lowerExpression(blit.e2, lowerer);
+                    const bitcast = pointerReadBitcastOperation(
+                        variable.type,
+                        blit.e2,
+                    );
+                    if (!bitcast.isNull)
+                        pointerReadBitcasts[variable] = bitcast.get;
                     rememberLocalTemporary(variable, value);
                     return value;
                 }
@@ -4640,6 +4698,12 @@ struct BodyLowerer {
                         message;
 
                 const value = lowerInitializerExpression(initializer.exp, lowerer);
+                const bitcast = pointerReadBitcastOperation(
+                    variable.type,
+                    initializer.exp,
+                );
+                if (!bitcast.isNull)
+                    pointerReadBitcasts[variable] = bitcast.get;
                 rememberLocalTemporary(variable, value);
                 return value;
             }
@@ -6900,6 +6964,23 @@ private long realLiteralValue(imported!"dmd.expression".RealExp real_) @trusted 
     return real_.toInteger();
 }
 
+private imported!"quickbite.executor".Value realLiteralRuntimeValue(
+    imported!"dmd.expression".RealExp real_,
+) @trusted {
+    import dmd.astenums: TY;
+    import quickbite.executor: Value;
+
+    const basetype = real_.type.toBasetype;
+
+    if (basetype.ty == TY.Tfloat32)
+        return Value(cast(float) real_.toReal());
+
+    if (basetype.ty == TY.Tfloat64)
+        return Value(cast(double) real_.toReal());
+
+    return Value(cast(real) real_.toReal());
+}
+
 private long doubleLiteralValue(double value) @trusted {
     return cast(long) *cast(ulong*) &value;
 }
@@ -7509,6 +7590,8 @@ private bool tryRuntimeMathUnaryOperation(
         case not:
         case complement:
         case bitScanReverse:
+        case floatToUintBits:
+        case doubleToUlongBits:
             return false;
     }
 }
@@ -7542,20 +7625,29 @@ private imported!"quickbite.ir.instruction".IntegerType integerType(
     if (basetype.ty == TY.Tint8)
         return IntegerType.i8;
 
-    if (basetype.ty == TY.Tuns8 || basetype.ty == TY.Tchar)
+    if (basetype.ty == TY.Tuns8)
         return IntegerType.u8;
+
+    if (basetype.ty == TY.Tchar)
+        return IntegerType.char_;
 
     if (basetype.ty == TY.Tint16)
         return IntegerType.i16;
 
-    if (basetype.ty == TY.Tuns16 || basetype.ty == TY.Twchar)
+    if (basetype.ty == TY.Tuns16)
         return IntegerType.u16;
+
+    if (basetype.ty == TY.Twchar)
+        return IntegerType.wchar_;
 
     if (basetype.ty == TY.Tint32)
         return IntegerType.i32;
 
-    if (basetype.ty == TY.Tuns32 || basetype.ty == TY.Tdchar)
+    if (basetype.ty == TY.Tuns32)
         return IntegerType.u32;
+
+    if (basetype.ty == TY.Tdchar)
+        return IntegerType.dchar_;
 
     if (basetype.ty == TY.Tint64)
         return IntegerType.i64;
@@ -7894,6 +7986,36 @@ private imported!"dmd.mtype".Type pointerTarget(
     return type.nextOf;
 }
 
+private imported!"std.typecons".Nullable!(
+    imported!"quickbite.ir.instruction".UnaryOperation,
+) pointerReadBitcastOperation(
+    imported!"dmd.mtype".Type pointerType,
+    imported!"dmd.expression".Expression initializer,
+) @safe {
+    import quickbite.ir.instruction: UnaryOperation;
+    import std.typecons: nullable;
+
+    if (!typeIsPointer(pointerType))
+        return typeof(return).init;
+
+    auto cast_ = initializer.isCastExp;
+    if (cast_ is null)
+        return typeof(return).init;
+
+    auto address = cast_.e1.isAddrExp;
+    if (address is null || !typeIsFloating(address.e1.type))
+        return typeof(return).init;
+
+    auto target = pointerTarget(pointerType);
+    if (typeIsUint32(target))
+        return UnaryOperation.floatToUintBits.nullable;
+
+    if (typeIsUint64(target))
+        return UnaryOperation.doubleToUlongBits.nullable;
+
+    return typeof(return).init;
+}
+
 private bool typeIsStruct(imported!"dmd.mtype".Type type) @trusted {
     return type !is null && type.isTypeStruct !is null;
 }
@@ -8048,6 +8170,18 @@ private bool typeIsFloating(imported!"dmd.mtype".Type type) @trusted {
     return basetype.ty == TY.Tfloat32 ||
         basetype.ty == TY.Tfloat64 ||
         basetype.ty == TY.Tfloat80;
+}
+
+private bool typeIsUint32(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tuns32;
+}
+
+private bool typeIsUint64(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tuns64;
 }
 
 private bool varIsParameter(

@@ -47,8 +47,9 @@ unittest {
     foreach (instruction; lowered.tests[0].instructions) {
         instruction.match!(
             (ConstInt instruction) {
-                if (instruction.value != 0)
-                    ids ~= instruction.value;
+                const value = instruction.value.asLong;
+                if (value != 0)
+                    ids ~= value;
             },
             (_) {},
         );
@@ -104,4 +105,16 @@ unittest {
             assert(fp2() == 13);
         }
     }, ExecutorBackend.ir);
+}
+
+@("eval.preservesScalarValueTypes")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    ir.eval("cast(ubyte) 3").should == Value(cast(ubyte) 3);
+    ir.eval("cast(char) 65").should == Value(cast(char) 65);
+    ir.eval("1.25").should == Value(1.25);
 }

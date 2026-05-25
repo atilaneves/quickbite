@@ -73,8 +73,9 @@ private imported!"quickbite.executor".TestSummary testSummary(
 
 private void execute(ref imported!"quickbite.backends.bytecode.module_".BytecodeModule module_) {
     import quickbite.backends.bytecode.opcode: OpCode;
+    import quickbite.executor: Value;
 
-    long[] stack;
+    Value[] stack;
     size_t[] returnAddresses;
     string explicitAssertMessage;
     size_t ip;
@@ -83,7 +84,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
         const instruction = module_.code[ip];
         final switch (instruction.op) {
             case OpCode.pushInteger:
-                stack ~= instruction.operand;
+                stack ~= instruction.valueOperand;
                 ++ip;
                 break;
             case OpCode.call:
@@ -135,7 +136,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                stack ~= left == right;
+                stack ~= Value(left.asLong == right.asLong);
                 ++ip;
                 break;
             case OpCode.notEqual:
@@ -213,25 +214,27 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
 }
 
 private bool comparisonHolds(
-    in long left,
-    in long right,
+    in imported!"quickbite.executor".Value left,
+    in imported!"quickbite.executor".Value right,
     in imported!"quickbite.backends.bytecode.opcode".OpCode op,
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
+    const leftLong = left.asLong;
+    const rightLong = right.asLong;
     with (OpCode) final switch (op) {
         case equal:
-            return left == right;
+            return leftLong == rightLong;
         case notEqual:
-            return left != right;
+            return leftLong != rightLong;
         case lessThan:
-            return left < right;
+            return leftLong < rightLong;
         case lessOrEqual:
-            return left <= right;
+            return leftLong <= rightLong;
         case greaterThan:
-            return left > right;
+            return leftLong > rightLong;
         case greaterOrEqual:
-            return left >= right;
+            return leftLong >= rightLong;
         case setAssertMessage:
         case pushInteger:
         case call:
@@ -292,13 +295,15 @@ private string comparisonOperator(
     }
 }
 
-private void executeBinaryOperation(alias operation)(ref long[] stack) @safe {
+private void executeBinaryOperation(alias operation)(ref imported!"quickbite.executor".Value[] stack) @safe {
     const right = stack.popValue;
     const left = stack.popValue;
-    stack ~= operation(left, right);
+    stack ~= imported!"quickbite.executor".Value(operation(left.asLong, right.asLong));
 }
 
-private long popValue(ref long[] stack) @safe {
+private imported!"quickbite.executor".Value popValue(
+    ref imported!"quickbite.executor".Value[] stack,
+) @safe {
     import std.exception: enforce;
 
     enforce(stack.length != 0, "Bytecode stack underflow.");

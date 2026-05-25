@@ -6,8 +6,19 @@ import std.sumtype: SumType;
 
 // Value-producing IR instructions write to an explicit temporary.
 public struct ConstInt {
+    import quickbite.executor: Value;
+
     uint destination;
-    long value;
+    Value value;
+
+    public this(in uint destination, in long value) @safe pure {
+        this(destination, Value(value));
+    }
+
+    public this(in uint destination, in Value value) @safe pure {
+        this.destination = destination;
+        this.value = value;
+    }
 }
 
 public struct Call {
@@ -70,6 +81,8 @@ public enum UnaryOperation {
     isNaNDouble,
     signbitDouble,
     sqrtDouble,
+    floatToUintBits,
+    doubleToUlongBits,
 }
 
 public struct Select {
@@ -120,6 +133,9 @@ public enum IntegerType {
     u32,
     i64,
     u64,
+    char_,
+    wchar_,
+    dchar_,
 }
 
 public struct Assert_ {
