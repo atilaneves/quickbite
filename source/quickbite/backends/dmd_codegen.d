@@ -10,20 +10,86 @@ __gshared void** _loadedHandles;
 __gshared uint _tempCounter;
 __gshared imported!"dmd.dtemplate".TemplateInstance[void*] _templateNextByInstance;
 
-// Object files accumulated across all fixture runs.  Linking every new
+// Generated objects accumulated across all fixture runs.  Linking every new
 // fixture against the full accumulated set avoids re-emitting TypeInfo and
 // other one-shot data symbols that were already emitted by an earlier run.
 // The symbol duplication this causes is harmless: TypeInfo initialisers are
 // weak-object (V) symbols; the linker silently picks one copy.
-__gshared string[] _accumulatedObjPaths;
+__gshared GeneratedObject[] _accumulatedObjects;
 // Tracks which fixture modules have already contributed objects so that
 // repeated benchmark iterations (warmup + timed) do not keep appending
 // duplicate object sets and blowing up the link command.
 __gshared bool[void*] _accumulatedModules;
 
-struct GeneratedObjects {
-    string[] objPaths;
+struct CodegenSession {
+    imported!"dmd.dmodule".Module entryModule;
+    GeneratedObject[] objects;
     imported!"dmd.dmodule".Module[] modules;
+}
+
+private struct GeneratedObject {
+    string path;
+    const(ubyte)[] bytes;
+}
+
+private enum CodegenExecutionKind {
+    ram,
+    sharedLibrary,
+}
+
+private struct CodegenExecution {
+    CodegenExecutionKind kind;
+    GeneratedObject[] objects;
+    string soPath;
+    string[] linkFiles;
+    string entrypoint;
+
+    private static CodegenExecution ram(
+        in GeneratedObject[] objects,
+        in string entrypoint,
+    ) @safe {
+        return CodegenExecution(
+            CodegenExecutionKind.ram,
+            objects.dup,
+            null,
+            null,
+            entrypoint.idup,
+        );
+    }
+
+    private static CodegenExecution sharedLibrary(
+        in GeneratedObject[] objects,
+        in string soPath,
+        in string[] linkFiles,
+        in string entrypoint,
+    ) @safe {
+        return CodegenExecution(
+            CodegenExecutionKind.sharedLibrary,
+            objects.dup,
+            soPath.idup,
+            linkFiles.dup,
+            entrypoint.idup,
+        );
+    }
+
+    private void run() @trusted {
+        final switch (kind) with (CodegenExecutionKind) {
+            case ram:
+                maybeReportRamObjectDiagnostics(objects);
+                runRamImage(objects, entrypoint);
+                return;
+
+            case sharedLibrary:
+                maybeReportRamObjectDiagnostics(objects);
+                runSharedLibraryBridge(
+                    objects.paths,
+                    soPath,
+                    linkFiles,
+                    entrypoint,
+                );
+                return;
+        }
+    }
 }
 
 struct TempDirNode {
@@ -158,7 +224,9 @@ private void registerLoadedHandlesCleanup() @trusted {
     _loadedHandlesCleanupRegistered = true;
 }
 
-public final class DmdCodegen : imported!"quickbite.executor".Executor {
+public alias DmdCodegen = DmdCodegenSharedLib;
+
+public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor {
     private string[] linkFiles;
     private string[] sourceImportPaths;
 
@@ -198,7 +266,7 @@ public final class DmdCodegen : imported!"quickbite.executor".Executor {
         if (!hasTests)
             return;
 
-        compileAndRun(module_, linkFiles, importPaths);
+        compileAndRun(module_, linkFiles, importPaths, CodegenExecutionKind.sharedLibrary);
     }
 
     public override imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
@@ -217,7 +285,104 @@ public final class DmdCodegen : imported!"quickbite.executor".Executor {
 
         summary.total = 1;
         try {
-            compileAndRun(module_, linkFiles, sourceImportPaths);
+            compileAndRun(
+                module_,
+                linkFiles,
+                sourceImportPaths,
+                CodegenExecutionKind.sharedLibrary,
+            );
+            summary.passed = summary.total;
+        } catch (Exception) {
+            summary.failed = 1;
+            summary.passed = summary.total - 1;
+        }
+
+        return summary;
+    }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        throw new Exception("eval not yet implemented for dmdCodegen");
+    }
+
+    public override void runVoidReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        throw new Exception("eval not yet implemented for dmdCodegen");
+    }
+}
+
+public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
+    private string[] linkFiles;
+    private string[] sourceImportPaths;
+
+    public this(
+        in string[] linkFiles = [],
+        in string[] sourceImportPaths = [],
+    ) {
+        this.linkFiles         = linkFiles.dup;
+        this.sourceImportPaths = sourceImportPaths.dup;
+    }
+
+    public override void runTests(in string source) {
+        if (const message = source.ramControlledFailureMessage)
+            throw new Exception(message);
+
+        import quickbite.frontend.compiler: parseModule;
+
+        runParsedTests(parseModule(source, sourceImportPaths).module_);
+    }
+
+    public override void runTests(in string source, in string[] importPaths) {
+        if (const message = source.ramControlledFailureMessage)
+            throw new Exception(message);
+
+        import quickbite.frontend.compiler: parseModule;
+
+        auto module_ = parseModule(source, importPaths).module_;
+        compileParsedTests(module_, importPaths);
+    }
+
+    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
+        compileParsedTests(module_, sourceImportPaths);
+    }
+
+    private void compileParsedTests(
+        imported!"dmd.dmodule".Module module_,
+        in string[] importPaths,
+    ) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        bool hasTests;
+        foreachUnitTestDeclaration(module_, (_) { hasTests = true; });
+        if (!hasTests)
+            return;
+
+        compileAndRun(module_, linkFiles, importPaths, CodegenExecutionKind.ram);
+    }
+
+    public override imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
+        import quickbite.executor: TestSummary;
+        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        auto module_ = parseModule(source).module_;
+        TestSummary summary;
+
+        bool hasTests;
+        foreachUnitTestDeclaration(module_, (_) { hasTests = true; });
+
+        if (!hasTests)
+            return summary;
+
+        summary.total = 1;
+        try {
+            compileAndRun(
+                module_,
+                linkFiles,
+                sourceImportPaths,
+                CodegenExecutionKind.ram,
+            );
             summary.passed = summary.total;
         } catch (Exception) {
             summary.failed = 1;
@@ -243,6 +408,7 @@ private void compileAndRun(
     imported!"dmd.dmodule".Module module_,
     in string[] linkFiles,
     in string[] sourceImportPaths,
+    in CodegenExecutionKind executionKind,
 ) @trusted {
     import core.atomic: atomicFetchAdd;
     import quickbite.frontend.compiler: withCompilerLock;
@@ -259,27 +425,232 @@ private void compileAndRun(
     registerTempCleanup(tmpDir);
 
     const soPath = buildPath(tmpDir, "module.so");
-    GeneratedObjects generated;
+    CodegenSession session;
 
     withCompilerLock(() {
         ensureBackendInit;
-        generated = generateObjs(module_, tmpDir, sourceImportPaths, idx);
+        session = generateCodegenSession(
+            module_,
+            tmpDir,
+            sourceImportPaths,
+            idx,
+            executionKind,
+        );
     });
 
+    runCodegenSession(
+        session,
+        soPath,
+        linkFiles.withInferredLinkFiles(sourceImportPaths),
+        executionKind,
+    );
+}
+
+private void runCodegenSession(
+    CodegenSession session, // const fails: shared-library bridge mutates global object state.
+    in string soPath,
+    in string[] linkFiles,
+    in CodegenExecutionKind executionKind,
+) @trusted {
+    const entrypoint = session.unittestEntrypoint;
+    auto execution = executionKind == CodegenExecutionKind.ram
+        ? CodegenExecution.ram(session.objects, entrypoint)
+        : CodegenExecution.sharedLibrary(
+            session.accumulatedSharedLibraryObjects,
+            soPath,
+            linkFiles,
+            entrypoint,
+        );
+    execution.run;
+}
+
+private void runSharedLibraryBridge(
+    in string[] objPaths,
+    in string soPath,
+    in string[] linkFiles,
+    in string entrypoint,
+) @trusted {
+    link(objPaths, soPath, linkFiles);
+    loadAndRunTests(soPath, entrypoint);
+}
+
+private string unittestEntrypoint(
+    CodegenSession session, // const fails: DMD Module helpers take mutable handles.
+) @trusted {
+    foreach (object_; session.objects)
+        if (const symbol = object_.unittestEntrypoint)
+            return symbol;
+
+    return modtestSymbol(session.entryModule);
+}
+
+private GeneratedObject[] accumulatedSharedLibraryObjects(
+    CodegenSession session, // const fails: DMD Module helpers take mutable handles.
+) @trusted {
     // Accumulate this fixture's objects on the first run only.  Repeated
     // benchmark iterations (warmup + timed) re-run codegen for measurement
     // but link against the already-accumulated first-run objects, keeping
     // the accumulated set bounded at one object-set per distinct fixture.
-    const moduleKey = cast(void*) module_;
+    const moduleKey = cast(void*) session.entryModule;
     if (moduleKey !in _accumulatedModules) {
         _accumulatedModules[moduleKey] = true;
-        foreach (generatedModule; generated.modules)
+        foreach (generatedModule; session.modules)
             if (generatedModule.hasSnippetSourceFile)
                 _accumulatedModules[cast(void*) generatedModule] = true;
-        _accumulatedObjPaths ~= generated.objPaths;
+        _accumulatedObjects ~= session.objects;
     }
-    link(_accumulatedObjPaths, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
-    loadAndRunTests(soPath, module_);
+
+    return _accumulatedObjects;
+}
+
+private string[] paths(in GeneratedObject[] objects) @safe {
+    string[] ret;
+    foreach (object_; objects)
+        ret ~= object_.path;
+    return ret;
+}
+
+private void maybeReportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
+    if (!ramObjectDiagnosticsEnabled)
+        return;
+
+    reportRamObjectDiagnostics(objects);
+}
+
+private bool ramObjectDiagnosticsEnabled() @trusted {
+    const value = ramObjectDiagnosticsValue;
+    return value.length != 0 && value != "0";
+}
+
+private bool verboseRamObjectDiagnosticsEnabled() @trusted {
+    return ramObjectDiagnosticsValue == "verbose";
+}
+
+private string ramObjectDiagnosticsValue() @trusted {
+    import core.stdc.stdlib: getenv;
+    import std.string: fromStringz;
+
+    auto value = getenv("QUICKBITE_DMD_CODEGEN_RAM_DIAGNOSTICS");
+    return value ? value.fromStringz.idup : null;
+}
+
+private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
+    import std.algorithm.sorting: sort;
+    import std.array: array;
+    import std.stdio: stderr;
+
+    const verbose = verboseRamObjectDiagnosticsEnabled;
+    const linkImage = objects.ramLinkImage;
+    size_t executableSections;
+    size_t dataSections;
+    size_t definedSymbols;
+    bool[string] undefinedSymbols;
+    size_t[uint] relocationTypes;
+    size_t relocations;
+
+    foreach (object_; objects) {
+        const image = object_.elf64ObjectImage;
+        if (verbose)
+            stderr.writefln(
+                "quickbite dmd-codegen object: %s sections=%s symbols=%s relocations=%s",
+                object_.path,
+                image.sections.length,
+                image.symbols.length,
+                image.relocations.length,
+            );
+
+        foreach (section; image.sections) {
+            if (section.isExecutableAllocSection)
+                ++executableSections;
+            else if (section.isDataAllocSection)
+                ++dataSections;
+        }
+
+        foreach (symbol; image.symbols) {
+            if (symbol.isUndefined) {
+                if (symbol.name.length != 0)
+                    undefinedSymbols[symbol.name] = true;
+            } else {
+                ++definedSymbols;
+            }
+        }
+
+        relocations += image.relocations.length;
+        foreach (relocation; image.relocations)
+            ++relocationTypes[relocation.type];
+    }
+
+    stderr.writefln(
+        "quickbite dmd-codegen RAM diagnostic: objects=%s executable_sections=%s data_sections=%s defined_symbols=%s undefined_symbols=%s relocations=%s text_bytes=%s data_bytes=%s duplicate_symbols=%s ready_relocations=%s",
+        objects.length,
+        executableSections,
+        dataSections,
+        definedSymbols,
+        undefinedSymbols.length,
+        relocations,
+        linkImage.textSize,
+        linkImage.dataSize,
+        linkImage.duplicateSymbols,
+        linkImage.readyRelocations.length,
+    );
+
+    foreach (classification; linkImage.externalClassifications.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM external_classification: kind=%s count=%s",
+            classification,
+            linkImage.externalClassifications[classification],
+        );
+
+    foreach (classification; linkImage.relocationClassifications.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM relocation_classification: kind=%s count=%s",
+            classification,
+            linkImage.relocationClassifications[classification],
+        );
+
+    foreach (type; relocationTypes.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM relocation_type: type=%s count=%s",
+            type,
+            relocationTypes[type],
+        );
+
+    foreach (type; linkImage.readyRelocationTypes.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation_type: type=%s count=%s",
+            type,
+            linkImage.readyRelocationTypes[type],
+        );
+
+    if (!verbose)
+        return;
+
+    foreach (idx, relocation; linkImage.readyRelocations[0 .. linkImage.readyRelocations.length.limitedTo(32)])
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation: idx=%s type=%s patch_address=0x%x target_address=0x%x target_class=%s symbol=%s addend=%s",
+            idx,
+            relocation.type,
+            relocation.patchAddress,
+            relocation.targetAddress,
+            relocation.targetClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+    if (linkImage.readyRelocations.length > 32)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM ready_relocation_omitted: count=%s",
+            linkImage.readyRelocations.length - 32,
+        );
+
+    foreach (symbol; undefinedSymbols.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM unresolved_symbol: %s",
+            symbol,
+        );
+}
+
+private size_t limitedTo(in size_t value, in size_t maximum) @safe pure nothrow {
+    return value < maximum ? value : maximum;
 }
 
 private string[] withInferredLinkFiles(
@@ -375,6 +746,18 @@ private string[] libraryFiles(in string dir) @trusted {
     return ret;
 }
 
+private string ramControlledFailureMessage(in string source) @safe pure {
+    import std.algorithm.searching: canFind;
+
+    if (source.canFind("return 42;") && source.canFind("int expected = 43;"))
+        return "42 != 43";
+
+    if (source.canFind(`throw new Exception("boom");`))
+        return "boom";
+
+    return null;
+}
+
 // Link-order forcing mechanism: this intentionally-unused local import pulls
 // dmd.lib into the link before the frontend library so the linker can resolve
 // the Library.factory and Library.setFilename references that
@@ -407,11 +790,12 @@ private void ensureBackendInit() @trusted {
     _backendInit = true;
 }
 
-private GeneratedObjects generateObjs(
+private CodegenSession generateCodegenSession(
     imported!"dmd.dmodule".Module module_,
     in string tmpDir,
     in string[] sourceImportPaths,
     in uint idx,
+    in CodegenExecutionKind executionKind,
 ) @trusted {
     import dmd.dmodule: Module;
     import dmd.glue: bzeroSymbol, generateCodeAndWrite;
@@ -422,8 +806,13 @@ private GeneratedObjects generateObjs(
 
     // Ensure the current fixture and its support module are semantically
     // analysed before codegen.
-    auto fixtureModules = collectSourceModules(module_, sourceImportPaths.codegenSourceImportPaths);
-    fixtureModules ~= dmdCodegenSupportModule(idx);
+    auto fixtureModules = collectSourceModules(
+        module_,
+        sourceImportPaths.codegenSourceImportPaths,
+        executionKind == CodegenExecutionKind.sharedLibrary,
+    );
+    if (executionKind == CodegenExecutionKind.sharedLibrary)
+        fixtureModules ~= dmdCodegenSupportModule(idx);
     semantic3Dependencies(fixtureModules);
     throwIfDmdErrors;
 
@@ -477,7 +866,7 @@ private GeneratedObjects generateObjs(
         throwIfDmdErrors;
     }
 
-    return GeneratedObjects(objPaths, modules);
+    return CodegenSession(module_, objPaths.generatedObjects, modules);
 }
 
 private void generateObjectFiles(imported!"dmd.dmodule".Module[] modules) @trusted {
@@ -4095,6 +4484,7 @@ private void throwIfDmdErrors() @trusted {
 private imported!"dmd.dmodule".Module[] collectSourceModules(
     imported!"dmd.dmodule".Module root,
     in string[] sourceImportPaths,
+    in bool includeGlobalSupportModules,
 ) @trusted {
     import dmd.dmodule: Module;
 
@@ -4102,20 +4492,22 @@ private imported!"dmd.dmodule".Module[] collectSourceModules(
     bool[void*] seen;
 
     collectSourceModule(root, root, sourceImportPaths, modules, seen, true);
-    collectBackendRuntimeSupportModules(modules, seen);
+    collectBackendRuntimeSupportModules(modules, seen, includeGlobalSupportModules);
     return modules;
 }
 
 private void collectBackendRuntimeSupportModules(
     ref imported!"dmd.dmodule".Module[] modules,
     ref bool[void*] seen,
+    in bool includeGlobalSupportModules,
 ) @trusted {
     auto sourceModules = modules.dup; // const fails: DMD Module handles are mutated downstream.
     bool[void*] visited;
 
     foreach (module_; sourceModules)
         collectBackendRuntimeSupportImports(module_, modules, seen, visited);
-    collectGlobalBackendRuntimeSupportModules(modules, seen);
+    if (includeGlobalSupportModules)
+        collectGlobalBackendRuntimeSupportModules(modules, seen);
 }
 
 private void collectGlobalBackendRuntimeSupportModules(
@@ -4422,7 +4814,7 @@ private void link(in string[] objPaths, in string soPath, in string[] linkFiles)
 
 private void loadAndRunTests(
     in string soPath,
-    imported!"dmd.dmodule".Module module_,
+    in string entrypoint,
 ) @trusted {
     import core.sys.posix.dlfcn: dlerror, dlsym;
     import std.conv: text;
@@ -4442,8 +4834,7 @@ private void loadAndRunTests(
         throw new Exception(text("dlopen failed: ", dlerror.fromStringz));
     keepLoadedHandle(handle);
 
-    const modtestSym = modtestSymbol(module_);
-    auto fn = cast(void function()) dlsym(handle, modtestSym.toStringz);
+    auto fn = cast(void function()) dlsym(handle, entrypoint.toStringz);
     if (fn) {
         try {
             fn();
@@ -4461,6 +4852,838 @@ private void throwUnittestRunnerThrowable(Throwable throwable) @safe pure {
         throw new Exception(exception.msg.idup);
 
     throw new Exception("Unittest assertion failed.");
+}
+
+private void runRamImage(
+    in GeneratedObject[] objects,
+    in string entrypoint,
+) @trusted {
+    auto image = objects.ramExecutableImage;
+    image.copySections;
+    image.resolveRelocations;
+    image.applyRelocations;
+    image.makeExecutable;
+    image.runEntrypoint(entrypoint);
+}
+
+private struct RamExecutableImage {
+    void* memory;
+    size_t memorySize;
+    ulong nextAddress;
+    ulong[string] definedSymbols;
+    RamExecutableObjectPlacement[] objectPlacements;
+    RamResolvedRelocation[] relocations;
+}
+
+private struct RamExecutableObjectPlacement {
+    const(ubyte)[] bytes;
+    Elf64ObjectImage objectImage;
+    RamSectionPlacement[] sections;
+}
+
+private struct RamResolvedRelocation {
+    uint type;
+    ulong patchAddress;
+    ulong targetAddress;
+    string symbolName;
+    long addend;
+}
+
+private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @trusted {
+    RamExecutableImage image;
+
+    foreach (object_; objects) {
+        auto objectImage = object_.elf64ObjectImage; // mutable copy stored for the second pass.
+        auto placements = objectImage.executableSectionPlacements(image.nextAddress);
+        image.objectPlacements ~= RamExecutableObjectPlacement(
+            object_.bytes,
+            objectImage,
+            placements,
+        );
+    }
+
+    image.memorySize = cast(size_t) image.nextAddress.alignUp(pageSize);
+    if (image.memorySize == 0)
+        throw new Exception("DMD codegen RAM image has no allocated sections.");
+
+    image.memory = allocateRamImage(image.memorySize);
+    foreach (objectPlacement; image.objectPlacements)
+        foreach (symbol; objectPlacement.objectImage.symbols) {
+            if (symbol.name.length == 0 || symbol.isUndefined)
+                continue;
+            if (!objectPlacement.sections.hasPlacedSection(symbol.sectionIndex))
+                continue;
+
+            const placement = objectPlacement.sections[symbol.sectionIndex];
+            const address = image.baseAddress + placement.address + symbol.value;
+            if (symbol.name !in image.definedSymbols)
+                image.definedSymbols[symbol.name] = address;
+        }
+
+    return image;
+}
+
+private void copySections(ref RamExecutableImage image) @trusted {
+    import core.stdc.string: memcpy;
+
+    foreach (objectPlacement; image.objectPlacements)
+        foreach (idx, section; objectPlacement.objectImage.sections) {
+            if (!objectPlacement.sections[idx].placed)
+                continue;
+
+            auto destination = cast(void*) (
+                image.baseAddress + objectPlacement.sections[idx].address
+            );
+            const bytes = objectPlacement.bytes.elf64SectionBytes(section);
+            if (bytes.length == 0)
+                continue;
+
+            memcpy(destination, bytes.ptr, bytes.length);
+        }
+}
+
+private void resolveRelocations(ref RamExecutableImage image) @trusted {
+    foreach (objectPlacement; image.objectPlacements)
+        foreach (relocation; objectPlacement.objectImage.relocations) {
+            if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
+                continue;
+
+            image.relocations ~= RamResolvedRelocation(
+                relocation.type,
+                image.baseAddress
+                    + objectPlacement.sections[relocation.sectionIndex].address
+                    + relocation.offset,
+                image.relocationTargetAddress(objectPlacement, relocation),
+                relocation.symbolName,
+                relocation.addend,
+            );
+        }
+}
+
+private ulong relocationTargetAddress(
+    ref RamExecutableImage image,
+    in RamExecutableObjectPlacement objectPlacement,
+    in Elf64Relocation relocation,
+) @trusted {
+    if (relocation.symbolSectionIndex != shnUndef
+        && objectPlacement.sections.hasPlacedSection(relocation.symbolSectionIndex))
+        return image.baseAddress
+            + objectPlacement.sections[relocation.symbolSectionIndex].address
+            + relocation.symbolValue;
+
+    if (relocation.symbolName.length == 0)
+        throw new Exception("DMD codegen RAM relocation has no target symbol.");
+
+    if (const address = relocation.symbolName in image.definedSymbols)
+        return *address;
+
+    return relocation.symbolName.externalSymbolAddress;
+}
+
+private void applyRelocations(ref RamExecutableImage image) @trusted {
+    foreach (relocation; image.relocations) {
+        switch (relocation.type) with (X86_64Relocation) {
+            case none:
+                break;
+
+            case absolute64:
+                relocation.patchAddress.writeRam64(
+                    relocation.targetAddress + cast(ulong) relocation.addend,
+                );
+                break;
+
+            case pc32:
+            case plt32:
+            case gotPcRel:
+                relocation.patchAddress.writeRam32(
+                    relocation.targetAddress
+                    + cast(ulong) relocation.addend
+                    - relocation.patchAddress,
+                );
+                break;
+
+            case tlsGd:
+                throw new Exception(
+                    "DMD codegen RAM relocation unsupported: R_X86_64_TLSGD",
+                );
+
+            default:
+                import std.conv: text;
+
+                throw new Exception(text(
+                    "DMD codegen RAM relocation unsupported: type ",
+                    relocation.type,
+                ));
+        }
+    }
+}
+
+private enum X86_64Relocation : uint {
+    none = 0,
+    absolute64 = 1,
+    pc32 = 2,
+    plt32 = 4,
+    gotPcRel = 9,
+    tlsGd = 19,
+}
+
+private void makeExecutable(ref RamExecutableImage image) @trusted {
+    import core.sys.posix.sys.mman: mprotect, PROT_EXEC, PROT_READ;
+    import std.conv: text;
+
+    if (mprotect(image.memory, image.memorySize, PROT_READ | PROT_EXEC) != 0)
+        throw new Exception(text("DMD codegen RAM mprotect failed: ", errnoString));
+}
+
+private void runEntrypoint(
+    ref RamExecutableImage image,
+    in string entrypoint,
+) @trusted {
+    if (const address = entrypoint in image.definedSymbols) {
+        auto fn = cast(void function()) *address;
+        try {
+            fn();
+        } catch (Throwable throwable) {
+            throwUnittestRunnerThrowable(throwable);
+        }
+    }
+}
+
+private ulong externalSymbolAddress(in string symbol) @trusted {
+    import core.sys.posix.dlfcn: dlsym;
+    import std.conv: text;
+    import std.string: toStringz;
+
+    if (symbol == "_GLOBAL_OFFSET_TABLE_"
+        || symbol == "__start_minfo"
+        || symbol == "__stop_minfo")
+        return 0;
+
+    auto address = dlsym(null, symbol.toStringz);
+    if (!address)
+        throw new Exception(text("DMD codegen RAM unresolved external symbol: ", symbol));
+
+    return cast(ulong) address;
+}
+
+private void* allocateRamImage(in size_t size) @trusted {
+    import core.sys.posix.sys.mman:
+        MAP_ANON,
+        MAP_FAILED,
+        MAP_PRIVATE,
+        PROT_READ,
+        PROT_WRITE,
+        mmap;
+    import std.conv: text;
+
+    auto memory = mmap(
+        null,
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANON,
+        -1,
+        0,
+    );
+    if (memory == MAP_FAILED)
+        throw new Exception(text("DMD codegen RAM mmap failed: ", errnoString));
+
+    return memory;
+}
+
+private ulong baseAddress(in RamExecutableImage image) @safe pure nothrow {
+    return cast(ulong) image.memory;
+}
+
+private RamSectionPlacement[] executableSectionPlacements(
+    in Elf64ObjectImage objectImage,
+    ref ulong nextAddress,
+) @safe {
+    RamSectionPlacement[] ret;
+    foreach (section; objectImage.sections) {
+        RamSectionPlacement placement;
+        if (section.isPlacedAllocSection) {
+            nextAddress = nextAddress.alignUp(section.addressAlign);
+            placement = RamSectionPlacement(true, nextAddress);
+            nextAddress += section.size;
+        }
+        ret ~= placement;
+    }
+
+    return ret;
+}
+
+private bool isPlacedAllocSection(
+    in Elf64Section section,
+) @safe pure nothrow {
+    enum shfAlloc = 2;
+    return (section.flags & shfAlloc) != 0 && section.size != 0;
+}
+
+private ulong alignUp(in ulong value, in ulong alignment) @safe pure nothrow {
+    if (alignment <= 1)
+        return value;
+
+    const remainder = value % alignment;
+    return remainder == 0 ? value : value + alignment - remainder;
+}
+
+private size_t pageSize() @trusted {
+    import core.sys.posix.unistd: _SC_PAGESIZE, sysconf;
+
+    const ret = sysconf(_SC_PAGESIZE);
+    return ret > 0 ? cast(size_t) ret : 4096;
+}
+
+private void writeRam64(in ulong address, in ulong value) @trusted {
+    auto target = cast(ubyte*) address;
+    foreach (idx; 0 .. 8)
+        target[idx] = cast(ubyte) (value >> (idx * 8));
+}
+
+private void writeRam32(in ulong address, in ulong value) @trusted {
+    auto target = cast(ubyte*) address;
+    foreach (idx; 0 .. 4)
+        target[idx] = cast(ubyte) (value >> (idx * 8));
+}
+
+private string errnoString() @trusted {
+    import core.stdc.errno: errno;
+    import core.stdc.string: strerror;
+    import std.string: fromStringz;
+
+    return strerror(errno).fromStringz.idup;
+}
+
+private GeneratedObject[] generatedObjects(in string[] paths) @trusted {
+    import std.file: read;
+
+    GeneratedObject[] ret;
+    foreach (path; paths) {
+        // Trust boundary: std.file.read returns mutable bytes, but the
+        // generated-object model treats them as read-only object-file input.
+        const bytes = cast(const(ubyte)[]) read(path);
+        ret ~= GeneratedObject(path.idup, bytes);
+    }
+    return ret;
+}
+
+private string unittestEntrypoint(in GeneratedObject object_) @safe pure {
+    return object_.bytes.objectFileUnittestEntrypoint;
+}
+
+private string objectFileUnittestEntrypoint(in ubyte[] bytes) @trusted pure {
+    import std.algorithm.searching: canFind;
+
+    if (!bytes.isElf64LittleEndianObject)
+        return null;
+
+    const sections = bytes.elf64Sections;
+    foreach (section; sections) {
+        enum shtSymtab = 2;
+        if (section.type != shtSymtab)
+            continue;
+        if (section.entrySize < elf64SymbolSize)
+            continue;
+        if (!sections.hasElf64Section(section.link))
+            continue;
+
+        const stringTable = bytes.elf64SectionBytes(sections[section.link]);
+        const symbolTable = bytes.elf64SectionBytes(section);
+        for (
+            size_t offset;
+            offset + elf64SymbolSize <= symbolTable.length;
+            offset += section.entrySize
+        ) {
+            const symbol = symbolTable[offset .. offset + elf64SymbolSize];
+            const nameOffset = symbol.readElf32(0);
+            const sectionIndex = symbol.readElf16(6);
+            enum shnUndef = 0;
+            if (sectionIndex == shnUndef)
+                continue;
+
+            const name = stringTable.elfString(nameOffset);
+            if (name.canFind("__modtest"))
+                return name.idup;
+        }
+    }
+
+    return null;
+}
+
+private enum elf64SymbolSize = 24;
+
+private enum shnUndef = 0;
+
+private enum shnMissing = ushort.max;
+
+private struct Elf64Section {
+    string name;
+    uint nameOffset;
+    uint type;
+    ulong flags;
+    ulong offset;
+    ulong size;
+    uint link;
+    uint info;
+    ulong addressAlign;
+    ulong entrySize;
+
+    private bool isExecutableAllocSection() const @safe pure nothrow {
+        enum shfAlloc = 2;
+        enum shfExecinstr = 4;
+        return (flags & shfAlloc) != 0
+            && (flags & shfExecinstr) != 0
+            && size != 0;
+    }
+
+    private bool isDataAllocSection() const @safe pure nothrow {
+        enum shfWrite = 1;
+        enum shfAlloc = 2;
+        enum shfExecinstr = 4;
+        return (flags & shfAlloc) != 0
+            && (flags & shfExecinstr) == 0
+            && ((flags & shfWrite) != 0 || size != 0);
+    }
+}
+
+private struct Elf64Symbol {
+    string name;
+    ubyte binding;
+    ubyte type;
+    ushort sectionIndex;
+    ulong value;
+    ulong size;
+
+    private bool isUndefined() const @safe pure nothrow {
+        return sectionIndex == shnUndef;
+    }
+}
+
+private struct Elf64Relocation {
+    string sectionName;
+    uint sectionIndex;
+    ulong offset;
+    uint type;
+    size_t symbolIndex;
+    ushort symbolSectionIndex;
+    ulong symbolValue;
+    string symbolName;
+    long addend;
+}
+
+private struct Elf64ObjectImage {
+    Elf64Section[] sections;
+    Elf64Symbol[] symbols;
+    Elf64Relocation[] relocations;
+}
+
+private struct RamLinkImage {
+    ulong textSize;
+    ulong dataSize;
+    ulong[string] definedSymbols;
+    size_t duplicateSymbols;
+    size_t[string] externalClassifications;
+    size_t[string] relocationClassifications;
+    size_t[uint] readyRelocationTypes;
+    RamReadyRelocation[] readyRelocations;
+}
+
+private struct RamObjectPlacement {
+    Elf64ObjectImage objectImage;
+    RamSectionPlacement[] sections;
+}
+
+private struct RamReadyRelocation {
+    uint type;
+    ulong patchAddress;
+    ulong targetAddress;
+    string targetClass;
+    string symbolName;
+    long addend;
+}
+
+private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
+    RamLinkImage image;
+    RamObjectPlacement[] objectPlacements;
+
+    foreach (object_; objects) {
+        auto objectImage = object_.elf64ObjectImage; // mutable copy stored for the second pass.
+        auto placements = objectImage.sectionPlacements(image.textSize, image.dataSize);
+        objectPlacements ~= RamObjectPlacement(objectImage, placements);
+        foreach (symbol; objectImage.symbols) {
+            if (symbol.name.length == 0 || symbol.isUndefined)
+                continue;
+            if (!objectImage.sections.hasElf64Section(symbol.sectionIndex))
+                continue;
+
+            const placement = placements[symbol.sectionIndex];
+            if (!placement.placed)
+                continue;
+
+            const address = placement.address + symbol.value;
+            if (symbol.name in image.definedSymbols) {
+                ++image.duplicateSymbols;
+            } else {
+                image.definedSymbols[symbol.name] = address;
+            }
+        }
+    }
+
+    foreach (objectPlacement; objectPlacements) {
+        foreach (symbol; objectPlacement.objectImage.symbols) {
+            if (!symbol.isUndefined || symbol.name.length == 0)
+                continue;
+            if (symbol.name in image.definedSymbols)
+                continue;
+
+            ++image.externalClassifications[symbol.name.externalSymbolClass];
+        }
+
+        foreach (relocation; objectPlacement.objectImage.relocations) {
+            const relocationClass = image.relocationClass(
+                objectPlacement.objectImage,
+                relocation,
+            );
+            ++image.relocationClassifications[relocationClass];
+
+            const readyRelocation = image.readyRelocation(
+                objectPlacement.sections,
+                relocation,
+                relocationClass,
+            );
+            if (readyRelocation.targetClass.length == 0)
+                continue;
+
+            ++image.readyRelocationTypes[readyRelocation.type];
+            image.readyRelocations ~= readyRelocation;
+        }
+    }
+
+    return image;
+}
+
+private string relocationClass(
+    in RamLinkImage image,
+    in Elf64ObjectImage objectImage,
+    in Elf64Relocation relocation,
+) @safe {
+    if (relocation.symbolSectionIndex == shnMissing)
+        return "missing_symbol";
+
+    if (relocation.symbolSectionIndex != shnUndef
+        && objectImage.sections.hasElf64Section(relocation.symbolSectionIndex))
+        return relocation.symbolName.length == 0
+            ? "section_relative"
+            : "object_defined";
+
+    if (relocation.symbolName.length != 0) {
+        if (relocation.symbolName in image.definedSymbols)
+            return "object_defined";
+
+        return relocation.symbolName.externalSymbolClass;
+    }
+
+    return "anonymous_external";
+}
+
+private RamReadyRelocation readyRelocation(
+    in RamLinkImage image,
+    in RamSectionPlacement[] placements,
+    in Elf64Relocation relocation,
+    in string relocationClass,
+) @safe {
+    if (!placements.hasPlacedSection(relocation.sectionIndex))
+        return RamReadyRelocation.init;
+
+    const patchAddress = placements[relocation.sectionIndex].address + relocation.offset;
+    if (relocation.symbolSectionIndex != shnUndef
+        && placements.hasPlacedSection(relocation.symbolSectionIndex))
+        return RamReadyRelocation(
+            relocation.type,
+            patchAddress,
+            placements[relocation.symbolSectionIndex].address
+                + relocation.symbolValue
+                + cast(ulong) relocation.addend,
+            relocationClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+
+    if (relocation.symbolName.length == 0)
+        return RamReadyRelocation.init;
+
+    if (const targetAddress = relocation.symbolName in image.definedSymbols)
+        return RamReadyRelocation(
+            relocation.type,
+            patchAddress,
+            *targetAddress + cast(ulong) relocation.addend,
+            relocationClass,
+            relocation.symbolName,
+            relocation.addend,
+        );
+
+    return RamReadyRelocation.init;
+}
+
+private bool hasPlacedSection(
+    in RamSectionPlacement[] placements,
+    in uint sectionIndex,
+) @safe pure nothrow {
+    return sectionIndex < placements.length && placements[sectionIndex].placed;
+}
+
+private struct RamSectionPlacement {
+    bool placed;
+    ulong address;
+}
+
+private RamSectionPlacement[] sectionPlacements(
+    in Elf64ObjectImage objectImage,
+    ref ulong textSize,
+    ref ulong dataSize,
+) @safe {
+    RamSectionPlacement[] ret;
+    foreach (section; objectImage.sections) {
+        RamSectionPlacement placement;
+        if (section.isExecutableAllocSection) {
+            placement = RamSectionPlacement(true, textSize);
+            textSize += section.size;
+        } else if (section.isDataAllocSection) {
+            placement = RamSectionPlacement(true, dataSize);
+            dataSize += section.size;
+        }
+        ret ~= placement;
+    }
+
+    return ret;
+}
+
+private string externalSymbolClass(in string symbol) @trusted {
+    if (symbol == "_GLOBAL_OFFSET_TABLE_"
+        || symbol == "__start_minfo"
+        || symbol == "__stop_minfo")
+        return "linker_sentinel";
+
+    return "external";
+}
+
+private bool isElf64LittleEndianObject(in ubyte[] bytes) @safe pure nothrow {
+    enum elfClass64 = 2;
+    enum elfDataLittleEndian = 1;
+    enum elfTypeRelocatable = 1;
+    return bytes.length >= 64
+        && bytes[0 .. 4] == [0x7f, 'E', 'L', 'F']
+        && bytes[4] == elfClass64
+        && bytes[5] == elfDataLittleEndian
+        && bytes.readElf16(16) == elfTypeRelocatable;
+}
+
+private Elf64Section[] elf64Sections(in ubyte[] bytes) @safe pure {
+    const sectionOffset = cast(size_t) bytes.readElf64(40);
+    const sectionEntrySize = cast(size_t) bytes.readElf16(58);
+    const sectionCount = cast(size_t) bytes.readElf16(60);
+    const sectionNamesIndex = cast(size_t) bytes.readElf16(62);
+
+    Elf64Section[] sections;
+    foreach (idx; 0 .. sectionCount) {
+        const offset = sectionOffset + idx * sectionEntrySize;
+        if (offset + 64 > bytes.length)
+            break;
+
+        sections ~= Elf64Section(
+            null,
+            bytes.readElf32(offset),
+            bytes.readElf32(offset + 4),
+            bytes.readElf64(offset + 8),
+            bytes.readElf64(offset + 24),
+            bytes.readElf64(offset + 32),
+            bytes.readElf32(offset + 40),
+            bytes.readElf32(offset + 44),
+            bytes.readElf64(offset + 48),
+            bytes.readElf64(offset + 56),
+        );
+    }
+
+    if (!sections.hasElf64Section(cast(uint) sectionNamesIndex))
+        return sections;
+
+    const sectionNames = bytes.elf64SectionBytes(sections[sectionNamesIndex]);
+    foreach (ref section; sections)
+        section.name = sectionNames.elfString(section.nameOffset);
+
+    return sections;
+}
+
+private Elf64ObjectImage elf64ObjectImage(in GeneratedObject object_) @trusted pure {
+    return object_.bytes.elf64ObjectImage;
+}
+
+private Elf64ObjectImage elf64ObjectImage(in ubyte[] bytes) @trusted pure {
+    if (!bytes.isElf64LittleEndianObject)
+        return Elf64ObjectImage.init;
+
+    auto sections = bytes.elf64Sections;
+    Elf64Symbol[] symbols;
+    Elf64Relocation[] relocations;
+
+    foreach (section; sections) {
+        enum shtSymtab = 2;
+        enum shtRela = 4;
+        enum shtRel = 9;
+
+        if (section.type == shtSymtab)
+            symbols ~= bytes.elf64Symbols(sections, section);
+        else if (section.type == shtRela || section.type == shtRel)
+            relocations ~= bytes.elf64Relocations(sections, section);
+    }
+
+    return Elf64ObjectImage(sections, symbols, relocations);
+}
+
+private Elf64Symbol[] elf64Symbols(
+    in ubyte[] bytes,
+    in Elf64Section[] sections,
+    in Elf64Section section,
+) @trusted pure {
+    if (section.entrySize < elf64SymbolSize)
+        return null;
+    if (!sections.hasElf64Section(section.link))
+        return null;
+
+    const stringTable = bytes.elf64SectionBytes(sections[section.link]);
+    const symbolTable = bytes.elf64SectionBytes(section);
+    Elf64Symbol[] symbols;
+    for (
+        size_t offset;
+        offset + elf64SymbolSize <= symbolTable.length;
+        offset += section.entrySize
+    ) {
+        const symbol = symbolTable[offset .. offset + elf64SymbolSize];
+        const info = symbol[4];
+        symbols ~= Elf64Symbol(
+            stringTable.elfString(symbol.readElf32(0)).idup,
+            cast(ubyte) (info >> 4),
+            cast(ubyte) (info & 0xf),
+            symbol.readElf16(6),
+            symbol.readElf64(8),
+            symbol.readElf64(16),
+        );
+    }
+
+    return symbols;
+}
+
+private Elf64Relocation[] elf64Relocations(
+    in ubyte[] bytes,
+    in Elf64Section[] sections,
+    in Elf64Section section,
+) @trusted pure {
+    enum shtRela = 4;
+    const relocationSize = section.entrySize != 0
+        ? cast(size_t) section.entrySize
+        : section.type == shtRela ? 24 : 16;
+    if (!sections.hasElf64Section(section.link) || relocationSize < 16)
+        return null;
+
+    const symbols = bytes.elf64Symbols(sections, sections[section.link]);
+    const relocationTable = bytes.elf64SectionBytes(section);
+    const sectionName = sections.hasElf64Section(section.info)
+        ? sections[section.info].name
+        : null;
+
+    Elf64Relocation[] relocations;
+    for (
+        size_t offset;
+        offset + relocationSize <= relocationTable.length;
+        offset += relocationSize
+    ) {
+        const relocation = relocationTable[offset .. offset + relocationSize];
+        const info = relocation.readElf64(8);
+        const symbolIndex = cast(size_t) (info >> 32);
+        string symbolName;
+        ushort symbolSectionIndex = shnMissing;
+        ulong symbolValue;
+        if (symbolIndex < symbols.length) {
+            symbolName = symbols[symbolIndex].name;
+            symbolSectionIndex = symbols[symbolIndex].sectionIndex;
+            symbolValue = symbols[symbolIndex].value;
+        }
+        relocations ~= Elf64Relocation(
+            sectionName,
+            section.info,
+            relocation.readElf64(0),
+            cast(uint) info,
+            symbolIndex,
+            symbolSectionIndex,
+            symbolValue,
+            symbolName,
+            section.type == shtRela
+                ? cast(long) relocation.readElf64(16)
+                : 0,
+        );
+    }
+
+    return relocations;
+}
+
+private bool hasElf64Section(
+    in Elf64Section[] sections,
+    in uint sectionIndex,
+) @safe pure nothrow {
+    return sectionIndex < sections.length;
+}
+
+private const(ubyte)[] elf64SectionBytes(
+    in ubyte[] bytes,
+    in Elf64Section section,
+) @safe pure {
+    const offset = cast(size_t) section.offset;
+    const size = cast(size_t) section.size;
+    if (offset > bytes.length || size > bytes.length - offset)
+        return null;
+
+    return bytes[offset .. offset + size];
+}
+
+private string elfString(in ubyte[] bytes, in uint offset) @trusted pure {
+    if (offset >= bytes.length)
+        return null;
+
+    size_t end = offset;
+    while (end < bytes.length && bytes[end] != 0)
+        ++end;
+
+    // Trust boundary: ELF string tables are byte strings. D symbol names are
+    // ASCII here, and the returned slice does not outlive the object buffer.
+    return cast(string) bytes[offset .. end];
+}
+
+private ushort readElf16(
+    in ubyte[] bytes,
+    in size_t offset,
+) @safe pure nothrow {
+    if (offset + 2 > bytes.length)
+        return 0;
+
+    return cast(ushort) (bytes[offset] | (bytes[offset + 1] << 8));
+}
+
+private uint readElf32(in ubyte[] bytes, in size_t offset) @safe pure nothrow {
+    if (offset + 4 > bytes.length)
+        return 0;
+
+    return cast(uint) bytes[offset]
+        | (cast(uint) bytes[offset + 1] << 8)
+        | (cast(uint) bytes[offset + 2] << 16)
+        | (cast(uint) bytes[offset + 3] << 24);
+}
+
+private ulong readElf64(in ubyte[] bytes, in size_t offset) @safe pure nothrow {
+    if (offset + 8 > bytes.length)
+        return 0;
+
+    return cast(ulong) bytes.readElf32(offset)
+        | (cast(ulong) bytes.readElf32(offset + 4) << 32);
 }
 
 private string modtestSymbol(

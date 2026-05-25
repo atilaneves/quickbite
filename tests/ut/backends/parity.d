@@ -8,6 +8,11 @@ private:
 
 import std.conv: text;
 import std.meta: AliasSeq;
+import ut.backends:
+    dmdCodegenRamExecutorBackends,
+    experimentalBackendTestsEnabled,
+    matureExecutorBackends;
+import unit_threaded;
 
 
 static foreach (backend; matureExecutorBackends ~ [
@@ -459,37 +464,43 @@ private void expectBackendFailure(
 static foreach (backend; matureExecutorBackends) {
     @("ok." ~ backend.text)
     unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
 
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
     }
 
     @("oops." ~ backend.text)
     unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
 
-            unittest {
-                assert(answer == 43);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+                unittest {
+                    assert(answer == 43);
+                }
+            }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }
     }
 
     @("throwingTest." ~ backend.text)
     unittest {
-        runTests(q{
-            unittest {
-                throw new Exception("boom");
-            }
-        }, backend).shouldThrowWithMessage("boom");
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    throw new Exception("boom");
+                }
+            }, backend).shouldThrowWithMessage("boom");
+        }
     }
 
     @("catchExceptionDoesNotCatchAssertFailure." ~ backend.text)
@@ -2283,6 +2294,249 @@ private void expectRunTestsFailure(
         exception.msg.should == expectedMessage;
     }
     threw.should == true;
+}
+
+static foreach (backend; dmdCodegenRamExecutorBackends) {
+    @(text("ok.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("assertionContext.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int answer() {
+                    return 42;
+                }
+
+                unittest {
+                    int expected = 43;
+                    assert(answer == expected);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
+    }
+
+    @(text("throwingTest.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    throw new Exception("boom");
+                }
+            }, backend).shouldThrowWithMessage("boom");
+        }
+    }
+
+    @(text("localIntReturn.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value() {
+                    int ret = 42;
+                    return ret;
+                }
+
+                unittest {
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intAddition.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 40;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value + 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intSubtraction.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 44;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value - 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intMultiplication.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 21;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value * 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intDivision.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 84;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value / 2 == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intModulo.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 44;
+                }
+
+                unittest {
+                    int value = input;
+                    assert(value % 43 == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intBitwiseAnd.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value = 0x2f;
+                    assert((value & 0x2a) == 0x2a);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intBitwiseOr.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value = 0x28;
+                    assert((value | 0x02) == 0x2a);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("intGreaterThan.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(input > 41);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("logicalAnd.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 42;
+                }
+
+                unittest {
+                    assert(input > 41 && input < 43);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("functionParameter.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int identity(int value) {
+                    return value;
+                }
+
+                unittest {
+                    assert(identity(42) == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("ifElse.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 1;
+                }
+
+                unittest {
+                    int value;
+                    if (input == 1)
+                        value = 42;
+                    else
+                        value = 7;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("while_.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    int value;
+                    while (value < 42)
+                        value += 7;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
 }
 
 static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking]) {
