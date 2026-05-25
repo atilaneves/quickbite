@@ -51,6 +51,27 @@ static foreach (backend; projectBackends) {
         }.runTests(backend);
     }
 
+    @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~ backend.text)
+    unittest {
+        q{
+            ubyte readByte(ubyte[] bytes, ref size_t position) {
+                return bytes[position++];
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] input = [first, second];
+                size_t position = input.length - 1;
+
+                const value = readByte(input, position);
+
+                assert(value == second);
+                assert(position == input.length);
+            }
+        }.runTests(backend);
+    }
+
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.text)
     unittest {
         q{

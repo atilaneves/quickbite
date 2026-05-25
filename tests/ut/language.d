@@ -1069,18 +1069,6 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("postIncrementSizeTIndex." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x2au];
-                size_t index = 0;
-                assert(values[index++] == 0x29u);
-                assert(index == 1);
-            }
-        }, backend);
-    }
-
     @("refUbyteArrayParameterAppend." ~ backend.text)
     unittest {
         runTests(q{
@@ -2187,6 +2175,18 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
                 append(values, value);
                 assert(values.length == 1);
                 assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("postIncrementSizeTIndex." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x2au];
+                size_t index = 0;
+                assert(values[index++] == 0x29u);
+                assert(index == 1);
             }
         }, backend);
     }
