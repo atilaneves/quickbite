@@ -4,7 +4,6 @@ private:
 
 public imported!"quickbite.executor".Repl.CellResult evalReplCell(
     imported!"quickbite.executor".Executor executor,
-    scope void delegate(in string transcript, in string input) runVoidCell,
     in string transcript,
     in string input,
 ) {
@@ -13,11 +12,11 @@ public imported!"quickbite.executor".Repl.CellResult evalReplCell(
     if (isExpressionCell(input))
         return Repl.CellResult.value_(executor.eval(transcript ~ input));
 
-    runVoidCell(transcript, input);
+    executor.runVoidReplCell(transcript, input);
     return Repl.CellResult.void_;
 }
 
-public bool isExpressionCell(in string input) {
+bool isExpressionCell(in string input) {
     import dmd.astcodegen: ASTCodegen;
     import dmd.errors: diagnostics;
     import dmd.globals: global;

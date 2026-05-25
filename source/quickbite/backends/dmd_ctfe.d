@@ -81,16 +81,10 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         return Value(cast(int) result);
     }
 
-    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+    public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
-        import quickbite.frontend.repl: frontendEvalReplCell = evalReplCell;
-
-        return frontendEvalReplCell(this, &runVoidReplCell, transcript, input);
-    }
-
-    private void runVoidReplCell(in string transcript, in string input) {
         import quickbite.frontend.compiler: parseModule;
 
         const source =
