@@ -199,16 +199,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long runPostIncrementExpression(
         imported!"dmd.expression".PostExp post,
     ) {
-        if (auto dotVar = post.e1.isDotVarExp)
-            if (dotVar.e1.isThisExp !is null && currentThis !is null)
-                if (auto field = dotVar.var.isVarDeclaration) {
-                    const oldValue = structScalarValue(currentThis, field);
-                    structScalars[currentThis][field] = coerceIntegerToType(
-                        oldValue + 1,
-                        field.type,
-                    );
-                    return oldValue;
-                }
+        long value;
+        if (postIncrementThisField(post, value))
+            return value;
 
         auto var = post.e1.isVarExp;
         if (var is null || var.var.isVarDeclaration is null)
@@ -227,6 +220,29 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         const oldValue = runExpression(post.e1);
         locals[variable] = coerceIntegerToType(oldValue + 1, variable.type);
         return oldValue;
+    }
+
+    private bool postIncrementThisField(
+        imported!"dmd.expression".PostExp post,
+        out long oldValue,
+    ) {
+        auto dotVar = post.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        if (dotVar.e1.isThisExp is null || currentThis is null)
+            return false;
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        oldValue = structScalarValue(currentThis, field);
+        structScalars[currentThis][field] = coerceIntegerToType(
+            oldValue + 1,
+            field.type,
+        );
+        return true;
     }
 
     private bool isPostIncrementExpression(
@@ -304,7 +320,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         }
 
         if (auto arrayLit = initializer.isArrayLiteralExp) {
-            localArrays[variable] = runArrayLiteral(arrayLit);
+            localArrays[variable] = evalArrayLiteral(arrayLit);
             return 0;
         }
 
@@ -315,31 +331,52 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
     private long runAssignExpression(imported!"dmd.expression".BinExp assign) {
         auto var = assign.e1.isVarExp;
-        if (var is null || var.var.isVarDeclaration is null) {
-            if (auto dotVar = assign.e1.isDotVarExp)
-                if (auto instance = dotVar.e1.isVarExp)
-                    if (auto instanceDecl = instance.var.isVarDeclaration)
-                        if (auto field = dotVar.var.isVarDeclaration) {
-                            if (auto arrayLit = assign.e2.isArrayLiteralExp) {
-                                structArrays[instanceDecl][field] = runArrayLiteral(arrayLit);
-                                return 0;
-                            }
+        if (var !is null)
+            if (auto variable = var.var.isVarDeclaration) {
+                const value = runExpression(assign.e2);
+                locals[variable] = value;
+                return value;
+            }
 
-                            const value = runExpression(assign.e2);
-                            structScalars[instanceDecl][field] = value;
-                            return value;
-                        }
+        long value;
+        if (assignStructField(assign, value))
+            return value;
 
-            throw new Exception("Unsupported assignment.");
-        }
-
-        auto variable = var.var.isVarDeclaration;
-        const value = runExpression(assign.e2);
-        locals[variable] = value;
-        return value;
+        throw new Exception("Unsupported assignment.");
     }
 
-    private long[] runArrayLiteral(
+    private bool assignStructField(
+        imported!"dmd.expression".BinExp assign,
+        out long value,
+    ) {
+        auto dotVar = assign.e1.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        auto instance = dotVar.e1.isVarExp;
+        if (instance is null)
+            return false;
+
+        auto instanceDecl = instance.var.isVarDeclaration;
+        if (instanceDecl is null)
+            return false;
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        if (auto arrayLit = assign.e2.isArrayLiteralExp) {
+            structArrays[instanceDecl][field] = evalArrayLiteral(arrayLit);
+            value = 0;
+            return true;
+        }
+
+        value = runExpression(assign.e2);
+        structScalars[instanceDecl][field] = value;
+        return true;
+    }
+
+    private long[] evalArrayLiteral(
         imported!"dmd.expression".ArrayLiteralExp arrayLit,
     ) {
         long[] elements;
@@ -534,22 +571,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 if (auto arr = variable in localArrays)
                     return *arr;
 
-        if (auto dotVar = expression.isDotVarExp)
-            if (auto instanceVar = dotVar.e1.isVarExp)
-                if (auto instanceDecl = instanceVar.var.isVarDeclaration)
-                    if (auto field = dotVar.var.isVarDeclaration) {
-                        long[] arr;
-                        if (structArrayValue(instanceDecl, field, arr))
-                            return arr;
-                    }
+        long[] value;
+        if (structArrayExpressionValue(expression, value))
+            return value;
 
-        if (auto dotVar = expression.isDotVarExp)
-            if (dotVar.e1.isThisExp !is null && currentThis !is null)
-                if (auto field = dotVar.var.isVarDeclaration) {
-                    long[] arr;
-                    if (structArrayValue(currentThis, field, arr))
-                        return arr;
-                }
+        if (thisStructArrayExpressionValue(expression, value))
+            return value;
 
         if (auto dotVar = expression.isDotVarExp)
             if (auto instanceVar = dotVar.e1.isVarExp)
@@ -559,6 +586,47 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         import std.conv: text;
         throw new Exception(text("Unsupported array expression: ", expression.op));
+    }
+
+    private bool structArrayExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
+        auto dotVar = expression.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        auto instanceVar = dotVar.e1.isVarExp;
+        if (instanceVar is null)
+            return false;
+
+        auto instanceDecl = instanceVar.var.isVarDeclaration;
+        if (instanceDecl is null)
+            return false;
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        return structArrayValue(instanceDecl, field, value);
+    }
+
+    private bool thisStructArrayExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
+        auto dotVar = expression.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        if (dotVar.e1.isThisExp is null || currentThis is null)
+            return false;
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        return structArrayValue(currentThis, field, value);
     }
 
     private bool structArrayValue(
