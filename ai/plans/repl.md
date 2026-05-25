@@ -54,7 +54,7 @@
     introduced `ExecutorBackend.bytecode`; it is not bytecode REPL support.
   - `dmdCodegen`: throws `Exception("eval not yet implemented for
     dmdCodegen")`.
-- `tests/ut/repl.d` — five eval tests parameterised over every
+- `tests/ut/backends/repl.d` — five eval tests parameterised over every
   `ExecutorBackend` except `dmdCodegen`:
   `add0`, `add1`, `add2`, `arithmetic` (five runtime cases covering
   +, -, *, /), `multiCell`.
@@ -75,9 +75,9 @@
   array payloads.
 - Binary integration tests have already proven basic executable wiring.
   Do not add more subprocess coverage for REPL behavior.
-- `tests/ut/repl.d` still has older binary smoke tests. Do not add more.
-  New REPL behavior must be unit-tested through `runReplLoop` or smaller
-  helpers.
+- `tests/ut/backends/repl.d` still has older binary smoke tests. Do not add
+  more. New REPL behavior must be unit-tested through `runReplLoop` or
+  smaller helpers.
 - The next approved `runReplLoop` test has already been added:
   `["int x;", "x", ":q"]` should display only `["0"]`. It was approved
   before editing and originally failed red against the old `eval` API.
@@ -194,7 +194,7 @@ test first and wait for approval before editing tests.
    - Keep the behavior test that declaration cells do not display dummy
      zero.
 4. Move binary smoke coverage out of normal `dub test`.
-   - The current `tests/ut/repl.d` builds and runs `bin/repl` from unit
+   - The current `tests/ut/backends/repl.d` builds and runs `bin/repl` from unit
      tests.
    - Replace this with a shell script or separate D smoke program that is
      run explicitly, not per normal unit-test run.
@@ -503,7 +503,7 @@ REPL cells go through `Executor.eval`, not `Executor.runTests`.
 
 Strict TDD. Each new behaviour is earned by a failing test first. Tests
 live in `tests/ut/` alongside the existing suite (or a dedicated
-`tests/ut/repl.d`).
+`tests/ut/backends/repl.d`).
 
 ## Verification
 

@@ -44,7 +44,7 @@ Current progress:
    the assertion.
 4. Old and new tree walkers have been split into separate modules, with
    new-walker execution state folded directly into the new executor shape.
-5. Project-inspired cerealed tests now live in `ut.projects.cerealed`.
+5. Project-inspired cerealed tests now live in `ut.backends.projects.cerealed`.
    They include `ExecutorBackend.treeWalking`, but those entries bail
    out for now. Follow-up changes should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
@@ -112,13 +112,14 @@ walker. The latest `dub test` passed with 711 tests and 0 failures. Do not
 start another slice on this branch; hand it off as-is unless review asks for
 more changes.
 
-After this branch is merged, continue with the next `ut.projects.cerealed`
-bailout or red project-inspired fixture. Do not add or enable new tests that
-depend on external packages such as cerealed. Use existing dependency-backed
-tests only as discovery material, then extract a dependency-free language
-fixture in `tests/ut/language.d` or a project-inspired fixture in
-`tests/ut/projects`. Spawn subagents and orchestrate the TDD loop below instead
-of doing the next implementation slice inline in the main thread.
+After this branch is merged, continue with the next
+`ut.backends.projects.cerealed` bailout or red project-inspired fixture. Do not
+add or enable new tests that depend on external packages such as cerealed. Use
+existing dependency-backed tests only as discovery material, then extract a
+dependency-free language fixture in `tests/ut/backends/parity.d` or a
+project-inspired fixture in `tests/ut/backends/projects`. Spawn subagents and
+orchestrate the TDD loop below instead of doing the next implementation slice
+inline in the main thread.
 
 Before starting another slice, check whether the current branch already
 contains one PR worth of work: a coherent behavior increment, its focused
@@ -134,8 +135,8 @@ For each existing cerealed-inspired behavior, take the following steps:
    untracked way.
 2. Spawn a test writer subagent with the failure information so that it can
    write a minimal dependency-free unittest in `language.d` or
-   `tests/ut/projects`. This new test must be `static foreach`ed for all
-   relevant backends, including the new one. At this point only the new
+   `tests/ut/backends/projects`. This new test must be `static foreach`ed for
+   all relevant backends, including the new one. At this point only the new
    dependency-free test should be red.
 3. Do not add `ExecutorBackend.treeWalking` to tests that import or require
    cerealed or any other external package as the TDD red step. Enable those

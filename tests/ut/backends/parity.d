@@ -10,6 +10,452 @@ import std.conv: text;
 import std.meta: AliasSeq;
 
 
+static foreach (backend; matureExecutorBackends ~ [
+    ExecutorBackend.bytecode,
+]) {
+    @("voidFunctionReturnsToCaller." ~ backend.text)
+    unittest {
+        q{
+            int one() {
+                return 1;
+            }
+
+            void foo() {}
+
+            unittest {
+                foo;
+                // Keep this runtime-shaped so DMD does not constant-fold it
+                // before the backend sees the equality expression.
+                assert(one == 2);
+            }
+        }.expectBackendFailure(backend, "1 != 2");
+    }
+
+    @("intAddition." ~ backend.text)
+    unittest {
+        runTests(q{
+            int one() {
+                return 1;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the addition before the backend sees it.
+                return one + 41;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intSubtraction." ~ backend.text)
+    unittest {
+        runTests(q{
+            int two() {
+                return 2;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the subtraction before the backend sees it.
+                return 44 - two;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intMultiplication." ~ backend.text)
+    unittest {
+        runTests(q{
+            int two() {
+                return 2;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the multiplication before the backend sees it.
+                return 21 * two;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intDivision." ~ backend.text)
+    unittest {
+        runTests(q{
+            int two() {
+                return 2;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the division before the backend sees it.
+                return 84 / two;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intModulo." ~ backend.text)
+    unittest {
+        runTests(q{
+            int divisor() {
+                return 44;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the modulo before the backend sees it.
+                return 86 % divisor;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intShiftRight." ~ backend.text)
+    unittest {
+        runTests(q{
+            int shift() {
+                return 2;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the right shift before the backend sees it.
+                return 0x80 >> shift;
+            }
+
+            unittest {
+                assert(answer == 0x20);
+            }
+        }, backend);
+    }
+
+    @("intShiftLeft." ~ backend.text)
+    unittest {
+        runTests(q{
+            int shift() {
+                return 1;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the left shift before the backend sees it.
+                return 0x10 << shift;
+            }
+
+            unittest {
+                assert(answer == 0x20);
+            }
+        }, backend);
+    }
+
+    @("intBitwiseOr." ~ backend.text)
+    unittest {
+        runTests(q{
+            int mask() {
+                return 0x06;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the bitwise OR before the backend sees it.
+                return 0x2a | mask;
+            }
+
+            unittest {
+                assert(answer == 0x2e);
+            }
+        }, backend);
+    }
+
+    @("intBitwiseAnd." ~ backend.text)
+    unittest {
+        runTests(q{
+            int mask() {
+                return 0x2f;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the bitwise AND before the backend sees it.
+                return mask & 0x3a;
+            }
+
+            unittest {
+                assert(answer == 0x2a);
+            }
+        }, backend);
+    }
+
+    @("intBitwiseXor." ~ backend.text)
+    unittest {
+        runTests(q{
+            int mask() {
+                return 0x04;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the bitwise XOR before the backend sees it.
+                return 0x2e ^ mask;
+            }
+
+            unittest {
+                assert(answer == 0x2a);
+            }
+        }, backend);
+    }
+
+    @("intLessThan." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(41 < bound);
+            }
+        }, backend);
+    }
+
+    @("intLessThanOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 < bound);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+
+    @("intLessOrEqual." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 <= bound);
+            }
+        }, backend);
+    }
+
+    @("intLessOrEqualOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 <= bound);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+
+    @("intGreaterThan." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 > bound);
+            }
+        }, backend);
+    }
+
+    @("intGreaterThanOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 > bound);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+
+    @("intGreaterOrEqual." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 >= bound);
+            }
+        }, backend);
+    }
+
+    @("intGreaterOrEqualOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(41 >= bound);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+
+    @("intNotEqual." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 != bound);
+            }
+        }, backend);
+    }
+
+    @("intNotEqualOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(bound != 42);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+
+    @("assertNonzeroIntCondition." ~ backend.text)
+    unittest {
+        runTests(q{
+            int mask() {
+                return 2;
+            }
+
+            unittest {
+                assert(0x28 | mask);
+            }
+        }, backend);
+    }
+}
+
+static foreach (backend; [ExecutorBackend.treeWalking]) {
+    @("voidFunctionReturnsToCaller." ~ backend.text)
+    unittest {
+        q{
+            int one() {
+                return 1;
+            }
+
+            void foo() {}
+
+            unittest {
+                foo;
+                // Keep this runtime-shaped so DMD does not constant-fold it
+                // before the backend sees the equality expression.
+                assert(one == 2);
+            }
+        }.expectBackendFailure(backend, "1 != 2");
+    }
+
+    @("intAddition." ~ backend.text)
+    unittest {
+        runTests(q{
+            int one() {
+                return 1;
+            }
+
+            int answer() {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the addition before the backend sees it.
+                return one + 41;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        }, backend);
+    }
+
+    @("intLessThanOops." ~ backend.text)
+    unittest {
+        q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 < bound);
+            }
+        }.expectBackendFailure(backend, "0 != 1");
+    }
+}
+
+private void expectBackendFailure(
+    in string source,
+    in ExecutorBackend backend,
+    in string extraBackendMessage,
+) {
+    bool threw;
+    try {
+        runTests(source, backend);
+    } catch (Exception exception) {
+        threw = true;
+        if (backend == ExecutorBackend.bytecode) {
+            exception.msg.should == extraBackendMessage;
+        }
+    }
+    threw.should == true;
+}
+
 static foreach (backend; matureExecutorBackends) {
     @("ok." ~ backend.text)
     unittest {
@@ -843,131 +1289,6 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @("intAddition." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                int value = 40;
-                return value + 2;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intSubtraction." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                int value = 44;
-                return value - 2;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intMultiplication." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                int value = 21;
-                return value * 2;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intDivision." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                int value = 84;
-                return value / 2;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intModulo." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                int value = 86;
-                return value % 44;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intShiftRight." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                const value = 168;
-                const shift = 2;
-                assert(value >> shift == 42);
-            }
-        }, backend);
-    }
-
-    @("intShiftLeft." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                auto value = 21;
-                auto shift = 1;
-                assert(value << shift == 42);
-            }
-        }, backend);
-    }
-
-    @("intBitwiseOr." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                auto left = 40;
-                auto right = 2;
-                assert((left | right) == 42);
-            }
-        }, backend);
-    }
-
-    @("intBitwiseAnd." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                auto left = 46;
-                auto right = 58;
-                assert((left & right) == 42);
-            }
-        }, backend);
-    }
-
-    @("intBitwiseXor." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                auto left = 0x2e;
-                auto right = 0x04;
-                assert((left ^ right) == 0x2a);
-            }
-        }, backend);
-    }
-
     @("intUnaryMinus." ~ backend.text)
     unittest {
         runTests(q{
@@ -1165,136 +1486,6 @@ static foreach (backend; matureExecutorBackends) {
                 int value = 41;
                 addOne(value);
                 assert(value == 43);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
-    }
-
-    @("intLessThan." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 41;
-            }
-
-            unittest {
-                assert(answer < 42);
-            }
-        }, backend);
-    }
-
-    @("intLessThanOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer < 42);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
-    }
-
-    @("intLessOrEqual." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer <= 42);
-            }
-        }, backend);
-    }
-
-    @("intLessOrEqualOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 43;
-            }
-
-            unittest {
-                assert(answer <= 42);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
-    }
-
-    @("intGreaterThan." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 43;
-            }
-
-            unittest {
-                assert(answer > 42);
-            }
-        }, backend);
-    }
-
-    @("intGreaterThanOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer > 42);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
-    }
-
-    @("intGreaterOrEqual." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer >= 42);
-            }
-        }, backend);
-    }
-
-    @("intGreaterOrEqualOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 41;
-            }
-
-            unittest {
-                assert(answer >= 42);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
-    }
-
-    @("intNotEqual." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 41;
-            }
-
-            unittest {
-                assert(answer != 42);
-            }
-        }, backend);
-    }
-
-    @("intNotEqualOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer != 42);
             }
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
