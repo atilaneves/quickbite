@@ -2109,6 +2109,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intMultiplication.bytecode")
+unittest {
+    runTests(q{
+        int two() {
+            return 2;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // multiplication before bytecode sees it.
+            return 21 * two;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;

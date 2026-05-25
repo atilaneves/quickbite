@@ -101,6 +101,13 @@ private struct Compiler {
             return;
         }
 
+        if (auto multiply = expression.isMulExp) {
+            compileExpression(multiply.e1);
+            compileExpression(multiply.e2);
+            module_.code ~= Instruction(OpCode.multiply);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
