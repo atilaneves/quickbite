@@ -85,6 +85,42 @@ The first slice deliberately keeps the bytecode representation simple. It still
 writes `Instruction` values directly while the opcode set is tiny; introduce an
 emitter when the next behaviours make raw writes start spreading.
 
+## Handoff: Integer Arithmetic
+
+Branch `bytecode-int-addition` grows the bytecode backend through the integer
+arithmetic parity fixtures:
+
+- addition: `ut.language.intAddition.bytecode`
+- subtraction: `ut.language.intSubtraction.bytecode`
+- multiplication: `ut.language.intMultiplication.bytecode`
+- division: `ut.language.intDivision.bytecode`
+- modulo: `ut.language.intModulo.bytecode`
+
+Each fixture keeps one operand runtime-shaped with a zero-argument helper
+function so DMD does not constant-fold the target expression before bytecode
+sees it.
+
+Implementation notes:
+
+- arithmetic expression emission is shared through `compileBinaryExpression`
+- arithmetic execution is shared through `executeBinaryArithmetic`
+- the value stack is still integer-only (`long[]`)
+- equality is intentionally still separate from arithmetic execution
+
+Verification on this branch:
+
+- focused arithmetic set:
+  `dub test -- ut.language.intAddition.bytecode
+  ut.language.intSubtraction.bytecode ut.language.intMultiplication.bytecode
+  ut.language.intDivision.bytecode ut.language.intModulo.bytecode`
+- full suite: `dub test`
+
+Next recommended slice: integer shifts. Start with
+`ut.language.intShiftRight.bytecode`, then add `ut.language.intShiftLeft.bytecode`
+if the first slice stays mechanical. Stop before bitwise operators, comparisons,
+locals, parameters, branches, or typed values unless those behaviours are
+explicitly approved.
+
 ## Remaining Work
 
 Grow bytecode by moving one approved behaviour at a time into parity coverage:
@@ -93,8 +129,8 @@ Grow bytecode by moving one approved behaviour at a time into parity coverage:
   behaviour is supported
 - implement unsupported statements one by one, starting with the next fixture
   needed for parity
-- implement local variables, assignment, branches, loops, and non-equality
-  integer operators
+- implement integer shifts, bitwise operators, comparisons, local variables,
+  assignment, branches, and loops
 - add call arguments and a real frame model for locals and parameters
 - support void functions and explicit bare returns
 - replace the current integer-only value stack with typed values, first for
