@@ -129,6 +129,120 @@ Do not add more binary/process tests unless explicitly requested. Future
 REPL behavior must be driven by unit tests around `runReplLoop` and
 supporting helpers, using real executors and no `executeShell`,
 `execute`, `pipeProcess`, or similar per-test process spawning.
+Do not use fake executors for REPL behavior tests. Use real mature
+backends.
+
+### PR 27 review follow-ups
+
+These are the agreed follow-ups from review. Use strict TDD: present the
+test first and wait for approval before editing tests.
+
+1. Run REPL loop tests across every mature backend.
+   - Import `matureExecutorBackends` from `ut.backends`.
+   - Cover `runReplLoop` behavior with every mature backend, not only
+     `ExecutorBackend.ir`.
+   - This should expose the current non-IR `evalReplCell` compatibility
+     stubs that always return `value`.
+2. Preserve evaluated integral result types.
+   - `Value` preserves distinct integral types, but every `eval` currently
+     returns `Value(cast(int) result)`.
+   - Add mature-backend tests for typed results such as `3u`, `3L`, `true`,
+     and values outside `int` range.
+   - Build `Value` from the semantic result type instead of collapsing to
+     `int`.
+3. Add an explicit D `void` value.
+   - `CellResult.void_` currently fabricates `Value(0)`.
+   - Add `struct Void {}` to the public REPL value model and include it in
+     `Value`'s `SumType`.
+   - Add a value-model test that `Value(Void.init)` is distinct from
+     `Value(0)`.
+   - Keep the behavior test that declaration cells do not display dummy
+     zero.
+4. Move binary smoke coverage out of normal `dub test`.
+   - The current `tests/ut/repl.d` builds and runs `bin/repl` from unit
+     tests.
+   - Replace this with a shell script or separate D smoke program that is
+     run explicitly, not per normal unit-test run.
+5. Keep the binary as a thin client.
+   - Move diagnostic handling and continuation behavior into the shared
+     REPL loop/event layer.
+   - `repl/main.d` should only handle I/O, prompts, and rendering returned
+     events.
+   - The `-c` path must use the same exception-to-diagnostic handling as
+     interactive mode, so invalid input prints `e.msg` rather than a D stack
+     trace.
+6. Make generated expression-history names hygienic.
+   - Current generated declarations such as
+     `auto __quickbite_repl_value_0 = ...;` live in the user scope and can
+     collide with user declarations.
+   - Add a real-backend test where the user declares the generated name,
+     then evaluates later cells without poisoning the transcript.
+7. Classify mixed cells by the whole submitted atom, not the first
+   statement.
+   - `isExpressionCell` currently parses one statement and does not verify
+     end-of-input.
+   - Add a real-backend test for `["1; int x;", "x", ":q"]` expecting
+     `["0", "0"]`.
+   - Then require the classifier/evaluator to consume the whole cell and
+     treat mixed statement cells consistently.
+8. Make incomplete input non-fatal and buffer it in the shared loop.
+   - Today `if (1)` can trip a DMD assertion through the raw parser path.
+   - Add a real-backend test that incomplete input does not terminate the
+     session.
+   - Once a backend returns `CellStatus.incomplete`, add a real-backend
+     buffering test that combines the incomplete atom with the next atom.
+9. Handle colon commands before D parsing.
+   - At the primary prompt, `:` input is REPL command input, not D source.
+   - Add real-backend loop tests for unknown colon commands producing a REPL
+     diagnostic and continuing.
+   - Keep `:q` and `:quit` as exit commands.
+10. Treat void expression statements as `void_`, not `value`.
+   - `assert(true)` currently displays `0` and poisons the transcript with
+     `auto __quickbite_repl_value_0 = assert(true);`.
+   - Add a mature-backend test:
+     `["assert(true)", "1", ":q"]` should produce `["1"]`.
+   - Void expression failures such as `assert(1 == 2)` should surface as
+     diagnostics and continue.
+11. Document true top-level declaration persistence as future work, not a
+    first-PR blocker.
+    - Current first-slice persistence is wrapper-local and does not make
+      functions, types, aliases, or imports fully usable as top-level REPL
+      declarations.
+    - Add a limitation note rather than blocking this PR on
+      `["int g() { return 5; }", "g()", ":q"] -> ["5"]`.
+12. Ignore blank and comment-only submitted atoms.
+    - Blank input, whitespace-only input, and comment-only input currently
+      reach D parsing and can crash, display dummy `0`, or poison the
+      transcript.
+    - Add a mature-backend test:
+      `["", "   ", "// hello", "/+ hello +/", "1", ":q"]` should produce
+      `["1"]`.
+13. Accept trailing newlines in submitted atoms.
+    - Current `eval` implementations split on the last newline and treat an
+      empty suffix as the result expression.
+    - Add a mature-backend test:
+      `["1\n", ":q"]` should produce `["1"]`.
+14. Support multi-line atoms whose final line is the display expression.
+    - An atom such as `"int x;\nx"` should display `0`, but IR currently
+      classifies it from the first statement and sends the whole atom down
+      the void path.
+    - Add a mature-backend test:
+      `["int x;\nx", ":q"]` should produce `["0"]`.
+15. Unsupported eval result types must throw a specific diagnostic.
+    - Do not silently return zero when a backend cannot turn an evaluated
+      result into a public `Value`.
+    - Add a mature-backend test using `shouldThrowWithMessage`, for example
+      `executor(backend).eval("\"hello\"")` should throw
+      `"unsupported eval result type"`.
+16. Reject invalid CLI arguments in the binary smoke entry point.
+    - `bin/repl -c`, `bin/repl -c 1 extra`, and `bin/repl -x` currently
+      start interactive mode and exit successfully when stdin closes.
+    - Cover this in the separate binary smoke script/program, not in
+      `dub test`.
+17. Put backend names last in new unittest names.
+    - Use names such as
+      `repl.loop.acceptsTrailingNewlineInAtom.ir`, not
+      `ir.repl.loop.acceptsTrailingNewlineInAtom`.
 
 Immediate continuation after this PR:
 
