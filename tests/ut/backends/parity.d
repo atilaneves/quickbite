@@ -17,6 +17,7 @@ import unit_threaded;
 
 static foreach (backend; matureExecutorBackends ~ [
     ExecutorBackend.bytecode,
+    ExecutorBackend.treeWalking,
 ]) {
     @("voidFunctionReturnsToCaller." ~ backend.text)
     unittest {
@@ -390,60 +391,6 @@ static foreach (backend; matureExecutorBackends ~ [
     }
 }
 
-static foreach (backend; [ExecutorBackend.treeWalking]) {
-    @("voidFunctionReturnsToCaller." ~ backend.text)
-    unittest {
-        q{
-            int one() {
-                return 1;
-            }
-
-            void foo() {}
-
-            unittest {
-                foo;
-                // Keep this runtime-shaped so DMD does not constant-fold it
-                // before the backend sees the equality expression.
-                assert(one == 2);
-            }
-        }.expectBackendFailure(backend, "1 != 2");
-    }
-
-    @("intAddition." ~ backend.text)
-    unittest {
-        runTests(q{
-            int one() {
-                return 1;
-            }
-
-            int answer() {
-                // Keep one operand runtime-shaped so DMD does not constant-fold
-                // the addition before the backend sees it.
-                return one + 41;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        }, backend);
-    }
-
-    @("intLessThanOops." ~ backend.text)
-    unittest {
-        q{
-            int bound() {
-                return 42;
-            }
-
-            unittest {
-                // Keep one operand runtime-shaped so DMD does not constant-fold
-                // the comparison before the backend sees it.
-                assert(42 < bound);
-            }
-        }.expectBackendFailure(backend, "42 >= 42");
-    }
-}
-
 private void expectBackendFailure(
     in string source,
     in ExecutorBackend backend,
@@ -454,7 +401,10 @@ private void expectBackendFailure(
         runTests(source, backend);
     } catch (Exception exception) {
         threw = true;
-        if (backend == ExecutorBackend.bytecode) {
+        if (
+            backend == ExecutorBackend.bytecode ||
+            backend == ExecutorBackend.treeWalking
+        ) {
             exception.msg.should == extraBackendMessage;
         }
     }
@@ -2258,13 +2208,18 @@ static foreach (backend; matureExecutorBackends) {
     }
 }
 
-@("bytecode explicit assert message overrides context")
-unittest {
-    runTests(q{
-        unittest {
-            assert(1 == 2, "oops");
-        }
-    }, ExecutorBackend.bytecode).shouldThrowWithMessage("oops");
+static foreach (backend; [
+    ExecutorBackend.bytecode,
+    ExecutorBackend.treeWalking,
+]) {
+    @(backend.text ~ " explicit assert message overrides context")
+    unittest {
+        runTests(q{
+            unittest {
+                assert(1 == 2, "oops");
+            }
+        }, backend).shouldThrowWithMessage("oops");
+    }
 }
 
 @("dmdCtfe fallback reports the failing unittest, not tree-walker support")

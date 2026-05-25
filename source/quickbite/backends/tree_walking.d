@@ -171,13 +171,25 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 runExpression(div.e1).asLong / runExpression(div.e2).asLong,
             );
 
-        if (isRightShiftExpression(expression)) {
-            auto binary = expression.isBinExp;
+        if (auto mod = expression.isModExp)
             return Value(
-                runExpression(binary.e1).asLong >>
-                    runExpression(binary.e2).asLong,
+                runExpression(mod.e1).asLong % runExpression(mod.e2).asLong,
             );
-        }
+
+        if (auto shiftRight = expression.isShrExp)
+            return runIntegerBinaryExpression(shiftRight);
+
+        if (auto shiftLeft = expression.isShlExp)
+            return runIntegerBinaryExpression(shiftLeft);
+
+        if (auto bitOr = expression.isOrExp)
+            return runIntegerBinaryExpression(bitOr);
+
+        if (auto bitAnd = expression.isAndExp)
+            return runIntegerBinaryExpression(bitAnd);
+
+        if (auto bitXor = expression.isXorExp)
+            return runIntegerBinaryExpression(bitXor);
 
         if (auto addAssign = expression.isAddAssignExp)
             return Value(runCompoundAssignExpression(addAssign, 1));
@@ -189,15 +201,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             if (isPostMutationExpression(post))
                 return runPostMutationExpression(post);
 
-        if (auto equal = expression.isEqualExp)
-            return Value(runExpression(equal.e1).asLong ==
-                runExpression(equal.e2).asLong ? 1L : 0L);
-
-        if (isLessThanExpression(expression)) {
-            auto binary = expression.isBinExp;
-            return Value(runExpression(binary.e1).asLong <
-                runExpression(binary.e2).asLong ? 1L : 0L);
-        }
+        if (isComparisonExpression(expression))
+            return runComparisonExpression(expression);
 
         if (auto assert_ = expression.isAssertExp)
             return Value(runAssertExpression(assert_));
@@ -342,20 +347,104 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         return 0;
     }
 
-    private bool isLessThanExpression(
-        imported!"dmd.expression".Expression expression,
+    private Value runIntegerBinaryExpression(
+        imported!"dmd.expression".BinExp binary,
     ) {
+        const left = runExpression(binary.e1).asLong;
+        const right = runExpression(binary.e2).asLong;
+
         import dmd.tokens: EXP;
 
-        return expression.op == EXP.lessThan;
+        with (EXP) switch (binary.op) {
+            case rightShift:
+                return Value(left >> right);
+            case leftShift:
+                return Value(left << right);
+            case or:
+                return Value(left | right);
+            case and:
+                return Value(left & right);
+            case xor:
+                return Value(left ^ right);
+            default:
+                throw new Exception("Unsupported integer binary expression.");
+        }
     }
 
-    private bool isRightShiftExpression(
+    private Value runComparisonExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto binary = expression.isBinExp;
+        if (binary is null)
+            throw new Exception("Unsupported comparison expression.");
+
+        const left = runExpression(binary.e1).asLong;
+        const right = runExpression(binary.e2).asLong;
+        return Value(comparisonHolds(left, right, expression.op) ? 1L : 0L);
+    }
+
+    private bool comparisonHolds(
+        in long left,
+        in long right,
+        imported!"dmd.tokens".EXP op,
+    ) const {
+        import dmd.tokens: EXP;
+
+        with (EXP) switch (op) {
+            case equal:
+                return left == right;
+            case notEqual:
+                return left != right;
+            case lessThan:
+                return left < right;
+            case lessOrEqual:
+                return left <= right;
+            case greaterThan:
+                return left > right;
+            case greaterOrEqual:
+                return left >= right;
+            default:
+                return false;
+        }
+    }
+
+    private bool isComparisonExpression(
         imported!"dmd.expression".Expression expression,
     ) {
         import dmd.tokens: EXP;
 
-        return expression.op == EXP.rightShift;
+        with (EXP) switch (expression.op) {
+            case equal:
+            case notEqual:
+            case lessThan:
+            case lessOrEqual:
+            case greaterThan:
+            case greaterOrEqual:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private string comparisonOperator(imported!"dmd.tokens".EXP op) @safe pure {
+        import dmd.tokens: EXP;
+
+        with (EXP) switch (op) {
+            case equal:
+                return "==";
+            case notEqual:
+                return "!=";
+            case lessThan:
+                return "<";
+            case lessOrEqual:
+                return "<=";
+            case greaterThan:
+                return ">";
+            case greaterOrEqual:
+                return ">=";
+            default:
+                return "==";
+        }
     }
 
     private long coerceIntegerToType(
@@ -870,24 +959,50 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long runAssertExpression(
         imported!"dmd.expression".AssertExp assert_,
     ) {
+        if (isComparisonExpression(assert_.e1)) {
+            auto comparison = assert_.e1.isBinExp;
+            if (comparison is null)
+                throw new Exception("Unsupported comparison assertion.");
+
+            const left = runExpression(comparison.e1).asLong;
+            const right = runExpression(comparison.e2).asLong;
+            if (comparisonHolds(left, right, assert_.e1.op))
+                return 1;
+
+            if (assert_.msg !is null)
+                throw new Exception(assertMessage(assert_.msg));
+
+            import quickbite.unittest_assertions:
+                AssertionMessageMode,
+                failedAssertionMessage;
+
+            throw new Exception(failedAssertionMessage(
+                AssertionMessageMode.context,
+                left,
+                right,
+                comparisonOperator(assert_.e1.op),
+            ));
+        }
+
         if (runExpression(assert_.e1).asLong)
             return 1;
 
-        if (auto equal = assert_.e1.isEqualExp) {
-            import std.conv: text;
-
-            throw new Exception(text(
-                runExpression(equal.e1).asLong,
-                " != ",
-                runExpression(equal.e2).asLong,
-            ));
-        }
+        if (assert_.msg !is null)
+            throw new Exception(assertMessage(assert_.msg));
 
         import quickbite.unittest_assertions:
             AssertionMessageMode,
             failedAssertionMessage;
 
         throw new Exception(failedAssertionMessage(AssertionMessageMode.context));
+    }
+
+    private string assertMessage(imported!"dmd.expression".Expression expression) {
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            throw new Exception("Unsupported tree-walking assert message.");
+
+        return literal.peekString.idup;
     }
 
     public override TestSummary runTestSummary(
