@@ -4873,9 +4873,16 @@ private struct RamExecutableImage {
     size_t memorySize;
     ulong nextAddress;
     ulong[string] definedSymbols;
-    ulong[string] gotSlotOffsets;
+    ulong[RamGotSlotKey] gotSlotOffsets;
     RamExecutableObjectPlacement[] objectPlacements;
     RamResolvedRelocation[] relocations;
+}
+
+private struct RamGotSlotKey {
+    bool objectDefined;
+    size_t objectIndex;
+    size_t symbolIndex;
+    string symbolName;
 }
 
 private struct RamExecutableObjectPlacement {
@@ -4928,19 +4935,23 @@ private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @tru
 }
 
 private void reserveGotSlots(ref RamExecutableImage image) @safe {
-    foreach (objectPlacement; image.objectPlacements)
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (relocation; objectPlacement.objectImage.relocations) {
             if (relocation.type != X86_64Relocation.gotPcRel)
                 continue;
             if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
                 continue;
-            if (relocation.symbolName.length == 0)
+            auto slotKey = relocation.gotSlotKey( // AA lookup needs a mutable key.
+                objectIndex,
+                objectPlacement.sections,
+            );
+            if (slotKey == RamGotSlotKey.init)
                 continue;
-            if (relocation.symbolName in image.gotSlotOffsets)
+            if (slotKey in image.gotSlotOffsets)
                 continue;
 
             image.nextAddress = image.nextAddress.alignUp((ulong).sizeof);
-            image.gotSlotOffsets[relocation.symbolName] = image.nextAddress;
+            image.gotSlotOffsets[slotKey] = image.nextAddress;
             image.nextAddress += (ulong).sizeof;
         }
 }
@@ -4965,7 +4976,7 @@ private void copySections(ref RamExecutableImage image) @trusted {
 }
 
 private void resolveRelocations(ref RamExecutableImage image) @trusted {
-    foreach (objectPlacement; image.objectPlacements)
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (relocation; objectPlacement.objectImage.relocations) {
             if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
                 continue;
@@ -4975,7 +4986,12 @@ private void resolveRelocations(ref RamExecutableImage image) @trusted {
                 relocation,
             );
             const relocationTarget = relocation.type == X86_64Relocation.gotPcRel
-                ? image.gotSlotAddress(relocation, targetAddress)
+                ? image.gotSlotAddress(
+                    relocation,
+                    objectIndex,
+                    objectPlacement.sections,
+                    targetAddress,
+                )
                 : targetAddress;
             image.relocations ~= RamResolvedRelocation(
                 relocation.type,
@@ -4992,18 +5008,36 @@ private void resolveRelocations(ref RamExecutableImage image) @trusted {
 private ulong gotSlotAddress(
     ref RamExecutableImage image,
     in Elf64Relocation relocation,
+    in size_t objectIndex,
+    in RamSectionPlacement[] sections,
     in ulong targetAddress,
 ) @trusted {
-    if (relocation.symbolName.length == 0)
+    auto slotKey = relocation.gotSlotKey(objectIndex, sections); // AA lookup needs a mutable key.
+    if (slotKey == RamGotSlotKey.init)
         throw new Exception("DMD codegen RAM GOT relocation has no target symbol.");
 
-    const slotOffset = relocation.symbolName in image.gotSlotOffsets;
+    const slotOffset = slotKey in image.gotSlotOffsets;
     if (!slotOffset)
         throw new Exception("DMD codegen RAM GOT relocation has no GOT slot.");
 
     const slotAddress = image.baseAddress + *slotOffset;
     slotAddress.writeRam64(targetAddress);
     return slotAddress;
+}
+
+private RamGotSlotKey gotSlotKey(
+    in Elf64Relocation relocation,
+    in size_t objectIndex,
+    in RamSectionPlacement[] sections,
+) @safe {
+    if (relocation.symbolSectionIndex != shnUndef
+        && sections.hasPlacedSection(relocation.symbolSectionIndex))
+        return RamGotSlotKey(true, objectIndex, relocation.symbolIndex, null);
+
+    if (relocation.symbolName.length == 0)
+        return RamGotSlotKey.init;
+
+    return RamGotSlotKey(false, 0, 0, relocation.symbolName);
 }
 
 private ulong relocationTargetAddress(
