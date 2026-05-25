@@ -23,7 +23,10 @@ Consult `ai/plans` for implementation plans.
 
 ## Git worktrees
 
-Worktree named "foo" → `./worktrees/foo` at repo root.
+Do work in a git worktree unless instructed otherwise. Name worktrees
+the same as their branch, e.g. worktree named "foo" →
+`./worktrees/foo` at repo root. Always use the `worktrees` directory
+in this repo unless instructed otherwise.
 
 ## TDD
 
@@ -32,12 +35,15 @@ until all tests pass. Ask for feedback after the refactoring step.
 
 Stop and wait for approval before adding or modifying any test.
 
+Test behaviours, not implementations.
+
 ## Style
 
 - OTBS. For functions with many attributes, `{` on its own line is acceptable.
 - Use UFCS liberally.
 - Local imports inside functions/types. `imported!"module"` only for parameter
-  and return types.
+  and return types. Exception: unit test modules may use module-scope imports
+  to avoid repeating the same import in every test block.
 - Always re-read files before editing; another agent or person may have
   changed them in the meantime.
 - Trailing commas.
@@ -54,6 +60,8 @@ Stop and wait for approval before adding or modifying any test.
 - No `synchronized`.
 - Omit empty parens: `doStuff;` not `doStuff();`.
 - Functions below first use; variables close to use.
+- Do not use exceptions for control flow.
+- Use `with` in `switch`/`final switch` with enums for more readability.
 
 # Testing
 
@@ -83,3 +91,16 @@ Never delete test code to make tests pass.
 
 - Label PR comments as from an agent (identify which one).
 - Open new PRs in the browser.
+- Check for local worktrees before using `gh` to look at diffs etc.
+
+## CI
+
+The repo is private for now, which is causing Github Actions failures
+due to billing issues. CI is not currently checking anything we can't
+and don't do locally, so ignore its failures for as long as the repo
+is private.
+
+## Reviews
+
+Present review findings one by one for discussion and approval. This
+applies to reviewing code or plans.

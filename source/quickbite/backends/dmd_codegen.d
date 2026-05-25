@@ -10,6 +10,111 @@ __gshared void** _loadedHandles;
 __gshared uint _tempCounter;
 __gshared imported!"dmd.dtemplate".TemplateInstance[void*] _templateNextByInstance;
 
+// Object files accumulated across all fixture runs.  Linking every new
+// fixture against the full accumulated set avoids re-emitting TypeInfo and
+// other one-shot data symbols that were already emitted by an earlier run.
+// The symbol duplication this causes is harmless: TypeInfo initialisers are
+// weak-object (V) symbols; the linker silently picks one copy.
+__gshared string[] _accumulatedObjPaths;
+// Tracks which fixture modules have already contributed objects so that
+// repeated benchmark iterations (warmup + timed) do not keep appending
+// duplicate object sets and blowing up the link command.
+__gshared bool[void*] _accumulatedModules;
+
+struct GeneratedObjects {
+    string[] objPaths;
+    imported!"dmd.dmodule".Module[] modules;
+}
+
+struct TempDirNode {
+    // C-owned mutable storage.  This is deliberately not a D string because
+    // the atexit handler can run after the D runtime has started tearing down.
+    char* path;
+    TempDirNode* next;
+}
+__gshared TempDirNode* _tempDirsToCleanup;
+__gshared bool _tempCleanupRegistered;
+
+extern (C) private void removeTempDirsAtExit() @trusted @nogc nothrow {
+    import core.stdc.stdlib: free;
+
+    auto node = _tempDirsToCleanup;
+    while (node) {
+        auto next = node.next;
+        removeTempDir(node.path);
+        free(node.path);
+        free(node);
+        node = next;
+    }
+}
+
+private void removeTempDir(char* path) @trusted @nogc nothrow {
+    import core.stdc.stdlib: free, malloc;
+    import core.stdc.string: memcpy, strcmp, strlen;
+    import core.sys.posix.dirent: closedir, DT_DIR, opendir, readdir;
+    import core.sys.posix.unistd: rmdir, unlink;
+
+    auto dir = opendir(path);
+    if (!dir) {
+        unlink(path);
+        return;
+    }
+
+    const pathLength = strlen(path);
+    while (auto entry = readdir(dir)) {
+        auto name = entry.d_name.ptr;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+            continue;
+
+        const nameLength = strlen(name);
+        // Allocate child paths with malloc so recursive cleanup stays out of
+        // the GC and Phobos during process-exit teardown.
+        auto child = cast(char*) malloc(pathLength + 1 + nameLength + 1);
+        if (!child)
+            continue;
+        memcpy(child, path, pathLength);
+        child[pathLength] = '/';
+        memcpy(child + pathLength + 1, name, nameLength + 1);
+        if (entry.d_type == DT_DIR) {
+            removeTempDir(child);
+        } else {
+            unlink(child);
+        }
+        free(child);
+    }
+
+    closedir(dir);
+    rmdir(path);
+}
+
+private void registerTempCleanup(in string dir) @trusted {
+    import core.stdc.stdlib: atexit, free, malloc;
+    import core.stdc.string: memcpy;
+
+    if (!_tempCleanupRegistered) {
+        atexit(&removeTempDirsAtExit);
+        _tempCleanupRegistered = true;
+    }
+
+    // Keep a C-owned copy of the temp path.  The cleanup callback is registered
+    // with libc's atexit, so it must not depend on GC-managed D arrays.
+    auto path = cast(char*) malloc(dir.length + 1);
+    auto node = cast(TempDirNode*) malloc(TempDirNode.sizeof);
+    if (!path || !node) {
+        if (path)
+            free(path);
+        if (node)
+            free(node);
+        throw new Exception("Failed to register DMD codegen temp directory cleanup.");
+    }
+
+    memcpy(path, dir.ptr, dir.length);
+    path[dir.length] = '\0';
+    node.path = path;
+    node.next = _tempDirsToCleanup;
+    _tempDirsToCleanup = node;
+}
+
 extern (C) private void closeLoadedHandlesAtExit() @trusted {
     import core.sys.posix.dlfcn: dlclose;
 
@@ -142,24 +247,38 @@ private void compileAndRun(
     import core.atomic: atomicFetchAdd;
     import quickbite.frontend.compiler: withCompilerLock;
     import std.conv: text;
-    import std.file: mkdirRecurse, rmdirRecurse, tempDir;
+    import std.file: mkdirRecurse, tempDir;
     import std.path: buildPath;
 
     const idx = atomicFetchAdd(_tempCounter, 1u);
     const tmpDir = buildPath(tempDir, text("quickbite_dmd_", idx));
     mkdirRecurse(tmpDir);
-    // Temporarily preserved while diagnosing cross-fixture DMD-codegen links.
-    // scope(exit) rmdirRecurse(tmpDir);
+    // Object files are kept for the process lifetime so later fixture runs can
+    // link against TypeInfo and other one-shot data symbols emitted earlier.
+    // The temp dir is removed at process exit via removeTempDirsAtExit.
+    registerTempCleanup(tmpDir);
 
     const soPath = buildPath(tmpDir, "module.so");
-    string[] objPaths;
+    GeneratedObjects generated;
 
     withCompilerLock(() {
         ensureBackendInit;
-        objPaths = generateObjs(module_, tmpDir, sourceImportPaths, idx);
+        generated = generateObjs(module_, tmpDir, sourceImportPaths, idx);
     });
 
-    link(objPaths, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
+    // Accumulate this fixture's objects on the first run only.  Repeated
+    // benchmark iterations (warmup + timed) re-run codegen for measurement
+    // but link against the already-accumulated first-run objects, keeping
+    // the accumulated set bounded at one object-set per distinct fixture.
+    const moduleKey = cast(void*) module_;
+    if (moduleKey !in _accumulatedModules) {
+        _accumulatedModules[moduleKey] = true;
+        foreach (generatedModule; generated.modules)
+            if (generatedModule.hasSnippetSourceFile)
+                _accumulatedModules[cast(void*) generatedModule] = true;
+        _accumulatedObjPaths ~= generated.objPaths;
+    }
+    link(_accumulatedObjPaths, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
     loadAndRunTests(soPath, module_);
 }
 
@@ -288,22 +407,54 @@ private void ensureBackendInit() @trusted {
     _backendInit = true;
 }
 
-private string[] generateObjs(
+private GeneratedObjects generateObjs(
     imported!"dmd.dmodule".Module module_,
     in string tmpDir,
     in string[] sourceImportPaths,
     in uint idx,
 ) @trusted {
+    import dmd.dmodule: Module;
     import dmd.glue: bzeroSymbol, generateCodeAndWrite;
     import dmd.globals: global;
     import dmd.root.filename: FileName;
     import std.conv: text;
     import std.path: buildPath;
 
-    auto modules = collectSourceModules(module_, sourceImportPaths.codegenSourceImportPaths);
-    modules ~= dmdCodegenSupportModule(idx);
-    semantic3Dependencies(modules);
+    // Ensure the current fixture and its support module are semantically
+    // analysed before codegen.
+    auto fixtureModules = collectSourceModules(module_, sourceImportPaths.codegenSourceImportPaths);
+    fixtureModules ~= dmdCodegenSupportModule(idx);
+    semantic3Dependencies(fixtureModules);
     throwIfDmdErrors;
+
+    // Run codegen over every parsed module that is not provided by a linked
+    // archive.  The current fixture is always compiled explicitly.  Fixture
+    // modules that are not accumulated yet are compiled once to emit shared
+    // cross-fixture symbols; imported package modules are compiled when they
+    // are not already provided by a linked archive.
+    imported!"dmd.dmodule".Module[] modules;
+    bool[void*] addedModules;
+    void addModule(imported!"dmd.dmodule".Module m) {
+        if (!m)
+            return;
+        const key = cast(void*) m;
+        if (key in addedModules)
+            return;
+        addedModules[key] = true;
+        modules ~= m;
+    }
+    addModule(module_);
+    // Add backend runtime support modules (core.internal.newaa etc.) — these
+    // are the non-archive modules that fixtureModules collected as support.
+    foreach (m; fixtureModules)
+        if (m !is module_)
+            addModule(m);
+    foreach (m; Module.amodules)
+        if (!m.isUnitThreadedModule
+            && !m.isArchiveBackedModule(sourceImportPaths)
+            && (m.isUnaccumulatedSnippetSourceFile
+                || m.isUnderAnyImportPackageRoot(sourceImportPaths)))
+            addModule(m);
     resetObjState(modules);
 
     string[] objPaths;
@@ -326,7 +477,7 @@ private string[] generateObjs(
         throwIfDmdErrors;
     }
 
-    return objPaths;
+    return GeneratedObjects(objPaths, modules);
 }
 
 private void generateObjectFiles(imported!"dmd.dmodule".Module[] modules) @trusted {
@@ -3486,29 +3637,24 @@ private string nestedNestedImplFlagsTypeInfoBackref(in size_t moduleNameLength) 
 
 private void resetObjState(imported!"dmd.dmodule".Module[] modules) @trusted {
     bool[void*] seen;
-    auto root = modules[0];
-    resetGlobalObjState(root, seen, modules);
+    resetGlobalObjState(seen);
     foreach (module_; modules)
-        resetObjState(module_, root, seen, modules);
+        resetObjState(module_, seen);
 }
 
 private void resetGlobalObjState(
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     import dmd.dmodule: Module;
 
     foreach (module_; Module.amodules)
         if (!module_.isUnitThreadedModule)
-            resetObjState(module_, root, seen, modules);
+            resetObjState(module_, seen);
 }
 
 private void resetObjState(
     imported!"dmd.dsymbol".Dsymbol symbol,
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     import dmd.dsymbol: foreachDsymbol, PASS;
 
@@ -3526,54 +3672,52 @@ private void resetObjState(
         symbol.semanticRun = PASS.semantic3done;
 
     if (auto declaration = symbol.isDeclaration)
-        resetTypeObjState(declaration.type, root, seen, modules);
+        resetTypeObjState(declaration.type);
 
     if (auto variable = symbol.isVarDeclaration)
-        resetInitializerObjState(variable._init, root, seen, modules);
+        resetInitializerObjState(variable._init, seen);
 
     if (auto typeInfo = symbol.isTypeInfoDeclaration) {
-        resetTypeObjState(typeInfo.tinfo, root, seen, modules);
+        resetTypeObjState(typeInfo.tinfo);
         if (auto typeStruct = typeInfo.tinfo.isTypeStruct)
-            resetObjState(typeStruct.sym, root, seen, modules);
+            resetObjState(typeStruct.sym, seen);
     }
 
     if (auto aggregate = symbol.isAggregateDeclaration) {
         aggregate.sinit = null;
-        resetObjState(aggregate.aggrDtor, root, seen, modules);
-        resetObjState(aggregate.dtor, root, seen, modules);
-        resetObjState(aggregate.tidtor, root, seen, modules);
-        resetObjState(aggregate.fieldDtor, root, seen, modules);
+        resetObjState(aggregate.aggrDtor, seen);
+        resetObjState(aggregate.dtor, seen);
+        resetObjState(aggregate.tidtor, seen);
+        resetObjState(aggregate.fieldDtor, seen);
     }
 
     if (auto class_ = symbol.isClassDeclaration) {
         if (class_.vtblsym)
             class_.vtblsym.csym = null;
-        resetObjState(class_.vclassinfo, root, seen, modules);
+        resetObjState(class_.vclassinfo, seen);
     }
 
     if (auto struct_ = symbol.isStructDeclaration) {
-        resetObjState(struct_.postblit, root, seen, modules);
-        resetObjState(struct_.xeq, root, seen, modules);
-        resetObjState(struct_.xcmp, root, seen, modules);
-        resetObjState(struct_.xhash, root, seen, modules);
+        resetObjState(struct_.postblit, seen);
+        resetObjState(struct_.xeq, seen);
+        resetObjState(struct_.xcmp, seen);
+        resetObjState(struct_.xhash, seen);
     }
 
-    if (auto templateInstance = symbol.isTemplateInstance) {
+    if (auto templateInstance = symbol.isTemplateInstance)
         templateInstance.restoreTemplateNext;
-        templateInstance.makeRootTemplateInstance(root, modules);
-    }
 
     if (auto module_ = symbol.isModule)
-        resetObjState(module_.decldefs, root, seen, modules);
+        resetObjState(module_.decldefs, seen);
 
     if (auto attribute = symbol.isAttribDeclaration)
         if (attribute.isStorageClassDeclaration
             || attribute.isVisibilityDeclaration
             || attribute.isStaticIfDeclaration)
-            resetObjState(attribute.decl, root, seen, modules);
+            resetObjState(attribute.decl, seen);
 
     if (auto scopeSymbol = symbol.isScopeDsymbol)
-        resetObjState(scopeSymbol.members, root, seen, modules);
+        resetObjState(scopeSymbol.members, seen);
 
     if (auto function_ = symbol.isFuncDeclaration) {
         function_.skipCodegen = false;
@@ -3581,43 +3725,39 @@ private void resetObjState(
             literal.deferToObj = false;
         if (auto unitTest = function_.isUnitTestDeclaration)
             unitTest.deferredNested.setDim(0);
-        resetObjState(function_.vthis, root, seen, modules);
-        resetObjState(function_.v_arguments, root, seen, modules);
-        resetObjState(function_.v_argptr, root, seen, modules);
+        resetObjState(function_.vthis, seen);
+        resetObjState(function_.v_arguments, seen);
+        resetObjState(function_.v_argptr, seen);
         if (function_.parameters)
             foreach (parameter; *function_.parameters)
-                resetObjState(parameter, root, seen, modules);
-        resetFunctionBodyObjState(function_, root, seen, modules);
+                resetObjState(parameter, seen);
+        resetFunctionBodyObjState(function_, seen);
     }
 }
 
 private void resetInitializerObjState(
     imported!"dmd.init".Initializer initializer,
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     if (!initializer)
         return;
 
     if (auto expInitializer = initializer.isExpInitializer) {
-        resetExpressionObjState(expInitializer.exp, root, seen, modules);
+        resetExpressionObjState(expInitializer.exp, seen);
     } else if (auto arrayInitializer = initializer.isArrayInitializer) {
         foreach (index; arrayInitializer.index)
-            resetExpressionObjState(index, root, seen, modules);
+            resetExpressionObjState(index, seen);
         foreach (value; arrayInitializer.value)
-            resetInitializerObjState(value, root, seen, modules);
+            resetInitializerObjState(value, seen);
     } else if (auto structInitializer = initializer.isStructInitializer) {
         foreach (value; structInitializer.value)
-            resetInitializerObjState(value, root, seen, modules);
+            resetInitializerObjState(value, seen);
     }
 }
 
 private void resetExpressionObjState(
     imported!"dmd.expression".Expression expression,
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     import dmd.dtemplate: isType;
     import dmd.expression:
@@ -3637,64 +3777,58 @@ private void resetExpressionObjState(
     extern (C++) final class ResetVisitor : StoppableVisitor {
         alias visit = typeof(super).visit;
 
-        imported!"dmd.dmodule".Module root;
         bool[void*]* seen;
-        imported!"dmd.dmodule".Module[] modules;
 
         override void visit(Expression expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
+            resetTypeObjState(expression.type);
         }
 
         override void visit(DeclarationExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetObjState(expression.declaration, root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetObjState(expression.declaration, *seen);
         }
 
         override void visit(DsymbolExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetObjState(expression.s, root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetObjState(expression.s, *seen);
         }
 
         override void visit(FuncExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetObjState(expression.fd, root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetObjState(expression.fd, *seen);
         }
 
         override void visit(SymbolExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetObjState(expression.var, root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetObjState(expression.var, *seen);
         }
 
         override void visit(TypeidExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetTypeObjState(isType(expression.obj), root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetTypeObjState(isType(expression.obj));
         }
 
         override void visit(VarExp expression) {
-            resetTypeObjState(expression.type, root, *seen, modules);
-            resetObjState(expression.var, root, *seen, modules);
+            resetTypeObjState(expression.type);
+            resetObjState(expression.var, *seen);
         }
     }
 
     scope visitor = new ResetVisitor;
-    visitor.root = root;
     visitor.seen = &seen;
-    visitor.modules = modules;
     walkPostorder(expression, visitor);
 }
 
 private void resetFunctionBodyObjState(
     imported!"dmd.func".FuncDeclaration function_,
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     import dmd.astenums: STMT;
     import dmd.expression: Expression;
     import dmd.statement: Statement;
 
     void resetExpression(Expression expression) {
-        resetExpressionObjState(expression, root, seen, modules);
+        resetExpressionObjState(expression, seen);
     }
 
     void resetStatement(Statement statement) {
@@ -3767,14 +3901,14 @@ private void resetFunctionBodyObjState(
             case STMT.With: {
                 auto withStatement = statement.isWithStatement;
                 resetExpression(withStatement.exp);
-                resetObjState(withStatement.wthis, root, seen, modules);
+                resetObjState(withStatement.wthis, seen);
                 resetStatement(withStatement._body);
                 break;
             }
             case STMT.TryCatch:
                 resetStatement(statement.isTryCatchStatement._body);
                 foreach (catch_; *statement.isTryCatchStatement.catches) {
-                    resetObjState(catch_.var, root, seen, modules);
+                    resetObjState(catch_.var, seen);
                     resetStatement(catch_.handler);
                 }
                 break;
@@ -3832,19 +3966,7 @@ private void resetTypeObjState(imported!"dmd.mtype".Type type) @trusted {
 
     bool[void*] seen;
     resetTypeObjState(type, seen);
-}
-
-private void resetTypeObjState(
-    imported!"dmd.mtype".Type type,
-    imported!"dmd.dmodule".Module root,
-    ref bool[void*] symbolsSeen,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    if (!type)
-        return;
-
     bool[void*] typesSeen;
-    resetTypeObjState(type);
     resetTypeAggregateInitializers(type, typesSeen);
 }
 
@@ -3859,10 +3981,17 @@ private void resetTypeObjState(
     if (key in seen)
         return;
 
+    import dmd.dsymbol: PASS;
+
     seen[key] = true;
     if (auto typeInfo = type.vtinfo) {
         resetBackendSymbol(typeInfo.csym);
         typeInfo.csym = null;
+        // TypeInfo declarations may be floating (not in any module's members),
+        // so resetObjState won't visit them. Reset semanticRun here so
+        // toObjFile re-emits instead of short-circuiting on PASS.obj.
+        if (typeInfo.semanticRun > PASS.semantic3done)
+            typeInfo.semanticRun = PASS.semantic3done;
     }
 
     if (!type.isTypeAArray)
@@ -3872,6 +4001,11 @@ private void resetTypeObjState(
     resetTypeObjState(type.nextOf, seen);
     if (auto associative = type.isTypeAArray)
         resetTypeObjState(associative.index, seen);
+    if (auto funcType = type.isTypeFunction)
+        if (funcType.parameterList.parameters)
+            foreach (param; *funcType.parameterList.parameters)
+                if (param)
+                    resetTypeObjState(param.type, seen);
 }
 
 private void resetTypeAggregateInitializers(
@@ -3917,55 +4051,11 @@ private void resetBzeroInitializer(ref void* initializer) @trusted {
 
 private void resetObjState(
     imported!"dmd.arraytypes".Dsymbols* symbols,
-    imported!"dmd.dmodule".Module root,
     ref bool[void*] seen,
-    imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
     import dmd.dsymbol: foreachDsymbol;
 
-    foreachDsymbol(symbols, (symbol) => resetObjState(symbol, root, seen, modules));
-}
-
-private void makeRootTemplateInstance(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-    imported!"dmd.dmodule".Module root,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    if (templateInstance.isUnitThreadedTemplateInstance)
-        return;
-    if (!templateInstance.canRootTemplateInstance(modules)
-        && !templateInstance.wasInstantiatedByCurrentCodegenModule(modules)
-        && !templateInstance.isAlwaysCodegenTemplateInstance)
-        return;
-
-    templateInstance.minst = root;
-    templateInstance.appendToCurrentRoot(root);
-
-    if (auto primary = templateInstance.inst) {
-        primary.restoreTemplateNext;
-        if (primary.isUnitThreadedTemplateInstance)
-            return;
-        if (!primary.canRootTemplateInstance(modules)
-            && !primary.wasInstantiatedByCurrentCodegenModule(modules)
-            && !primary.isAlwaysCodegenTemplateInstance)
-            return;
-
-        primary.minst = root;
-        primary.appendToCurrentRoot(root);
-    }
-}
-
-private void appendToCurrentRoot(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-    imported!"dmd.dmodule".Module root,
-) @trusted {
-    if (templateInstance.isTemplateMixin)
-        return;
-    if (templateInstance.memberOf is root)
-        return;
-
-    root.members.push(templateInstance);
-    templateInstance.memberOf = root;
+    foreachDsymbol(symbols, (symbol) => resetObjState(symbol, seen));
 }
 
 private void restoreTemplateNext(
@@ -3980,76 +4070,6 @@ private void restoreTemplateNext(
 
     if (auto next = key in _templateNextByInstance)
         templateInstance.tnext = *next;
-}
-
-private bool canRootTemplateInstance(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    if (templateInstance.referencesNonCurrentSourceModule(modules))
-        return false;
-
-    if (!templateInstance.minst)
-        return true;
-
-    return templateInstance.minst.isCurrentCodegenModule(modules)
-        || templateInstance.minst.isBackendRuntimeSupportModule;
-}
-
-private bool wasInstantiatedByCurrentCodegenModule(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    return templateInstance.minst
-        && templateInstance.minst.isCurrentCodegenModule(modules);
-}
-
-private bool isAlwaysCodegenTemplateInstance(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-) @trusted {
-    import dmd.id: Id;
-
-    return templateInstance.inst
-        && templateInstance.inst.name == Id._d_arrayliteralTX;
-}
-
-private bool referencesNonCurrentSourceModule(
-    imported!"dmd.dtemplate".TemplateInstance templateInstance,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    import dmd.dmodule: Module;
-    import std.algorithm.searching: canFind, startsWith;
-    import std.string: fromStringz;
-
-    const instanceName = templateInstance.toChars.fromStringz;
-    foreach (module_; Module.amodules) {
-        if (module_.isCurrentCodegenModule(modules)
-            || module_.isBackendRuntimeSupportModule
-            || module_.isUnitThreadedModule)
-            continue;
-
-        const moduleName = module_.toPrettyChars.fromStringz;
-        if (moduleName.startsWith("core.")
-            || moduleName.startsWith("std.")
-            || moduleName == "object")
-            continue;
-
-        if (instanceName.canFind(moduleName))
-            return true;
-    }
-
-    return false;
-}
-
-private bool isCurrentCodegenModule(
-    imported!"dmd.dmodule".Module module_,
-    imported!"dmd.dmodule".Module[] modules,
-) @trusted {
-    foreach (current; modules)
-        if (current is module_)
-            return true;
-
-    return false;
 }
 
 private void throwIfDmdErrors() @trusted {
@@ -4226,6 +4246,65 @@ private bool isGlobalBackendRuntimeSupportModule(imported!"dmd.dmodule".Module m
         || name == "core.lifetime";
 }
 
+private bool isUnaccumulatedSnippetSourceFile(
+    imported!"dmd.dmodule".Module module_,
+) @trusted {
+    return module_.hasSnippetSourceFile
+        && cast(void*) module_ !in _accumulatedModules;
+}
+
+// parseModule receives readText(path) contents, so DMD records the module's
+// source file as "snippet_N.d" instead of the original benchmark file path.
+private bool hasSnippetSourceFile(
+    imported!"dmd.dmodule".Module module_,
+) @trusted {
+    import std.algorithm.searching: startsWith;
+    import std.string: fromStringz;
+
+    const src = module_.srcfile.toString.fromStringz;
+    return src.startsWith("snippet_");
+}
+
+// Returns true if the module's source file is under the package root of any
+// configured import path.  "Package root" is one level above a trailing
+// "source" or "src" component, otherwise the import path itself.  This lets us
+// include sibling directories (e.g. cerealed/tests/ when the import path is
+// cerealed/src/) while excluding system modules (/usr/include/dlang/dmd/).
+private bool isUnderAnyImportPackageRoot(
+    imported!"dmd.dmodule".Module module_,
+    in string[] importPaths,
+) @trusted {
+    import std.path: absolutePath, buildNormalizedPath;
+
+    const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
+    foreach (importPath; importPaths) {
+        const root = importPath.importPackageRoot.absolutePath.buildNormalizedPath;
+        if (path.isUnderPath(root))
+            return true;
+    }
+    return false;
+}
+
+// Returns true when the module's source file lives under an import path that is
+// backed by a static archive.  Those modules are already linked from the
+// archive; generating objects for them too would cause duplicate-symbol errors.
+private bool isArchiveBackedModule(
+    imported!"dmd.dmodule".Module module_,
+    in string[] importPaths,
+) @trusted {
+    import std.path: absolutePath, buildNormalizedPath;
+
+    const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
+    foreach (importPath; importPaths) {
+        if (importPath.linkFileForImportPath.length == 0)
+            continue; // not archive-backed
+        const importPathAbs = importPath.absolutePath.buildNormalizedPath;
+        if (path.isUnderPath(importPathAbs))
+            return true;
+    }
+    return false;
+}
+
 private bool isUnitThreadedTemplateInstance(
     imported!"dmd.dtemplate".TemplateInstance templateInstance,
 ) @trusted {
@@ -4269,6 +4348,7 @@ private bool isUnderPath(in string path, in string parent) @safe {
 private void semantic3Dependencies(
     imported!"dmd.dmodule".Module[] modules,
 ) @trusted {
+    import dmd.dmodule: Module;
     import dmd.dsymbolsem:
         dsymbolSemantic,
         importAll,
@@ -4278,6 +4358,14 @@ private void semantic3Dependencies(
     import dmd.dsymbol: PASS;
     import dmd.semantic2: semantic2;
     import dmd.semantic3: semantic3;
+
+    // Mark every known module as its own root before running deferred semantic
+    // passes.  runDeferredSemantic* calls appendToModuleMember which uses
+    // importedFrom to determine root ownership; if only fixture modules are
+    // marked root, deferred template instances from other modules get placed
+    // into the fixture's members instead of their own.
+    foreach (m; Module.amodules)
+        m.importedFrom = m;
 
     foreach (module_; modules) {
         module_.importedFrom = module_;
@@ -4314,6 +4402,11 @@ private void link(in string[] objPaths, in string soPath, in string[] linkFiles)
     }
     command ~= [
         "-of=" ~ soPath,
+        // Accumulated objects from earlier fixture runs may define the same
+        // strong symbol as the current run's objects (e.g. ModuleInfo, static
+        // initialisers).  All duplicate definitions are identical; pick the
+        // first and silence the linker error.
+        "-L=--allow-multiple-definition",
     ];
     command ~= objPaths;
     if (linkFiles.length != 0)

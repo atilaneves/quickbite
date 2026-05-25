@@ -31,13 +31,13 @@ private immutable string[] testFileNames = [
 
 static foreach (backend; matureExecutorBackends) {
     static if (backend == ExecutorBackend.dmdCtfe) {
-        @("dmdCtfe.cerealed.compile_time.d")
+        @("cerealed.compile_time.d.dmdCtfe")
         unittest {
             runCerealedTest!(backend, "compile_time.d");
         }
     } else {
         static foreach (fileName; testFileNames) {
-            @(backend.text ~ ".cerealed." ~ fileName)
+            @("cerealed." ~ fileName ~ "." ~ backend.text)
             unittest {
                 runCerealedTest!(backend, fileName);
             }
@@ -45,7 +45,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 }
 
-@("treeWalkingOld.cerealed.valueArrayUsesExplicitUbyteLengthWidth")
+@("cerealed.valueArrayUsesExplicitUbyteLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -62,7 +62,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.valueArrayUsesExplicitUintLengthWidth")
+@("cerealed.valueArrayUsesExplicitUintLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -80,7 +80,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.grainDynamicArrayUsesExplicitUintLengthWidth")
+@("cerealed.grainDynamicArrayUsesExplicitUintLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -101,7 +101,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.valueNestedArrayUsesExplicitUbyteLengthWidth")
+@("cerealed.valueNestedArrayUsesExplicitUbyteLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -121,7 +121,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.decerealiseArrayDefaultsToUshortLengthWidth")
+@("cerealed.decerealiseArrayDefaultsToUshortLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -135,7 +135,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.valueAssocArrayUsesExplicitUbyteLengthWidth")
+@("cerealed.valueAssocArrayUsesExplicitUbyteLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -152,7 +152,7 @@ unittest {
     }.runTests(dubImportPaths, ExecutorBackend.treeWalkingOld);
 }
 
-@("treeWalkingOld.cerealed.grainAssocArrayUsesExplicitUbyteLengthWidth")
+@("cerealed.grainAssocArrayUsesExplicitUbyteLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 

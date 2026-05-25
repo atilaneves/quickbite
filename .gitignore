@@ -21,7 +21,7 @@ quickbite-test-*
 tmp
 /ut
 /bench
-/bin
+/bin/
 .codex
 .claude
 worktrees

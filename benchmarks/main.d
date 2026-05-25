@@ -1,6 +1,7 @@
 module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
+import quickbite.benchmarks: moduleDisplayName, populateDmdCodegenModuleSet;
 import quickbite.backends.dmd_codegen: DmdCodegen;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
@@ -46,22 +47,23 @@ int main(string[] args) {
         return 0;
     }
 
-    string[] fixtures = args[1 .. $].dup;
+    string[] fixtures    = args[1 .. $].dup;
+    string[] dubFixtures;
 
     if (dubPkg.length > 0) {
         auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         linkFiles   ~= dubInfo.linkFiles;
-        fixtures    ~= dubInfo.fixtures;
+        dubFixtures  = dubInfo.fixtures;
     }
 
-    if (fixtures.length == 0)
+    if (fixtures.length == 0 && dubFixtures.length == 0)
         fixtures = ["tests/minicereal.d"];
 
     if (!isOptimisedBuild) {
         stderr.writeln(
             "benchmark refuses to run on a non-optimised build "
-            ~ "(rebuild with `dub run -c benchmark -b release`).",
+            ~ "(rebuild with `dub build -c benchmark -b benchmark-opt`).",
         );
         return 1;
     }
@@ -76,7 +78,9 @@ int main(string[] args) {
     backends["dmd-codegen"]    = new DmdCodegen(linkFiles, importPaths);
 
     if (backendNames.length == 0)
-        backendNames = ["ir", "treeWalkingOld", "dmd-ctfe"];
+        backendNames = dubFixtures.length > 0
+            ? ["dmd-codegen", "ir", "treeWalkingOld"]
+            : ["dmd-codegen", "ir", "treeWalkingOld", "dmd-ctfe"];
 
     foreach (name; backendNames)
         if (name !in backends)
@@ -86,6 +90,9 @@ int main(string[] args) {
     printHeader;
     foreach (name; backendNames) {
         auto executor = backends[name];
+        if (name == "dmd-codegen")
+            populateDmdCodegenModuleSet(fixtures, importPaths);
+
         foreach (path; fixtures) {
             const source      = readText(path);
             const displayName = moduleDisplayName(path, importPaths);
@@ -101,11 +108,40 @@ int main(string[] args) {
                 } catch (Exception e) {
                     stderr.writefln(
                         "skipping %s %s: %s",
-                        displayName, name, e.msg,
+                        displayName, name, e.msg.firstLine,
                     );
                 }
             } catch (Exception e) {
                 stderr.writefln("skipping %s: %s", displayName, e.msg);
+            }
+            writeln;
+        }
+    }
+
+    if (dubFixtures.length > 0) {
+        import dmd.dmodule: Module;
+        import quickbite.executor: runModulesTests;
+
+        Module[] dubModules;
+        foreach (path; dubFixtures) {
+            try {
+                dubModules ~= parseModule(readText(path), importPaths).module_;
+            } catch (Exception e) {
+                stderr.writefln("skipping %s: %s", path, e.msg);
+            }
+        }
+
+        if (dubModules.length > 0) {
+            foreach (name; backendNames) {
+                auto executor = backends[name];
+                try {
+                    printRow(
+                        dubPkg, name, warmup, iterations,
+                        () => runModulesTests(executor, dubModules),
+                    );
+                } catch (Exception e) {
+                    stderr.writefln("skipping %s %s: %s", dubPkg, name, e.msg);
+                }
             }
             writeln;
         }
@@ -120,20 +156,6 @@ string firstLine(in string message) {
     foreach (line; message.lineSplitter)
         return line.idup;
     return "";
-}
-
-string moduleDisplayName(in string path, in string[] importPaths) {
-    import std.algorithm.searching: startsWith;
-    import std.path: absolutePath, baseName, buildNormalizedPath, relativePath, stripExtension;
-    import std.string: replace;
-
-    const absPath = path.absolutePath.buildNormalizedPath;
-    foreach (ip; importPaths) {
-        const rel = absPath.relativePath(ip.absolutePath.buildNormalizedPath);
-        if (!rel.startsWith(".."))
-            return rel.stripExtension.replace("/", ".").replace("\\", ".");
-    }
-    return absPath.baseName.stripExtension;
 }
 
 struct DubInfo {

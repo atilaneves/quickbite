@@ -2,6 +2,24 @@
 
 ## Handoff (2026-05-25, in-progress worktree)
 
+### Merge status
+
+- Local `master` at `c761fd5 Update plan` has been merged into
+  `worktree-repl`.
+- Merge conflicts were resolved in `.gitignore`, `ai/mistakes.md`, and
+  `source/quickbite/backends/tree_walking.d`.
+- The `treeWalking` conflict resolution keeps `master`'s array, struct, call,
+  ref-argument, right-shift, and integer-coercion support, while preserving
+  the REPL branch's eval support for division, compound `+=`/`-=`, and
+  pre/post `++`/`--` mutations.
+- The bytecode backend and benchmark updates from `master` are now present on
+  this branch. Future REPL tests that iterate mature backends should be
+  checked against the updated backend lists before adding coverage.
+- `BytecodeExecutor` has compatibility `eval` and `evalReplCell` methods so it
+  satisfies the REPL branch's expanded `Executor` interface. They currently
+  delegate to `TreeWalkingExecutor`; this is only a merge compatibility shim
+  for the existing all-backend eval tests, not real bytecode REPL support.
+
 ### What is done
 
 - `Value` struct in `source/quickbite/executor.d` redesigned to use

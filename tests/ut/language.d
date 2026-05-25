@@ -9,7 +9,7 @@ import ut.backends: matureExecutorBackends;
 import unit_threaded;
 
 static foreach (backend; matureExecutorBackends) {
-    @(backend.text ~ ".ok")
+    @("ok." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -22,7 +22,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".oops")
+    @("oops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -35,7 +35,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".throwingTest")
+    @("throwingTest." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -44,7 +44,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("boom");
     }
 
-    @(backend.text ~ ".catchExceptionDoesNotCatchAssertFailure")
+    @("catchExceptionDoesNotCatchAssertFailure." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -56,7 +56,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".catchExceptionCatchesThrownException")
+    @("catchExceptionCatchesThrownException." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -69,7 +69,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 
     static if (backend == ExecutorBackend.ir) {
-        @(backend.text ~ ".catchExceptionCatchesThrownExceptionFromCalledFunction")
+        @("catchExceptionCatchesThrownExceptionFromCalledFunction." ~ backend.text)
         unittest {
             runTests(q{
                 void f() {
@@ -88,7 +88,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".catchExceptionCatchesThrowAfterCalleeSideEffect")
+        @("catchExceptionCatchesThrowAfterCalleeSideEffect." ~ backend.text)
         unittest {
             runTests(q{
                 int marker;
@@ -114,7 +114,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".catchExceptionCatchesNestedBranchThrowFromCalledFunction")
+        @("catchExceptionCatchesNestedBranchThrowFromCalledFunction." ~ backend.text)
         unittest {
             runTests(q{
                 int marker;
@@ -152,7 +152,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".catchExceptionCatchesRuntimeBranchThrowFromCalledFunction")
+        @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunction." ~ backend.text)
         unittest {
             runTests(q{
                 int marker;
@@ -187,7 +187,7 @@ static foreach (backend; matureExecutorBackends) {
         }
     }
 
-    @(backend.text ~ ".throwPreservesExceptionMessage")
+    @("throwPreservesExceptionMessage." ~ backend.text)
     unittest {
         expectRunTestsFailure(q{
             unittest {
@@ -196,7 +196,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend, "domain failure");
     }
 
-    @(backend.text ~ ".shouldThrowFailsWhenExpressionDoesNotThrow")
+    @("shouldThrowFailsWhenExpressionDoesNotThrow." ~ backend.text)
     unittest {
         import ut.dub_paths: dubImportPaths;
 
@@ -209,7 +209,7 @@ static foreach (backend; matureExecutorBackends) {
         }, dubImportPaths, backend);
     }
 
-    @(backend.text ~ ".shouldThrowWithMessageChecksMessage")
+    @("shouldThrowWithMessageChecksMessage." ~ backend.text)
     unittest {
         import ut.dub_paths: dubImportPaths;
 
@@ -226,7 +226,7 @@ static foreach (backend; matureExecutorBackends) {
         }, dubImportPaths, backend);
     }
 
-    @(backend.text ~ ".distinguishesFloatingPointValues")
+    @("distinguishesFloatingPointValues." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -237,7 +237,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".supportsContinue")
+    @("supportsContinue." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -252,7 +252,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".supportsSwitch")
+    @("supportsSwitch." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -275,7 +275,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 
     static if (backend != ExecutorBackend.dmdCtfe) {
-        @(backend.text ~ ".finallyRunsAfterReturn")
+        @("finallyRunsAfterReturn." ~ backend.text)
         unittest {
             runTests(q{
                 int value;
@@ -297,7 +297,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 
     static if (backend == ExecutorBackend.ir) {
-        @(backend.text ~ ".finallyReturnCapturesValueBeforeFinally")
+        @("finallyReturnCapturesValueBeforeFinally." ~ backend.text)
         unittest {
             runTests(q{
                 int value;
@@ -318,7 +318,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".finallyBranchReturnsCaptureValueBeforeFinally")
+        @("finallyBranchReturnsCaptureValueBeforeFinally." ~ backend.text)
         unittest {
             runTests(q{
                 int value;
@@ -347,7 +347,7 @@ static foreach (backend; matureExecutorBackends) {
         }
     }
 
-    @(backend.text ~ ".catchHandlerRuns")
+    @("catchHandlerRuns." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -362,7 +362,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".evaluatesPow")
+    @("evaluatesPow." ~ backend.text)
     unittest {
         runTests(q{
             import std.math: pow;
@@ -374,7 +374,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 
     static if (backend == ExecutorBackend.ir) {
-        @(backend.text ~ ".evaluatesRuntimePowDoubleInputs")
+        @("evaluatesRuntimePowDoubleInputs." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: pow;
@@ -397,7 +397,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".doesNotTreatUserNamedPowAsMathIntrinsic")
+        @("doesNotTreatUserNamedPowAsMathIntrinsic." ~ backend.text)
         unittest {
             runTests(q{
                 double pow(double base, double exponent) {
@@ -412,7 +412,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeSqrtInput")
+        @("evaluatesRuntimeSqrtInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: sqrt;
@@ -424,7 +424,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesDifferentRuntimeSqrtInput")
+        @("evaluatesDifferentRuntimeSqrtInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: sqrt;
@@ -436,7 +436,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeNonIntegerSqrtInput")
+        @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: sqrt;
@@ -448,7 +448,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeNonPerfectSqrtInput")
+        @("evaluatesRuntimeNonPerfectSqrtInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: sqrt;
@@ -462,7 +462,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeFabsDoubleInput")
+        @("evaluatesRuntimeFabsDoubleInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: fabs;
@@ -476,7 +476,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeFabsPositiveDoubleInput")
+        @("evaluatesRuntimeFabsPositiveDoubleInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: fabs;
@@ -488,7 +488,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeIsNaNDoubleInput")
+        @("evaluatesRuntimeIsNaNDoubleInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: isNaN;
@@ -503,7 +503,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeIsInfinityDoubleInput")
+        @("evaluatesRuntimeIsInfinityDoubleInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: isInfinity;
@@ -524,7 +524,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeSignbitDoubleInput")
+        @("evaluatesRuntimeSignbitDoubleInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: signbit;
@@ -545,7 +545,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".evaluatesRuntimeSignbitNanInput")
+        @("evaluatesRuntimeSignbitNanInput." ~ backend.text)
         unittest {
             runTests(q{
                 import std.math: signbit;
@@ -560,7 +560,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".doesNotTreatUserNamedIsNaNAsMathIntrinsic")
+        @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.text)
         unittest {
             runTests(q{
                 bool isNaN(double value) {
@@ -574,7 +574,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".callsUserNamedIsNaNForNanInput")
+        @("callsUserNamedIsNaNForNanInput." ~ backend.text)
         unittest {
             runTests(q{
                 bool isNaN(double value) {
@@ -588,7 +588,7 @@ static foreach (backend; matureExecutorBackends) {
             }, backend);
         }
 
-        @(backend.text ~ ".doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics")
+        @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.text)
         unittest {
             runTests(q{
                 double sqrt(double value) {
@@ -608,7 +608,7 @@ static foreach (backend; matureExecutorBackends) {
         }
     }
 
-    @(backend.text ~ ".functionPointerHashCollisionDetected")
+    @("functionPointerHashCollisionDetected." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -627,7 +627,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".nestedSliceWritesPropagateToOriginalArray")
+    @("nestedSliceWritesPropagateToOriginalArray." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -641,7 +641,7 @@ static foreach (backend; matureExecutorBackends) {
     }
 
     static if (backend == ExecutorBackend.ir) {
-        @(backend.text ~ ".nestedSliceAppendWritesThroughOuterSliceToOriginalArray")
+        @("nestedSliceAppendWritesThroughOuterSliceToOriginalArray." ~ backend.text)
         unittest {
             runTests(q{
                 unittest {
@@ -655,7 +655,7 @@ static foreach (backend; matureExecutorBackends) {
         }
     }
 
-    @(backend.text ~ ".localIntReturn")
+    @("localIntReturn." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -669,7 +669,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".localIntReturnOops")
+    @("localIntReturnOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -683,7 +683,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".voidFunction")
+    @("voidFunction." ~ backend.text)
     unittest {
         runTests(q{
             void foo() {}
@@ -694,7 +694,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodPostIncrementsSizeTField")
+    @("structMethodPostIncrementsSizeTField." ~ backend.text)
     unittest {
         runTests(q{
             struct Cursor {
@@ -713,7 +713,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodReadsArrayFieldAtPostIncrementedField")
+    @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.text)
     unittest {
         runTests(q{
             struct Reader {
@@ -734,7 +734,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".foreachArray")
+    @("foreachArray." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -747,7 +747,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".foreachEmptyArray")
+    @("foreachEmptyArray." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -760,7 +760,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".whileNeverRuns")
+    @("whileNeverRuns." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -777,7 +777,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".whileRunsOnce")
+    @("whileRunsOnce." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -796,7 +796,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".while_")
+    @("while_." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -815,7 +815,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".voidFunctionExplicitReturn")
+    @("voidFunctionExplicitReturn." ~ backend.text)
     unittest {
         runTests(q{
             void foo() {
@@ -828,7 +828,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".voidFunctionOops")
+    @("voidFunctionOops." ~ backend.text)
     unittest {
         runTests(q{
             void foo() {
@@ -841,7 +841,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intAddition")
+    @("intAddition." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -855,7 +855,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intSubtraction")
+    @("intSubtraction." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -869,7 +869,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intMultiplication")
+    @("intMultiplication." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -883,7 +883,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intDivision")
+    @("intDivision." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -897,7 +897,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intModulo")
+    @("intModulo." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -911,7 +911,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intShiftRight")
+    @("intShiftRight." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -922,7 +922,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intShiftLeft")
+    @("intShiftLeft." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -933,7 +933,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intBitwiseOr")
+    @("intBitwiseOr." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -944,7 +944,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intBitwiseAnd")
+    @("intBitwiseAnd." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -955,7 +955,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intBitwiseXor")
+    @("intBitwiseXor." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -966,7 +966,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intUnaryMinus")
+    @("intUnaryMinus." ~ backend.text)
     unittest {
         runTests(q{
             int input() {
@@ -983,7 +983,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intBitwiseComplement")
+    @("intBitwiseComplement." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -993,7 +993,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intOrAssign")
+    @("intOrAssign." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1004,7 +1004,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intSubtractAssign")
+    @("intSubtractAssign." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1015,7 +1015,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intAddAssign")
+    @("intAddAssign." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1026,7 +1026,18 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ubyteArrayAppendAssign")
+    @("ubyteAddAssignWrapsOnStore." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 0);
+            }
+        }, backend);
+    }
+
+    @("ubyteArrayAppendAssign." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1037,7 +1048,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ubyteArrayIndexRead")
+    @("ubyteArrayIndexRead." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1047,7 +1058,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ubyteArrayIndexWrite")
+    @("ubyteArrayIndexWrite." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1058,19 +1069,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".postIncrementSizeTIndex")
-    unittest {
-        runTests(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x2au];
-                size_t index = 0;
-                assert(values[index++] == 0x29u);
-                assert(index == 1);
-            }
-        }, backend);
-    }
-
-    @(backend.text ~ ".refUbyteArrayParameterAppend")
+    @("refUbyteArrayParameterAppend." ~ backend.text)
     unittest {
         runTests(q{
             void appendAnswer(ref ubyte[] values) {
@@ -1086,7 +1085,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".functionParameter")
+    @("functionParameter." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1099,7 +1098,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".functionParameters")
+    @("functionParameters." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int left, int right) {
@@ -1112,7 +1111,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".functionParametersOops")
+    @("functionParametersOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int left, int right) {
@@ -1125,7 +1124,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".functionParameterOops")
+    @("functionParameterOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1138,7 +1137,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".refParameter")
+    @("refParameter." ~ backend.text)
     unittest {
         runTests(q{
             void addOne(ref int value) {
@@ -1153,7 +1152,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".refParameterOops")
+    @("refParameterOops." ~ backend.text)
     unittest {
         runTests(q{
             void addOne(ref int value) {
@@ -1168,7 +1167,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intLessThan")
+    @("intLessThan." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1181,7 +1180,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intLessThanOops")
+    @("intLessThanOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1194,7 +1193,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intLessOrEqual")
+    @("intLessOrEqual." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1207,7 +1206,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intLessOrEqualOops")
+    @("intLessOrEqualOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1220,7 +1219,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intGreaterThan")
+    @("intGreaterThan." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1233,7 +1232,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intGreaterThanOops")
+    @("intGreaterThanOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1246,7 +1245,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intGreaterOrEqual")
+    @("intGreaterOrEqual." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1259,7 +1258,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intGreaterOrEqualOops")
+    @("intGreaterOrEqualOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1272,7 +1271,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".intNotEqual")
+    @("intNotEqual." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1285,7 +1284,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".intNotEqualOops")
+    @("intNotEqualOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer() {
@@ -1298,7 +1297,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".ulongHighBitLessThan")
+    @("ulongHighBitLessThan." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1308,7 +1307,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ifBodyAssignment")
+    @("ifBodyAssignment." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1324,7 +1323,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ifElse")
+    @("ifElse." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1341,7 +1340,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ifElseOops")
+    @("ifElseOops." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1357,7 +1356,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".ifElseUntakenBranch")
+    @("ifElseUntakenBranch." ~ backend.text)
     unittest {
         runTests(q{
             int zero() {
@@ -1377,7 +1376,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".earlyReturn")
+    @("earlyReturn." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1394,7 +1393,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".multipleEarlyReturns")
+    @("multipleEarlyReturns." ~ backend.text)
     unittest {
         runTests(q{
             int answer(int value) {
@@ -1415,7 +1414,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".inFunctionParameters")
+    @("inFunctionParameters." ~ backend.text)
     unittest {
         runTests(q{
             void check(in int left, in int right) {
@@ -1428,7 +1427,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".inFunctionParametersOops")
+    @("inFunctionParametersOops." ~ backend.text)
     unittest {
         runTests(q{
             void check(in int left, in int right) {
@@ -1441,7 +1440,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".multipleRefParameters")
+    @("multipleRefParameters." ~ backend.text)
     unittest {
         runTests(q{
             void add(int left, ref int right) {
@@ -1456,7 +1455,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".refSizeTParameter")
+    @("refSizeTParameter." ~ backend.text)
     unittest {
         runTests(q{
             void advance(ref size_t pos) {
@@ -1471,7 +1470,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".refSizeTParameterOops")
+    @("refSizeTParameterOops." ~ backend.text)
     unittest {
         runTests(q{
             void advance(ref size_t pos) {
@@ -1486,7 +1485,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".longLiteral")
+    @("longLiteral." ~ backend.text)
     unittest {
         runTests(q{
             long answer() {
@@ -1499,7 +1498,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ulongHighBitLessOrEqual")
+    @("ulongHighBitLessOrEqual." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1509,7 +1508,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ulongHighBitGreaterOrEqual")
+    @("ulongHighBitGreaterOrEqual." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1519,7 +1518,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ulongHighBitGreaterThan")
+    @("ulongHighBitGreaterThan." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1529,7 +1528,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structPassedToFunction")
+    @("structPassedToFunction." ~ backend.text)
     unittest {
         runTests(q{
             struct Point {
@@ -1550,7 +1549,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".scalarStructPassedToFunction")
+    @("scalarStructPassedToFunction." ~ backend.text)
     unittest {
         runTests(q{
             struct Value {
@@ -1569,7 +1568,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structByValueMutationDoesNotLeak")
+    @("structByValueMutationDoesNotLeak." ~ backend.text)
     unittest {
         runTests(q{
             struct Point { int x; }
@@ -1583,7 +1582,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structByValueArrayFieldMutationDoesNotLeak")
+    @("structByValueArrayFieldMutationDoesNotLeak." ~ backend.text)
     unittest {
         runTests(q{
             struct Buffer {
@@ -1602,7 +1601,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structByValueArrayFieldElementMutationLeaks")
+    @("structByValueArrayFieldElementMutationLeaks." ~ backend.text)
     unittest {
         runTests(q{
             struct Buffer {
@@ -1622,7 +1621,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".scalarStructField")
+    @("scalarStructField." ~ backend.text)
     unittest {
         runTests(q{
             struct Value {
@@ -1637,7 +1636,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".arrayLength")
+    @("arrayLength." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1647,7 +1646,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".emptyArrayLength")
+    @("emptyArrayLength." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1657,7 +1656,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".arrayEqualTrue")
+    @("arrayEqualTrue." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1668,7 +1667,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".arrayEqualFalse")
+    @("arrayEqualFalse." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1679,7 +1678,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".castUbyteTruncates")
+    @("castUbyteRuntimeValueTruncates." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1689,7 +1688,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ubyteLocalTruncatesOnStore")
+    @("ubyteLocalTruncatesOnStore." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1700,7 +1699,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".ubyteArrayLiteralTruncatesElements")
+    @("ubyteArrayLiteralTruncatesElements." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1711,7 +1710,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".struct_")
+    @("struct_." ~ backend.text)
     unittest {
         runTests(q{
             struct Point {
@@ -1732,7 +1731,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structFieldDefaultsToZero")
+    @("structFieldDefaultsToZero." ~ backend.text)
     unittest {
         runTests(q{
             struct Point {
@@ -1752,7 +1751,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structArrayFieldDefaultsToEmpty")
+    @("structArrayFieldDefaultsToEmpty." ~ backend.text)
     unittest {
         runTests(q{
             struct Buffer {
@@ -1766,7 +1765,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".refStructArrayFieldParameter")
+    @("refStructArrayFieldParameter." ~ backend.text)
     unittest {
         runTests(q{
             struct Buffer {
@@ -1786,7 +1785,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodReadsField")
+    @("structMethodReadsField." ~ backend.text)
     unittest {
         runTests(q{
             struct Box {
@@ -1805,7 +1804,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodPassesFieldByRef")
+    @("structMethodPassesFieldByRef." ~ backend.text)
     unittest {
         runTests(q{
             void append42(ref ubyte[] output) {
@@ -1829,7 +1828,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structTemplateMethodPassesFieldByRef")
+    @("structTemplateMethodPassesFieldByRef." ~ backend.text)
     unittest {
         runTests(q{
             void appendValue(T)(T value, ref ubyte[] output) {
@@ -1853,7 +1852,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodIndexWritesArrayField")
+    @("structMethodIndexWritesArrayField." ~ backend.text)
     unittest {
         runTests(q{
             struct Buffer {
@@ -1873,7 +1872,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".structMethodAppendsArrayField")
+    @("structMethodAppendsArrayField." ~ backend.text)
     unittest {
         runTests(q{
             struct Writer {
@@ -1893,7 +1892,32 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalNot")
+    @("structMethodCallsStructMethod." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Writer {
+                ubyte[] bytes;
+
+                void write(ubyte value) {
+                    append(value);
+                }
+
+                void append(ubyte value) {
+                    bytes ~= value;
+                }
+            }
+
+            unittest {
+                Writer writer;
+                writer.write(42);
+
+                assert(writer.bytes.length == 1);
+                assert(writer.bytes[0] == 42);
+            }
+        }, backend);
+    }
+
+    @("logicalNot." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1903,7 +1927,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalNotCall")
+    @("logicalNotCall." ~ backend.text)
     unittest {
         runTests(q{
             bool isReady() {
@@ -1916,7 +1940,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalAnd")
+    @("logicalAnd." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1927,7 +1951,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalAndCall")
+    @("logicalAndCall." ~ backend.text)
     unittest {
         runTests(q{
             bool left() {
@@ -1944,7 +1968,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalAndShortCircuit")
+    @("logicalAndShortCircuit." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1955,7 +1979,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalAndCallShortCircuit")
+    @("logicalAndCallShortCircuit." ~ backend.text)
     unittest {
         runTests(q{
             bool isReady() {
@@ -1973,7 +1997,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalOrBoolResult")
+    @("logicalOrBoolResult." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1982,7 +2006,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalOr")
+    @("logicalOr." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -1993,7 +2017,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @(backend.text ~ ".logicalOrOops")
+    @("logicalOrOops." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -2004,7 +2028,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @(backend.text ~ ".logicalOrShortCircuit")
+    @("logicalOrShortCircuit." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -2016,7 +2040,38 @@ static foreach (backend; matureExecutorBackends) {
     }
 }
 
-@("treeWalkingOld.unitThreadedCheckRunsPredicate")
+@("ok.bytecode")
+unittest {
+    runTests(q{
+        int answer() {
+            return 42;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
+@("voidFunctionReturnsToCaller.bytecode")
+unittest {
+    runTests(q{
+        int one() {
+            return 1;
+        }
+
+        void foo() {}
+
+        unittest {
+            foo;
+            // Keep this runtime-shaped so DMD does not constant-fold it before
+            // bytecode sees the equality expression.
+            assert(one == 2);
+        }
+    }, ExecutorBackend.bytecode).shouldThrowWithMessage("1 != 2");
+}
+
+@("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
 
@@ -2068,9 +2123,386 @@ private void expectRunTestsFailure(
     threw.should == true;
 }
 
+static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking]) {
+    @("arrayLiteralElements." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int[] arr = [1, 2];
+                assert(arr[0] == 1);
+                assert(arr[1] == 2);
+            }
+        }, backend);
+    }
+
+    @("arrayLiteralVariableElements." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 10;
+                int b = 20;
+                int[] arr = [a, b];
+                assert(arr[0] == 10);
+                assert(arr[1] == 20);
+            }
+        }, backend);
+    }
+
+    @("uninitializedDynamicArrayLength." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                assert(values.length == 0);
+            }
+        }, backend);
+    }
+
+    @("foreachRange." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int sum;
+                foreach (i; 0 .. 3)
+                    sum += i;
+                assert(sum == 3);
+            }
+        }, backend);
+    }
+
+    @("lessThan." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 2;
+                assert(value < 3);
+            }
+        }, backend);
+    }
+
+    @("localDynamicArrayAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                values ~= value;
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("refDynamicArrayParameterAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            void append(ref ubyte[] values, ubyte value) {
+                values ~= value;
+            }
+
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                append(values, value);
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("structConstructorStoresDynamicArrayParameter." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                int[] values;
+
+                this(int[] input) {
+                    store(input);
+                }
+
+                void store(int[] input) {
+                    values = input;
+                }
+            }
+
+            unittest {
+                int first = 40;
+                int second = first + 2;
+                int[] input = [first, second];
+
+                auto box = Box(input);
+
+                assert(box.values.length == input.length);
+                assert(box.values[0] == first);
+                assert(box.values[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArraySliceFromRuntimeBounds." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                size_t start = 1;
+                size_t stop = values.length;
+
+                const tail = values[start .. stop];
+
+                assert(tail.length == 1);
+                assert(tail[0] == second);
+            }
+        }, backend);
+    }
+
+    @("postIncrementSizeTIndex." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x2au];
+                size_t index = 0;
+                assert(values[index++] == 0x29u);
+                assert(index == 1);
+            }
+        }, backend);
+    }
+
+    @("structMethodPostIncrementsSizeTField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Cursor {
+                size_t position;
+
+                size_t read() {
+                    return position++;
+                }
+            }
+
+            unittest {
+                Cursor cursor;
+                size_t start = 1;
+                cursor.position = start;
+
+                assert(cursor.read == start);
+                assert(cursor.position == start + 1);
+            }
+        }, backend);
+    }
+
+    @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Reader {
+                ubyte[] bytes;
+                size_t position;
+
+                ubyte read() {
+                    return bytes[position++];
+                }
+            }
+
+            unittest {
+                Reader reader;
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                reader.bytes = [first, second];
+                reader.position = reader.bytes.length - 1;
+
+                const value = reader.read;
+
+                assert(value == second);
+                assert(reader.position == reader.bytes.length);
+            }
+        }, backend);
+    }
+
+    @("rightShift." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 8;
+                uint amount = 1;
+                assert((value >> amount) == 4);
+            }
+        }, backend);
+    }
+
+    @("multiplication." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 7;
+                int factor = 6;
+                assert(value * factor == 42);
+            }
+        }, backend);
+    }
+
+    @("castUbyteTruncates." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 0x102;
+                assert(cast(ubyte) value == 0x02);
+            }
+        }, backend);
+    }
+
+    @("subtraction." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 5;
+                int b = a - 3;
+                assert(b == 2);
+            }
+        }, backend);
+    }
+
+    @("subtractionDifferentValues." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int a = 10;
+                int b = a - 7;
+                assert(b == 3);
+            }
+        }, backend);
+    }
+
+    @("freeFunctionCallWithReturn." ~ backend.text)
+    unittest {
+        runTests(q{
+            int add(int a, int b) {
+                return a + b;
+            }
+
+            unittest {
+                int result = add(1, 2);
+                assert(result == 3);
+            }
+        }, backend);
+    }
+
+    @("freeFunctionCallWithReturnDifferentValues." ~ backend.text)
+    unittest {
+        runTests(q{
+            int sub(int a, int b) {
+                return a - b;
+            }
+
+            unittest {
+                int result = sub(10, 3);
+                assert(result == 7);
+            }
+        }, backend);
+    }
+
+    @("freeFunctionCallWithArrayParam." ~ backend.text)
+    unittest {
+        runTests(q{
+            int firstElement(int[] arr) {
+                return arr[0];
+            }
+
+            unittest {
+                int[] arr = [42];
+                int result = firstElement(arr);
+                assert(result == 42);
+            }
+        }, backend);
+    }
+
+    @("freeFunctionCallWithArrayParamSecondElement." ~ backend.text)
+    unittest {
+        runTests(q{
+            int secondElement(int[] arr) {
+                return arr[1];
+            }
+
+            unittest {
+                int[] arr = [10, 20];
+                int result = secondElement(arr);
+                assert(result == 20);
+            }
+        }, backend);
+    }
+
+    @("preIncrement." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int x = 5;
+                ++x;
+                assert(x == 6);
+            }
+        }, backend);
+    }
+
+    @("preIncrementDifferentValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int x = 10;
+                ++x;
+                assert(x == 11);
+            }
+        }, backend);
+    }
+
+    @("refParamWriteback." ~ backend.text)
+    unittest {
+        runTests(q{
+            void increment(ref int x) {
+                x += 1;
+            }
+
+            unittest {
+                int value = 5;
+                increment(value);
+                assert(value == 6);
+            }
+        }, backend);
+    }
+
+    @("refParamWritebackDifferentValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            void increment(ref int x) {
+                x += 1;
+            }
+
+            unittest {
+                int value = 10;
+                increment(value);
+                assert(value == 11);
+            }
+        }, backend);
+    }
+}
+
+@("structMethodReturnDoesNotSkipCallerStatements.treeWalking")
+unittest {
+    runTests(q{
+        struct Worker {
+            void stop() {
+                return;
+            }
+        }
+
+        unittest {
+            Worker worker;
+            worker.stop;
+            assert(false);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("Unittest assertion failed.");
+}
+
 static foreach (backend; matureExecutorBackends) {
     static foreach (T; AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong)) {
-        @(backend.text ~ ".integralType." ~ T.stringof)
+        @("integralType." ~ T.stringof ~ "." ~ backend.text)
         unittest {
             import std.conv: text;
 

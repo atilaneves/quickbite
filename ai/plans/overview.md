@@ -14,7 +14,8 @@ costs (loading shared libraries, compiling call stubs) are amortised
 across many runs. The benchmarking target is the hot-path latency, not
 cold start. This is the end goal, but for most of development we will
 simply benchmark running all unittest blocks from one module. We don't
-yet know which backend will work best.
+yet know which backend will work best, and we do not commit to one
+backend or dependency strategy up front.
 
 ### Input Scope
 
@@ -29,8 +30,10 @@ set runs a safe superset.
 
 ## Dependencies and Runtime
 
-Dub dependencies and the D runtime are pre-compiled native code. We reuse
-dub's compiled output. The executor does not re-compile them.
+Dependency handling is part of the experiment. The simplest first bytecode
+approach may compile everything it sees. Later variants should measure whether
+precompiled dependency bytecode, native dependency calls, or another strategy is
+faster for the average dub project.
 
 ### Native Call Bridging (open problem)
 
@@ -42,12 +45,10 @@ into the native calling convention. Two mechanisms are viable:
 - JIT-compiled stubs: a small native thunk per function, compiled once at
   session start, zero per-call overhead thereafter
 
-This decision is left open. The initial implementation only needs to run
-self-contained tests. Until bridging exists, the lowerer must explicitly
-reject any call to external native code rather than silently skipping it.
-Add bridging when the first test that calls a dependency needs to run.
-The JIT backend may sidestep this problem if the chosen library handles
-calling convention and symbol resolution (native code calls native code).
+This decision is left open. Native calls are one possible dependency strategy,
+not an assumed end state. The JIT backend may sidestep this problem if the
+chosen library handles calling convention and symbol resolution (native code
+calls native code).
 
 ## Common Interface
 
@@ -90,11 +91,11 @@ and a ceiling on what the DMD frontend alone can do.
 
 ### 4. BytecodeExecutor (not yet implemented)
 
-Pipeline: DMD → lower to IR → encode to compact byte[] → switch-dispatch VM.
+Pipeline: DMD → emit stack bytecode directly from the analysed AST →
+switch-dispatch VM.
 
-Shares the lowering pass with IrInterpreterExecutor. Adds one encoding
-step. Potential advantage: better cache locality in the dispatch loop.
-Requires explicit ReturnVoid terminator in unittest bodies (see ai/plans/ir.md).
+The baseline avoids the IR lowering pass. An IR-to-bytecode variant may be
+measured later, but it is not the initial architecture.
 
 ### 5. JitExecutor (deferred)
 
@@ -103,8 +104,7 @@ Pipeline: DMD → lower to IR → JIT compile to native code → execute.
 ABI bridging may not be needed if the chosen library handles calling
 convention and symbol resolution. Library TBD;
 MIR is the leading candidate for its low startup overhead and suitability
-for language-runtime use. Only pursue if the interpreter benchmarks leave
-meaningful headroom.
+for language-runtime use. Only pursue when measurements justify the spike.
 
 ## Toy Serialization Library
 
@@ -140,12 +140,12 @@ and accepts `--import-path` flags so cerealed tests can be timed.
 7. Add DmdCtfe backend. (Done.)
 8. Run real cerealed tests: all 19 files exercised on all three backends.
    (Done.)
-9. Add explicit IR test-body termination (`ReturnVoid`; see
-   ai/plans/ir.md), implement BytecodeExecutor, and run the three-way
-   benchmark.
-10. Spike native call bridging (libffi vs JIT stubs) when the first
-    test that calls a dependency needs to run.
-11. Decide on JitExecutor based on benchmark results.
+9. Implement the first direct AST-to-stack-bytecode slice and add it to the
+   backend parity matrix as soon as it supports the first approved behaviour.
+10. Measure bytecode against comparable existing backends.
+11. Spike dependency strategies such as cached dependency bytecode and native
+    calls when benchmarks show dependency handling matters.
+12. Decide whether JIT work is justified based on benchmark results.
 
 ## Test Plan
 

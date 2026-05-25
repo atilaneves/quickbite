@@ -15,6 +15,24 @@ unittest {
     parseModule(readText(cerealTestsDir ~ "/utils.d"), dubImportPaths);
 }
 
+@("benchmark.preParseReportsMissingFixture.dmdCodegen")
+unittest {
+    import quickbite.benchmarks: populateDmdCodegenModuleSet;
+    import std.algorithm.searching: canFind, startsWith;
+    import std.path: buildPath;
+
+    const importPath = tempModuleDir("benchmark-preparse");
+    const missingFixture = buildPath(importPath, "missing_fixture.d");
+
+    try {
+        populateDmdCodegenModuleSet([missingFixture], [importPath]);
+        assert(false, "missing fixture did not throw");
+    } catch (Exception e) {
+        assert(e.msg.startsWith("failed to pre-parse missing_fixture: "));
+        assert(e.msg.canFind("missing_fixture.d"));
+    }
+}
+
 @("runTests.withImportPaths.dmdCtfe")
 unittest {
     import quickbite: ExecutorBackend, runTestsFromFile;
@@ -52,7 +70,7 @@ unittest {
     runTests(source, [importPath], ExecutorBackend.dmdCtfe);
 }
 
-@("runTests.treeWalking.emptyUnittestCompletes")
+@("runTests.emptyUnittestCompletes.treeWalking")
 unittest {
     import quickbite: ExecutorBackend, runTests;
 
@@ -62,7 +80,7 @@ unittest {
     }, ExecutorBackend.treeWalking);
 }
 
-@("runTests.treeWalking.failingUnittestThrows")
+@("runTests.failingUnittestThrows.treeWalking")
 unittest {
     import quickbite: ExecutorBackend, runTests;
 
@@ -74,7 +92,7 @@ unittest {
     }, ExecutorBackend.treeWalking).shouldThrowWithMessage("1 != 2");
 }
 
-@("runTests.treeWalking.failingUnittestAfterAssignmentThrows")
+@("runTests.failingUnittestAfterAssignmentThrows.treeWalking")
 unittest {
     import quickbite: ExecutorBackend, runTests;
 
@@ -85,6 +103,25 @@ unittest {
             assert(value == 3);
         }
     }, ExecutorBackend.treeWalking).shouldThrowWithMessage("2 != 3");
+}
+
+@("runTests.unsupportedArrayExpressionReportsExpressionKind.treeWalking")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        int[] values() {
+            int first = 40;
+            int second = first + 2;
+            return [first, second];
+        }
+
+        unittest {
+            assert(values[0] == 40);
+        }
+    }, ExecutorBackend.treeWalking).shouldThrowWithMessage(
+        "Unsupported array expression: call",
+    );
 }
 
 @("runTests.runsAttributedUnittests")
@@ -105,7 +142,7 @@ unittest {
     }
 }
 
-@("runTests.dmdCodegenRunsFailingPackageModuleUnittest")
+@("runTests.runsFailingPackageModuleUnittest.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
@@ -124,7 +161,7 @@ unittest {
     }
 }
 
-@("runTests.dmdCodegenCatchesAssertWithoutMessage")
+@("runTests.catchesAssertWithoutMessage.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
@@ -143,7 +180,7 @@ unittest {
     }
 }
 
-@("runTests.dmdCodegenRunsImportedSourceModules")
+@("runTests.runsImportedSourceModules.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
@@ -185,7 +222,7 @@ unittest {
     }
 }
 
-@("runTests.dmdCodegenRunsAssociativeArrayLiteral")
+@("runTests.runsAssociativeArrayLiteral.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTests;
@@ -278,7 +315,7 @@ unittest {
     }
 }
 
-@("runTestSummary.dmdCodegenCountsPassingSourceModule")
+@("runTestSummary.countsPassingSourceModule.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTestSummary;
@@ -305,7 +342,7 @@ unittest {
     }
 }
 
-@("runTestSummary.dmdCodegenCountsFailingSourceModule")
+@("runTestSummary.countsFailingSourceModule.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite: ExecutorBackend, runTestSummary;
@@ -337,7 +374,7 @@ unittest {
     }
 }
 
-@("runTestSummary.ir.countsAssertErrorsAsFailures")
+@("runTestSummary.countsAssertErrorsAsFailures.ir")
 unittest {
     import quickbite: ExecutorBackend, runTestSummary;
 
@@ -379,7 +416,7 @@ unittest {
     count.should == 2;
 }
 
-@("lowerModule.ir.functionPointerValuesAreAssignedIds")
+@("lowerModule.functionPointerValuesAreAssignedIds.ir")
 unittest {
     import quickbite.frontend.compiler: lowerModule, parseModule;
     import quickbite.ir.instruction: ConstInt;
@@ -416,7 +453,7 @@ unittest {
     ids.should == [1L, 2L];
 }
 
-@("runTests.ir.functionPointerDenseIdsDispatchToMatchingCallees")
+@("runTests.functionPointerDenseIdsDispatchToMatchingCallees.ir")
 unittest {
     import quickbite: ExecutorBackend, runTests;
 
@@ -438,7 +475,7 @@ unittest {
     }, ExecutorBackend.ir);
 }
 
-@("runTests.ir.functionPointerDispatchUsesLoweredFunctionIds")
+@("runTests.functionPointerDispatchUsesLoweredFunctionIds.ir")
 unittest {
     import quickbite: ExecutorBackend, runTests;
 
@@ -542,7 +579,7 @@ unittest {
     message.canFind("quickbite_test_missing_module_xyzzy").should == true;
 }
 
-@("runParsedTests.ctfe.exposes.dmdDiagnostic.callingCFunction")
+@("runParsedTests.exposes.dmdDiagnostic.callingCFunction.dmdCtfe")
 unittest {
     import quickbite.backends.dmd_ctfe: DmdCtfe;
     import quickbite.frontend.compiler: parseModule;

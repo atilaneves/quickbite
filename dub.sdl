@@ -15,6 +15,7 @@ subPackage {
 configuration "unittest" {
     targetType "executable"
     targetName "ut"
+    targetPath "bin"
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
@@ -33,6 +34,7 @@ configuration "unittest" {
 configuration "unittest-cov" {
     targetType "executable"
     targetName "ut-cov"
+    targetPath "bin"
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests"
@@ -55,6 +57,7 @@ configuration "unittest-cov" {
 configuration "benchmark" {
     targetType "executable"
     targetName "bench"
+    targetPath "bin"
 
     mainSourceFile "benchmarks/main.d"
     sourcePaths "benchmarks"

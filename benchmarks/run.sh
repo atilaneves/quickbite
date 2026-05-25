@@ -5,4 +5,5 @@
 set -euo pipefail
 cd "$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 printf 'Building benchmark binary if needed; this can take a while after source changes...\n' >&2
-exec dub run -q -c benchmark -b benchmark-opt -- "$@"
+dub build -q -c benchmark -b benchmark-opt
+exec bin/bench "$@"

@@ -138,3 +138,17 @@
 - Do not use failed REPL evaluation as control flow to distinguish
   expressions from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.
+
+- Follow the Github section of AGENTS.md: after `gh pr create`, open the
+  resulting PR URL in the browser.
+
+- In D, member access through a pointer auto-dereferences (`ptr.field` works),
+  but indexing does NOT (`ptr[i]` is pointer arithmetic). To index into a
+  struct wrapped in a pointer (e.g. `Array!T*`), always use `(*ptr)[i]`.
+
+- Don't implement TDD cycles inline in the main thread when the plan prescribes
+  subagents; see the existing subagent rule above.
+
+- Don't propose adding or enabling dependency-backed tests for new tree walker
+  TDD slices; extract dependency-free language or project-inspired tests
+  instead.
