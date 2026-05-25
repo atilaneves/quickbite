@@ -27,6 +27,31 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after PR 38 review fix:
+
+- Worktree: `worktrees/dmd-codegen-ram-next`.
+- Branch: `dmd-codegen-ram-next`.
+- Review found that RAM GOT slots were keyed only by `symbolName`, while
+  object-defined relocation targets are resolved from the current object and
+  symbol section. That could alias same-named local/object-defined symbols
+  from different objects into one GOT slot.
+- Commit `11ec7e6 Fix RAM GOT slot identity` changes the RAM GOT slot map to
+  use object/symbol identity for object-defined relocations and symbol name
+  only for external/name-resolved targets.
+- No tests were added or modified for the review fix, following the repo rule
+  to stop for approval before changing tests.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.__gsharedIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  dub test
+  749 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after RAM GOTPCREL slice:
 
 - Worktree: `worktrees/dmd-codegen-ram-next`.
