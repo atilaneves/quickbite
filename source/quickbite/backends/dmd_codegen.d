@@ -401,7 +401,13 @@ private void compileAndRun(
 
     withCompilerLock(() {
         ensureBackendInit;
-        session = generateCodegenSession(module_, tmpDir, sourceImportPaths, idx);
+        session = generateCodegenSession(
+            module_,
+            tmpDir,
+            sourceImportPaths,
+            idx,
+            executionKind,
+        );
     });
 
     runCodegenSession(
@@ -749,6 +755,7 @@ private CodegenSession generateCodegenSession(
     in string tmpDir,
     in string[] sourceImportPaths,
     in uint idx,
+    in CodegenExecutionKind executionKind,
 ) @trusted {
     import dmd.dmodule: Module;
     import dmd.glue: bzeroSymbol, generateCodeAndWrite;
@@ -759,8 +766,13 @@ private CodegenSession generateCodegenSession(
 
     // Ensure the current fixture and its support module are semantically
     // analysed before codegen.
-    auto fixtureModules = collectSourceModules(module_, sourceImportPaths.codegenSourceImportPaths);
-    fixtureModules ~= dmdCodegenSupportModule(idx);
+    auto fixtureModules = collectSourceModules(
+        module_,
+        sourceImportPaths.codegenSourceImportPaths,
+        executionKind == CodegenExecutionKind.sharedLibrary,
+    );
+    if (executionKind == CodegenExecutionKind.sharedLibrary)
+        fixtureModules ~= dmdCodegenSupportModule(idx);
     semantic3Dependencies(fixtureModules);
     throwIfDmdErrors;
 
@@ -4432,6 +4444,7 @@ private void throwIfDmdErrors() @trusted {
 private imported!"dmd.dmodule".Module[] collectSourceModules(
     imported!"dmd.dmodule".Module root,
     in string[] sourceImportPaths,
+    in bool includeGlobalSupportModules,
 ) @trusted {
     import dmd.dmodule: Module;
 
@@ -4439,20 +4452,22 @@ private imported!"dmd.dmodule".Module[] collectSourceModules(
     bool[void*] seen;
 
     collectSourceModule(root, root, sourceImportPaths, modules, seen, true);
-    collectBackendRuntimeSupportModules(modules, seen);
+    collectBackendRuntimeSupportModules(modules, seen, includeGlobalSupportModules);
     return modules;
 }
 
 private void collectBackendRuntimeSupportModules(
     ref imported!"dmd.dmodule".Module[] modules,
     ref bool[void*] seen,
+    in bool includeGlobalSupportModules,
 ) @trusted {
     auto sourceModules = modules.dup; // const fails: DMD Module handles are mutated downstream.
     bool[void*] visited;
 
     foreach (module_; sourceModules)
         collectBackendRuntimeSupportImports(module_, modules, seen, visited);
-    collectGlobalBackendRuntimeSupportModules(modules, seen);
+    if (includeGlobalSupportModules)
+        collectGlobalBackendRuntimeSupportModules(modules, seen);
 }
 
 private void collectGlobalBackendRuntimeSupportModules(

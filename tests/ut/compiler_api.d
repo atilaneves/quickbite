@@ -46,7 +46,7 @@ unittest {
 }
 
 static foreach (backend; dmdCodegenRamExecutorBackends) {
-    @("runTests.localIntegerArithmetic." ~ backend.text)
+    @(text("runTests.localIntegerArithmetic.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {
             import quickbite: runTests;
