@@ -25,6 +25,7 @@ private struct Compiler {
             auto function_ = module_.functions[i];
             module_.functionEntries[function_] = module_.code.length;
             compileStatement(function_.fbody);
+            module_.code ~= Instruction(OpCode.ret);
         }
     }
 
@@ -66,6 +67,13 @@ private struct Compiler {
         }
 
         if (auto assert_ = expression.isAssertExp) {
+            if (auto equal = assert_.e1.isEqualExp) {
+                compileExpression(equal.e1);
+                compileExpression(equal.e2);
+                module_.code ~= Instruction(OpCode.assertEqual);
+                return;
+            }
+
             compileExpression(assert_.e1);
             module_.code ~= Instruction(OpCode.assertTrue);
             return;

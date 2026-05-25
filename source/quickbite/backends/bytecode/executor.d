@@ -86,6 +86,16 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                     throw new Exception("Unittest assertion failed.");
                 ++ip;
                 break;
+            case OpCode.assertEqual:
+                const right = stack.popValue;
+                const left = stack.popValue;
+                if (left != right) {
+                    import std.conv: text;
+
+                    throw new Exception(text(left, " != ", right));
+                }
+                ++ip;
+                break;
             case OpCode.ret:
                 ip = returnAddresses.popSize;
                 break;
