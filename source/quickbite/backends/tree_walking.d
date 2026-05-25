@@ -8,8 +8,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     import quickbite.executor: TestSummary;
 
     private long[VarDeclaration] locals;
+    private long[][VarDeclaration] localArrays;
     private long[][VarDeclaration][VarDeclaration] structArrays;
     private VarDeclaration currentThis;
+    private bool didReturn;
+    private long returnValue;
 
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
@@ -35,8 +38,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         locals = null;
+        localArrays = null;
         structArrays = null;
         currentThis = null;
+        didReturn = false;
+        returnValue = 0;
         runStatement(unitTest.fbody);
     }
 
@@ -51,20 +57,31 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
                     runStatement(child);
+                    if (didReturn) return;
+                }
             return;
         }
 
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
                     runStatement(child);
+                    if (didReturn) return;
+                }
             return;
         }
 
         if (auto expressionStatement = statement.isExpStatement) {
             runExpression(expressionStatement.exp);
+            return;
+        }
+
+        if (auto return_ = statement.isReturnStatement) {
+            if (return_.exp !is null)
+                returnValue = runExpression(return_.exp);
+            didReturn = true;
             return;
         }
 
@@ -93,6 +110,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
+
+        if (auto sub = expression.isMinExp)
+            return runExpression(sub.e1) - runExpression(sub.e2);
 
         if (auto addAssign = expression.isAddAssignExp) {
             auto lhs = addAssign.e1;
@@ -152,6 +172,15 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         else if (auto blit = initializer.isBlitExp)
             initializer = blit.e2;
 
+        if (auto arrayLit = initializer.isArrayLiteralExp) {
+            long[] elements;
+            if (arrayLit.elements !is null)
+                foreach (elem; *arrayLit.elements)
+                    elements ~= runExpression(elem);
+            localArrays[variable] = elements;
+            return 0;
+        }
+
         const value = runExpression(initializer);
         locals[variable] = value;
         return value;
@@ -169,6 +198,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     }
 
     private long runCallExpression(imported!"dmd.expression".CallExp call) {
+        if (auto funcVar = call.e1.isVarExp)
+            if (auto func = funcVar.var.isFuncDeclaration)
+                return runFreeFunctionCall(func, call.arguments);
+
         auto dotVar = call.e1.isDotVarExp;
         if (dotVar is null) {
             import std.conv: text;
@@ -196,8 +229,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         auto savedLocals = locals.dup;
         auto savedThis = currentThis;
+        auto savedDidReturn = didReturn;
+        auto savedReturnValue = returnValue;
         locals = null;
         currentThis = instanceDecl;
+        didReturn = false;
+        returnValue = 0;
 
         if (func.parameters !is null)
             foreach (i, param; *func.parameters)
@@ -205,10 +242,78 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                     locals[param] = argValues[i];
 
         runStatement(func.fbody);
+        const result = returnValue;
 
-        locals = savedLocals.dup;
+        locals = savedLocals;
         currentThis = savedThis;
-        return 0;
+        didReturn = savedDidReturn;
+        returnValue = savedReturnValue;
+        return result;
+    }
+
+    private long runFreeFunctionCall(
+        imported!"dmd.func".FuncDeclaration func,
+        imported!"dmd.expression".Expressions* arguments,
+    ) {
+        struct ArgValue {
+            long scalar;
+            long[] array;
+            bool isArray;
+        }
+
+        ArgValue[] args;
+        if (arguments !is null)
+            foreach (arg; *arguments) {
+                if (auto varExp = arg.isVarExp)
+                    if (auto varDecl = varExp.var.isVarDeclaration)
+                        if (auto arr = varDecl in localArrays) {
+                            args ~= ArgValue(0, *arr, true);
+                            continue;
+                        }
+                args ~= ArgValue(runExpression(arg));
+            }
+
+        auto savedLocals = locals.dup;
+        auto savedLocalArrays = localArrays.dup;
+        auto savedThis = currentThis;
+        auto savedDidReturn = didReturn;
+        auto savedReturnValue = returnValue;
+
+        locals = null;
+        localArrays = null;
+        currentThis = null;
+        didReturn = false;
+        returnValue = 0;
+
+        if (func.parameters !is null)
+            foreach (i, param; *func.parameters) {
+                if (i >= args.length) continue;
+                if (args[i].isArray)
+                    localArrays[param] = args[i].array;
+                else
+                    locals[param] = args[i].scalar;
+            }
+
+        runStatement(func.fbody);
+        const result = returnValue;
+
+        if (func.parameters !is null && arguments !is null)
+            foreach (i, param; *func.parameters) {
+                if (!param.isRef) continue;
+                if (i >= arguments.length) continue;
+                if (auto varExp = (*arguments)[i].isVarExp)
+                    if (auto callerVar = varExp.var.isVarDeclaration)
+                        if (param in locals)
+                            savedLocals[callerVar] = locals[param];
+            }
+
+        locals = savedLocals;
+        localArrays = savedLocalArrays;
+        currentThis = savedThis;
+        didReturn = savedDidReturn;
+        returnValue = savedReturnValue;
+
+        return result;
     }
 
     private long runCatAssignExpression(
@@ -236,6 +341,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long[] runArrayExpression(
         imported!"dmd.expression".Expression expression,
     ) {
+        if (auto var = expression.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (auto arr = variable in localArrays)
+                    return *arr;
+
         if (auto dotVar = expression.isDotVarExp)
             if (auto instanceVar = dotVar.e1.isVarExp)
                 if (auto instanceDecl = instanceVar.var.isVarDeclaration)
