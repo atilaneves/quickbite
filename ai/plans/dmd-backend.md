@@ -108,6 +108,20 @@ Suggested next direction:
   already registers `/tmp/quickbite_dmd_*` for cleanup at process exit, so the
   diagnostics-only handoff warning is not currently an outstanding local diff.
 
+2026-05-25 session-boundary refactor:
+
+- The generated object result is now a `CodegenSession` with an explicit entry
+  module, object paths, and generated modules.
+- Shared-library accumulation moved behind
+  `accumulatedSharedLibraryObjPaths`, and session execution moved behind
+  `runCodegenSession`.
+- The only implemented execution path is still the existing shared-library
+  bridge. This is a behaviour-preserving boundary for a later RAM executor to
+  bypass `_accumulatedObjPaths`, `dmd -shared`, and `dlsym`.
+- The smaller benchmark smoke
+  `./benchmarks/run.sh --backend=dmd-codegen --iterations=1` still prints a
+  `minicereal` / `dmd-codegen` row.
+
 2026-05-25 default benchmark update:
 
 - `dmd-codegen` is now in the default benchmark backend list on `master`.

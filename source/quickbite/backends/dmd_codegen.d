@@ -21,7 +21,8 @@ __gshared string[] _accumulatedObjPaths;
 // duplicate object sets and blowing up the link command.
 __gshared bool[void*] _accumulatedModules;
 
-struct GeneratedObjects {
+struct CodegenSession {
+    imported!"dmd.dmodule".Module entryModule;
     string[] objPaths;
     imported!"dmd.dmodule".Module[] modules;
 }
@@ -248,30 +249,30 @@ private void compileAndRun(
     registerTempCleanup(tmpDir);
 
     const soPath = buildPath(tmpDir, "module.so");
-    GeneratedObjects generated;
+    CodegenSession session;
 
     withCompilerLock(() {
         ensureBackendInit;
-        generated = generateObjs(module_, tmpDir, sourceImportPaths, idx);
+        session = generateCodegenSession(module_, tmpDir, sourceImportPaths, idx);
     });
 
-    // Accumulate this fixture's objects on the first run only.  Repeated
-    // benchmark iterations (warmup + timed) re-run codegen for measurement
-    // but link against the already-accumulated first-run objects, keeping
-    // the accumulated set bounded at one object-set per distinct fixture.
-    const moduleKey = cast(void*) module_;
-    if (moduleKey !in _accumulatedModules) {
-        _accumulatedModules[moduleKey] = true;
-        foreach (generatedModule; generated.modules)
-            if (generatedModule.hasSnippetSourceFile)
-                _accumulatedModules[cast(void*) generatedModule] = true;
-        _accumulatedObjPaths ~= generated.objPaths;
-    }
-    runSharedLibraryBridge(
-        _accumulatedObjPaths,
+    runCodegenSession(
+        session,
         soPath,
         linkFiles.withInferredLinkFiles(sourceImportPaths),
-        module_,
+    );
+}
+
+private void runCodegenSession(
+    CodegenSession session, // const fails: shared-library bridge mutates global object state.
+    in string soPath,
+    in string[] linkFiles,
+) @trusted {
+    runSharedLibraryBridge(
+        session.accumulatedSharedLibraryObjPaths,
+        soPath,
+        linkFiles,
+        session.entryModule,
     );
 }
 
@@ -283,6 +284,25 @@ private void runSharedLibraryBridge(
 ) @trusted {
     link(objPaths, soPath, linkFiles);
     loadAndRunTests(soPath, module_);
+}
+
+private string[] accumulatedSharedLibraryObjPaths(
+    CodegenSession session, // const fails: DMD Module helpers take mutable handles.
+) @trusted {
+    // Accumulate this fixture's objects on the first run only.  Repeated
+    // benchmark iterations (warmup + timed) re-run codegen for measurement
+    // but link against the already-accumulated first-run objects, keeping
+    // the accumulated set bounded at one object-set per distinct fixture.
+    const moduleKey = cast(void*) session.entryModule;
+    if (moduleKey !in _accumulatedModules) {
+        _accumulatedModules[moduleKey] = true;
+        foreach (generatedModule; session.modules)
+            if (generatedModule.hasSnippetSourceFile)
+                _accumulatedModules[cast(void*) generatedModule] = true;
+        _accumulatedObjPaths ~= session.objPaths;
+    }
+
+    return _accumulatedObjPaths;
 }
 
 private string[] withInferredLinkFiles(
@@ -410,7 +430,7 @@ private void ensureBackendInit() @trusted {
     _backendInit = true;
 }
 
-private GeneratedObjects generateObjs(
+private CodegenSession generateCodegenSession(
     imported!"dmd.dmodule".Module module_,
     in string tmpDir,
     in string[] sourceImportPaths,
@@ -480,7 +500,7 @@ private GeneratedObjects generateObjs(
         throwIfDmdErrors;
     }
 
-    return GeneratedObjects(objPaths, modules);
+    return CodegenSession(module_, objPaths, modules);
 }
 
 private void generateObjectFiles(imported!"dmd.dmodule".Module[] modules) @trusted {
