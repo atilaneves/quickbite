@@ -9,22 +9,59 @@ public struct Value {
         short, ushort,
         int, uint,
         long, ulong,
+        long[],
     );
     private Data data;
 
-    public this(T)(in T value) {
+    public this(T)(in T value)
+    if (!is(T == long[]))
+    {
         data = Data(value);
+    }
+
+    public this(in long[] value) {
+        data = Data(value.dup);
     }
 
     public bool opEquals(in Value other) const {
         return data == other.data;
     }
 
-    public string toString() const {
-        import std.conv: text;
+    public long asLong() const {
         import std.sumtype: match;
 
-        return data.match!((value) => text(value));
+        return data.match!(
+            (const(long)[] _) {
+                throw new Exception("Expected scalar, got array.");
+                return 0L;
+            },
+            (value) => cast(long) value,
+        );
+    }
+
+    public long[] asLongArray() const {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(long)[] value) => value.dup,
+            (_) {
+                throw new Exception("Expected array, got scalar.");
+                return null;
+            },
+        );
+    }
+
+    public bool isLongArray() const {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(long)[] _) => true,
+            (_) => false,
+        );
+    }
+
+    public string toString() const {
+        return data.toString;
     }
 }
 
