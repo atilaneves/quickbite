@@ -93,6 +93,16 @@ private struct Compiler {
             return;
         }
 
+        if (isLessOrEqualExpression(expression)) {
+            auto lessOrEqual = expression.isBinExp;
+            compileBinaryExpression(
+                lessOrEqual.e1,
+                lessOrEqual.e2,
+                OpCode.lessOrEqual,
+            );
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileBinaryExpression(add.e1, add.e2, OpCode.add);
             return;
@@ -160,6 +170,14 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.lessThan;
+    }
+
+    private bool isLessOrEqualExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.lessOrEqual;
     }
 
     private void compileBinaryExpression(

@@ -2276,6 +2276,21 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intLessOrEqual.bytecode")
+unittest {
+    runTests(q{
+        int bound() {
+            return 42;
+        }
+
+        unittest {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // comparison before bytecode sees it.
+            assert(42 <= bound);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
