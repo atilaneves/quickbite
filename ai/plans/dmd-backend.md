@@ -27,7 +27,29 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 default benchmark update:
+
+- `dmd-codegen` is now in the default benchmark backend list on `master`.
+- It currently runs first in the default order because it is still sensitive to
+  DMD process-global state left by earlier benchmark backends. Running it after
+  `ir` and `treeWalkingOld` can fail with:
+
+  ```text
+  skipping cerealed dmd-codegen: DMD codegen support module failed to parse.
+  ```
+
+- This order-sensitivity is real debt, but it is not the next substantial
+  backend step. Fix it later when working on DMD process-state isolation.
+- The next substantial backend step is to move toward emitting DMD-generated
+  machine code directly into RAM and executing it without producing, linking,
+  loading, or accumulating shared libraries.
+- That work should aim to delete the shared-library bridge, including
+  `_accumulatedObjPaths`, `--allow-multiple-definition`, temp object lifetime
+  management, and module-name-only `__modtest` lookup through `dlsym`.
+
 2026-05-25 merge-readiness update:
+
+Historical note: this predates the default benchmark update above.
 
 - This branch is acceptable to merge as an experimental `dmd-codegen` foothold,
   not as a correctness-complete or benchmark-complete backend.
@@ -65,11 +87,10 @@ Post-merge handoff for the next agent:
    benchmark defaults or `matureExecutorBackends`, keep `dmd-codegen` excluded.
 2. After merge, record the accepted limitations in the PR or follow-up issue so
    later benchmark numbers are not mistaken for clean latency data.
-3. The next substantial backend step should be a session/batch boundary that
-   owns the DMD module set for a run, or the planned in-RAM execution path that
-   removes the shared-library bridge. Either direction should aim to delete
-   `_accumulatedObjPaths`, `--allow-multiple-definition`, and module-name-only
-   symbol reuse.
+3. The next substantial backend step should be the planned in-RAM execution
+   path that removes the shared-library bridge. Do not spend the next session
+   trying to perfect shared-library-specific state cleanup unless it directly
+   blocks the RAM-emission path.
 4. Before promoting `dmd-codegen`, add tests that prove two different same-named
    source snippets in one process do not reuse stale generated code, and that a
    failed parse/codegen run cannot poison later valid runs.
@@ -202,10 +223,60 @@ template/typeinfo/backend state between generated fixtures.
 
 The shared-library path can introduce separate link/load failures, but the
 latest evidence still points at incomplete or over-broad in-process DMD codegen
-state. The same complete object bodies would be required by a future in-memory
-code emitter, so replacing the shared-library bridge is not the immediate fix
-unless new evidence shows the bridge is the reason complete code cannot be
-emitted.
+state. Keep that evidence, but do not make shared-library-specific cleanup the
+next project. The next backend project is the in-memory machine-code path below,
+which should remove link/load failures from the execution model entirely.
+
+## Next Substantial Backend Step: In-RAM Execution
+
+Move `dmd-codegen` toward executing generated machine code from memory instead
+of writing object files, invoking the linker, loading a `.so`, and resolving
+`__modtest` via `dlsym`.
+
+The shared-library bridge has done its job: it proved that DMD's backend can run
+real cerealed unittest code from the Quickbite process. It is now distorting the
+benchmark and forcing bridge-specific compromises:
+
+- `_accumulatedObjPaths` keeps object files from earlier fixtures alive.
+- `--allow-multiple-definition` hides duplicate strong symbols.
+- Temp directories must live for the process lifetime.
+- Module-name-only `__modtest` lookup can reuse stale generated code.
+- Link time and dynamic loader behavior are included in measurements that
+  should be about DMD codegen and execution latency.
+
+Do not make bridge cleanup the main next project. Order sensitivity, stale DMD
+global state, and negative-run contamination remain known issues, but they can
+be handled after the execution path no longer depends on cross-fixture shared
+library accumulation.
+
+Concrete direction:
+
+1. Find the lowest-friction interception point in DMD's backend for generated
+   code and data before they are written as object files.
+2. Build a tiny executable-memory owner for one codegen session. It should own
+   code bytes, data bytes, relocations or fixups, and the generated unittest
+   entrypoint address.
+3. Start with the smallest supported fixture, not cerealed. A good first target
+   is the existing `minicereal` DMD-codegen benchmark path.
+4. Keep the current `.so` bridge as a fallback while the RAM path is incomplete.
+5. When the RAM path can run the benchmark slice, stop accumulating object files
+   for that path and remove link/load work from the measured loop.
+
+Initial acceptance criteria:
+
+- `./benchmarks/run.sh --backend=dmd-codegen --iterations=1` can execute through
+  the RAM path for the chosen first slice.
+- The old shared-library path remains available or is easy to re-enable until
+  the RAM path can handle cerealed.
+- The RAM path does not use `_accumulatedObjPaths`,
+  `--allow-multiple-definition`, or `dmd -shared`.
+
+Later acceptance criteria:
+
+- `./benchmarks/run.sh --backend=dmd-codegen --dub cerealed --iterations=1`
+  produces timing rows through the RAM path.
+- The shared-library bridge and its support code can be deleted.
+- Benchmark rows no longer include linker or dynamic-loader cost.
 
 ## Branch Context
 
