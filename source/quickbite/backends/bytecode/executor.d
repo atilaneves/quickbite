@@ -38,6 +38,23 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
 
         return testSummary(parseModule(source).module_);
     }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        return fallbackEvalExecutor.eval(input);
+    }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        return fallbackEvalExecutor.evalReplCell(transcript, input);
+    }
+
+    private imported!"quickbite.executor".Executor fallbackEvalExecutor() {
+        import quickbite.backends.tree_walking: TreeWalkingExecutor;
+
+        return new TreeWalkingExecutor;
+    }
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(

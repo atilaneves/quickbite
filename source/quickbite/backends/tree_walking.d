@@ -125,8 +125,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
-            if (variable !is null && variable in locals)
-                return locals[variable];
+            if (variable !is null) {
+                if (variable in locals)
+                    return locals[variable];
+                else
+                    return 0;  // Uninitialized variable defaults to 0
+            }
         }
 
         if (expression.isThisExp !is null)
@@ -159,26 +163,23 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+        if (auto div = expression.isDivExp)
+            return runExpression(div.e1) / runExpression(div.e2);
+
         if (isRightShiftExpression(expression)) {
             auto binary = expression.isBinExp;
             return runExpression(binary.e1) >> runExpression(binary.e2);
         }
 
-        if (auto addAssign = expression.isAddAssignExp) {
-            auto lhs = addAssign.e1;
-            if (auto cast_ = lhs.isCastExp)
-                lhs = cast_.e1;
-            if (auto var = lhs.isVarExp)
-                if (auto variable = var.var.isVarDeclaration) {
-                    const value = runExpression(addAssign.e1) + runExpression(addAssign.e2);
-                    locals[variable] = value;
-                    return value;
-                }
-        }
+        if (auto addAssign = expression.isAddAssignExp)
+            return runCompoundAssignExpression(addAssign, 1);
+
+        if (auto minAssign = expression.isMinAssignExp)
+            return runCompoundAssignExpression(minAssign, -1);
 
         if (auto post = expression.isPostExp)
-            if (isPostIncrementExpression(post))
-                return runPostIncrementExpression(post);
+            if (isPostMutationExpression(post))
+                return runPostMutationExpression(post);
 
         if (auto equal = expression.isEqualExp)
             return runExpression(equal.e1) == runExpression(equal.e2);
@@ -193,6 +194,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto cast_ = expression.isCastExp)
             return coerceIntegerToType(runExpression(cast_.e1), cast_.to);
+
+        if (auto pre = expression.isPreExp)
+            if (isPreMutationExpression(pre))
+                return runPreMutationExpression(pre);
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
@@ -213,11 +218,29 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
-    private long runPostIncrementExpression(
+    private long runCompoundAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+        in long sign,
+    ) {
+        auto lhs = assign.e1;
+        if (auto cast_ = lhs.isCastExp)
+            lhs = cast_.e1;
+        if (auto var = lhs.isVarExp)
+            if (auto variable = var.var.isVarDeclaration) {
+                const value = runExpression(assign.e1)
+                    + sign * runExpression(assign.e2);
+                locals[variable] = value;
+                return value;
+            }
+
+        throw new Exception("Unsupported compound assignment.");
+    }
+
+    private long runPostMutationExpression(
         imported!"dmd.expression".PostExp post,
     ) {
         long value;
-        if (postIncrementThisField(post, value))
+        if (postMutationThisField(post, value))
             return value;
 
         auto var = post.e1.isVarExp;
@@ -228,18 +251,21 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (currentThis !is null && variable !in locals) {
             const oldValue = structScalarValue(currentThis, variable);
             structScalars[currentThis][variable] = coerceIntegerToType(
-                oldValue + 1,
+                oldValue + mutationStep(post.op),
                 variable.type,
             );
             return oldValue;
         }
 
         const oldValue = runExpression(post.e1);
-        locals[variable] = coerceIntegerToType(oldValue + 1, variable.type);
+        locals[variable] = coerceIntegerToType(
+            oldValue + mutationStep(post.op),
+            variable.type,
+        );
         return oldValue;
     }
 
-    private bool postIncrementThisField(
+    private bool postMutationThisField(
         imported!"dmd.expression".PostExp post,
         out long oldValue,
     ) {
@@ -256,18 +282,48 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         oldValue = structScalarValue(currentThis, field);
         structScalars[currentThis][field] = coerceIntegerToType(
-            oldValue + 1,
+            oldValue + mutationStep(post.op),
             field.type,
         );
         return true;
     }
 
-    private bool isPostIncrementExpression(
+    private bool isPostMutationExpression(
         imported!"dmd.expression".PostExp post,
     ) {
+        return mutationStep(post.op) != 0;
+    }
+
+    private long runPreMutationExpression(
+        imported!"dmd.expression".PreExp pre,
+    ) {
+        auto var = pre.e1.isVarExp;
+        if (var is null || var.var.isVarDeclaration is null)
+            throw new Exception("Unsupported pre expression.");
+
+        auto variable = var.var.isVarDeclaration;
+        const value = coerceIntegerToType(
+            runExpression(pre.e1) + mutationStep(pre.op),
+            variable.type,
+        );
+        locals[variable] = value;
+        return value;
+    }
+
+    private bool isPreMutationExpression(
+        imported!"dmd.expression".PreExp pre,
+    ) {
+        return mutationStep(pre.op) != 0;
+    }
+
+    private long mutationStep(imported!"dmd.tokens".EXP op) {
         import dmd.tokens: EXP;
 
-        return post.op == EXP.plusPlus;
+        if (op == EXP.plusPlus)
+            return 1;
+        if (op == EXP.minusMinus)
+            return -1;
+        return 0;
     }
 
     private bool isLessThanExpression(
@@ -804,5 +860,51 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         in string source,
     ) {
         return TestSummary.init;
+    }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+        import quickbite.frontend.compiler: parseModule;
+        import dmd.declaration: VarDeclaration;
+        import dmd.func: FuncDeclaration;
+        import std.string: lastIndexOf;
+
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        locals = null;
+        runStatement(f.fbody);
+
+        foreach (decl, value; locals) {
+            if (decl.ident.toString == "__r")
+                return Value(cast(int) value);
+        }
+
+        return Value(0);
+    }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.executor: Repl;
+
+        return Repl.CellResult.value_(eval(transcript ~ input));
     }
 }

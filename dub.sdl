@@ -69,6 +69,20 @@ configuration "benchmark" {
     dependency ":dmd-backend-vendor" version="*"
 }
 
+configuration "repl" {
+    targetType "executable"
+    targetName "repl"
+    targetPath "bin"
+
+    mainSourceFile "repl/main.d"
+    sourcePaths "source" "repl"
+    includePaths "source" "repl"
+    lflags "--allow-multiple-definition" platform="linux"
+
+    dependency "dmd:frontend" version="~>2.112.0"
+    dependency ":dmd-backend-vendor" version="*"
+}
+
 // `-inline` causes DMD to hang on large lowering.d; omit it until the
 // file is split into smaller modules.
 buildType "benchmark-opt" {

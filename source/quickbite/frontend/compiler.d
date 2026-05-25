@@ -61,6 +61,9 @@ final class Compiler {
 
     private this() {
         import core.sync.mutex: Mutex;
+        import dmd.common.charactertables:
+            IdentifierCharLookup,
+            IdentifierTable;
         import dmd.errors: diagnostics, fatalErrorHandler;
         import dmd.frontend: addImport, findImportPaths, initDMD;
         import dmd.globals: global;
@@ -116,6 +119,10 @@ final class Compiler {
         // directly to stderr (a fprintf path that bypasses diagnosticHandler).
         global.params.v.errorLimit = 0;
 
+        global.compileEnv.cCharLookupTable =
+            IdentifierCharLookup.forTable(IdentifierTable.LR);
+        global.compileEnv.dCharLookupTable =
+            IdentifierCharLookup.forTable(IdentifierTable.LR);
         global.params.useUnitTests = true;
         global.params.allInst = true;
         global.errors = 0;
