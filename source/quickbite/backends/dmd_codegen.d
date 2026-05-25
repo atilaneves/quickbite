@@ -4873,8 +4873,16 @@ private struct RamExecutableImage {
     size_t memorySize;
     ulong nextAddress;
     ulong[string] definedSymbols;
+    ulong[RamGotSlotKey] gotSlotOffsets;
     RamExecutableObjectPlacement[] objectPlacements;
     RamResolvedRelocation[] relocations;
+}
+
+private struct RamGotSlotKey {
+    bool objectDefined;
+    size_t objectIndex;
+    size_t symbolIndex;
+    string symbolName;
 }
 
 private struct RamExecutableObjectPlacement {
@@ -4904,6 +4912,7 @@ private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @tru
         );
     }
 
+    image.reserveGotSlots;
     image.memorySize = cast(size_t) image.nextAddress.alignUp(pageSize);
     if (image.memorySize == 0)
         throw new Exception("DMD codegen RAM image has no allocated sections.");
@@ -4923,6 +4932,28 @@ private RamExecutableImage ramExecutableImage(in GeneratedObject[] objects) @tru
         }
 
     return image;
+}
+
+private void reserveGotSlots(ref RamExecutableImage image) @safe {
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
+        foreach (relocation; objectPlacement.objectImage.relocations) {
+            if (relocation.type != X86_64Relocation.gotPcRel)
+                continue;
+            if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
+                continue;
+            auto slotKey = relocation.gotSlotKey( // AA lookup needs a mutable key.
+                objectIndex,
+                objectPlacement.sections,
+            );
+            if (slotKey == RamGotSlotKey.init)
+                continue;
+            if (slotKey in image.gotSlotOffsets)
+                continue;
+
+            image.nextAddress = image.nextAddress.alignUp((ulong).sizeof);
+            image.gotSlotOffsets[slotKey] = image.nextAddress;
+            image.nextAddress += (ulong).sizeof;
+        }
 }
 
 private void copySections(ref RamExecutableImage image) @trusted {
@@ -4945,21 +4976,68 @@ private void copySections(ref RamExecutableImage image) @trusted {
 }
 
 private void resolveRelocations(ref RamExecutableImage image) @trusted {
-    foreach (objectPlacement; image.objectPlacements)
+    foreach (objectIndex, objectPlacement; image.objectPlacements)
         foreach (relocation; objectPlacement.objectImage.relocations) {
             if (!objectPlacement.sections.hasPlacedSection(relocation.sectionIndex))
                 continue;
 
+            const targetAddress = image.relocationTargetAddress(
+                objectPlacement,
+                relocation,
+            );
+            const relocationTarget = relocation.type == X86_64Relocation.gotPcRel
+                ? image.gotSlotAddress(
+                    relocation,
+                    objectIndex,
+                    objectPlacement.sections,
+                    targetAddress,
+                )
+                : targetAddress;
             image.relocations ~= RamResolvedRelocation(
                 relocation.type,
                 image.baseAddress
                     + objectPlacement.sections[relocation.sectionIndex].address
                     + relocation.offset,
-                image.relocationTargetAddress(objectPlacement, relocation),
+                relocationTarget,
                 relocation.symbolName,
                 relocation.addend,
             );
         }
+}
+
+private ulong gotSlotAddress(
+    ref RamExecutableImage image,
+    in Elf64Relocation relocation,
+    in size_t objectIndex,
+    in RamSectionPlacement[] sections,
+    in ulong targetAddress,
+) @trusted {
+    auto slotKey = relocation.gotSlotKey(objectIndex, sections); // AA lookup needs a mutable key.
+    if (slotKey == RamGotSlotKey.init)
+        throw new Exception("DMD codegen RAM GOT relocation has no target symbol.");
+
+    const slotOffset = slotKey in image.gotSlotOffsets;
+    if (!slotOffset)
+        throw new Exception("DMD codegen RAM GOT relocation has no GOT slot.");
+
+    const slotAddress = image.baseAddress + *slotOffset;
+    slotAddress.writeRam64(targetAddress);
+    return slotAddress;
+}
+
+private RamGotSlotKey gotSlotKey(
+    in Elf64Relocation relocation,
+    in size_t objectIndex,
+    in RamSectionPlacement[] sections,
+) @safe {
+    if (relocation.symbolSectionIndex != shnUndef
+        && sections.hasPlacedSection(relocation.symbolSectionIndex))
+        return RamGotSlotKey(true, objectIndex, relocation.symbolIndex, null);
+
+    if (relocation.symbolName.length == 0)
+        return RamGotSlotKey.init;
+
+    return RamGotSlotKey(false, 0, 0, relocation.symbolName);
 }
 
 private ulong relocationTargetAddress(
@@ -5004,9 +5082,12 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
                 break;
 
             case gotPcRel:
-                throw new Exception(
-                    "DMD codegen RAM relocation unsupported: R_X86_64_GOTPCREL",
+                relocation.patchAddress.writeRam32(
+                    relocation.targetAddress
+                    + cast(ulong) relocation.addend
+                    - relocation.patchAddress,
                 );
+                break;
 
             case tlsGd:
                 throw new Exception(

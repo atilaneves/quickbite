@@ -27,6 +27,80 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after PR 38 review fix:
+
+- Worktree: `worktrees/dmd-codegen-ram-next`.
+- Branch: `dmd-codegen-ram-next`.
+- Review found that RAM GOT slots were keyed only by `symbolName`, while
+  object-defined relocation targets are resolved from the current object and
+  symbol section. That could alias same-named local/object-defined symbols
+  from different objects into one GOT slot.
+- Commit `11ec7e6 Fix RAM GOT slot identity` changes the RAM GOT slot map to
+  use object/symbol identity for object-defined relocations and symbol name
+  only for external/name-resolved targets.
+- No tests were added or modified for the review fix, following the repo rule
+  to stop for approval before changing tests.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.__gsharedIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  dub test
+  749 test(s) run, 0 failed.
+  ```
+
+2026-05-25 handoff after RAM GOTPCREL slice:
+
+- Worktree: `worktrees/dmd-codegen-ram-next`.
+- Branch: `dmd-codegen-ram-next`.
+- Added the approved focused RAM test:
+  `ut.backends.parity.__gsharedIntRead.dmdCodegenRam`.
+- Initial red result was the expected controlled diagnostic:
+  `DMD codegen RAM relocation unsupported: R_X86_64_GOTPCREL`.
+- RAM images now reserve one 8-byte GOT slot per named GOTPCREL symbol, write
+  the resolved target address into that slot during relocation resolution, and
+  patch `R_X86_64_GOTPCREL` as a PC-relative reference to the slot.
+- This covers the PIC shape DMD emits for reading a `__gshared` module-level
+  variable from generated RAM code. It does not yet cover TLS globals
+  (`R_X86_64_TLSGD`) or anonymous/section-relative GOT relocations if DMD later
+  emits them.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.__gsharedIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.backends.parity.ok.dmdCodegenRam \
+    ut.backends.parity.assertionContext.dmdCodegenRam \
+    ut.backends.parity.throwingTest.dmdCodegenRam \
+    ut.backends.parity.localIntReturn.dmdCodegenRam \
+    ut.backends.parity.__gsharedIntRead.dmdCodegenRam \
+    ut.backends.parity.intAddition.dmdCodegenRam \
+    ut.backends.parity.intSubtraction.dmdCodegenRam \
+    ut.backends.parity.intMultiplication.dmdCodegenRam \
+    ut.backends.parity.intDivision.dmdCodegenRam \
+    ut.backends.parity.intModulo.dmdCodegenRam \
+    ut.backends.parity.intBitwiseAnd.dmdCodegenRam \
+    ut.backends.parity.intBitwiseOr.dmdCodegenRam \
+    ut.backends.parity.intGreaterThan.dmdCodegenRam \
+    ut.backends.parity.logicalAnd.dmdCodegenRam \
+    ut.backends.parity.functionParameter.dmdCodegenRam \
+    ut.backends.parity.ifElse.dmdCodegenRam \
+    ut.backends.parity.while_.dmdCodegenRam \
+    ut.backends.codegen.runTests.localIntegerArithmetic.dmdCodegenRam
+
+  18 test(s) run, 0 failed.
+
+  dub test
+  749 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after PR 31 review-fix branch:
 
 - PR 31 was merged before review fixes landed. The follow-up work now lives in
