@@ -108,13 +108,57 @@ Progress after continuing this snapshot:
   591 test(s) run, 0 failed.
   ```
 
+Progress after RAM executor implementation:
+
+- Added a separate `DmdCodegenRam` executor and
+  `ExecutorBackend.dmdCodegenRam`. The benchmark/backend name `dmd-codegen`
+  still maps to `DmdCodegenSharedLib`.
+- The RAM executor uses the same DMD semantic/codegen session path but runs
+  generated object bytes from a Quickbite-owned RAM image.
+- RAM execution uses the current session's objects, not the shared-library
+  accumulated object set. This avoids pulling stale snippets from earlier
+  tests into RAM images.
+- The shared-library synthetic support module and broad global support-module
+  sweep are shared-library-only now. RAM sessions compile the fixture and
+  actual discovered imports instead of importing link-time shims.
+- RAM tests are still experimental-gated with
+  `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1`.
+- Passing RAM coverage promoted so far:
+  - `ut.compiler_api.runTests.localIntegerArithmetic.dmdCodegenRam`,
+  - `ut.language.ok.dmdCodegenRam`,
+  - `ut.language.localIntReturn.dmdCodegenRam`,
+  - `ut.language.intAddition.dmdCodegenRam`,
+  - `ut.language.intSubtraction.dmdCodegenRam`,
+  - `ut.language.intMultiplication.dmdCodegenRam`,
+  - `ut.language.intDivision.dmdCodegenRam`,
+  - `ut.language.intModulo.dmdCodegenRam`,
+  - `ut.language.intBitwiseAnd.dmdCodegenRam`,
+  - `ut.language.intBitwiseOr.dmdCodegenRam`,
+  - `ut.language.intGreaterThan.dmdCodegenRam`,
+  - `ut.language.logicalAnd.dmdCodegenRam`,
+  - `ut.language.functionParameter.dmdCodegenRam`,
+  - `ut.language.ifElse.dmdCodegenRam`,
+  - `ut.language.while_.dmdCodegenRam`.
+- Tried but did not promote:
+  - `ut.language.oops.dmdCodegenRam`,
+  - `ut.language.throwingTest.dmdCodegenRam`.
+  Both currently segfault in the generated RAM code path; assertion and
+  exception propagation need a later focused slice.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <15 RAM tests>
+  15 test(s) run, 0 failed.
+
+  dub test
+  606 test(s) run, 0 failed.
+  ```
+
 Immediate next step:
 
-1. Ask for approval before adding the first `DmdCodegenRam` test.
-2. After approval, add the smallest RAM behavior test: a trivial unittest with
-   local integer arithmetic.
-3. Implement the dumbest separate `DmdCodegenRam` path needed to pass it,
-   without replacing the shared-library `dmd-codegen` backend mapping.
+1. Run PR-readiness checks, including `benchmarks/run.sh`.
+2. Open a PR for the shared-library split plus initial RAM executor/scalar
+   coverage.
 
 Historical snapshot below is retained for evidence and context.
 
