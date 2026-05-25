@@ -27,6 +27,281 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after execution abstraction:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current head remains:
+
+  ```text
+  8940bb1 Separate DMD codegen session execution
+  ```
+
+- The worktree is intentionally not committed yet:
+  - `source/quickbite/backends/dmd_codegen.d`
+  - `ai/plans/dmd-backend.md`
+- Current source diff summary:
+  - The previous object-file entrypoint adapter is still present:
+    `runCodegenSession` resolves the generated unittest entrypoint from the
+    generated ELF64 object symbol table before entering the bridge.
+  - `runCodegenSession` now constructs a `CodegenExecution` abstraction and
+    calls `execution.run`.
+  - `CodegenExecution` is currently enum-backed with only one implementation:
+    the existing shared-library bridge.
+  - This keeps behaviour identical while giving the RAM path a replacement
+    point below `runCodegenSession`.
+  - This still writes object files, links `module.so`, loads it, and calls the
+    generated unittest entrypoint through `dlsym`.
+
+- Verification after the latest source edit:
+
+  ```text
+  dub test
+  591 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.compiler_api.runTests.runsFailingPackageModuleUnittest.dmdCodegen \
+    ut.compiler_api.runTestSummary.countsPassingSourceModule.dmdCodegen \
+    ut.minicereal.minicerealFileCanRunTwice.dmdCodegen
+  ```
+
+  ```text
+  3 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  ```
+
+  It printed a `minicereal` / `dmd-codegen` row. The first attempt in the
+  sandbox failed because Dub needed to update generated config under `~/.dub`;
+  rerunning with filesystem approval succeeded.
+
+Next recommended step:
+
+- Commit the current adapter plus execution-abstraction slice if the diff
+  looks acceptable.
+- Then start the first real RAM-path implementation behind `CodegenExecution`,
+  keeping `sharedLibrary` as the fallback until a RAM executor can run the
+  smallest benchmark slice.
+- Do not add or modify tests without explicit approval.
+
+Historical notes below are retained for context.
+
+2026-05-25 handoff after entrypoint adapter verification:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current head remains:
+
+  ```text
+  8940bb1 Separate DMD codegen session execution
+  ```
+
+- The worktree is intentionally not committed yet:
+  - `source/quickbite/backends/dmd_codegen.d`
+  - `ai/plans/dmd-backend.md`
+- Reason not committed: the last user request was to continue the backend work
+  and then ask "Next?"; no commit was requested yet. Leave the diff reviewable
+  as a single adapter slice unless the user asks to commit it.
+- Current source diff summary:
+  - `runCodegenSession` resolves an explicit unittest entrypoint before
+    entering the shared-library bridge.
+  - The resolver reads generated ELF64 object symbol tables in Quickbite-owned
+    code and finds the generated `__modtest` symbol from the object file.
+  - `loadAndRunTests` receives the explicit symbol and calls `dlsym` with it.
+  - The old module-name-derived `modtestSymbol` remains as fallback if
+    object-file resolution finds no entrypoint.
+  - This is still the shared-library bridge; it does not yet execute code from
+    RAM or remove object files, `dmd -shared`, `dlopen`, or `dlsym`.
+
+- Verification after the latest source edit:
+
+  ```text
+  dub test
+  591 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.compiler_api.runTests.runsFailingPackageModuleUnittest.dmdCodegen \
+    ut.compiler_api.runTestSummary.countsPassingSourceModule.dmdCodegen \
+    ut.minicereal.minicerealFileCanRunTwice.dmdCodegen
+  ```
+
+  ```text
+  3 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  ```
+
+  It printed a `minicereal` / `dmd-codegen` row.
+
+  ```sh
+  ./benchmarks/run.sh \
+    --warmup=1 \
+    --iterations=2 \
+    --backend=dmd-codegen \
+    --dub cerealed
+  ```
+
+  It printed a `cerealed` / `dmd-codegen` row.
+
+- Local artifact note: the first cerealed benchmark attempt skipped at link
+  time because the local cached cerealed unittest archive was stale and lacked
+  needed template instantiations. Running `dub build --config=unittest` in the
+  cached cerealed package rebuilt that local artifact; the same benchmark
+  command then printed the expected row.
+
+Next recommended step:
+
+- Commit the current adapter slice if the diff looks acceptable.
+- Then add a small Quickbite-owned execution abstraction under
+  `runCodegenSession`, with the current shared-library bridge as the first
+  implementation. Keep behaviour identical in that refactor.
+- Do not add or modify tests without explicit approval.
+
+Historical notes below are retained for context.
+
+2026-05-25 continuation after entrypoint adapter:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current head remains:
+
+  ```text
+  8940bb1 Separate DMD codegen session execution
+  ```
+
+- Local source change:
+  - `runCodegenSession` now resolves an explicit unittest entrypoint from the
+    current session before entering the shared-library bridge.
+  - The resolver reads generated ELF64 object symbol tables in Quickbite-owned
+    code and finds the generated `__modtest` symbol from the object file.
+  - `loadAndRunTests` now receives that symbol explicitly. The old
+    module-name-derived `modtestSymbol` remains as fallback when object-file
+    resolution cannot find an entrypoint.
+  - This still links `module.so`, loads it, and calls the function through
+    `dlsym`; it only removes module-name-only symbol discovery from the bridge
+    boundary.
+
+- Verification after the source edit:
+
+  ```text
+  dub test
+  591 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.compiler_api.runTests.runsFailingPackageModuleUnittest.dmdCodegen \
+    ut.compiler_api.runTestSummary.countsPassingSourceModule.dmdCodegen \
+    ut.minicereal.minicerealFileCanRunTwice.dmdCodegen
+  ```
+
+  ```text
+  3 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  ```
+
+  It printed a `minicereal` / `dmd-codegen` row.
+
+  ```sh
+  ./benchmarks/run.sh \
+    --warmup=1 \
+    --iterations=2 \
+    --backend=dmd-codegen \
+    --dub cerealed
+  ```
+
+  It printed a `cerealed` / `dmd-codegen` row.
+
+- Local artifact note: the first cerealed benchmark attempt skipped at link
+  time because the local cached cerealed unittest archive was stale and lacked
+  needed template instantiations. Running `dub build --config=unittest` in the
+  cached cerealed package rebuilt that local artifact; the same benchmark
+  command then printed the expected row.
+
+Next recommended step:
+
+- Keep this object-file entrypoint resolver as a small bridge adapter. The next
+  RAM-path step should move execution behind a real Quickbite-owned execution
+  abstraction that can eventually replace linking/loading `module.so`.
+- Do not expand the ELF reader into a general linker unless that is explicitly
+  chosen as the RAM execution strategy.
+- Keep vendored code clean. Do not edit `vendor/dmd-backend/**` or the vendored
+  `dmd.lib` stub for convenience.
+- Stop and ask before adding or modifying tests, per the repo TDD rule.
+
+Historical notes below are retained for context.
+
+2026-05-25 handoff after session-boundary commits:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current head:
+
+  ```text
+  8940bb1 Separate DMD codegen session execution
+  ```
+
+- The worktree is clean.
+- Recent commits:
+  - `1100698 Prepare DMD codegen bridge replacement point`
+  - `8940bb1 Separate DMD codegen session execution`
+- `dub test` passed after the latest source edit:
+
+  ```text
+  591 test(s) run, 0 failed.
+  ```
+
+- The smaller opt-in benchmark smoke passed after the latest source edit:
+
+  ```sh
+  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  ```
+
+  It printed a `minicereal` / `dmd-codegen` row. Do not record raw benchmark
+  timings in this plan unless the active task is specifically performance
+  regression tracking.
+
+What changed in the latest commits:
+
+- `compileAndRun` no longer calls link/load directly. It now creates a
+  `CodegenSession`, then passes the session to `runCodegenSession`.
+- `CodegenSession` names the current generated-code unit: entry module,
+  generated object paths, and generated modules.
+- The existing shared-library execution path is isolated behind
+  `runSharedLibraryBridge`.
+- Shared-library object accumulation is isolated behind
+  `accumulatedSharedLibraryObjPaths`.
+- This is still a behaviour-preserving refactor. The only implemented execution
+  path still writes `.o` files, links `module.so`, loads it, and calls the
+  generated `__modtest` symbol.
+
+Next recommended step:
+
+- Do not add tests for private mechanics such as "no `.so` was produced" or
+  "object bytes were captured". The current public behaviour is already covered
+  by existing DMD-codegen tests and benchmark smoke checks.
+- Continue by adding a Quickbite-owned execution abstraction under
+  `runCodegenSession`, with the shared-library bridge as the fallback.
+- The first useful implementation target is a non-vendored adapter that starts
+  from the current generated object files and can identify the generated
+  unittest entrypoint without going through module-name-only `dlsym`.
+- Keep vendored code clean. Do not edit `vendor/dmd-backend/**` or the vendored
+  `dmd.lib` stub for convenience.
+- Stop and ask before adding or modifying tests, per the repo TDD rule.
+
+Historical notes below are retained for context.
+
 2026-05-25 RAM-path handoff after vendored-code rollback:
 
 - The worktree was re-vendored with `scripts/vendor-dmd-backend.sh`.
@@ -93,8 +368,12 @@ Suggested next direction:
 
 - The goal benchmark command now succeeds on the clean vendored path:
 
-  ```text
-  ./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen --dub cerealed
+  ```sh
+  ./benchmarks/run.sh \
+    --warmup=1 \
+    --iterations=2 \
+    --backend=dmd-codegen \
+    --dub cerealed
   ```
 
   It printed a `cerealed` / `dmd-codegen` row.

@@ -27,6 +27,46 @@ struct CodegenSession {
     imported!"dmd.dmodule".Module[] modules;
 }
 
+private enum CodegenExecutionKind {
+    sharedLibrary,
+}
+
+private struct CodegenExecution {
+    CodegenExecutionKind kind;
+    string[] objPaths;
+    string soPath;
+    string[] linkFiles;
+    string entrypoint;
+
+    private static CodegenExecution sharedLibrary(
+        in string[] objPaths,
+        in string soPath,
+        in string[] linkFiles,
+        in string entrypoint,
+    ) @safe {
+        return CodegenExecution(
+            CodegenExecutionKind.sharedLibrary,
+            objPaths.dup,
+            soPath.idup,
+            linkFiles.dup,
+            entrypoint.idup,
+        );
+    }
+
+    private void run() @trusted {
+        final switch (kind) with (CodegenExecutionKind) {
+            case sharedLibrary:
+                runSharedLibraryBridge(
+                    objPaths,
+                    soPath,
+                    linkFiles,
+                    entrypoint,
+                );
+                return;
+        }
+    }
+}
+
 struct TempDirNode {
     // C-owned mutable storage.  This is deliberately not a D string because
     // the atexit handler can run after the D runtime has started tearing down.
@@ -268,22 +308,34 @@ private void runCodegenSession(
     in string soPath,
     in string[] linkFiles,
 ) @trusted {
-    runSharedLibraryBridge(
+    const entrypoint = session.unittestEntrypoint;
+    auto execution = CodegenExecution.sharedLibrary(
         session.accumulatedSharedLibraryObjPaths,
         soPath,
         linkFiles,
-        session.entryModule,
+        entrypoint,
     );
+    execution.run;
 }
 
 private void runSharedLibraryBridge(
     in string[] objPaths,
     in string soPath,
     in string[] linkFiles,
-    imported!"dmd.dmodule".Module module_,
+    in string entrypoint,
 ) @trusted {
     link(objPaths, soPath, linkFiles);
-    loadAndRunTests(soPath, module_);
+    loadAndRunTests(soPath, entrypoint);
+}
+
+private string unittestEntrypoint(
+    CodegenSession session, // const fails: DMD Module helpers take mutable handles.
+) @trusted {
+    foreach (objPath; session.objPaths)
+        if (const symbol = objPath.objectFileUnittestEntrypoint)
+            return symbol;
+
+    return modtestSymbol(session.entryModule);
 }
 
 private string[] accumulatedSharedLibraryObjPaths(
@@ -4445,7 +4497,7 @@ private void link(in string[] objPaths, in string soPath, in string[] linkFiles)
 
 private void loadAndRunTests(
     in string soPath,
-    imported!"dmd.dmodule".Module module_,
+    in string entrypoint,
 ) @trusted {
     import core.sys.posix.dlfcn: dlerror, dlsym;
     import std.conv: text;
@@ -4465,8 +4517,7 @@ private void loadAndRunTests(
         throw new Exception(text("dlopen failed: ", dlerror.fromStringz));
     keepLoadedHandle(handle);
 
-    const modtestSym = modtestSymbol(module_);
-    auto fn = cast(void function()) dlsym(handle, modtestSym.toStringz);
+    auto fn = cast(void function()) dlsym(handle, entrypoint.toStringz);
     if (fn) {
         try {
             fn();
@@ -4484,6 +4535,153 @@ private void throwUnittestRunnerThrowable(Throwable throwable) @safe pure {
         throw new Exception(exception.msg.idup);
 
     throw new Exception("Unittest assertion failed.");
+}
+
+private string objectFileUnittestEntrypoint(in string objPath) @trusted {
+    import std.algorithm.searching: canFind;
+    import std.file: read;
+
+    // Trust boundary: std.file.read returns mutable bytes, but this parser
+    // only reads from the object-file buffer.
+    const bytes = cast(const(ubyte)[]) read(objPath);
+    if (!bytes.isElf64LittleEndianObject)
+        return null;
+
+    const sections = bytes.elf64Sections;
+    foreach (section; sections) {
+        enum shtSymtab = 2;
+        if (section.type != shtSymtab)
+            continue;
+        if (section.entrySize < elf64SymbolSize)
+            continue;
+        if (!sections.hasElf64Section(section.link))
+            continue;
+
+        const stringTable = bytes.elf64SectionBytes(sections[section.link]);
+        const symbolTable = bytes.elf64SectionBytes(section);
+        for (
+            size_t offset;
+            offset + elf64SymbolSize <= symbolTable.length;
+            offset += section.entrySize
+        ) {
+            const symbol = symbolTable[offset .. offset + elf64SymbolSize];
+            const nameOffset = symbol.readElf32(0);
+            const sectionIndex = symbol.readElf16(6);
+            enum shnUndef = 0;
+            if (sectionIndex == shnUndef)
+                continue;
+
+            const name = stringTable.elfString(nameOffset);
+            if (name.canFind("__modtest"))
+                return name.idup;
+        }
+    }
+
+    return null;
+}
+
+private enum elf64SymbolSize = 24;
+
+private struct Elf64Section {
+    uint type;
+    ulong offset;
+    ulong size;
+    uint link;
+    ulong entrySize;
+}
+
+private bool isElf64LittleEndianObject(in ubyte[] bytes) @safe pure nothrow {
+    enum elfClass64 = 2;
+    enum elfDataLittleEndian = 1;
+    enum elfTypeRelocatable = 1;
+    return bytes.length >= 64
+        && bytes[0 .. 4] == [0x7f, 'E', 'L', 'F']
+        && bytes[4] == elfClass64
+        && bytes[5] == elfDataLittleEndian
+        && bytes.readElf16(16) == elfTypeRelocatable;
+}
+
+private Elf64Section[] elf64Sections(in ubyte[] bytes) @safe pure {
+    const sectionOffset = cast(size_t) bytes.readElf64(40);
+    const sectionEntrySize = cast(size_t) bytes.readElf16(58);
+    const sectionCount = cast(size_t) bytes.readElf16(60);
+
+    Elf64Section[] sections;
+    foreach (idx; 0 .. sectionCount) {
+        const offset = sectionOffset + idx * sectionEntrySize;
+        if (offset + 64 > bytes.length)
+            break;
+
+        sections ~= Elf64Section(
+            bytes.readElf32(offset + 4),
+            bytes.readElf64(offset + 24),
+            bytes.readElf64(offset + 32),
+            bytes.readElf32(offset + 40),
+            bytes.readElf64(offset + 56),
+        );
+    }
+
+    return sections;
+}
+
+private bool hasElf64Section(
+    in Elf64Section[] sections,
+    in uint sectionIndex,
+) @safe pure nothrow {
+    return sectionIndex < sections.length;
+}
+
+private const(ubyte)[] elf64SectionBytes(
+    in ubyte[] bytes,
+    in Elf64Section section,
+) @safe pure {
+    const offset = cast(size_t) section.offset;
+    const size = cast(size_t) section.size;
+    if (offset > bytes.length || size > bytes.length - offset)
+        return null;
+
+    return bytes[offset .. offset + size];
+}
+
+private string elfString(in ubyte[] bytes, in uint offset) @trusted pure {
+    if (offset >= bytes.length)
+        return null;
+
+    size_t end = offset;
+    while (end < bytes.length && bytes[end] != 0)
+        ++end;
+
+    // Trust boundary: ELF string tables are byte strings. D symbol names are
+    // ASCII here, and the returned slice does not outlive the object buffer.
+    return cast(string) bytes[offset .. end];
+}
+
+private ushort readElf16(
+    in ubyte[] bytes,
+    in size_t offset,
+) @safe pure nothrow {
+    if (offset + 2 > bytes.length)
+        return 0;
+
+    return cast(ushort) (bytes[offset] | (bytes[offset + 1] << 8));
+}
+
+private uint readElf32(in ubyte[] bytes, in size_t offset) @safe pure nothrow {
+    if (offset + 4 > bytes.length)
+        return 0;
+
+    return cast(uint) bytes[offset]
+        | (cast(uint) bytes[offset + 1] << 8)
+        | (cast(uint) bytes[offset + 2] << 16)
+        | (cast(uint) bytes[offset + 3] << 24);
+}
+
+private ulong readElf64(in ubyte[] bytes, in size_t offset) @safe pure nothrow {
+    if (offset + 8 > bytes.length)
+        return 0;
+
+    return cast(ulong) bytes.readElf32(offset)
+        | (cast(ulong) bytes.readElf32(offset + 4) << 32);
 }
 
 private string modtestSymbol(
