@@ -82,43 +82,43 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 ];
                 break;
             case OpCode.add:
-                stack.executeBinaryArithmetic!((left, right) => left + right);
+                stack.executeBinaryOperation!((left, right) => left + right);
                 ++ip;
                 break;
             case OpCode.subtract:
-                stack.executeBinaryArithmetic!((left, right) => left - right);
+                stack.executeBinaryOperation!((left, right) => left - right);
                 ++ip;
                 break;
             case OpCode.multiply:
-                stack.executeBinaryArithmetic!((left, right) => left * right);
+                stack.executeBinaryOperation!((left, right) => left * right);
                 ++ip;
                 break;
             case OpCode.divide:
-                stack.executeBinaryArithmetic!((left, right) => left / right);
+                stack.executeBinaryOperation!((left, right) => left / right);
                 ++ip;
                 break;
             case OpCode.modulo:
-                stack.executeBinaryArithmetic!((left, right) => left % right);
+                stack.executeBinaryOperation!((left, right) => left % right);
                 ++ip;
                 break;
             case OpCode.shiftRight:
-                stack.executeBinaryArithmetic!((left, right) => left >> right);
+                stack.executeBinaryOperation!((left, right) => left >> right);
                 ++ip;
                 break;
             case OpCode.shiftLeft:
-                stack.executeBinaryArithmetic!((left, right) => left << right);
+                stack.executeBinaryOperation!((left, right) => left << right);
                 ++ip;
                 break;
             case OpCode.bitwiseOr:
-                stack.executeBinaryArithmetic!((left, right) => left | right);
+                stack.executeBinaryOperation!((left, right) => left | right);
                 ++ip;
                 break;
             case OpCode.bitwiseAnd:
-                stack.executeBinaryArithmetic!((left, right) => left & right);
+                stack.executeBinaryOperation!((left, right) => left & right);
                 ++ip;
                 break;
             case OpCode.bitwiseXor:
-                stack.executeBinaryArithmetic!((left, right) => left ^ right);
+                stack.executeBinaryOperation!((left, right) => left ^ right);
                 ++ip;
                 break;
             case OpCode.equal:
@@ -128,23 +128,23 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 ++ip;
                 break;
             case OpCode.notEqual:
-                stack.executeBinaryArithmetic!((left, right) => left != right);
+                stack.executeBinaryOperation!((left, right) => left != right);
                 ++ip;
                 break;
             case OpCode.lessThan:
-                stack.executeBinaryArithmetic!((left, right) => left < right);
+                stack.executeBinaryOperation!((left, right) => left < right);
                 ++ip;
                 break;
             case OpCode.lessOrEqual:
-                stack.executeBinaryArithmetic!((left, right) => left <= right);
+                stack.executeBinaryOperation!((left, right) => left <= right);
                 ++ip;
                 break;
             case OpCode.greaterThan:
-                stack.executeBinaryArithmetic!((left, right) => left > right);
+                stack.executeBinaryOperation!((left, right) => left > right);
                 ++ip;
                 break;
             case OpCode.greaterOrEqual:
-                stack.executeBinaryArithmetic!((left, right) => left >= right);
+                stack.executeBinaryOperation!((left, right) => left >= right);
                 ++ip;
                 break;
             case OpCode.assertEqual:
@@ -166,7 +166,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
     }
 }
 
-private void executeBinaryArithmetic(alias operation)(ref long[] stack) @safe {
+private void executeBinaryOperation(alias operation)(ref long[] stack) @safe {
     const right = stack.popValue;
     const left = stack.popValue;
     stack ~= operation(left, right);

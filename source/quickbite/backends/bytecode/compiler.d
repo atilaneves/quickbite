@@ -71,19 +71,17 @@ private struct Compiler {
                 compileExpression(equal.e1);
                 compileExpression(equal.e2);
                 if (isEqualExpression(equal)) {
-                    module_.code ~= Instruction(OpCode.assertEqual);
+                    compileAssertEqual;
                     return;
                 }
 
                 module_.code ~= Instruction(OpCode.notEqual);
-                module_.code ~= Instruction(OpCode.pushInteger, 1);
-                module_.code ~= Instruction(OpCode.assertEqual);
+                compileAssertTrue;
                 return;
             }
 
             compileExpression(assert_.e1);
-            module_.code ~= Instruction(OpCode.pushInteger, 1);
-            module_.code ~= Instruction(OpCode.assertEqual);
+            compileAssertTrue;
             return;
         }
 
@@ -185,6 +183,15 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
+    }
+
+    private void compileAssertTrue() {
+        module_.code ~= Instruction(OpCode.pushInteger, 1);
+        compileAssertEqual;
+    }
+
+    private void compileAssertEqual() {
+        module_.code ~= Instruction(OpCode.assertEqual);
     }
 
     private OpCode equalOpCode(imported!"dmd.expression".EqualExp equal) {

@@ -85,16 +85,26 @@ The first slice deliberately keeps the bytecode representation simple. It still
 writes `Instruction` values directly while the opcode set is tiny; introduce an
 emitter when the next behaviours make raw writes start spreading.
 
-## Handoff: Integer Arithmetic
+## Handoff: Integer Binary Operations
 
-Branch `bytecode-int-addition` grows the bytecode backend through the integer
-arithmetic parity fixtures:
+Branch `bytecode-int-addition` grows the bytecode backend through the covered
+integer binary-op parity fixtures:
 
 - addition: `ut.language.intAddition.bytecode`
 - subtraction: `ut.language.intSubtraction.bytecode`
 - multiplication: `ut.language.intMultiplication.bytecode`
 - division: `ut.language.intDivision.bytecode`
 - modulo: `ut.language.intModulo.bytecode`
+- right shift: `ut.language.intShiftRight.bytecode`
+- left shift: `ut.language.intShiftLeft.bytecode`
+- bitwise OR: `ut.language.intBitwiseOr.bytecode`
+- bitwise AND: `ut.language.intBitwiseAnd.bytecode`
+- bitwise XOR: `ut.language.intBitwiseXor.bytecode`
+- less than: `ut.language.intLessThan.bytecode`
+- less or equal: `ut.language.intLessOrEqual.bytecode`
+- greater than: `ut.language.intGreaterThan.bytecode`
+- greater or equal: `ut.language.intGreaterOrEqual.bytecode`
+- not equal: `ut.language.intNotEqual.bytecode`
 
 Each fixture keeps one operand runtime-shaped with a zero-argument helper
 function so DMD does not constant-fold the target expression before bytecode
@@ -102,24 +112,36 @@ sees it.
 
 Implementation notes:
 
-- arithmetic expression emission is shared through `compileBinaryExpression`
-- arithmetic execution is shared through `executeBinaryArithmetic`
+- binary expression emission is shared through `compileBinaryExpression`
+- binary execution is shared through `executeBinaryOperation`
 - the value stack is still integer-only (`long[]`)
 - equality is intentionally still separate from arithmetic execution
 
 Verification on this branch:
 
-- focused arithmetic set:
+- focused binary-op set:
   `dub test -- ut.language.intAddition.bytecode
-  ut.language.intSubtraction.bytecode ut.language.intMultiplication.bytecode
-  ut.language.intDivision.bytecode ut.language.intModulo.bytecode`
+  ut.language.intSubtraction.bytecode
+  ut.language.intMultiplication.bytecode
+  ut.language.intDivision.bytecode
+  ut.language.intModulo.bytecode
+  ut.language.intShiftRight.bytecode
+  ut.language.intShiftLeft.bytecode
+  ut.language.intBitwiseOr.bytecode
+  ut.language.intBitwiseAnd.bytecode
+  ut.language.intBitwiseXor.bytecode
+  ut.language.intLessThan.bytecode
+  ut.language.intLessOrEqual.bytecode
+  ut.language.intGreaterThan.bytecode
+  ut.language.intGreaterOrEqual.bytecode
+  ut.language.intNotEqual.bytecode`
 - full suite: `dub test`
 
-Next recommended slice: integer shifts. Start with
-`ut.language.intShiftRight.bytecode`, then add `ut.language.intShiftLeft.bytecode`
-if the first slice stays mechanical. Stop before bitwise operators, comparisons,
-locals, parameters, branches, or typed values unless those behaviours are
-explicitly approved.
+Next recommended slice: integer unary operations. Start with one approved
+fixture, such as `ut.language.intUnaryMinus.bytecode`, and keep unary
+complement separate unless it is explicitly approved. Stop before locals,
+parameters, branches, or typed values unless those behaviours are explicitly
+approved.
 
 ## Remaining Work
 
