@@ -151,8 +151,8 @@ Grow bytecode by moving one approved behaviour at a time into parity coverage:
   behaviour is supported
 - implement unsupported statements one by one, starting with the next fixture
   needed for parity
-- implement integer shifts, bitwise operators, comparisons, local variables,
-  assignment, branches, and loops
+- implement integer unary operators, local variables, assignment, branches, and
+  loops
 - add call arguments and a real frame model for locals and parameters
 - support void functions and explicit bare returns
 - replace the current integer-only value stack with typed values, first for
