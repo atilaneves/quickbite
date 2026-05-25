@@ -19,6 +19,13 @@ public struct Value {
     public bool opEquals(in Value other) const {
         return data == other.data;
     }
+
+    public string toString() const {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!((value) => text(value));
+    }
 }
 
 public struct TestSummary {

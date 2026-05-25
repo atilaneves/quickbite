@@ -8,6 +8,39 @@ import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
+@("repl.binary.evaluatesExpressionCells")
+unittest {
+    import std.process: Redirect, pipeProcess, wait;
+
+    auto repl = pipeProcess(
+        [replExecutable],
+        Redirect.stdin | Redirect.stdout,
+    );
+
+    repl.stdin.write("1\n2\n:q\n");
+    repl.stdin.close;
+
+    string output;
+    foreach (line; repl.stdout.byLine)
+        output ~= line.idup ~ "\n";
+
+    wait(repl.pid).should == 0;
+    output.should == "1\n2\n";
+}
+
+private string replExecutable() {
+    static bool built;
+    if (!built) {
+        import std.process: execute;
+
+        const result = execute(["dub", "build", "-c", "repl"]);
+        result.status.should == 0;
+        built = true;
+    }
+
+    return "bin/repl";
+}
+
 @("value.uint_vs_long")
 unittest {
     (Value(3u) == Value(3L)).should == false;
