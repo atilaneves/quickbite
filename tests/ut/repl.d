@@ -8,6 +8,18 @@ import std.conv: text;
 import std.traits: EnumMembers;
 import unit_threaded;
 
+@("repl.loop.evaluatesExpressionCellsUntilQuit")
+unittest {
+    import quickbite.repl: runReplLoop;
+
+    auto output = runReplLoop(
+        executor(ExecutorBackend.ir),
+        ["1", "2", ":q"],
+    );
+
+    output.should == ["1", "2"];
+}
+
 @("repl.binary.evaluatesExpressionCells")
 unittest {
     import std.process: Redirect, pipeProcess, wait;

@@ -1,6 +1,6 @@
 # Plan: REPL
 
-## Handoff (2026-05-22, updated)
+## Handoff (2026-05-25)
 
 ### What is done
 
@@ -28,21 +28,60 @@
   implemented backends (`dmdCodegen` excluded via `static if`):
   `add0`, `add1`, `add2`, `arithmetic` (five runtime cases covering
   +, -, *, /), `multiCell`. 560 tests, all pass.
+- `dub.sdl` has a `repl` configuration that builds `bin/repl`.
+- `repl/main.d` is a minimal executable that reads all stdin lines,
+  runs them through the shared loop, and writes returned expression
+  values to stdout.
+- `source/quickbite/repl.d` exposes `runReplLoop`, which currently:
+  - takes a real `Executor`;
+  - evaluates each input atom independently;
+  - returns one output string per expression value;
+  - stops on `:q` or `:quit`.
+- `Value.toString` exists for displaying integral and bool values.
+- `tests/ut/repl.d` has exactly one binary integration test:
+  `repl.binary.evaluatesExpressionCells`. It builds `bin/repl` once
+  with `dub build -c repl`, runs `bin/repl` directly with
+  `pipeProcess`, feeds `1`, `2`, `:q`, and expects stdout
+  `1\n2\n`.
+- `tests/ut/repl.d` has the first unit-level REPL loop test:
+  `repl.loop.evaluatesExpressionCellsUntilQuit`. It uses the real IR
+  executor, passes `["1", "2", ":q"]` to `runReplLoop`, and expects
+  `["1", "2"]`.
+- Last verification: `dub test` passed with 562 tests.
 
 ### What is fake
 
-Nothing is fake. All four active `eval` implementations are real.
+- The REPL loop is still intentionally minimal. It does not yet handle
+  prompts, diagnostics, command-mode execution, backend selection,
+  completeness, or stateful session accumulation.
+- `repl/main.d` buffers stdin into an array before running the loop.
+  This is acceptable for the current tests but should be replaced by a
+  streaming line-input abstraction when prompts/completeness are added.
+- Expression cells are evaluated independently. Statement/declaration
+  cells and no-result values are not supported yet.
+- `dmdCodegen.eval` is still not implemented.
 
 ### What comes next
 
-1. Implement `isComplete(in string input) -> bool` on `Executor`
-   (the REPL loop calls this to decide whether to show `> ` or
-   `... `).
-2. Build the REPL executable: `repl/main.d`, line-input module,
-   `dub.sdl` `repl` configuration.
-3. The REPL accumulates all prior cell inputs and passes the full
-   accumulated source to `eval` on each new cell. No `context`
-   parameter — the full accumulated source is the input.
+Use strict TDD and stop for approval before each new or modified test.
+Do not add more binary/process tests unless explicitly requested; the
+single existing binary test is the smoke test for wiring. Future REPL
+behavior should be driven by unit tests around `runReplLoop` and
+supporting helpers, using real executors and no `executeShell`.
+
+Recommended next approved test:
+
+1. A unit test for `:quit` as the long-form quit command:
+   `runReplLoop(executor(ExecutorBackend.ir), ["1", ":quit", "2"])`
+   returns `["1"]`.
+
+After that, likely next slices are:
+
+1. Backend selection parsing shared with benchmark tooling.
+2. Command-mode execution (`-c`) with no implicit echo.
+3. Session accumulation across cells.
+4. `Value` support for D `void` / no-result cells.
+5. Parsed completeness status, not string heuristics.
 
 ### How to implement real eval
 
