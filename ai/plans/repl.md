@@ -86,15 +86,12 @@
   declarations, e.g. `auto __quickbite_repl_value_N = x++;`. This keeps
   expression side effects visible to later cells without triggering DMD's
   "no effect" diagnostic for plain literal expressions.
-- The IR backend has an initial `evalReplCell` implementation. It classifies
-  expression cells, delegates expression cells to `eval(transcript ~ input)`,
-  and runs statement/declaration cells through:
-  `unittest { auto f() { <transcript><input> } f(); }`.
 - `runReplLoop` behavior tests now run across all `matureExecutorBackends`.
-  The shared REPL cell classifier lives in
-  `source/quickbite/frontend/repl.d`, and `ir`, `treeWalkingOld`, and
-  `dmdCtfe` all classify expression cells before deciding whether to return a
-  displayed value or run a void/declaration cell.
+  The shared REPL cell control flow lives in
+  `source/quickbite/frontend/repl.d`: it classifies expression cells,
+  delegates expression cells to `eval(transcript ~ input)`, and otherwise
+  calls a backend-specific void/declaration runner. `ir`, `treeWalkingOld`,
+  and `dmdCtfe` now only provide the backend-specific void/declaration path.
 - `repl/main.d` has been rewired to call `evalReplCell` and maintain the same
   transcript state as `runReplLoop`. The previous interactive executable still
   called `active.eval(line)`, which is why manual input such as `int x;` kept
@@ -167,6 +164,9 @@ test first and wait for approval before editing tests.
      `ExecutorBackend.ir`.
    - This exposed and replaced the non-IR `evalReplCell` compatibility stubs
      that always returned `value`.
+   - The common `evalReplCell` expression-vs-void branching now lives in
+     `quickbite.frontend.repl`; mature backends only pass their
+     void/declaration executor.
 2. Preserve evaluated integral result types.
    - `Value` preserves distinct integral types, but every `eval` currently
      returns `Value(cast(int) result)`.
@@ -288,10 +288,11 @@ Do not continue the old "split by last newline and wrap the last line as an
 expression" design. That approach cannot correctly support declarations,
 imports, aliases, multi-line constructs, or incomplete input.
 
-The current worktree has started this by adding `Executor.evalReplCell` and
-`Repl.CellResult`. Continue moving the implementation toward a frontend-owned
-REPL cell API that parses the accumulated session source plus the current
-buffered cell and returns a structured result:
+The current worktree has started this by adding `Executor.evalReplCell`,
+`Repl.CellResult`, and shared REPL cell control flow in
+`quickbite.frontend.repl`. Continue moving the implementation toward a
+frontend-owned REPL cell API that parses the accumulated session source plus
+the current buffered cell and returns a structured result:
 
 - `incomplete` when the frontend recognizes a valid but unfinished D fragment;
 - `void_` when a complete statement/declaration/import/alias cell ran without
@@ -301,9 +302,10 @@ buffered cell and returns a structured result:
 The REPL loop should only branch on that result. It should not inspect
 delimiters, keywords, braces, or semicolons in user code.
 
-The first backend slice is in progress for IR. Reuse the existing
-parser/lowering path, but keep the expression-vs-declaration decision inside
-the frontend/eval layer where the parsed AST is available.
+The first mature-backend slice is complete for `ir`, `treeWalkingOld`, and
+`dmdCtfe`. Reuse the existing parser/lowering path, but keep the
+expression-vs-declaration decision inside the frontend/eval layer where the
+parsed AST is available.
 
 ### Important: use a stronger model for the implementer
 
