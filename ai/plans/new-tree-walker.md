@@ -95,14 +95,15 @@ Current progress:
     is now named `asArrayIndex`, keeping the `long` to `size_t` conversion
     localized and explicit. The non-throwing dynamic-array probe is now named
     `tryGetArray`, distinct from the throwing `Value.asLongArray` accessor.
+16. The branch has been merged with current `master` again after the backend
+    test module reorganisation. `dub test` now passes with 707 tests and 0
+    failures.
 
 Handoff note for the next agent: this branch already contains one PR worth of
 work. It adds shared-`Value` dynamic array return support for the new tree
-walker. The latest `dub test` builds and runs the test binary; it reports
-`711 test(s) run, 1 failed`, with the failure in
-`ut.cerealed.cerealed.encode_decode.d.ir`. Do not start another slice on this
-branch; fix or explain that post-merge verification failure, then hand off the
-PR.
+walker. The latest `dub test` passed with 707 tests and 0 failures. Do not
+start another slice on this branch; hand it off as-is unless review asks for
+more changes.
 
 After this branch is merged, continue with the next `ut.projects.cerealed`
 bailout or red project-inspired fixture. Do not add or enable new tests that
