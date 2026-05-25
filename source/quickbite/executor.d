@@ -9,22 +9,67 @@ public struct Value {
         short, ushort,
         int, uint,
         long, ulong,
+        long[],
     );
     private Data data;
 
     public this(T)(in T value) {
-        data = Data(value);
+        static if (is(T == long[]))
+            data = Data(value.dup);
+        else
+            data = Data(value);
+    }
+
+    public this(in long[] value) {
+        data = Data(value.dup);
     }
 
     public bool opEquals(in Value other) const {
         return data == other.data;
     }
 
-    public string toString() const {
-        import std.conv: text;
-        import std.sumtype: match;
+    public long asLong() {
+        import std.sumtype: get, has;
 
-        return data.match!((value) => text(value));
+        if (data.has!bool)
+            return data.get!bool ? 1L : 0L;
+        if (data.has!byte)
+            return data.get!byte;
+        if (data.has!ubyte)
+            return data.get!ubyte;
+        if (data.has!short)
+            return data.get!short;
+        if (data.has!ushort)
+            return data.get!ushort;
+        if (data.has!int)
+            return data.get!int;
+        if (data.has!uint)
+            return data.get!uint;
+        if (data.has!long)
+            return data.get!long;
+        if (data.has!ulong)
+            return cast(long) data.get!ulong;
+
+        throw new Exception("Expected scalar, got array.");
+    }
+
+    public long[] asLongArray() {
+        import std.sumtype: get, has;
+
+        if (data.has!(long[]))
+            return data.get!(long[]).dup;
+
+        throw new Exception("Expected array, got scalar.");
+    }
+
+    public bool isLongArray() {
+        import std.sumtype: has;
+
+        return data.has!(long[]);
+    }
+
+    public string toString() const {
+        return data.toString;
     }
 }
 
@@ -61,7 +106,7 @@ public interface Executor {
     public TestSummary runTestSummary(in string source);
     public void runParsedTests(imported!"dmd.dmodule".Module module_);
     public Value eval(in string input);
-    public Repl.CellResult evalReplCell(in string transcript, in string input);
+    public void runVoidReplCell(in string transcript, in string input);
 }
 
 public void runModulesTests(

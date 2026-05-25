@@ -6,6 +6,7 @@ public string[] runReplLoop(
     imported!"quickbite.executor".Executor executor,
     in string[] inputAtoms,
 ) {
+    import quickbite.frontend.repl: evalReplCell;
     import quickbite.executor: Repl;
     import std.conv: text;
 
@@ -16,7 +17,7 @@ public string[] runReplLoop(
         if (input == ":q" || input == ":quit")
             break;
 
-        const result = executor.evalReplCell(transcript, input);
+        const result = evalReplCell(executor, transcript, input);
         with (Repl.CellStatus) {
             final switch (result.status) {
                 case incomplete:

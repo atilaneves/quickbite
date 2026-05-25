@@ -5,11 +5,7 @@ private:
 public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor {
     import dmd.declaration: VarDeclaration;
     import dmd.dmodule: Module;
-    import quickbite.executor: TestSummary;
-    import std.sumtype: SumType;
-
-    // Internal runtime value for the tree walker; distinct from the public REPL Value.
-    private alias Value = SumType!(long, long[]);
+    import quickbite.executor: TestSummary, Value;
 
     private Value[VarDeclaration] locals;
     private long[VarDeclaration][VarDeclaration] structScalars;
@@ -233,7 +229,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             if (auto variable = var.var.isVarDeclaration) {
                 const value = asLong(runExpression(assign.e1))
                     + sign * asLong(runExpression(assign.e2));
-                locals[variable] = value;
+                locals[variable] = Value(value);
                 return value;
             }
 
@@ -262,10 +258,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         }
 
         const oldValue = asLong(runExpression(post.e1));
-        locals[variable] = coerceIntegerToType(
+        locals[variable] = Value(coerceIntegerToType(
             oldValue + mutationStep(post.op),
             variable.type,
-        );
+        ));
         return Value(oldValue);
     }
 
@@ -310,7 +306,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             asLong(runExpression(pre.e1)) + mutationStep(pre.op),
             variable.type,
         );
-        locals[variable] = value;
+        locals[variable] = Value(value);
         return value;
     }
 
@@ -377,12 +373,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         Value value,
         imported!"dmd.mtype".Type type,
     ) {
-        import std.sumtype: match;
+        if (value.isLongArray)
+            return Value(value.asLongArray);
 
-        return value.match!(
-            (long scalar) => Value(coerceIntegerToType(scalar, type)),
-            (long[] array) => Value(array),
-        );
+        return Value(coerceIntegerToType(value.asLong, type));
     }
 
     private Value runDeclarationExpression(
@@ -978,29 +972,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         return Value(0);
     }
 
-    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        import quickbite.executor: Repl;
-
-        if (isExpressionCell(input))
-            return Repl.CellResult.value_(eval(transcript ~ input));
-
-        runVoidReplCell(transcript, input);
-        return Repl.CellResult.void_;
-    }
-
-    private void resetState() {
-        locals = null;
-        structScalars = null;
-        structArrays = null;
-        currentThis = null;
-        didReturn = false;
-        returnValue = Value(0L);
-    }
-
-    private void runVoidReplCell(
+    public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
@@ -1026,16 +998,17 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         runStatement(f.fbody);
     }
 
-    private long asLong(Value value) {
-        import std.sumtype: match;
+    private void resetState() {
+        locals = null;
+        structScalars = null;
+        structArrays = null;
+        currentThis = null;
+        didReturn = false;
+        returnValue = Value(0L);
+    }
 
-        return value.match!(
-            (long scalar) => scalar,
-            (long[] _) {
-                throw new Exception("Expected scalar, got array.");
-                return 0L;
-            },
-        );
+    private long asLong(Value value) {
+        return value.asLong;
     }
 
     private size_t asIndex(Value value) {
@@ -1043,15 +1016,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     }
 
     private bool tryAsArray(Value value, out long[] array) {
-        import std.sumtype: match;
+        if (!value.isLongArray)
+            return false;
 
-        return value.match!(
-            (long[] value) {
-                array = value;
-                return true;
-            },
-            (long _) => false,
-        );
+        array = value.asLongArray;
+        return true;
     }
 
     private bool isExpressionCell(in string input) {

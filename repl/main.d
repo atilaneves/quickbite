@@ -4,6 +4,7 @@ private:
 
 public int main(string[] args) {
     import quickbite: ExecutorBackend, executor;
+    import quickbite.frontend.repl: evalReplCell;
     import quickbite.executor: Repl;
     import std.conv: text;
     import std.stdio: stdin, writeln;
@@ -11,7 +12,7 @@ public int main(string[] args) {
     auto active = executor(ExecutorBackend.ir);
 
     if (args.length == 3 && args[1] == "-c") {
-        active.evalReplCell("", args[2]);
+        evalReplCell(active, "", args[2]);
         return 0;
     }
 
@@ -25,7 +26,7 @@ public int main(string[] args) {
             break;
 
         try {
-            const result = active.evalReplCell(transcript, line);
+            const result = evalReplCell(active, transcript, line);
             with (Repl.CellStatus) {
                 final switch (result.status) {
                     case incomplete:
