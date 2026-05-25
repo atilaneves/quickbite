@@ -84,12 +84,19 @@ Current progress:
     `dynamicArrayReturnValueIndexesCallResult`, covering dynamic arrays
     returned from functions, slice expressions returned from functions, and
     direct indexing of an array-returning call result.
+14. The branch has been merged with current `master` after the test
+    reorganisation. The dynamic array return tests now live in
+    `tests/ut/backend_parity.d`. The review follow-up to reuse the public
+    `quickbite.executor.Value` has been applied: `Value` now carries `long[]`
+    payloads, and `TreeWalkingExecutor` uses that shared type instead of a
+    private backend-only union.
 
 Handoff note for the next agent: this branch already contains one PR worth of
-work. It adds `Value`-based dynamic array return support for the new tree
-walker. `dub test` passed with 659 tests and 0 failures after these changes.
-Do not start another slice on this branch; hand it off as-is unless review asks
-for more changes.
+work. It adds shared-`Value` dynamic array return support for the new tree
+walker. The latest `dub test` builds and starts running the test binary, but
+the runner exits with code `-11` after printing many `ut.backend_parity.*`
+entries. Do not start another slice on this branch; fix or explain that
+post-merge verification failure, then hand off the PR.
 
 After this branch is merged, continue with the next `ut.projects.cerealed`
 bailout or red project-inspired fixture. Do not add or enable new tests that

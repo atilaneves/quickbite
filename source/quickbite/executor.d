@@ -13,11 +13,10 @@ public struct Value {
     );
     private Data data;
 
-    public this(T)(in T value) {
-        static if (is(T == long[]))
-            data = Data(value.dup);
-        else
-            data = Data(value);
+    public this(T)(in T value)
+    if (!is(T == long[]))
+    {
+        data = Data(value);
     }
 
     public this(in long[] value) {
@@ -28,44 +27,37 @@ public struct Value {
         return data == other.data;
     }
 
-    public long asLong() {
-        import std.sumtype: get, has;
+    public long asLong() const {
+        import std.sumtype: match;
 
-        if (data.has!bool)
-            return data.get!bool ? 1L : 0L;
-        if (data.has!byte)
-            return data.get!byte;
-        if (data.has!ubyte)
-            return data.get!ubyte;
-        if (data.has!short)
-            return data.get!short;
-        if (data.has!ushort)
-            return data.get!ushort;
-        if (data.has!int)
-            return data.get!int;
-        if (data.has!uint)
-            return data.get!uint;
-        if (data.has!long)
-            return data.get!long;
-        if (data.has!ulong)
-            return cast(long) data.get!ulong;
-
-        throw new Exception("Expected scalar, got array.");
+        return data.match!(
+            (const(long)[] _) {
+                throw new Exception("Expected scalar, got array.");
+                return 0L;
+            },
+            (value) => cast(long) value,
+        );
     }
 
-    public long[] asLongArray() {
-        import std.sumtype: get, has;
+    public long[] asLongArray() const {
+        import std.sumtype: match;
 
-        if (data.has!(long[]))
-            return data.get!(long[]).dup;
-
-        throw new Exception("Expected array, got scalar.");
+        return data.match!(
+            (const(long)[] value) => value.dup,
+            (_) {
+                throw new Exception("Expected array, got scalar.");
+                return null;
+            },
+        );
     }
 
-    public bool isLongArray() {
-        import std.sumtype: has;
+    public bool isLongArray() const {
+        import std.sumtype: match;
 
-        return data.has!(long[]);
+        return data.match!(
+            (const(long)[] _) => true,
+            (_) => false,
+        );
     }
 
     public string toString() const {

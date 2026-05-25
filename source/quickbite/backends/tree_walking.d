@@ -413,7 +413,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return Value(0L);
         }
 
-        const value = runExpression(initializer);
+        auto value = runExpression(initializer);
         locals[variable] = value;
         return value;
     }

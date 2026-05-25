@@ -2,6 +2,12 @@
 
 ## Handoff (2026-05-25, in-progress worktree)
 
+- `source/quickbite/executor.d` now exposes one public `Value` sum type for
+  both scalars and `long[]`.
+- `Value.toString` delegates to `std.sumtype`'s own formatting.
+- `source/quickbite/backends/tree_walking.d` now uses the shared public
+  `Value` instead of a private backend-only union.
+
 ### Merge status
 
 - Local `master` at `c761fd5 Update plan` has been merged into
@@ -26,9 +32,9 @@
 ### What is done
 
 - `Value` struct in `source/quickbite/executor.d` redesigned to use
-  `SumType!(bool, byte, ubyte, short, ushort, int, uint, long, ulong)`.
-  Each D integral type is preserved exactly — no normalisation to `long`.
-  `Value(3u) != Value(3L)`, `Value(3) != Value(3L)`, etc.
+  `SumType!(bool, byte, ubyte, short, ushort, int, uint, long, ulong,
+  long[])`. Each D integral type is preserved exactly, and array payloads
+  now stay inside the same public wrapper.
 - `eval(in string input) -> Value` implemented on four real backends, with
   one compatibility shim:
   - `treeWalking`: wraps input as `void f() { <prior> auto __r =
@@ -65,7 +71,8 @@
   - evaluates each input atom independently;
   - returns one output string per expression value;
   - stops on `:q` or `:quit`.
-- `Value.toString` exists for displaying integral and bool values.
+- `Value.toString` delegates to `std.sumtype` for displaying scalar and
+  array payloads.
 - Binary integration tests have already proven basic executable wiring.
   Do not add more subprocess coverage for REPL behavior.
 - `tests/ut/repl.d` still has older binary smoke tests. Do not add more.
