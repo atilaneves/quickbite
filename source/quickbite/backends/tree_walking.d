@@ -204,10 +204,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return runCatAssignExpression(catElemAssign);
 
         if (auto arrayLength = expression.isArrayLengthExp)
-            return runArrayExpression(arrayLength.e1).length;
+            return evalArrayExpression(arrayLength.e1).length;
 
         if (auto index = expression.isIndexExp)
-            return runArrayExpression(index.e1)[runExpression(index.e2)];
+            return evalArrayExpression(index.e1)[runExpression(index.e2)];
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expression.op));
@@ -341,6 +341,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return 0;
         }
 
+        long[] array;
+        if (tryEvalArrayExpression(initializer, array)) {
+            localArrays[variable] = array;
+            return 0;
+        }
+
         const value = runExpression(initializer);
         locals[variable] = value;
         return value;
@@ -376,7 +382,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (dotVar.e1.isThisExp !is null && currentThis !is null) {
             long[] array;
-            if (tryRunArrayExpression(assign.e2, array)) {
+            if (tryEvalArrayExpression(assign.e2, array)) {
                 structArrays[currentThis][field] = array;
                 value = 0;
                 return true;
@@ -625,22 +631,25 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         return 0;
     }
 
-    private long[] runArrayExpression(
+    private long[] evalArrayExpression(
         imported!"dmd.expression".Expression expression,
     ) {
         long[] value;
-        if (tryRunArrayExpression(expression, value))
+        if (tryEvalArrayExpression(expression, value))
             return value;
 
         import std.conv: text;
         throw new Exception(text("Unsupported array expression: ", expression.op));
     }
 
-    private bool tryRunArrayExpression(
+    private bool tryEvalArrayExpression(
         imported!"dmd.expression".Expression expression,
         out long[] value,
     ) {
         if (localArrayExpressionValue(expression, value))
+            return true;
+
+        if (sliceArrayExpressionValue(expression, value))
             return true;
 
         if (structArrayExpressionValue(expression, value))
@@ -653,6 +662,21 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return true;
 
         return false;
+    }
+
+    private bool sliceArrayExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
+        auto slice = expression.isSliceExp;
+        if (slice is null || slice.lwr is null || slice.upr is null)
+            return false;
+
+        const array = evalArrayExpression(slice.e1);
+        const lower = cast(size_t) runExpression(slice.lwr);
+        const upper = cast(size_t) runExpression(slice.upr);
+        value = array[lower .. upper].dup;
+        return true;
     }
 
     private bool localArrayExpressionValue(
