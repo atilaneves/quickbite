@@ -8,6 +8,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     import quickbite.executor: TestSummary;
     import std.sumtype: SumType;
 
+    // Internal runtime value for the tree walker; distinct from the public REPL Value.
     private alias Value = SumType!(long, long[]);
 
     private Value[VarDeclaration] locals;
@@ -120,8 +121,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
-            if (variable !is null && variable in locals)
-                return locals[variable];
+            if (variable !is null) {
+                if (variable in locals)
+                    return locals[variable];
+                else
+                    return Value(0L);  // Uninitialized variable defaults to 0
+            }
         }
 
         if (expression.isThisExp !is null)
@@ -154,27 +159,23 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto mul = expression.isMulExp)
             return Value(asLong(runExpression(mul.e1)) * asLong(runExpression(mul.e2)));
 
+        if (auto div = expression.isDivExp)
+            return Value(asLong(runExpression(div.e1)) / asLong(runExpression(div.e2)));
+
         if (isRightShiftExpression(expression)) {
             auto binary = expression.isBinExp;
             return Value(asLong(runExpression(binary.e1)) >> asLong(runExpression(binary.e2)));
         }
 
-        if (auto addAssign = expression.isAddAssignExp) {
-            auto lhs = addAssign.e1;
-            if (auto cast_ = lhs.isCastExp)
-                lhs = cast_.e1;
-            if (auto var = lhs.isVarExp)
-                if (auto variable = var.var.isVarDeclaration) {
-                    const value = asLong(runExpression(addAssign.e1)) +
-                        asLong(runExpression(addAssign.e2));
-                    locals[variable] = Value(value);
-                    return Value(value);
-                }
-        }
+        if (auto addAssign = expression.isAddAssignExp)
+            return Value(runCompoundAssignExpression(addAssign, 1));
+
+        if (auto minAssign = expression.isMinAssignExp)
+            return Value(runCompoundAssignExpression(minAssign, -1));
 
         if (auto post = expression.isPostExp)
-            if (isPostIncrementExpression(post))
-                return runPostIncrementExpression(post);
+            if (isPostMutationExpression(post))
+                return runPostMutationExpression(post);
 
         if (auto equal = expression.isEqualExp)
             return Value(asLong(runExpression(equal.e1)) ==
@@ -191,6 +192,10 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto cast_ = expression.isCastExp)
             return coerceValueToType(runExpression(cast_.e1), cast_.to);
+
+        if (auto pre = expression.isPreExp)
+            if (isPreMutationExpression(pre))
+                return Value(runPreMutationExpression(pre));
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
@@ -210,18 +215,36 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         if (auto index = expression.isIndexExp)
             return Value(evalArrayExpression(index.e1)[
-                cast(size_t) asLong(runExpression(index.e2))
+                asIndex(runExpression(index.e2))
             ]);
 
         import std.conv: text;
         throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
-    private Value runPostIncrementExpression(
+    private long runCompoundAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+        in long sign,
+    ) {
+        auto lhs = assign.e1;
+        if (auto cast_ = lhs.isCastExp)
+            lhs = cast_.e1;
+        if (auto var = lhs.isVarExp)
+            if (auto variable = var.var.isVarDeclaration) {
+                const value = asLong(runExpression(assign.e1))
+                    + sign * asLong(runExpression(assign.e2));
+                locals[variable] = value;
+                return value;
+            }
+
+        throw new Exception("Unsupported compound assignment.");
+    }
+
+    private Value runPostMutationExpression(
         imported!"dmd.expression".PostExp post,
     ) {
         long value;
-        if (postIncrementThisField(post, value))
+        if (postMutationThisField(post, value))
             return Value(value);
 
         auto var = post.e1.isVarExp;
@@ -232,18 +255,21 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (currentThis !is null && variable !in locals) {
             const oldValue = structScalarValue(currentThis, variable);
             structScalars[currentThis][variable] = coerceIntegerToType(
-                oldValue + 1,
+                oldValue + mutationStep(post.op),
                 variable.type,
             );
             return Value(oldValue);
         }
 
         const oldValue = asLong(runExpression(post.e1));
-        locals[variable] = coerceIntegerToType(oldValue + 1, variable.type);
+        locals[variable] = coerceIntegerToType(
+            oldValue + mutationStep(post.op),
+            variable.type,
+        );
         return Value(oldValue);
     }
 
-    private bool postIncrementThisField(
+    private bool postMutationThisField(
         imported!"dmd.expression".PostExp post,
         out long oldValue,
     ) {
@@ -260,18 +286,48 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         oldValue = structScalarValue(currentThis, field);
         structScalars[currentThis][field] = coerceIntegerToType(
-            oldValue + 1,
+            oldValue + mutationStep(post.op),
             field.type,
         );
         return true;
     }
 
-    private bool isPostIncrementExpression(
+    private bool isPostMutationExpression(
         imported!"dmd.expression".PostExp post,
     ) {
+        return mutationStep(post.op) != 0;
+    }
+
+    private long runPreMutationExpression(
+        imported!"dmd.expression".PreExp pre,
+    ) {
+        auto var = pre.e1.isVarExp;
+        if (var is null || var.var.isVarDeclaration is null)
+            throw new Exception("Unsupported pre expression.");
+
+        auto variable = var.var.isVarDeclaration;
+        const value = coerceIntegerToType(
+            asLong(runExpression(pre.e1)) + mutationStep(pre.op),
+            variable.type,
+        );
+        locals[variable] = value;
+        return value;
+    }
+
+    private bool isPreMutationExpression(
+        imported!"dmd.expression".PreExp pre,
+    ) {
+        return mutationStep(pre.op) != 0;
+    }
+
+    private long mutationStep(imported!"dmd.tokens".EXP op) {
         import dmd.tokens: EXP;
 
-        return post.op == EXP.plusPlus;
+        if (op == EXP.plusPlus)
+            return 1;
+        if (op == EXP.minusMinus)
+            return -1;
+        return 0;
     }
 
     private bool isLessThanExpression(
@@ -585,7 +641,9 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     ) {
         if (auto var = catAssign.e1.isVarExp)
             if (auto variable = var.var.isVarDeclaration) {
-                auto array = asArray(locals[variable]);
+                long[] array;
+                if (!tryAsArray(locals[variable], array))
+                    throw new Exception("Unsupported ~=: expected array lhs.");
                 array ~= asLong(runExpression(catAssign.e2));
                 locals[variable] = Value(array);
                 return Value(0L);
@@ -746,8 +804,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return false;
 
         const array = evalArrayExpression(slice.e1);
-        const lower = cast(size_t) asLong(runExpression(slice.lwr));
-        const upper = cast(size_t) asLong(runExpression(slice.upr));
+        const lower = asIndex(runExpression(slice.lwr));
+        const upper = asIndex(runExpression(slice.upr));
         value = array[lower .. upper].dup;
         return true;
     }
@@ -883,6 +941,91 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         return TestSummary.init;
     }
 
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+        import quickbite.frontend.compiler: parseModule;
+        import dmd.declaration: VarDeclaration;
+        import dmd.func: FuncDeclaration;
+        import std.string: lastIndexOf;
+
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        resetState;
+        runStatement(f.fbody);
+
+        foreach (decl, value; locals) {
+            if (decl.ident.toString == "__r")
+                return Value(cast(int) asLong(value));
+        }
+
+        return Value(0);
+    }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.executor: Repl;
+
+        if (isExpressionCell(input))
+            return Repl.CellResult.value_(eval(transcript ~ input));
+
+        runVoidReplCell(transcript, input);
+        return Repl.CellResult.void_;
+    }
+
+    private void resetState() {
+        locals = null;
+        structScalars = null;
+        structArrays = null;
+        currentThis = null;
+        didReturn = false;
+        returnValue = Value(0L);
+    }
+
+    private void runVoidReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import dmd.func: FuncDeclaration;
+        import quickbite.frontend.compiler: parseModule;
+
+        const source = "void f() { " ~ transcript ~ input ~ " }";
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        resetState;
+        runStatement(f.fbody);
+    }
+
     private long asLong(Value value) {
         import std.sumtype: match;
 
@@ -895,16 +1038,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         );
     }
 
-    private long[] asArray(Value value) {
-        import std.sumtype: match;
-
-        return value.match!(
-            (long[] array) => array,
-            (long _) {
-                throw new Exception("Expected array, got scalar.");
-                return (long[]).init;
-            },
-        );
+    private size_t asIndex(Value value) {
+        return cast(size_t) asLong(value);
     }
 
     private bool tryAsArray(Value value, out long[] array) {
@@ -917,5 +1052,52 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             },
             (long _) => false,
         );
+    }
+
+    private bool isExpressionCell(in string input) {
+        import dmd.astcodegen: ASTCodegen;
+        import dmd.errors: diagnostics;
+        import dmd.globals: global;
+        import dmd.parse: ParseStatementFlags, Parser;
+        import quickbite.frontend.compiler: withCompilerLock;
+
+        bool result;
+        withCompilerLock(() {
+            global.errors = 0;
+            global.warnings = 0;
+            diagnostics.length = 0;
+
+            scope parser = new Parser!ASTCodegen(
+                null,
+                input,
+                false,
+                global.errorSinkNull,
+                &global.compileEnv,
+                true,
+            );
+
+            parser.nextToken;
+            const expression = statementExpression(
+                parser.parseStatement(ParseStatementFlags.semiOk),
+            );
+            result = expression !is null &&
+                expression.isDeclarationExp is null &&
+                global.errors == 0;
+        });
+
+        return result;
+    }
+
+    private imported!"dmd.expression".Expression statementExpression(
+        imported!"dmd.statement".Statement statement,
+    ) {
+        if (statement is null)
+            return null;
+
+        auto expressionStatement = statement.isExpStatement;
+        if (expressionStatement is null)
+            return null;
+
+        return expressionStatement.exp;
     }
 }

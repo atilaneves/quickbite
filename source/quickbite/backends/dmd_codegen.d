@@ -226,6 +226,17 @@ public final class DmdCodegen : imported!"quickbite.executor".Executor {
 
         return summary;
     }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        throw new Exception("eval not yet implemented for dmdCodegen");
+    }
+
+    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        throw new Exception("eval not yet implemented for dmdCodegen");
+    }
 }
 
 private void compileAndRun(
