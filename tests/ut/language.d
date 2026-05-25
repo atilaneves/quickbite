@@ -2239,6 +2239,24 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("dynamicArraySliceFromRuntimeBounds." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                size_t start = 1;
+                size_t stop = values.length;
+
+                const tail = values[start .. stop];
+
+                assert(tail.length == 1);
+                assert(tail[0] == second);
+            }
+        }, backend);
+    }
+
     @("postIncrementSizeTIndex." ~ backend.text)
     unittest {
         runTests(q{
