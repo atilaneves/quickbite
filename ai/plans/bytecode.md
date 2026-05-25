@@ -97,6 +97,8 @@ Grow bytecode by moving one approved behaviour at a time into parity coverage:
   integer operators
 - add call arguments and a real frame model for locals and parameters
 - support void functions and explicit bare returns
+- replace the current integer-only value stack with typed values, first for
+  booleans and integers, then for all D types needed by covered behaviours
 - support module state, struct values, arrays, slices, and references as tests
   demand them
 - keep dependency and imported-module behaviour behind the existing

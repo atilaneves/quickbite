@@ -6,7 +6,7 @@ public enum OpCode : ubyte {
     pushInteger,
     call,
     equal,
-    assertTrue,
+    assertEqual,
     ret,
     halt,
 }

@@ -2053,6 +2053,24 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("voidFunctionReturnsToCaller.bytecode")
+unittest {
+    runTests(q{
+        int one() {
+            return 1;
+        }
+
+        void foo() {}
+
+        unittest {
+            foo;
+            // Keep this runtime-shaped so DMD does not constant-fold it before
+            // bytecode sees the equality expression.
+            assert(one == 2);
+        }
+    }, ExecutorBackend.bytecode).shouldThrowWithMessage("1 != 2");
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
