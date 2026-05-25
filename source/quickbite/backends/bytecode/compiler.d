@@ -88,23 +88,22 @@ private struct Compiler {
         }
 
         if (auto add = expression.isAddExp) {
-            compileExpression(add.e1);
-            compileExpression(add.e2);
-            module_.code ~= Instruction(OpCode.add);
+            compileBinaryExpression(add.e1, add.e2, OpCode.add);
             return;
         }
 
         if (auto subtract = expression.isMinExp) {
-            compileExpression(subtract.e1);
-            compileExpression(subtract.e2);
-            module_.code ~= Instruction(OpCode.subtract);
+            compileBinaryExpression(subtract.e1, subtract.e2, OpCode.subtract);
             return;
         }
 
         if (auto multiply = expression.isMulExp) {
-            compileExpression(multiply.e1);
-            compileExpression(multiply.e2);
-            module_.code ~= Instruction(OpCode.multiply);
+            compileBinaryExpression(multiply.e1, multiply.e2, OpCode.multiply);
+            return;
+        }
+
+        if (auto divide = expression.isDivExp) {
+            compileBinaryExpression(divide.e1, divide.e2, OpCode.divide);
             return;
         }
 
@@ -117,6 +116,16 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
+    }
+
+    private void compileBinaryExpression(
+        imported!"dmd.expression".Expression left,
+        imported!"dmd.expression".Expression right,
+        in OpCode op,
+    ) {
+        compileExpression(left);
+        compileExpression(right);
+        module_.code ~= Instruction(op);
     }
 
     private long functionIndex(imported!"dmd.func".FuncDeclaration function_) {

@@ -82,21 +82,19 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 ];
                 break;
             case OpCode.add:
-                const right = stack.popValue;
-                const left = stack.popValue;
-                stack ~= left + right;
+                stack.executeBinaryArithmetic!((left, right) => left + right);
                 ++ip;
                 break;
             case OpCode.subtract:
-                const right = stack.popValue;
-                const left = stack.popValue;
-                stack ~= left - right;
+                stack.executeBinaryArithmetic!((left, right) => left - right);
                 ++ip;
                 break;
             case OpCode.multiply:
-                const right = stack.popValue;
-                const left = stack.popValue;
-                stack ~= left * right;
+                stack.executeBinaryArithmetic!((left, right) => left * right);
+                ++ip;
+                break;
+            case OpCode.divide:
+                stack.executeBinaryArithmetic!((left, right) => left / right);
                 ++ip;
                 break;
             case OpCode.equal:
@@ -122,6 +120,12 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 return;
         }
     }
+}
+
+private void executeBinaryArithmetic(alias operation)(ref long[] stack) @safe {
+    const right = stack.popValue;
+    const left = stack.popValue;
+    stack ~= operation(left, right);
 }
 
 private long popValue(ref long[] stack) @safe {

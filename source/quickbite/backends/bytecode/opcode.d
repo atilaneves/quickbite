@@ -8,6 +8,7 @@ public enum OpCode : ubyte {
     add,
     subtract,
     multiply,
+    divide,
     equal,
     assertEqual,
     ret,

@@ -2128,6 +2128,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intDivision.bytecode")
+unittest {
+    runTests(q{
+        int two() {
+            return 2;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // division before bytecode sees it.
+            return 84 / two;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
