@@ -27,6 +27,81 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after PR 39 review fixes:
+
+- Worktree: `worktrees/dmd-codegen-ram-continue`.
+- Branch: `dmd-codegen-ram-continue`.
+- Review found that zero-initialized TLS globals live in `.tbss`, an
+  `SHT_NOBITS` section. The RAM image allocator already zero-fills via
+  `mmap`, so copying bytes from the object-file offset for these sections can
+  copy unrelated object metadata over the variable's zero initializer.
+- Added the focused RAM test:
+  `ut.backends.parity.zeroInitializedModuleIntRead.dmdCodegenRam`.
+- Initial red result:
+  `Program exited with code -11`.
+- RAM section copying now skips `SHT_NOBITS` sections so their allocated image
+  storage remains zero-filled.
+- Review also found that skipping every `__tls_get_addr` `PC32`/`PLT32`
+  relocation was too broad; only the call paired with a relaxed TLSGD sequence
+  should be skipped.
+- Added the focused RAM test:
+  `ut.backends.parity.userDefinedTlsGetAddrCall.dmdCodegenRam`.
+- Initial red result:
+  `Program exited with code -11`.
+- RAM relocation application now records the exact call relocation addresses
+  paired with TLSGD relaxations and skips only those addresses.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.zeroInitializedModuleIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.userDefinedTlsGetAddrCall.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <21 RAM tests>
+
+  21 test(s) run, 0 failed.
+
+  dub test
+  752 test(s) run, 0 failed.
+  ```
+
+2026-05-25 handoff after RAM TLSGD slice:
+
+- Worktree: `worktrees/dmd-codegen-ram-continue`.
+- Branch: `dmd-codegen-ram-continue`.
+- Added the approved focused RAM test:
+  `ut.backends.parity.moduleIntRead.dmdCodegenRam`.
+- The test covers a default module-level `int`, which is D TLS, as distinct
+  from the existing `__gshared` module global test.
+- Initial red result was the expected controlled diagnostic:
+  `DMD codegen RAM relocation unsupported: R_X86_64_TLSGD`.
+- RAM relocation application now recognizes DMD's local TLSGD load sequence,
+  rewrites it in the RAM image to load the placed TLS symbol address directly
+  into `RAX`, and skips the paired `__tls_get_addr` PLT relocation.
+- This is a local RAM-image relaxation for DMD-generated TLS access, not a
+  general dynamic-loader TLS implementation.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.moduleIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <19 RAM tests>
+
+  19 test(s) run, 0 failed.
+
+  dub test
+  750 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after PR 38 review fix:
 
 - Worktree: `worktrees/dmd-codegen-ram-next`.

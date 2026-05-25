@@ -2372,6 +2372,66 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("moduleIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value = 41;
+
+                int answer() {
+                    // Unlike __gshared, default module variables are D TLS.
+                    // The RAM backend must handle DMD's TLS relocation path
+                    // instead of only the normal global/GOT access shape.
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("zeroInitializedModuleIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int value;
+
+                int answer() {
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 1);
+                }
+            }, backend);
+        }
+    }
+
+    @(text("userDefinedTlsGetAddrCall.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                __gshared int calls;
+
+                extern(C) void __tls_get_addr() {
+                    calls = 41;
+                }
+
+                void answer() {
+                    __tls_get_addr();
+                }
+
+                unittest {
+                    calls = 1;
+                    answer();
+                    assert(calls == 41);
+                }
+            }, backend);
+        }
+    }
+
     @(text("intAddition.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {
