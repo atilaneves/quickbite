@@ -449,6 +449,13 @@ private void reportRamObjectDiagnostics(in GeneratedObject[] objects) @trusted {
             linkImage.externalClassifications[classification],
         );
 
+    foreach (classification; linkImage.relocationClassifications.byKey.array.sort)
+        stderr.writefln(
+            "quickbite dmd-codegen RAM relocation_classification: kind=%s count=%s",
+            classification,
+            linkImage.relocationClassifications[classification],
+        );
+
     foreach (type; relocationTypes.byKey.array.sort)
         stderr.writefln(
             "quickbite dmd-codegen RAM relocation_type: type=%s count=%s",
@@ -4703,6 +4710,8 @@ private enum elf64SymbolSize = 24;
 
 private enum shnUndef = 0;
 
+private enum shnMissing = ushort.max;
+
 private struct Elf64Section {
     string name;
     uint nameOffset;
@@ -4749,6 +4758,8 @@ private struct Elf64Relocation {
     string sectionName;
     ulong offset;
     uint type;
+    size_t symbolIndex;
+    ushort symbolSectionIndex;
     string symbolName;
     long addend;
 }
@@ -4765,6 +4776,7 @@ private struct RamLinkImage {
     ulong[string] definedSymbols;
     size_t duplicateSymbols;
     size_t[string] externalClassifications;
+    size_t[string] relocationClassifications;
 }
 
 private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
@@ -4802,9 +4814,36 @@ private RamLinkImage ramLinkImage(in GeneratedObject[] objects) @trusted {
 
             ++image.externalClassifications[symbol.name.externalSymbolClass];
         }
+
+        foreach (relocation; objectImage.relocations)
+            ++image.relocationClassifications[
+                image.relocationClass(objectImage, relocation)
+            ];
     }
 
     return image;
+}
+
+private string relocationClass(
+    in RamLinkImage image,
+    in Elf64ObjectImage objectImage,
+    in Elf64Relocation relocation,
+) @safe {
+    if (relocation.symbolSectionIndex == shnMissing)
+        return "missing_symbol";
+
+    if (relocation.symbolName.length != 0) {
+        if (relocation.symbolName in image.definedSymbols)
+            return "object_defined";
+
+        return relocation.symbolName.externalSymbolClass;
+    }
+
+    if (relocation.symbolSectionIndex != shnUndef
+        && objectImage.sections.hasElf64Section(relocation.symbolSectionIndex))
+        return "section_relative";
+
+    return "anonymous_external";
 }
 
 private struct RamSectionPlacement {
@@ -4974,13 +5013,18 @@ private Elf64Relocation[] elf64Relocations(
         const relocation = relocationTable[offset .. offset + relocationSize];
         const info = relocation.readElf64(8);
         const symbolIndex = cast(size_t) (info >> 32);
-        const symbolName = symbolIndex < symbols.length
-            ? symbols[symbolIndex].name
-            : null;
+        string symbolName;
+        ushort symbolSectionIndex = shnMissing;
+        if (symbolIndex < symbols.length) {
+            symbolName = symbols[symbolIndex].name;
+            symbolSectionIndex = symbols[symbolIndex].sectionIndex;
+        }
         relocations ~= Elf64Relocation(
             sectionName,
             relocation.readElf64(0),
             cast(uint) info,
+            symbolIndex,
+            symbolSectionIndex,
             symbolName,
             section.type == shtRela
                 ? cast(long) relocation.readElf64(16)

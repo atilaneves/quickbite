@@ -27,24 +27,24 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 handoff after RAM link-image diagnostic slice:
+2026-05-25 handoff after RAM relocation diagnostic slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
 - Branch: `dmd-codegen-ram`.
 - Current head:
 
   ```text
-  c3806d9 Add DMD codegen RAM object diagnostics
+  50dd43e Add DMD codegen RAM link diagnostics
   ```
 
 - The RAM object diagnostics slice was committed as `c3806d9`.
-- The worktree has an uncommitted RAM link-image diagnostic slice:
+- The RAM link-image diagnostics slice was committed as `50dd43e`.
+- The worktree has an uncommitted RAM relocation diagnostic slice:
   - `source/quickbite/backends/dmd_codegen.d`
-  - `ai/mistakes.md`
   - `ai/plans/dmd-backend.md`
 - Recent commits:
-  - `2cb0519 Store generated DMD objects in codegen sessions`
   - `c3806d9 Add DMD codegen RAM object diagnostics`
+  - `50dd43e Add DMD codegen RAM link diagnostics`
 - Current source state:
   - `runCodegenSession` resolves the generated unittest entrypoint before
     choosing an execution path.
@@ -78,6 +78,10 @@ tried, what happened, and why the result was insufficient.
     allocated executable/data sections at virtual offsets, builds a generated
     defined-symbol table, counts duplicate generated definitions, and classifies
     remaining undefined symbols only as `external` or `linker_sentinel`.
+  - The latest uncommitted slice records each relocation's target symbol index
+    and target symbol section index, then classifies relocation targets as
+    `object_defined`, `section_relative`, `external`, `linker_sentinel`,
+    `anonymous_external`, or `missing_symbol`.
   - A previous attempt used `dlsym(null, symbol)` to classify current-process
     symbols. It printed useful data but then aborted during D runtime shutdown
     with:
@@ -110,6 +114,10 @@ tried, what happened, and why the result was insufficient.
   relocations=1642 text_bytes=24480 data_bytes=24237 duplicate_symbols=44
   quickbite dmd-codegen RAM external_classification: kind=external count=92
   quickbite dmd-codegen RAM external_classification: kind=linker_sentinel count=27
+  quickbite dmd-codegen RAM relocation_classification: kind=external count=354
+  quickbite dmd-codegen RAM relocation_classification: kind=linker_sentinel count=20
+  quickbite dmd-codegen RAM relocation_classification: kind=object_defined count=359
+  quickbite dmd-codegen RAM relocation_classification: kind=section_relative count=909
   quickbite dmd-codegen RAM relocation_type: type=1 count=286
   quickbite dmd-codegen RAM relocation_type: type=2 count=909
   quickbite dmd-codegen RAM relocation_type: type=4 count=398
@@ -154,9 +162,10 @@ Next recommended step:
 
 - Commit this diagnostics slice if the diff looks acceptable.
 - Extend `RamLinkImage` toward a real resolver model without executing code:
-  collect relocation sites by target section, resolve object-defined symbols
-  through the generated defined-symbol table, and report which relocation
-  records still need external or linker-sentinel handling.
+  map `object_defined` and `section_relative` relocation records to concrete
+  virtual addresses and report relocation type/address pairs that are ready for
+  patching. Keep external and linker-sentinel relocations diagnostic-only until
+  there is an explicit resolver model for them.
 - Keep `sharedLibrary` as the fallback until a RAM executor can run the
   smallest benchmark slice.
 - Do not add or modify tests without explicit approval.
