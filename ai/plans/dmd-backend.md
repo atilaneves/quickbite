@@ -27,6 +27,37 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after RAM TLSGD slice:
+
+- Worktree: `worktrees/dmd-codegen-ram-continue`.
+- Branch: `dmd-codegen-ram-continue`.
+- Added the approved focused RAM test:
+  `ut.backends.parity.moduleIntRead.dmdCodegenRam`.
+- The test covers a default module-level `int`, which is D TLS, as distinct
+  from the existing `__gshared` module global test.
+- Initial red result was the expected controlled diagnostic:
+  `DMD codegen RAM relocation unsupported: R_X86_64_TLSGD`.
+- RAM relocation application now recognizes DMD's local TLSGD load sequence,
+  rewrites it in the RAM image to load the placed TLS symbol address directly
+  into `RAX`, and skips the paired `__tls_get_addr` PLT relocation.
+- This is a local RAM-image relaxation for DMD-generated TLS access, not a
+  general dynamic-loader TLS implementation.
+- Verification:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.moduleIntRead.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <19 RAM tests>
+
+  19 test(s) run, 0 failed.
+
+  dub test
+  750 test(s) run, 0 failed.
+  ```
+
 2026-05-25 handoff after PR 38 review fix:
 
 - Worktree: `worktrees/dmd-codegen-ram-next`.

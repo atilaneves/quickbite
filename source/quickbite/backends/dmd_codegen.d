@@ -5074,6 +5074,9 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
 
             case pc32:
             case plt32:
+                if (relocation.symbolName == "__tls_get_addr")
+                    break;
+
                 relocation.patchAddress.writeRam32(
                     relocation.targetAddress
                     + cast(ulong) relocation.addend
@@ -5090,9 +5093,8 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
                 break;
 
             case tlsGd:
-                throw new Exception(
-                    "DMD codegen RAM relocation unsupported: R_X86_64_TLSGD",
-                );
+                relocation.patchRamTlsGd;
+                break;
 
             default:
                 import std.conv: text;
@@ -5103,6 +5105,35 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
                 ));
         }
     }
+}
+
+private void patchRamTlsGd(in RamResolvedRelocation relocation) @trusted {
+    import std.conv: text;
+
+    const instructionAddress = relocation.patchAddress - 4;
+    auto bytes = cast(ubyte*) instructionAddress;
+    if (bytes[0] != 0x66
+        || bytes[1] != 0x48
+        || bytes[2] != 0x8d
+        || bytes[3] != 0x3d
+        || bytes[8] != 0x66
+        || bytes[9] != 0x66
+        || bytes[10] != 0x48
+        || bytes[11] != 0xe8)
+        throw new Exception(text(
+            "DMD codegen RAM TLSGD relocation has unsupported instruction "
+            ~ "sequence for ",
+            relocation.symbolName,
+        ));
+
+    bytes[0] = 0x48;
+    bytes[1] = 0x8d;
+    bytes[2] = 0x05;
+    (instructionAddress + 3).writeRam32(
+        relocation.targetAddress - (instructionAddress + 7),
+    );
+    foreach (idx; 7 .. 16)
+        bytes[idx] = 0x90;
 }
 
 private enum X86_64Relocation : uint {
