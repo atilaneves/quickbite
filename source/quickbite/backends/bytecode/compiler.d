@@ -87,6 +87,13 @@ private struct Compiler {
             return;
         }
 
+        if (auto add = expression.isAddExp) {
+            compileExpression(add.e1);
+            compileExpression(add.e2);
+            module_.code ~= Instruction(OpCode.add);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");

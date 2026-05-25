@@ -81,6 +81,12 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                     module_.functions[cast(size_t) instruction.operand]
                 ];
                 break;
+            case OpCode.add:
+                const right = stack.popValue;
+                const left = stack.popValue;
+                stack ~= left + right;
+                ++ip;
+                break;
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;

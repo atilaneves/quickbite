@@ -5,6 +5,7 @@ private:
 public enum OpCode : ubyte {
     pushInteger,
     call,
+    add,
     equal,
     assertEqual,
     ret,

@@ -2071,6 +2071,25 @@ unittest {
     }, ExecutorBackend.bytecode).shouldThrowWithMessage("1 != 2");
 }
 
+@("intAddition.bytecode")
+unittest {
+    runTests(q{
+        int one() {
+            return 1;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // addition before bytecode sees it.
+            return one + 41;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
