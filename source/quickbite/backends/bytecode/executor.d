@@ -2,10 +2,6 @@ module quickbite.backends.bytecode.executor;
 
 private:
 
-import quickbite.backends.bytecode.compiler: compileBytecode;
-import quickbite.backends.bytecode.module_: BytecodeModule;
-import quickbite.backends.bytecode.opcode: OpCode;
-
 public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
@@ -20,6 +16,7 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     }
 
     public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
+        import quickbite.backends.bytecode.compiler: compileBytecode;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
@@ -31,13 +28,36 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override imported!"quickbite.executor".TestSummary runTestSummary(
         in string source,
     ) {
-        import quickbite.executor: TestSummary;
+        import quickbite.frontend.compiler: parseModule;
 
-        return TestSummary.init;
+        return testSummary(parseModule(source).module_);
     }
 }
 
-private void execute(ref BytecodeModule module_) {
+private imported!"quickbite.executor".TestSummary testSummary(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import quickbite.backends.bytecode.compiler: compileBytecode;
+    import quickbite.executor: TestSummary;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+    TestSummary summary;
+    foreachUnitTestDeclaration(module_, (unitTest) {
+        ++summary.total;
+        try {
+            auto bytecode = compileBytecode(unitTest);
+            bytecode.execute;
+            ++summary.passed;
+        } catch (Exception) {
+            ++summary.failed;
+        }
+    });
+    return summary;
+}
+
+private void execute(ref imported!"quickbite.backends.bytecode.module_".BytecodeModule module_) {
+    import quickbite.backends.bytecode.opcode: OpCode;
+
     long[] stack;
     size_t[] returnAddresses;
     size_t ip;

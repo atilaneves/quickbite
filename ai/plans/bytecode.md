@@ -64,6 +64,46 @@ Tests should exercise bytecode through public backend behaviour. Do not write
 tests that assert bytecode layout, opcode streams, frame internals, or other
 private implementation details.
 
+## Current Status
+
+PR 23 adds the first bytecode backend slice:
+
+- `ExecutorBackend.bytecode` is wired into the public executor factory.
+- The backend finds unittest blocks in a parsed DMD module.
+- The compiler emits stack bytecode directly from DMD AST nodes for the first
+  fixture shape: integer literals, equality, assertions, zero-argument function
+  calls, and returns.
+- The executor runs the bytecode with a simple value stack, return-address
+  stack, and halt instruction.
+- Unsupported statements and expressions now fail with diagnostics instead of
+  being silently ignored.
+- `runTestSummary` counts bytecode unittest blocks by compiling and executing
+  each block independently.
+- The focused public behaviour is covered by `ut.language.ok.bytecode`.
+
+The first slice deliberately keeps the bytecode representation simple. It still
+writes `Instruction` values directly while the opcode set is tiny; introduce an
+emitter when the next behaviours make raw writes start spreading.
+
+## Remaining Work
+
+Grow bytecode by moving one approved behaviour at a time into parity coverage:
+
+- add bytecode to the shared backend lists only when the currently selected
+  behaviour is supported
+- implement unsupported statements one by one, starting with the next fixture
+  needed for parity
+- implement local variables, assignment, branches, loops, and non-equality
+  integer operators
+- add call arguments and a real frame model for locals and parameters
+- support void functions and explicit bare returns
+- support module state, struct values, arrays, slices, and references as tests
+  demand them
+- keep dependency and imported-module behaviour behind the existing
+  dmd-as-library frontend boundary
+- benchmark direct AST-to-bytecode emission before considering native dispatch
+  or dependency bytecode caches
+
 ## Later Strategy Experiments
 
 The baseline may pay too much emission cost by handling everything. That is

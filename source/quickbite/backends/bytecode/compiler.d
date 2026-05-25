@@ -2,12 +2,9 @@ module quickbite.backends.bytecode.compiler;
 
 private:
 
-import dmd.func: FuncDeclaration, UnitTestDeclaration;
-import quickbite.backends.bytecode.module_: BytecodeModule;
-import quickbite.backends.bytecode.opcode: Instruction, OpCode;
-
-package(quickbite.backends.bytecode) BytecodeModule compileBytecode(
-    UnitTestDeclaration unitTest,
+package(quickbite.backends.bytecode)
+imported!"quickbite.backends.bytecode.module_".BytecodeModule compileBytecode(
+    imported!"dmd.func".UnitTestDeclaration unitTest,
 ) {
     Compiler compiler;
     compiler.compileUnitTest(unitTest);
@@ -15,9 +12,12 @@ package(quickbite.backends.bytecode) BytecodeModule compileBytecode(
 }
 
 private struct Compiler {
+    import quickbite.backends.bytecode.module_: BytecodeModule;
+    import quickbite.backends.bytecode.opcode: Instruction, OpCode;
+
     private BytecodeModule module_;
 
-    private void compileUnitTest(UnitTestDeclaration unitTest) {
+    private void compileUnitTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         compileStatement(unitTest.fbody);
         module_.code ~= Instruction(OpCode.halt);
 
@@ -54,6 +54,9 @@ private struct Compiler {
             module_.code ~= Instruction(OpCode.ret);
             return;
         }
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
     }
 
     private void compileExpression(imported!"dmd.expression".Expression expression) {
@@ -86,7 +89,7 @@ private struct Compiler {
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
     }
 
-    private long functionIndex(FuncDeclaration function_) {
+    private long functionIndex(imported!"dmd.func".FuncDeclaration function_) {
         if (auto existing = function_ in module_.functionIndexes)
             return cast(long) *existing;
 
@@ -96,7 +99,9 @@ private struct Compiler {
         return cast(long) index;
     }
 
-    private FuncDeclaration callFunction(imported!"dmd.expression".CallExp call) {
+    private imported!"dmd.func".FuncDeclaration callFunction(
+        imported!"dmd.expression".CallExp call,
+    ) {
         if (call.f !is null)
             return call.f;
 
