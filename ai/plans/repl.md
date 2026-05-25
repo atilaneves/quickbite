@@ -38,11 +38,8 @@
   - returns one output string per expression value;
   - stops on `:q` or `:quit`.
 - `Value.toString` exists for displaying integral and bool values.
-- `tests/ut/repl.d` has exactly one binary integration test:
-  `repl.binary.evaluatesExpressionCells`. It builds `bin/repl` once
-  with `dub build -c repl`, runs `bin/repl` directly with
-  `pipeProcess`, feeds `1`, `2`, `:q`, and expects stdout
-  `1\n2\n`.
+- Binary integration tests have already proven basic executable wiring.
+  Do not add more subprocess coverage for REPL behavior.
 - `tests/ut/repl.d` has the first unit-level REPL loop test:
   `repl.loop.evaluatesExpressionCellsUntilQuit`. It uses the real IR
   executor, passes `["1", "2", ":q"]` to `runReplLoop`, and expects
@@ -64,10 +61,10 @@
 ### What comes next
 
 Use strict TDD and stop for approval before each new or modified test.
-Do not add more binary/process tests unless explicitly requested; the
-single existing binary test is the smoke test for wiring. Future REPL
-behavior should be driven by unit tests around `runReplLoop` and
-supporting helpers, using real executors and no `executeShell`.
+Do not add more binary/process tests unless explicitly requested. Future
+REPL behavior must be driven by unit tests around `runReplLoop` and
+supporting helpers, using real executors and no `executeShell`,
+`execute`, `pipeProcess`, or similar per-test process spawning.
 
 Recommended next approved test:
 
