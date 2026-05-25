@@ -20,7 +20,14 @@ public int main(string[] args) {
         if (line == ":q" || line == ":quit")
             break;
 
-        writeln(active.eval(line).toString);
+        try {
+            writeln(active.eval(line).toString);
+        } catch (Exception e) {
+            writeln(e.msg);
+        } catch (Error e) {
+            writeln(e.msg);
+            return 1;
+        }
         writePrompt;
     }
 

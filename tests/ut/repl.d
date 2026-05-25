@@ -29,6 +29,28 @@ unittest {
     result.output.should == "";
 }
 
+@("repl.binary.continuesAfterFrontendDiagnostic")
+unittest {
+    import std.algorithm.searching: canFind;
+    import std.process: Redirect, pipeProcess, wait;
+
+    auto repl = pipeProcess(
+        [replExecutable],
+        Redirect.stdin | Redirect.stdout,
+    );
+
+    repl.stdin.write("int x\n1\n:q\n");
+    repl.stdin.close;
+
+    string output;
+    foreach (line; repl.stdout.byLine)
+        output ~= line.idup ~ "\n";
+
+    wait(repl.pid).should == 0;
+    output.canFind("unexpected identifier `x` in declarator").should == true;
+    output.canFind("> 1\n>").should == true;
+}
+
 private string replExecutable() {
     static bool built;
     if (!built) {
