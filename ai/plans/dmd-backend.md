@@ -27,6 +27,87 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 RAM-path handoff after vendored-code rollback:
+
+- The worktree was re-vendored with `scripts/vendor-dmd-backend.sh`.
+- There is no current diff under `vendor/` or
+  `source/quickbite/backends/dmd_codegen.d`.
+- The only intentional local edits after this handoff are documentation:
+  this plan and `ai/mistakes.md`.
+- `dub test` was run after re-vendoring and passed:
+
+  ```text
+  591 test(s) run, 0 failed.
+  ```
+
+What was attempted:
+
+- A first RAM-path experiment used `dmd.glue.generateCodeAndWrite` with
+  `writeLibrary=true` so DMD would call `dmd.lib.Library.addObject` with
+  finished object bytes.
+- To make that compile, the experiment changed
+  `vendor/dmd-backend/dmd/lib/package.d` from a stub into an in-memory object
+  collector, then changed `source/quickbite/backends/dmd_codegen.d` to capture
+  object bytes and write them back to temp `.o` files for the existing linker
+  bridge.
+- That experiment did build and `dub test` passed, but it violated the
+  project rule that vendored code must not be changed for convenience.
+- The experiment was fully rolled back, then `scripts/vendor-dmd-backend.sh`
+  was run to verify the vendored backend is clean.
+
+What not to do next:
+
+- Do not change `vendor/dmd-backend/**` or the vendored `dmd.lib` stub for
+  helper APIs, object capture, or convenience plumbing.
+- If DMD object-byte capture is still worth pursuing, put the wrapper or
+  convenience code in Quickbite-owned source. A tiny vendored forwarding shim is
+  also off the table unless explicitly approved first.
+- Do not treat `dmd.lib.Library.addObject` as usable from this repo without a
+  non-vendored integration design. The current local `dmd.lib` is deliberately
+  a stub because `generateCodeAndWrite(writeLibrary=false)` is the only
+  supported path today.
+- Do not add tests for private mechanics such as "bytes were captured in
+  memory" or "no `.so` was produced". Use existing `DmdCodegen.runParsedTests`
+  behaviour and benchmark slices as characterization unless a real public
+  behaviour gap appears, then stop for approval before changing tests.
+
+Suggested next direction:
+
+- Re-read the current DMD glue/backend APIs and look for an integration point
+  that can live outside `vendor/`.
+- Prefer a Quickbite-owned adapter around the existing emitted object files as
+  the first step if that keeps vendored code clean. For example, a
+  Quickbite-owned ELF object loader/linker experiment can start from the
+  existing `.o` files and defer replacing DMD's object emission until the
+  execution model is clearer.
+- Keep the current `.so` bridge as a fallback until a non-vendored RAM path can
+  execute at least the smallest DMD-codegen benchmark slice.
+
+2026-05-25 continuation after handoff:
+
+- Baseline `dub test` passed again:
+
+  ```text
+  591 test(s) run, 0 failed.
+  ```
+
+- The goal benchmark command now succeeds on the clean vendored path:
+
+  ```text
+  ./benchmarks/run.sh --warmup=1 --iterations=2 --backend=dmd-codegen --dub cerealed
+  ```
+
+  It printed a `cerealed` / `dmd-codegen` row.
+
+- `compileAndRun` now calls a Quickbite-owned `runSharedLibraryBridge` helper
+  for the existing link/load path. This is only a behaviour-preserving
+  replacement point for later RAM execution work; it still links the
+  accumulated `.o` files into `module.so` and calls the current `dlsym`
+  `__modtest` runner.
+- `benchmarks/main.d` already prints `firstLine(e.msg)`, and `compileAndRun`
+  already registers `/tmp/quickbite_dmd_*` for cleanup at process exit, so the
+  diagnostics-only handoff warning is not currently an outstanding local diff.
+
 2026-05-25 default benchmark update:
 
 - `dmd-codegen` is now in the default benchmark backend list on `master`.
@@ -248,6 +329,19 @@ Do not make bridge cleanup the main next project. Order sensitivity, stale DMD
 global state, and negative-run contamination remain known issues, but they can
 be handled after the execution path no longer depends on cross-fixture shared
 library accumulation.
+
+Testing direction for this phase:
+
+- Do not add tests that expose implementation details such as "object bytes were
+  collected in memory" or "no `.so` file was produced". Those are private
+  mechanics, not user-facing Quickbite behaviour.
+- The first RAM-execution changes are allowed to be implementation-only if they
+  preserve the `DmdCodegen.runParsedTests` behaviour that already exists.
+- Use the existing experimental `dmd-codegen` tests and benchmark slices as
+  characterization checks while replacing the bridge internally.
+- Add or modify tests only when the work creates a real public behaviour seam or
+  reveals a behavioural bug. Stop for approval before doing so, per the repo
+  TDD rules.
 
 Concrete direction:
 

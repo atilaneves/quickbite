@@ -136,3 +136,7 @@
 
 - Don't implement TDD cycles inline in the main thread when the plan prescribes
   subagents; see the existing subagent rule above.
+
+- Don't change vendored code for convenience. If a wrapper or helper is needed,
+  add Quickbite-owned code instead, and re-vendor to verify vendor files stay
+  clean.

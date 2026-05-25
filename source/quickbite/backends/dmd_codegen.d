@@ -267,7 +267,21 @@ private void compileAndRun(
                 _accumulatedModules[cast(void*) generatedModule] = true;
         _accumulatedObjPaths ~= generated.objPaths;
     }
-    link(_accumulatedObjPaths, soPath, linkFiles.withInferredLinkFiles(sourceImportPaths));
+    runSharedLibraryBridge(
+        _accumulatedObjPaths,
+        soPath,
+        linkFiles.withInferredLinkFiles(sourceImportPaths),
+        module_,
+    );
+}
+
+private void runSharedLibraryBridge(
+    in string[] objPaths,
+    in string soPath,
+    in string[] linkFiles,
+    imported!"dmd.dmodule".Module module_,
+) @trusted {
+    link(objPaths, soPath, linkFiles);
     loadAndRunTests(soPath, module_);
 }
 
