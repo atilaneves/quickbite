@@ -63,7 +63,7 @@ int main(string[] args) {
     if (!isOptimisedBuild) {
         stderr.writeln(
             "benchmark refuses to run on a non-optimised build "
-            ~ "(rebuild with `dub run -c benchmark -b release`).",
+            ~ "(rebuild with `dub build -c benchmark -b benchmark-opt`).",
         );
         return 1;
     }
