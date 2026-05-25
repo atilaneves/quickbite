@@ -98,10 +98,70 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                     module_.functions[cast(size_t) instruction.operand]
                 ];
                 break;
+            case OpCode.add:
+                stack.executeBinaryOperation!((left, right) => left + right);
+                ++ip;
+                break;
+            case OpCode.subtract:
+                stack.executeBinaryOperation!((left, right) => left - right);
+                ++ip;
+                break;
+            case OpCode.multiply:
+                stack.executeBinaryOperation!((left, right) => left * right);
+                ++ip;
+                break;
+            case OpCode.divide:
+                stack.executeBinaryOperation!((left, right) => left / right);
+                ++ip;
+                break;
+            case OpCode.modulo:
+                stack.executeBinaryOperation!((left, right) => left % right);
+                ++ip;
+                break;
+            case OpCode.shiftRight:
+                stack.executeBinaryOperation!((left, right) => left >> right);
+                ++ip;
+                break;
+            case OpCode.shiftLeft:
+                stack.executeBinaryOperation!((left, right) => left << right);
+                ++ip;
+                break;
+            case OpCode.bitwiseOr:
+                stack.executeBinaryOperation!((left, right) => left | right);
+                ++ip;
+                break;
+            case OpCode.bitwiseAnd:
+                stack.executeBinaryOperation!((left, right) => left & right);
+                ++ip;
+                break;
+            case OpCode.bitwiseXor:
+                stack.executeBinaryOperation!((left, right) => left ^ right);
+                ++ip;
+                break;
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
                 stack ~= left == right;
+                ++ip;
+                break;
+            case OpCode.notEqual:
+                stack.executeBinaryOperation!((left, right) => left != right);
+                ++ip;
+                break;
+            case OpCode.lessThan:
+                stack.executeBinaryOperation!((left, right) => left < right);
+                ++ip;
+                break;
+            case OpCode.lessOrEqual:
+                stack.executeBinaryOperation!((left, right) => left <= right);
+                ++ip;
+                break;
+            case OpCode.greaterThan:
+                stack.executeBinaryOperation!((left, right) => left > right);
+                ++ip;
+                break;
+            case OpCode.greaterOrEqual:
+                stack.executeBinaryOperation!((left, right) => left >= right);
                 ++ip;
                 break;
             case OpCode.assertEqual:
@@ -121,6 +181,12 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 return;
         }
     }
+}
+
+private void executeBinaryOperation(alias operation)(ref long[] stack) @safe {
+    const right = stack.popValue;
+    const left = stack.popValue;
+    stack ~= operation(left, right);
 }
 
 private long popValue(ref long[] stack) @safe {
