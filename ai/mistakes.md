@@ -136,3 +136,7 @@
 
 - Don't implement TDD cycles inline in the main thread when the plan prescribes
   subagents; see the existing subagent rule above.
+
+- Don't propose adding or enabling dependency-backed tests for new tree walker
+  TDD slices; extract dependency-free language or project-inspired tests
+  instead.
