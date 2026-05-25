@@ -2147,6 +2147,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intModulo.bytecode")
+unittest {
+    runTests(q{
+        int divisor() {
+            return 44;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // modulo before bytecode sees it.
+            return 86 % divisor;
+        }
+
+        unittest {
+            assert(answer == 42);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;

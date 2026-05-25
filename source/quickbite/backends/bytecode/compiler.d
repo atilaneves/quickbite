@@ -107,6 +107,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto modulo = expression.isModExp) {
+            compileBinaryExpression(modulo.e1, modulo.e2, OpCode.modulo);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
