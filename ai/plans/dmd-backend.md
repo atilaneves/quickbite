@@ -27,6 +27,69 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after PR 31 review-fix branch:
+
+- PR 31 was merged before review fixes landed. The follow-up work now lives in
+  a new worktree and branch on top of the merged `master`:
+  - Worktree: `worktrees/dmd-codegen-ram-review-fixes`.
+  - Branch: `dmd-codegen-ram-review-fixes`.
+  - Base: `2425c42 Merge pull request #31 from atilaneves/dmd-codegen-ram`.
+- The follow-up branch addresses the review comments without adding tests:
+  - `ExecutorBackend.dmdCodegenRam` is still present in the public enum for
+    existing test names, but `executor(ExecutorBackend.dmdCodegenRam)` now
+    rejects normal callers unless `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS` is
+    set.
+  - `CodegenSession` now computes the expected generated module
+    `__modtest` symbol from the entry module and only accepts an object symbol
+    with that exact name. User-defined decoys containing `__modtest` no longer
+    win by symbol-table order.
+  - Both DMD codegen executors parse `runTestSummary(source)` with their
+    configured `sourceImportPaths`, matching `runTests(source)`.
+  - RAM images are released with `munmap` after execution.
+  - RAM execution now reports a controlled unsupported diagnostic for
+    `R_X86_64_GOTPCREL` instead of applying the PC-relative formula for a
+    direct symbol address.
+  - RAM images remain writable while executable. This is intentionally not the
+    final protection model, but it removes the immediate read-only data fault
+    for generated writable sections without blocking existing RAM smoke tests.
+- Verification on the follow-up branch:
+
+  ```text
+  dub test
+  724 test(s) run, 0 failed.
+  ```
+
+- Focused RAM verification before this branch was recreated also passed:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 bin/ut \
+    ut.backends.codegen.runTests.localIntegerArithmetic.dmdCodegenRam \
+    ut.backends.parity.ok.dmdCodegenRam \
+    ut.backends.parity.functionParameter.dmdCodegenRam \
+    ut.backends.parity.throwingTest.dmdCodegenRam
+
+  4 test(s) run, 0 failed.
+  ```
+
+- A full experimental run with `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1` is
+  still not a PR gate. It fails in pre-existing experimental DMD codegen paths
+  after RAM smoke tests have run, with DMD backend assertions in shared-library
+  codegen tests such as `minicerealFileCanRunTwice.dmdCodegen` and package
+  DMD-codegen tests.
+
+Immediate next step:
+
+1. Commit and push `dmd-codegen-ram-review-fixes`.
+2. Open a new PR against `master`.
+3. Before adding any review regression tests, ask for approval per the repo
+   TDD rule.
+4. Remaining RAM work is still substantial:
+   - replace fixture-specific failure preflights with real controlled
+     assertion/exception semantics or a broader safe rejection model,
+   - implement a real GOT slot model for `R_X86_64_GOTPCREL`,
+   - split RAM image protections into code/data pages instead of RWX,
+   - keep RAM tests experimental until those paths are safe for normal callers.
+
 2026-05-25 handoff after direct-throw RAM preflight slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
