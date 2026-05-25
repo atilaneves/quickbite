@@ -2137,6 +2137,17 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("throwingTest.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    throw new Exception("boom");
+                }
+            }, backend).shouldThrowWithMessage("boom");
+        }
+    }
+
     @(text("localIntReturn.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {

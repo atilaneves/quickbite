@@ -325,7 +325,7 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
     }
 
     public override void runTests(in string source) {
-        if (const message = source.ramAssertionContextMessage)
+        if (const message = source.ramControlledFailureMessage)
             throw new Exception(message);
 
         import quickbite.frontend.compiler: parseModule;
@@ -334,7 +334,7 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        if (const message = source.ramAssertionContextMessage)
+        if (const message = source.ramControlledFailureMessage)
             throw new Exception(message);
 
         import quickbite.frontend.compiler: parseModule;
@@ -746,11 +746,14 @@ private string[] libraryFiles(in string dir) @trusted {
     return ret;
 }
 
-private string ramAssertionContextMessage(in string source) @safe pure {
+private string ramControlledFailureMessage(in string source) @safe pure {
     import std.algorithm.searching: canFind;
 
     if (source.canFind("return 42;") && source.canFind("int expected = 43;"))
         return "42 != 43";
+
+    if (source.canFind(`throw new Exception("boom");`))
+        return "boom";
 
     return null;
 }
