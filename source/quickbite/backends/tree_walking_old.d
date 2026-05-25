@@ -193,13 +193,16 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         return Value(cast(int) longResult);
     }
 
-    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+    public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
-        import quickbite.executor: Repl;
+        import quickbite.frontend.compiler: parseModule;
 
-        return Repl.CellResult.value_(eval(transcript ~ input));
+        const source =
+            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
+
+        runParsedTests(parseModule(source).module_);
     }
 }
 

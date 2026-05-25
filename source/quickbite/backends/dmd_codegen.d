@@ -231,7 +231,7 @@ public final class DmdCodegen : imported!"quickbite.executor".Executor {
         throw new Exception("eval not yet implemented for dmdCodegen");
     }
 
-    public override imported!"quickbite.executor".Repl.CellResult evalReplCell(
+    public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {

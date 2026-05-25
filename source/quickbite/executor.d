@@ -61,7 +61,7 @@ public interface Executor {
     public TestSummary runTestSummary(in string source);
     public void runParsedTests(imported!"dmd.dmodule".Module module_);
     public Value eval(in string input);
-    public Repl.CellResult evalReplCell(in string transcript, in string input);
+    public void runVoidReplCell(in string transcript, in string input);
 }
 
 public void runModulesTests(
