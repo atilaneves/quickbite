@@ -127,6 +127,10 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack ~= left == right;
                 ++ip;
                 break;
+            case OpCode.notEqual:
+                stack.executeBinaryArithmetic!((left, right) => left != right);
+                ++ip;
+                break;
             case OpCode.lessThan:
                 stack.executeBinaryArithmetic!((left, right) => left < right);
                 ++ip;

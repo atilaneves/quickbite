@@ -70,6 +70,13 @@ private struct Compiler {
             if (auto equal = assert_.e1.isEqualExp) {
                 compileExpression(equal.e1);
                 compileExpression(equal.e2);
+                if (isEqualExpression(equal)) {
+                    module_.code ~= Instruction(OpCode.assertEqual);
+                    return;
+                }
+
+                module_.code ~= Instruction(OpCode.notEqual);
+                module_.code ~= Instruction(OpCode.pushInteger, 1);
                 module_.code ~= Instruction(OpCode.assertEqual);
                 return;
             }
@@ -83,7 +90,7 @@ private struct Compiler {
         if (auto equal = expression.isEqualExp) {
             compileExpression(equal.e1);
             compileExpression(equal.e2);
-            module_.code ~= Instruction(OpCode.equal);
+            module_.code ~= Instruction(equalOpCode(equal));
             return;
         }
 
@@ -178,6 +185,22 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
+    }
+
+    private OpCode equalOpCode(imported!"dmd.expression".EqualExp equal) {
+        return isNotEqualExpression(equal) ? OpCode.notEqual : OpCode.equal;
+    }
+
+    private bool isEqualExpression(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+
+        return equal.op == EXP.equal;
+    }
+
+    private bool isNotEqualExpression(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+
+        return equal.op == EXP.notEqual;
     }
 
     private bool isLessThanExpression(
