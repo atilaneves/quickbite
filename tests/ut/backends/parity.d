@@ -2738,6 +2738,29 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
     }
 }
 
+static foreach (
+    backend;
+    matureExecutorBackends ~ [
+        ExecutorBackend.treeWalking,
+        ExecutorBackend.dmdCodegenRam,
+    ]
+) {
+    @("localDynamicArrayAppend." ~ backend.text)
+    unittest {
+        if (backend != ExecutorBackend.dmdCodegenRam || experimentalBackendTestsEnabled) {
+            runTests(q{
+                unittest {
+                    ubyte[] values;
+                    ubyte value = 42;
+                    values ~= value;
+                    assert(values.length == 1);
+                    assert(values[0] == value);
+                }
+            }, backend);
+        }
+    }
+}
+
 static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking]) {
     @("arrayLiteralElements." ~ backend.text)
     unittest {
@@ -2791,19 +2814,6 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
             unittest {
                 int value = 2;
                 assert(value < 3);
-            }
-        }, backend);
-    }
-
-    @("localDynamicArrayAppend." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                ubyte[] values;
-                ubyte value = 42;
-                values ~= value;
-                assert(values.length == 1);
-                assert(values[0] == value);
             }
         }, backend);
     }

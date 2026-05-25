@@ -27,6 +27,64 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff from `dmd-codegen-ram-further`:
+
+- Worktree: `worktrees/dmd-codegen-ram-further`.
+- Branch: `dmd-codegen-ram-further`.
+- Direction correction: do not add or keep long-lived backend-specific tests for
+  behaviours that belong in parity coverage. When RAM supports an existing
+  behaviour, promote that existing parity fixture to include
+  `ExecutorBackend.dmdCodegenRam`, gated by
+  `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS`.
+- Existing debt remains: the tree still has older RAM-only coverage in
+  `tests/ut/backends/parity.d` under `dmdCodegenRamExecutorBackends`, and in
+  `tests/ut/backends/codegen.d` for `runTests.localIntegerArithmetic`. Before
+  adding more RAM behaviour coverage, migrate or retire those backend-specific
+  test bodies so RAM coverage is expressed through shared parity fixtures.
+- The approved target for this slice was the existing
+  `localDynamicArrayAppend` parity behaviour. It was moved out of the broad
+  dynamic-array parity loop into a small shared loop that includes
+  `dmdCodegenRam`, avoiding a duplicate RAM-only fixture.
+- Initial red result for `localDynamicArrayAppend.dmdCodegenRam` was:
+  `DMD codegen RAM unresolved external symbol:
+  _D2rt9profilegc10accumulateFNbNiAyakQeQgmZv`.
+- A host-linker anchor for `rt.profilegc` was tried and rejected as the wrong
+  direction. The RAM backend exists to avoid generated-code link/load work, so
+  do not make RAM support depend on pulling extra generated-runtime symbols
+  into the Quickbite host binary.
+- Current WIP implementation instead keeps the fix in the RAM image:
+  - marks alloc sections reachable from the generated unittest entrypoint,
+  - copies and relocates only reachable generated sections,
+  - reserves local PLT-style stubs for reachable external `PLT32` calls, so
+    generated code calls a nearby RAM stub and the stub jumps to the absolute
+    host/runtime address.
+- The focused test passed after the PLT-stub change:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test -- \
+    ut.backends.parity.localDynamicArrayAppend.dmdCodegenRam
+
+  1 test(s) run, 0 failed.
+  ```
+
+- A broader RAM run before narrowing the test-list change also passed:
+
+  ```text
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut <52 RAM tests>
+
+  52 test(s) run, 0 failed.
+  ```
+
+  That run was too broad because the temporary backend-list change had promoted
+  the whole dynamic-array parity block to RAM. The source was narrowed afterward
+  so only `localDynamicArrayAppend` is newly promoted in this slice. Rerun the
+  focused RAM test and `dub test` before committing.
+- Removed the static-symbol fallback in `externalSymbolAddress` that read the
+  host executable's ELF symbol table. It could resolve non-callable absolute or
+  file symbols and turn an unresolved external into an invalid RAM jump target.
+  Keep following the preferred direction of RAM-image reachability and local
+  stubs instead of broader host executable symbol scraping.
+
 2026-05-25 handoff after PR 39 review fixes:
 
 - Worktree: `worktrees/dmd-codegen-ram-continue`.
