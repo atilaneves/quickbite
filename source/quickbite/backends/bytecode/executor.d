@@ -101,6 +101,14 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack.executeBinaryArithmetic!((left, right) => left % right);
                 ++ip;
                 break;
+            case OpCode.shiftRight:
+                stack.executeBinaryArithmetic!((left, right) => left >> right);
+                ++ip;
+                break;
+            case OpCode.shiftLeft:
+                stack.executeBinaryArithmetic!((left, right) => left << right);
+                ++ip;
+                break;
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;

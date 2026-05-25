@@ -112,6 +112,16 @@ private struct Compiler {
             return;
         }
 
+        if (auto shiftRight = expression.isShrExp) {
+            compileBinaryExpression(shiftRight.e1, shiftRight.e2, OpCode.shiftRight);
+            return;
+        }
+
+        if (auto shiftLeft = expression.isShlExp) {
+            compileBinaryExpression(shiftLeft.e1, shiftLeft.e2, OpCode.shiftLeft);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");

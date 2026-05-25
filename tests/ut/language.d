@@ -2166,6 +2166,44 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intShiftRight.bytecode")
+unittest {
+    runTests(q{
+        int shift() {
+            return 2;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // right shift before bytecode sees it.
+            return 0x80 >> shift;
+        }
+
+        unittest {
+            assert(answer == 0x20);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
+@("intShiftLeft.bytecode")
+unittest {
+    runTests(q{
+        int shift() {
+            return 1;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // left shift before bytecode sees it.
+            return 0x10 << shift;
+        }
+
+        unittest {
+            assert(answer == 0x20);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;
