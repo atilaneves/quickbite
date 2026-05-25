@@ -105,10 +105,18 @@ Current progress:
     also removed unused duplicate REPL parser helpers from
     `source/quickbite/backends/tree_walking.d`. `dub test` now passes with 711
     tests and 0 failures.
+18. PR review follow-up added
+    `dynamicArrayReturnValueAssignsStructField` and
+    `dynamicArrayStructFieldReturnValueIndexesCallResult`. Before the fix, the
+    focused tree-walking tests failed with `Expected scalar, got array.` and
+    `Unsupported array expression: call`, respectively. The new tree walker now
+    stores array-valued call results into struct fields and indexes call
+    results based on the executed `Value` instead of a syntactic return-shape
+    whitelist. `dub test` now passes with 731 tests and 0 failures.
 
 Handoff note for the next agent: this branch already contains one PR worth of
 work. It adds shared-`Value` dynamic array return support for the new tree
-walker. The latest `dub test` passed with 711 tests and 0 failures. Do not
+walker. The latest `dub test` passed with 731 tests and 0 failures. Do not
 start another slice on this branch; hand it off as-is unless review asks for
 more changes.
 
