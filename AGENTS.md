@@ -61,6 +61,7 @@ Test behaviours, not implementations.
 - Omit empty parens: `doStuff;` not `doStuff();`.
 - Functions below first use; variables close to use.
 - Do not use exceptions for control flow.
+- Use `with` in `switch`/`final switch` with enums for more readability.
 
 # Testing
 

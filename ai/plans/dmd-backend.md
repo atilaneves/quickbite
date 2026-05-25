@@ -27,92 +27,38 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
-2026-05-25 handoff after RAM executor direction discussion:
+2026-05-25 handoff after merging current `master` into PR 31:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
 - Branch: `dmd-codegen-ram`.
-- Current committed head:
+- Current head:
 
   ```text
-  4eef642 Report DMD codegen ready relocations
+  9187331 Merge master into dmd-codegen-ram
   ```
 
-- Important: the worktree currently has an interrupted, uncommitted RAM
-  executor experiment in `source/quickbite/backends/dmd_codegen.d`. It changed
-  `CodegenExecution` to select a `ram` kind and added a large first-pass
-  `mmap`/relocation/execution implementation. That edit was intentionally
-  stopped during review because it bundled too many unknowns into one change.
-  Do not merge or build on that WIP as-is. Revert or set it aside before doing
-  the next focused step.
-- The committed RAM diagnostics are useful scaffolding, but they are not a
-  mergeable end state by themselves. The user does not care about diagnostics
-  as an intermediate deliverable. A mergeable unit should produce observable
-  behavior: generated DMD codegen objects running from RAM for at least one
-  approved test case.
-- Do not switch the existing `DmdCodegen` backend wholesale to RAM. Instead,
-  split the current shared-library implementation out first:
-  - Rename the existing public executor class from `DmdCodegen` to
-    `DmdCodegenSharedLib`.
-  - Keep the benchmark/backend name `dmd-codegen` mapped to the shared-library
-    implementation until the RAM executor is real enough to replace it.
-  - Update imports and direct constructor calls accordingly.
-  - Consider whether `ExecutorBackend.dmdCodegen` should keep pointing at the
-    shared-library executor for now, or whether a later change should add a
-    separate enum case once RAM has an approved test.
-- After that rename, add a separate RAM executor rather than mutating the
-  shared-library path:
-  - Introduce a new executor such as `DmdCodegenRam`.
-  - Share the common DMD semantic/codegen session creation between
-    `DmdCodegenSharedLib` and `DmdCodegenRam`.
-  - Keep object generation, generated-object bytes, and entrypoint discovery in
-    common code.
-  - Let `DmdCodegenSharedLib` continue to run through
-    `dmd -shared` / `dlopen` / `dlsym`.
-  - Let `DmdCodegenRam` consume the same `CodegenSession` and grow a RAM image
-    executor behind focused tests.
-- Add RAM tests gradually and only with explicit approval. Do not add
-  `DmdCodegenRam` to `matureExecutorBackends`. Start with one tiny behavior
-  test, then promote more cases as each missing capability is implemented.
-  Suggested progression:
-  - trivial unittest with local integer arithmetic,
-  - assertion failure propagation,
-  - function calls,
-  - module data and static data,
-  - arrays/slices,
-  - minicereal,
-  - cerealed benchmark fixtures.
-- Keep the shared-library executor as the stable fallback while RAM support is
-  incomplete. If many RAM tests fail, that is expected; expand RAM coverage one
-  approved test at a time rather than forcing the existing DMD-codegen suite
-  through the incomplete path.
-- The previous diagnostic commits may be retained as implementation support if
-  they help the RAM executor. They should not be presented as the reason to
-  merge. If diagnostics are no longer needed once RAM execution works, delete
-  or hide them.
-
-Progress after continuing this snapshot:
-
-- The interrupted uncommitted RAM executor WIP in
-  `source/quickbite/backends/dmd_codegen.d` was set aside by restoring that
-  file to committed head before making new edits.
-- The shared-library executor was renamed to `DmdCodegenSharedLib`.
-  `ExecutorBackend.dmdCodegen` and the benchmark name `dmd-codegen` still map
-  to this shared-library executor.
-- A compatibility alias, `public alias DmdCodegen = DmdCodegenSharedLib;`,
-  remains for existing callers. The test direct constructor call was left
-  unchanged because test edits require explicit approval.
-- Verification:
-
-  ```text
-  dub test
-  591 test(s) run, 0 failed.
-  ```
-
-Progress after RAM executor implementation:
-
-- Added a separate `DmdCodegenRam` executor and
-  `ExecutorBackend.dmdCodegenRam`. The benchmark/backend name `dmd-codegen`
-  still maps to `DmdCodegenSharedLib`.
+- Worktree status after the merge commit was clean.
+- The branch is ahead of `origin/dmd-codegen-ram`; push is still needed if PR
+  31 should be updated on GitHub.
+- Local `master` has been merged into the PR worktree, and conflicts have been
+  resolved.
+- The merge brought in the bytecode backend, REPL/eval interface work, and the
+  reorganized test layout under `tests/ut/backends/`.
+- Conflict resolution kept the new `master` test organization and moved the PR
+  RAM coverage into the new modules:
+  - `tests/ut/backends/codegen.d`,
+  - `tests/ut/backends/parity.d`,
+  - `tests/ut/backends/package.d`.
+- The old split-out test modules are gone after the merge:
+  - `tests/ut/backends.d`,
+  - `tests/ut/compiler_api.d`,
+  - `tests/ut/language.d`.
+- `ExecutorBackend.dmdCodegen` and the benchmark/backend name `dmd-codegen`
+  still map to `DmdCodegenSharedLib`.
+- `ExecutorBackend.dmdCodegenRam` still maps to `DmdCodegenRam`, and
+  `DmdCodegenRam` remains outside `matureExecutorBackends`.
+- `DmdCodegenSharedLib` now has explicit REPL/eval stubs so it satisfies the
+  merged `Executor` interface. The RAM executor has the same current stubs.
 - The RAM executor uses the same DMD semantic/codegen session path but runs
   generated object bytes from a Quickbite-owned RAM image.
 - RAM execution uses the current session's objects, not the shared-library
@@ -124,26 +70,27 @@ Progress after RAM executor implementation:
 - RAM tests are still experimental-gated with
   `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1`.
 - Passing RAM coverage promoted so far:
-  - `ut.compiler_api.runTests.localIntegerArithmetic.dmdCodegenRam`,
-  - `ut.language.ok.dmdCodegenRam`,
-  - `ut.language.localIntReturn.dmdCodegenRam`,
-  - `ut.language.intAddition.dmdCodegenRam`,
-  - `ut.language.intSubtraction.dmdCodegenRam`,
-  - `ut.language.intMultiplication.dmdCodegenRam`,
-  - `ut.language.intDivision.dmdCodegenRam`,
-  - `ut.language.intModulo.dmdCodegenRam`,
-  - `ut.language.intBitwiseAnd.dmdCodegenRam`,
-  - `ut.language.intBitwiseOr.dmdCodegenRam`,
-  - `ut.language.intGreaterThan.dmdCodegenRam`,
-  - `ut.language.logicalAnd.dmdCodegenRam`,
-  - `ut.language.functionParameter.dmdCodegenRam`,
-  - `ut.language.ifElse.dmdCodegenRam`,
-  - `ut.language.while_.dmdCodegenRam`.
+  - `ut.backends.codegen.runTests.localIntegerArithmetic.dmdCodegenRam`,
+  - `ut.backends.parity.ok.dmdCodegenRam`,
+  - `ut.backends.parity.localIntReturn.dmdCodegenRam`,
+  - `ut.backends.parity.intAddition.dmdCodegenRam`,
+  - `ut.backends.parity.intSubtraction.dmdCodegenRam`,
+  - `ut.backends.parity.intMultiplication.dmdCodegenRam`,
+  - `ut.backends.parity.intDivision.dmdCodegenRam`,
+  - `ut.backends.parity.intModulo.dmdCodegenRam`,
+  - `ut.backends.parity.intBitwiseAnd.dmdCodegenRam`,
+  - `ut.backends.parity.intBitwiseOr.dmdCodegenRam`,
+  - `ut.backends.parity.intGreaterThan.dmdCodegenRam`,
+  - `ut.backends.parity.logicalAnd.dmdCodegenRam`,
+  - `ut.backends.parity.functionParameter.dmdCodegenRam`,
+  - `ut.backends.parity.ifElse.dmdCodegenRam`,
+  - `ut.backends.parity.while_.dmdCodegenRam`.
 - Tried but did not promote:
-  - `ut.language.oops.dmdCodegenRam`,
-  - `ut.language.throwingTest.dmdCodegenRam`.
+  - `ut.backends.parity.oops.dmdCodegenRam`,
+  - `ut.backends.parity.throwingTest.dmdCodegenRam`.
   Both currently segfault in the generated RAM code path; assertion and
-  exception propagation need a later focused slice.
+  exception propagation need a focused slice before the RAM backend should be
+  considered generally usable.
 - Verification:
 
   ```text
@@ -151,14 +98,33 @@ Progress after RAM executor implementation:
   15 test(s) run, 0 failed.
 
   dub test
-  606 test(s) run, 0 failed.
+  710 test(s) run, 0 failed.
   ```
 
 Immediate next step:
 
-1. Run PR-readiness checks, including `benchmarks/run.sh`.
-2. Open a PR for the shared-library split plus initial RAM executor/scalar
-   coverage.
+1. Push `dmd-codegen-ram` if the GitHub PR should reflect the resolved merge.
+2. Do not merge PR 31 into `master` yet. The public
+   `ExecutorBackend.dmdCodegenRam` path can still crash the process for normal
+   failing/throwing unittest code.
+3. Before changing tests, ask for approval and add one focused failing test for
+   the next behavior slice.
+4. First behavior slice: make RAM assertion/exception failure semantics
+   controlled. Either failing/throwing unittests must report normal
+   `runTests` failures, or the RAM executor must be hidden/rejected so normal
+   callers cannot crash the test process.
+5. Then fix entrypoint discovery. The object symbol scan must identify the
+   generated unittest runner exactly enough that a user-defined decoy symbol
+   containing `__modtest` cannot skip the real runner.
+6. Then fix `DmdCodegenRam.runTestSummary` to parse with
+   `sourceImportPaths`, matching `runTests`.
+7. Decide the writable-data story before promoting module/static data tests:
+   the current whole-image executable protection is not enough for generated
+   writable sections.
+8. Handle `R_X86_64_GOTPCREL` either by implementing it correctly or by
+   rejecting it with a controlled diagnostic before execution.
+9. After those slices, run `dub test`, the focused experimental RAM tests, and
+   `benchmarks/run.sh` for PR readiness.
 
 Historical snapshot below is retained for evidence and context.
 

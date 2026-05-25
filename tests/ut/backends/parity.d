@@ -1,8 +1,11 @@
-module ut.language;
+module ut.backends.parity;
+
+
+import ut.backends;
+
 
 private:
 
-import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
 import std.meta: AliasSeq;
 import ut.backends:
@@ -10,6 +13,7 @@ import ut.backends:
     experimentalBackendTestsEnabled,
     matureExecutorBackends;
 import unit_threaded;
+
 
 static foreach (backend; matureExecutorBackends) {
     @("ok." ~ backend.text)
@@ -1078,18 +1082,6 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("postIncrementSizeTIndex." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x2au];
-                size_t index = 0;
-                assert(values[index++] == 0x29u);
-                assert(index == 1);
-            }
-        }, backend);
-    }
-
     @("refUbyteArrayParameterAppend." ~ backend.text)
     unittest {
         runTests(q{
@@ -1699,7 +1691,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @("castUbyteTruncates." ~ backend.text)
+    @("castUbyteRuntimeValueTruncates." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -2350,6 +2342,208 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
                 int[] arr = [a, b];
                 assert(arr[0] == 10);
                 assert(arr[1] == 20);
+            }
+        }, backend);
+    }
+
+    @("uninitializedDynamicArrayLength." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                assert(values.length == 0);
+            }
+        }, backend);
+    }
+
+    @("foreachRange." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int sum;
+                foreach (i; 0 .. 3)
+                    sum += i;
+                assert(sum == 3);
+            }
+        }, backend);
+    }
+
+    @("lessThan." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 2;
+                assert(value < 3);
+            }
+        }, backend);
+    }
+
+    @("localDynamicArrayAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                values ~= value;
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("refDynamicArrayParameterAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            void append(ref ubyte[] values, ubyte value) {
+                values ~= value;
+            }
+
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                append(values, value);
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("structConstructorStoresDynamicArrayParameter." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                int[] values;
+
+                this(int[] input) {
+                    store(input);
+                }
+
+                void store(int[] input) {
+                    values = input;
+                }
+            }
+
+            unittest {
+                int first = 40;
+                int second = first + 2;
+                int[] input = [first, second];
+
+                auto box = Box(input);
+
+                assert(box.values.length == input.length);
+                assert(box.values[0] == first);
+                assert(box.values[1] == second);
+            }
+        }, backend);
+    }
+
+    @("dynamicArraySliceFromRuntimeBounds." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                size_t start = 1;
+                size_t stop = values.length;
+
+                const tail = values[start .. stop];
+
+                assert(tail.length == 1);
+                assert(tail[0] == second);
+            }
+        }, backend);
+    }
+
+    @("postIncrementSizeTIndex." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x2au];
+                size_t index = 0;
+                assert(values[index++] == 0x29u);
+                assert(index == 1);
+            }
+        }, backend);
+    }
+
+    @("structMethodPostIncrementsSizeTField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Cursor {
+                size_t position;
+
+                size_t read() {
+                    return position++;
+                }
+            }
+
+            unittest {
+                Cursor cursor;
+                size_t start = 1;
+                cursor.position = start;
+
+                assert(cursor.read == start);
+                assert(cursor.position == start + 1);
+            }
+        }, backend);
+    }
+
+    @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Reader {
+                ubyte[] bytes;
+                size_t position;
+
+                ubyte read() {
+                    return bytes[position++];
+                }
+            }
+
+            unittest {
+                Reader reader;
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                reader.bytes = [first, second];
+                reader.position = reader.bytes.length - 1;
+
+                const value = reader.read;
+
+                assert(value == second);
+                assert(reader.position == reader.bytes.length);
+            }
+        }, backend);
+    }
+
+    @("rightShift." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 8;
+                uint amount = 1;
+                assert((value >> amount) == 4);
+            }
+        }, backend);
+    }
+
+    @("multiplication." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 7;
+                int factor = 6;
+                assert(value * factor == 42);
+            }
+        }, backend);
+    }
+
+    @("castUbyteTruncates." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 0x102;
+                assert(cast(ubyte) value == 0x02);
             }
         }, backend);
     }

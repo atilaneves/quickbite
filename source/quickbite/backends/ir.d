@@ -49,6 +49,52 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
         const loweredModule = lowerModule(parsed.module_);
         return testSummary(loweredModule);
     }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+        import quickbite.frontend.compiler: lowerModule, parseModule;
+        import std.string: lastIndexOf;
+
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source =
+            "auto f() { " ~ prior ~ "return " ~ last ~ "; }\n" ~
+            "unittest { f(); }";
+
+        auto parsed = parseModule(source);
+        const loweredModule = lowerModule(parsed.module_);
+
+        // f is the first (and only) non-test function in the lowered module
+        if (loweredModule.functions.length == 0)
+            return Value(0);
+
+        ExecutionContext context;
+        long[] callerTemporaries;
+        const result = executeFunction(
+            loweredModule,
+            loweredModule.functions[0].name,
+            callerTemporaries,
+            [],
+            context,
+        );
+
+        return Value(cast(int) result);
+    }
+
+    public override void runVoidReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.frontend.compiler: lowerModule, parseModule;
+
+        const source =
+            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
+
+        auto parsed = parseModule(source);
+        const loweredModule = lowerModule(parsed.module_);
+        executeUnitTests(loweredModule);
+    }
 }
 
 private void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {

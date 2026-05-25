@@ -127,6 +127,18 @@
   helper such as `declarationName` with a `FuncDeclaration`; use the existing
   function helper instead.
 
+- For established interactive-tool behavior, check the closest precedent
+  before designing. For a Python-like REPL, use Python as the default baseline
+  and diverge only after explaining the concrete reason.
+
+- Do not make the REPL loop parse or classify D code with string heuristics
+  such as suffix checks, delimiter counting, keyword checks, or regexes. Ask
+  the frontend/eval API for structured cell status instead.
+
+- Do not use failed REPL evaluation as control flow to distinguish
+  expressions from statements/declarations or incomplete input. Exceptions are
+  diagnostics/failures, not a parser API.
+
 - Follow the Github section of AGENTS.md: after `gh pr create`, open the
   resulting PR URL in the browser.
 
@@ -144,3 +156,7 @@
 - Backend diagnostics should report mechanically-derived facts. Don't classify
   external symbols with hardcoded "known symbol" lists, and don't probe the
   process loader from diagnostics just to guess symbol availability.
+
+- Don't propose adding or enabling dependency-backed tests for new tree walker
+  TDD slices; extract dependency-free language or project-inspired tests
+  instead.

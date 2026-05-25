@@ -154,6 +154,56 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         auto parsed = parseModule(source);
         return testSummary(parsed.module_);
     }
+
+    public override imported!"quickbite.executor".Value eval(in string input) {
+        import quickbite.executor: Value;
+        import quickbite.frontend.compiler: parseModule;
+        import dmd.func: FuncDeclaration;
+        import std.string: lastIndexOf;
+        import std.sumtype: match;
+
+        const lastNl = input.lastIndexOf('\n');
+        const prior  = lastNl < 0 ? "" : input[0 .. lastNl + 1];
+        const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
+        const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        auto module_ = parsed.module_;
+
+        FuncDeclaration f;
+        if (module_.members !is null) {
+            foreach (member; *module_.members) {
+                auto fd = member.isFuncDeclaration;
+                if (fd !is null && fd.ident.toString == "f") {
+                    f = fd;
+                    break;
+                }
+            }
+        }
+
+        Interpreter interp;
+        auto result = interp.executeFunction(f);
+
+        long longResult;
+        result.value.match!(
+            (long v) { longResult = v; },
+            (_) {},
+        );
+
+        return Value(cast(int) longResult);
+    }
+
+    public override void runVoidReplCell(
+        in string transcript,
+        in string input,
+    ) {
+        import quickbite.frontend.compiler: parseModule;
+
+        const source =
+            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
+
+        runParsedTests(parseModule(source).module_);
+    }
 }
 
 private void walkModule(imported!"dmd.dmodule".Module module_) {

@@ -9,6 +9,7 @@ public enum ExecutorBackend {
     dmdCtfe,
     dmdCodegen,
     dmdCodegenRam,
+    bytecode,
 }
 
 public void runTests(
@@ -64,5 +65,8 @@ public imported!"quickbite.executor".Executor executor(
         case ExecutorBackend.dmdCodegenRam:
             import quickbite.backends.dmd_codegen: DmdCodegenRam;
             return new DmdCodegenRam;
+        case ExecutorBackend.bytecode:
+            import quickbite.backends.bytecode: BytecodeExecutor;
+            return new BytecodeExecutor;
     }
 }
