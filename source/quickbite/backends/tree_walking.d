@@ -78,6 +78,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return;
         }
 
+        if (auto for_ = statement.isForStatement) {
+            runForStatement(for_);
+            return;
+        }
+
         if (auto return_ = statement.isReturnStatement) {
             if (return_.exp !is null)
                 returnValue = runExpression(return_.exp);
@@ -87,6 +92,18 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         import std.conv: text;
         throw new Exception(text("Unsupported statement: ", statement.stmt));
+    }
+
+    private void runForStatement(imported!"dmd.statement".ForStatement for_) {
+        if (for_._init !is null)
+            runStatement(for_._init);
+
+        while (for_.condition is null || runExpression(for_.condition)) {
+            runStatement(for_._body);
+            if (didReturn) return;
+            if (for_.increment !is null)
+                runExpression(for_.increment);
+        }
     }
 
     private long runExpression(imported!"dmd.expression".Expression expression) {
@@ -114,6 +131,14 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto sub = expression.isMinExp)
             return runExpression(sub.e1) - runExpression(sub.e2);
 
+        if (auto mul = expression.isMulExp)
+            return runExpression(mul.e1) * runExpression(mul.e2);
+
+        if (isRightShiftExpression(expression)) {
+            auto binary = expression.isBinExp;
+            return runExpression(binary.e1) >> runExpression(binary.e2);
+        }
+
         if (auto addAssign = expression.isAddAssignExp) {
             auto lhs = addAssign.e1;
             if (auto cast_ = lhs.isCastExp)
@@ -129,11 +154,16 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (auto equal = expression.isEqualExp)
             return runExpression(equal.e1) == runExpression(equal.e2);
 
+        if (isLessThanExpression(expression)) {
+            auto binary = expression.isBinExp;
+            return runExpression(binary.e1) < runExpression(binary.e2);
+        }
+
         if (auto assert_ = expression.isAssertExp)
             return runAssertExpression(assert_);
 
         if (auto cast_ = expression.isCastExp)
-            return runExpression(cast_.e1);
+            return coerceIntegerToType(runExpression(cast_.e1), cast_.to);
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
@@ -154,6 +184,49 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         throw new Exception(text("Unsupported expression: ", expression.op));
     }
 
+    private bool isLessThanExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.lessThan;
+    }
+
+    private bool isRightShiftExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.rightShift;
+    }
+
+    private long coerceIntegerToType(
+        in long value,
+        imported!"dmd.mtype".Type type,
+    ) {
+        import dmd.astenums: TY;
+
+        if (type is null)
+            return value;
+
+        switch (type.toBasetype.ty) {
+            case TY.Tint8:
+                return cast(long) cast(byte) value;
+            case TY.Tuns8:
+                return cast(long) cast(ubyte) value;
+            case TY.Tint16:
+                return cast(long) cast(short) value;
+            case TY.Tuns16:
+                return cast(long) cast(ushort) value;
+            case TY.Tint32:
+                return cast(long) cast(int) value;
+            case TY.Tuns32:
+                return cast(long) cast(uint) value;
+            default:
+                return value;
+        }
+    }
+
     private long runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -171,6 +244,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             initializer = construct.e2;
         else if (auto blit = initializer.isBlitExp)
             initializer = blit.e2;
+
+        if (initializer.isNullExp) {
+            localArrays[variable] = [];
+            return 0;
+        }
 
         if (auto arrayLit = initializer.isArrayLiteralExp) {
             long[] elements;
@@ -302,9 +380,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 if (!param.isRef) continue;
                 if (i >= arguments.length) continue;
                 if (auto varExp = (*arguments)[i].isVarExp)
-                    if (auto callerVar = varExp.var.isVarDeclaration)
+                    if (auto callerVar = varExp.var.isVarDeclaration) {
                         if (param in locals)
                             savedLocals[callerVar] = locals[param];
+                        else if (auto array = param in localArrays)
+                            savedLocalArrays[callerVar] = *array;
+                    }
             }
 
         locals = savedLocals;
@@ -319,6 +400,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private long runCatAssignExpression(
         imported!"dmd.expression".BinExp catAssign,
     ) {
+        if (auto var = catAssign.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration) {
+                localArrays[variable] ~= runExpression(catAssign.e2);
+                return 0;
+            }
+
         auto dotVar = catAssign.e1.isDotVarExp;
         if (dotVar is null) {
             import std.conv: text;

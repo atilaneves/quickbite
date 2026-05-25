@@ -48,6 +48,25 @@ Current progress:
    They include `ExecutorBackend.treeWalking`, but those entries bail
    out for now. Follow-up PRs should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
+6. The `projects.cerealed.templateLengthPrefixUsesRequestedWidth`
+   `treeWalking` bailout has been removed on branch
+   `new-tree-walker-template-length`. The new walker now covers the
+   extracted behaviours needed by that fixture: uninitialised dynamic
+   array length, lowered range `foreach` as `ForStatement`, signed
+   less-than, local dynamic array append, ref dynamic array append
+   writeback, right shift, multiplication, and runtime `ubyte` cast
+   truncation. `dub test` passed for this branch.
+
+Handoff note for the next agent: continue with the next
+`ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
+subagents and orchestrate the TDD loop below instead of doing the next
+implementation slice inline in the main thread.
+
+Before starting another slice, check whether the current branch already
+contains one PR worth of work: a coherent behavior increment, its focused
+language tests, and a green `dub test`. If it does, stop and hand off that
+PR as-is. Do not choose another bailout or fixture just because the long-term
+plan has more work left.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:
@@ -81,7 +100,8 @@ take the following steps:
 10. Repeat steps 8/9 until the reviewer is satisfied.
 11. Spawn a subagent to fix the cerealed integration test if it's red.
     If it's now green it has nothing to do.
-12. Move on to the next cerealed step, i.e. go to 1.
+12. If the branch is now one PR worth of work, stop and hand it off.
+    Otherwise move on to the next cerealed step, i.e. go to 1.
 
 Repeat these steps until the new tree walker passes all cerealed
 integration tests. At that point, `TreeWalkingExecutorOld` and
