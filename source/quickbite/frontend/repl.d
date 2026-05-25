@@ -2,6 +2,21 @@ module quickbite.frontend.repl;
 
 private:
 
+public imported!"quickbite.executor".Repl.CellResult evalReplCell(
+    imported!"quickbite.executor".Executor executor,
+    scope void delegate(in string transcript, in string input) runVoidCell,
+    in string transcript,
+    in string input,
+) {
+    import quickbite.executor: Repl;
+
+    if (isExpressionCell(input))
+        return Repl.CellResult.value_(executor.eval(transcript ~ input));
+
+    runVoidCell(transcript, input);
+    return Repl.CellResult.void_;
+}
+
 public bool isExpressionCell(in string input) {
     import dmd.astcodegen: ASTCodegen;
     import dmd.errors: diagnostics;

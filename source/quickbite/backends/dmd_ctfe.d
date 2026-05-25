@@ -85,14 +85,9 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         in string transcript,
         in string input,
     ) {
-        import quickbite.executor: Repl;
-        import quickbite.frontend.repl: isExpressionCell;
+        import quickbite.frontend.repl: frontendEvalReplCell = evalReplCell;
 
-        if (isExpressionCell(input))
-            return Repl.CellResult.value_(eval(transcript ~ input));
-
-        runVoidReplCell(transcript, input);
-        return Repl.CellResult.void_;
+        return frontendEvalReplCell(this, &runVoidReplCell, transcript, input);
     }
 
     private void runVoidReplCell(in string transcript, in string input) {
