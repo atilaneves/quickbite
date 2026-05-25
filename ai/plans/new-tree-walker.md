@@ -46,7 +46,7 @@ Current progress:
    new-walker execution state folded directly into the new executor shape.
 5. Project-inspired cerealed tests now live in `ut.projects.cerealed`.
    They include `ExecutorBackend.treeWalking`, but those entries bail
-   out for now. Follow-up PRs should remove the bail-outs one behavior
+   out for now. Follow-up changes should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
 6. The `projects.cerealed.templateLengthPrefixUsesRequestedWidth`
    `treeWalking` entry now runs on `master`. The new walker covers the
@@ -58,21 +58,41 @@ Current progress:
 7. The `projects.cerealed.postIncrementCursorReadAdvancesPosition`
    `treeWalking` entry now runs on `master`. The new walker supports
    `size_t` post-increment index reads through `ref` parameters.
-8. The struct cursor read slice from PR 25 is merged on `master`. The new
-   walker supports the extracted behaviours for struct methods that
-   post-increment scalar fields and read array fields through
-   `bytes[position++]`.
+8. The struct cursor read slice is merged on `master`. The new walker supports
+   the extracted behaviours for struct methods that post-increment scalar
+   fields and read array fields through `bytes[position++]`.
+9. The `projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte`
+   `treeWalking` entry now runs. The focused language test is
+   `structConstructorStoresDynamicArrayParameter`, covering a struct
+   constructor that passes a dynamic array parameter to another method, stores
+   it in a struct field, and then reads the field length and elements.
+10. Nested "arrow" control flow has been flattened in `TreeWalkingExecutor`
+    argument and array-expression handling. `dub test` passed after that
+    refactor.
+11. The unsupported array-expression diagnostic from `runArrayExpression` is
+    covered by `runTests.unsupportedArrayExpressionReportsExpressionKind`.
 
-Handoff note for the next agent: continue with the next
-`ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
-subagents and orchestrate the TDD loop below instead of doing the next
-implementation slice inline in the main thread.
+Handoff note for the next agent: this branch already contains one PR worth of
+work. It enables
+`projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte.treeWalking`, adds
+the focused `structConstructorStoresDynamicArrayParameter` language coverage,
+flattens the reviewed "arrow" control flow in `TreeWalkingExecutor`, and covers
+the unsupported array-expression diagnostic with
+`runTests.unsupportedArrayExpressionReportsExpressionKind`. `dub test` passed
+with 642 tests and 0 failures after these changes. Do not start another
+cerealed slice on this branch; hand it off as-is unless review asks for more
+changes.
+
+After this branch is merged, continue with the next `ut.projects.cerealed`
+bailout or red project-inspired fixture. Spawn subagents and orchestrate the
+TDD loop below instead of doing the next implementation slice inline in the
+main thread.
 
 Before starting another slice, check whether the current branch already
 contains one PR worth of work: a coherent behavior increment, its focused
-language tests, and a green `dub test`. If it does, stop and hand off that
-PR as-is. Do not choose another bailout or fixture just because the long-term
-plan has more work left.
+language tests, and a green `dub test`. If it does, stop and hand off that PR
+as-is. Do not choose another bailout or fixture just because the long-term plan
+has more work left.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:
