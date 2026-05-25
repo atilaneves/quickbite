@@ -16,6 +16,7 @@ public enum OpCode : ubyte {
     bitwiseAnd,
     bitwiseXor,
     equal,
+    lessThan,
     assertEqual,
     ret,
     halt,

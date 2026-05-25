@@ -87,6 +87,12 @@ private struct Compiler {
             return;
         }
 
+        if (isLessThanExpression(expression)) {
+            auto lessThan = expression.isBinExp;
+            compileBinaryExpression(lessThan.e1, lessThan.e2, OpCode.lessThan);
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileBinaryExpression(add.e1, add.e2, OpCode.add);
             return;
@@ -146,6 +152,14 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
+    }
+
+    private bool isLessThanExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.lessThan;
     }
 
     private void compileBinaryExpression(
