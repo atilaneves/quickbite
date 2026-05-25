@@ -6,8 +6,8 @@ The latency target is the gap between receiving a semantically analysed DMD AST
 and returning ok/fail for the selected unittest blocks.
 
 The bytecode backend must therefore avoid the IR backend's lowering cost on the
-hot path. Reusing IR lowering is acceptable only as a temporary spike for
-learning or parity checks; it is not the intended architecture.
+hot path. Reusing IR lowering is acceptable only as a later experiment or
+parity spike; it is not the intended baseline architecture.
 
 Pipeline:
 
@@ -15,19 +15,22 @@ Pipeline:
 DMD AST -> direct unittest bytecode emission -> bytecode execution -> ok/fail
 ```
 
-The first useful result is not a complete VM. It is a narrow AST-to-bytecode
-slice that can run minicereal-level tests faster than, or at least near, the IR
-backend while preserving the path to broader language coverage.
+The first useful result is not a complete VM. It is the narrowest
+AST-to-bytecode slice that can join the existing backend parity matrix for the
+first approved behaviour.
+
+Quickbite is not committing to bytecode as the final answer. The project is
+measuring execution strategies and may choose different strategies for
+different project shapes. Bytecode is one experiment in that portfolio.
 
 ## Near-Term Shape
 
 Keep the first version deliberately small:
 
 - emit bytecode directly from the analysed AST
-- emit only selected unittest bodies and their transitive local dependencies
+- use the simplest stack VM that can pass the next approved behaviour
+- initially handle all code in the analysed execution scope
 - walk DMD AST nodes directly inside the backend
-- support only the constructs needed by the approved minicereal slice
-- fail during emission for unsupported constructs
 - prefer a D executor first unless the benchmark shows dispatch is the current
   bottleneck
 
@@ -41,23 +44,39 @@ encoding across the compiler.
 
 The first slice should answer one question:
 
-> Can direct AST-to-bytecode execution beat the current post-AST IR path for
-> the full minicereal suite?
+> Can direct AST-to-bytecode execution run the first approved parity fixture?
 
-Done means: `benchmarks/run.sh` (which runs minicerealed by default) shows
-timings for the bytecode backend alongside `ir` and `treeWalking`.
+Done means bytecode is wired into the existing backend parity matrix as early
+as possible. Fixtures that bytecode cannot yet run should exclude bytecode
+using the same mechanism currently used for the new tree walker. Remove those
+exclusions one behaviour at a time.
 
 Implementation should be the dumbest green step:
 
 1. find unittest blocks in the analysed module
-2. emit bytecode for each test body and its transitive module-local
-   dependencies
-3. throw a clear unsupported-bytecode diagnostic for anything not yet
-   supported
-4. execute that bytecode with the simplest frame model that passes the suite
-5. verify timings via `benchmarks/run.sh`
+2. emit stack bytecode for the first approved parity fixture
+3. execute that bytecode with the simplest frame model that passes the fixture
+4. add the bytecode backend to parity coverage for that fixture
 
 Do not generalise from nearby D constructs until a test forces the next case.
+
+Tests should exercise bytecode through public backend behaviour. Do not write
+tests that assert bytecode layout, opcode streams, frame internals, or other
+private implementation details.
+
+## Later Strategy Experiments
+
+The baseline may pay too much emission cost by handling everything. That is
+acceptable for the first implementation. Later experiments should measure
+whether the average dub project benefits from more specialised strategies:
+
+- precompile dependencies to bytecode and cache them until dependency inputs
+  change
+- keep project modules in bytecode while jumping to native machine code for
+  dependency calls
+- compare dependency-bytecode and native-call variants per project shape
+
+Do not assume any one variant is the final strategy. Measure before choosing.
 
 ## Files
 
@@ -73,11 +92,6 @@ Avoid C computed-goto until there is evidence that D dispatch is the limiting
 cost. The main risk is extra compilation/emission work, not interpreter branch
 prediction.
 
-## Open Questions
-
-- Is per-unittest dependency discovery needed in the first slice, or is
-  module-local function lookup enough?
-
 ## Verification
 
 After each editing session:
@@ -88,4 +102,4 @@ For bytecode-specific work:
 
 1. run the approved focused unittest
 2. run `QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 dub test`
-3. run the post-parse benchmark against `ir` and `treeWalking`
+3. run the relevant post-parse benchmark against comparable backends
