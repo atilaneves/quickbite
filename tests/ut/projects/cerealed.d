@@ -5,7 +5,7 @@ private:
 import ut.projects;
 
 static foreach (backend; projectBackends) {
-    @(backend.text ~ ".projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte")
+    @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~ backend.text)
     unittest {
         q{
             struct Writer {
@@ -28,7 +28,7 @@ static foreach (backend; projectBackends) {
         }.runTests(backend);
     }
 
-    @(backend.text ~ ".projects.cerealed.refCursorReadAdvancesPosition")
+    @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.text)
     unittest {
         q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
@@ -51,7 +51,7 @@ static foreach (backend; projectBackends) {
         }.runTests(backend);
     }
 
-    @(backend.text ~ ".projects.cerealed.templateLengthPrefixUsesRequestedWidth")
+    @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.text)
     unittest {
         if (backend.bailsOutNewTreeWalker)
             return;

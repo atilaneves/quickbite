@@ -5,7 +5,7 @@ import std.conv: text;
 import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
 import unit_threaded;
 
-@("dmd-codegen.minicerealFileCanRunTwice")
+@("minicerealFileCanRunTwice.dmdCodegen")
 unittest {
     if (experimentalBackendTestsEnabled) {
         import quickbite.backends.dmd_codegen: DmdCodegen;
@@ -26,14 +26,14 @@ unittest {
 }
 
 static foreach (backend; matureExecutorBackends) {
-    @(backend.text ~ ".minicerealFile")
+    @("minicerealFile." ~ backend.text)
     unittest {
         import std.file: readText;
 
         readText("tests/minicereal.d").runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealEncodeUbyte")
+    @("minicerealEncodeUbyte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -49,7 +49,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealDecodeUbyte")
+    @("minicerealDecodeUbyte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -65,7 +65,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealDecodeUbyteAtOffset")
+    @("minicerealDecodeUbyteAtOffset." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -81,7 +81,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealDecodeNegativeInt")
+    @("minicerealDecodeNegativeInt." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -97,7 +97,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealRoundTripNegativeInt")
+    @("minicerealRoundTripNegativeInt." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -114,7 +114,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealEncodeHighBitUlongBytes")
+    @("minicerealEncodeHighBitUlongBytes." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -139,7 +139,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructDefaultBytes")
+    @("minicerealStructDefaultBytes." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -153,7 +153,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructBytesAppend")
+    @("minicerealStructBytesAppend." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -169,7 +169,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructAppendByte")
+    @("minicerealStructAppendByte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -186,7 +186,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructIndexWriteByte")
+    @("minicerealStructIndexWriteByte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -203,7 +203,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutUbyte")
+    @("minicerealPutUbyte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -219,7 +219,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutUbyteBytesEqual")
+    @("minicerealPutUbyteBytesEqual." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -235,7 +235,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutMultipleIntegralWidths")
+    @("minicerealPutMultipleIntegralWidths." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -252,7 +252,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutIntBytesSliceEqual")
+    @("minicerealPutIntBytesSliceEqual." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -268,7 +268,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutUshortMiddleBytesSliceEqual")
+    @("minicerealPutUshortMiddleBytesSliceEqual." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -285,7 +285,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructBoundedSliceBytes")
+    @("minicerealStructBoundedSliceBytes." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -301,7 +301,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealPutIntTailBytesDollarSliceEqual")
+    @("minicerealPutIntTailBytesDollarSliceEqual." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -318,7 +318,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealRoundTripUbyte")
+    @("minicerealRoundTripUbyte." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -335,7 +335,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructRoundTripInt")
+    @("minicerealStructRoundTripInt." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -352,7 +352,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructDecodeKnownInt")
+    @("minicerealStructDecodeKnownInt." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -369,7 +369,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructRoundTripHighBitUlong")
+    @("minicerealStructRoundTripHighBitUlong." ~ backend.text)
     unittest {
         import std.file: readText;
 
@@ -389,7 +389,7 @@ static foreach (backend; matureExecutorBackends) {
         ).runTests(backend);
     }
 
-    @(backend.text ~ ".minicerealStructRoundTripsIntegralTypes")
+    @("minicerealStructRoundTripsIntegralTypes." ~ backend.text)
     unittest {
         import std.file: readText;
 
