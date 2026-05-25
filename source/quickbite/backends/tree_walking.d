@@ -15,6 +15,12 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private bool didReturn;
     private long returnValue;
 
+    private struct ArgValue {
+        long scalar;
+        long[] array;
+        bool isArray;
+    }
+
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
@@ -463,23 +469,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (func is null)
             throw new Exception("Unsupported call: not a FuncDeclaration.");
 
-        struct ArgValue {
-            long scalar;
-            long[] array;
-            bool isArray;
-        }
-
-        ArgValue[] args;
-        if (call.arguments !is null)
-            foreach (arg; *call.arguments) {
-                if (auto varExp = arg.isVarExp)
-                    if (auto varDecl = varExp.var.isVarDeclaration)
-                        if (auto arr = varDecl in localArrays) {
-                            args ~= ArgValue(0, *arr, true);
-                            continue;
-                        }
-                args ~= ArgValue(runExpression(arg));
-            }
+        auto args = argumentValues(call.arguments);
 
         auto savedLocals = locals.dup;
         auto savedLocalArrays = localArrays.dup;
@@ -516,23 +506,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         imported!"dmd.func".FuncDeclaration func,
         imported!"dmd.expression".Expressions* arguments,
     ) {
-        struct ArgValue {
-            long scalar;
-            long[] array;
-            bool isArray;
-        }
-
-        ArgValue[] args;
-        if (arguments !is null)
-            foreach (arg; *arguments) {
-                if (auto varExp = arg.isVarExp)
-                    if (auto varDecl = varExp.var.isVarDeclaration)
-                        if (auto arr = varDecl in localArrays) {
-                            args ~= ArgValue(0, *arr, true);
-                            continue;
-                        }
-                args ~= ArgValue(runExpression(arg));
-            }
+        auto args = argumentValues(arguments);
 
         auto savedLocals = locals.dup;
         auto savedLocalArrays = localArrays.dup;
@@ -580,6 +554,49 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         return result;
     }
 
+    private ArgValue[] argumentValues(
+        imported!"dmd.expression".Expressions* arguments,
+    ) {
+        ArgValue[] values;
+        if (arguments is null)
+            return values;
+
+        foreach (arg; *arguments)
+            values ~= argumentValue(arg);
+
+        return values;
+    }
+
+    private ArgValue argumentValue(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        long[] array;
+        if (localArrayArgument(argument, array))
+            return ArgValue(0, array, true);
+
+        return ArgValue(runExpression(argument));
+    }
+
+    private bool localArrayArgument(
+        imported!"dmd.expression".Expression argument,
+        out long[] value,
+    ) {
+        auto varExp = argument.isVarExp;
+        if (varExp is null)
+            return false;
+
+        auto varDecl = varExp.var.isVarDeclaration;
+        if (varDecl is null)
+            return false;
+
+        auto array = varDecl in localArrays;
+        if (array is null)
+            return false;
+
+        value = *array;
+        return true;
+    }
+
     private long runCatAssignExpression(
         imported!"dmd.expression".BinExp catAssign,
     ) {
@@ -623,10 +640,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         imported!"dmd.expression".Expression expression,
         out long[] value,
     ) {
-        if (auto var = expression.isVarExp)
-            if (auto variable = var.var.isVarDeclaration)
-                if (auto arr = variable in localArrays)
-                    return arrayValue(*arr, value);
+        if (localArrayExpressionValue(expression, value))
+            return true;
 
         if (structArrayExpressionValue(expression, value))
             return true;
@@ -634,13 +649,52 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (thisStructArrayExpressionValue(expression, value))
             return true;
 
-        if (auto dotVar = expression.isDotVarExp)
-            if (auto instanceVar = dotVar.e1.isVarExp)
-                if (auto instanceDecl = instanceVar.var.isVarDeclaration)
-                    if (auto field = dotVar.var.isVarDeclaration)
-                        return arrayValue([], value);
+        if (emptyStructArrayExpressionValue(expression, value))
+            return true;
 
         return false;
+    }
+
+    private bool localArrayExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
+        auto var = expression.isVarExp;
+        if (var is null)
+            return false;
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            return false;
+
+        auto array = variable in localArrays;
+        if (array is null)
+            return false;
+
+        return arrayValue(*array, value);
+    }
+
+    private bool emptyStructArrayExpressionValue(
+        imported!"dmd.expression".Expression expression,
+        out long[] value,
+    ) {
+        auto dotVar = expression.isDotVarExp;
+        if (dotVar is null)
+            return false;
+
+        auto instanceVar = dotVar.e1.isVarExp;
+        if (instanceVar is null)
+            return false;
+
+        auto instanceDecl = instanceVar.var.isVarDeclaration;
+        if (instanceDecl is null)
+            return false;
+
+        auto field = dotVar.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        return arrayValue([], value);
     }
 
     private bool arrayValue(in long[] source, out long[] value) {

@@ -46,7 +46,7 @@ Current progress:
    new-walker execution state folded directly into the new executor shape.
 5. Project-inspired cerealed tests now live in `ut.projects.cerealed`.
    They include `ExecutorBackend.treeWalking`, but those entries bail
-   out for now. Follow-up PRs should remove the bail-outs one behavior
+   out for now. Follow-up changes should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
 6. The `projects.cerealed.templateLengthPrefixUsesRequestedWidth`
    `treeWalking` entry now runs on `master`. The new walker covers the
@@ -58,21 +58,33 @@ Current progress:
 7. The `projects.cerealed.postIncrementCursorReadAdvancesPosition`
    `treeWalking` entry now runs on `master`. The new walker supports
    `size_t` post-increment index reads through `ref` parameters.
-8. The struct cursor read slice from PR 25 is merged on `master`. The new
-   walker supports the extracted behaviours for struct methods that
-   post-increment scalar fields and read array fields through
-   `bytes[position++]`.
+8. The struct cursor read slice is merged on `master`. The new walker supports
+   the extracted behaviours for struct methods that post-increment scalar
+   fields and read array fields through `bytes[position++]`.
+9. The `projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte`
+   `treeWalking` entry now runs. The focused language test is
+   `structConstructorStoresDynamicArrayParameter`, covering a struct
+   constructor that passes a dynamic array parameter to another method, stores
+   it in a struct field, and then reads the field length and elements.
+10. Nested "arrow" control flow has been flattened in `TreeWalkingExecutor`
+    argument and array-expression handling. `dub test` passed after that
+    refactor. Left to do: add or identify a test for the unsupported
+    array-expression diagnostic introduced by
+    `runArrayExpression`.
 
 Handoff note for the next agent: continue with the next
 `ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
 subagents and orchestrate the TDD loop below instead of doing the next
 implementation slice inline in the main thread.
 
+Before choosing another cerealed slice, finish the remaining review item.
+Because it asks for a test, stop for explicit approval before editing tests.
+
 Before starting another slice, check whether the current branch already
 contains one PR worth of work: a coherent behavior increment, its focused
-language tests, and a green `dub test`. If it does, stop and hand off that
-PR as-is. Do not choose another bailout or fixture just because the long-term
-plan has more work left.
+language tests, and a green `dub test`. If it does, stop and hand off that PR
+as-is. Do not choose another bailout or fixture just because the long-term plan
+has more work left.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:
