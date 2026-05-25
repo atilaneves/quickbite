@@ -68,17 +68,14 @@ Current progress:
    it in a struct field, and then reads the field length and elements.
 10. Nested "arrow" control flow has been flattened in `TreeWalkingExecutor`
     argument and array-expression handling. `dub test` passed after that
-    refactor. Left to do: add or identify a test for the unsupported
-    array-expression diagnostic introduced by
-    `runArrayExpression`.
+    refactor.
+11. The unsupported array-expression diagnostic from `runArrayExpression` is
+    covered by `runTests.unsupportedArrayExpressionReportsExpressionKind`.
 
 Handoff note for the next agent: continue with the next
 `ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
 subagents and orchestrate the TDD loop below instead of doing the next
 implementation slice inline in the main thread.
-
-Before choosing another cerealed slice, finish the remaining review item.
-Because it asks for a test, stop for explicit approval before editing tests.
 
 Before starting another slice, check whether the current branch already
 contains one PR worth of work: a coherent behavior increment, its focused
