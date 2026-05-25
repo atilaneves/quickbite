@@ -63,6 +63,14 @@ public imported!"quickbite.executor".Executor executor(
             import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
             return new DmdCodegenSharedLib;
         case ExecutorBackend.dmdCodegenRam:
+            import std.process: environment;
+
+            if (environment.get("QUICKBITE_EXPERIMENTAL_BACKEND_TESTS").length == 0)
+                throw new Exception(
+                    "ExecutorBackend.dmdCodegenRam is experimental; set "
+                    ~ "QUICKBITE_EXPERIMENTAL_BACKEND_TESTS to use it.",
+                );
+
             import quickbite.backends.dmd_codegen: DmdCodegenRam;
             return new DmdCodegenRam;
         case ExecutorBackend.bytecode:

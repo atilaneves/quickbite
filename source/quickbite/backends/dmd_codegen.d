@@ -274,7 +274,7 @@ public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor 
         import quickbite.frontend.compiler: parseModule;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto module_ = parseModule(source).module_;
+        auto module_ = parseModule(source, sourceImportPaths).module_;
         TestSummary summary;
 
         bool hasTests;
@@ -366,7 +366,7 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
         import quickbite.frontend.compiler: parseModule;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto module_ = parseModule(source).module_;
+        auto module_ = parseModule(source, sourceImportPaths).module_;
         TestSummary summary;
 
         bool hasTests;
@@ -452,7 +452,7 @@ private void runCodegenSession(
     in string[] linkFiles,
     in CodegenExecutionKind executionKind,
 ) @trusted {
-    const entrypoint = session.unittestEntrypoint;
+    const entrypoint = session.expectedUnittestEntrypoint;
     auto execution = executionKind == CodegenExecutionKind.ram
         ? CodegenExecution.ram(session.objects, entrypoint)
         : CodegenExecution.sharedLibrary(
@@ -474,14 +474,15 @@ private void runSharedLibraryBridge(
     loadAndRunTests(soPath, entrypoint);
 }
 
-private string unittestEntrypoint(
+private string expectedUnittestEntrypoint(
     CodegenSession session, // const fails: DMD Module helpers take mutable handles.
 ) @trusted {
+    const expected = modtestSymbol(session.entryModule);
     foreach (object_; session.objects)
-        if (const symbol = object_.unittestEntrypoint)
+        if (const symbol = object_.unittestEntrypoint(expected))
             return symbol;
 
-    return modtestSymbol(session.entryModule);
+    return expected;
 }
 
 private GeneratedObject[] accumulatedSharedLibraryObjects(
@@ -4859,6 +4860,7 @@ private void runRamImage(
     in string entrypoint,
 ) @trusted {
     auto image = objects.ramExecutableImage;
+    scope(exit) image.release;
     image.copySections;
     image.resolveRelocations;
     image.applyRelocations;
@@ -4994,13 +4996,17 @@ private void applyRelocations(ref RamExecutableImage image) @trusted {
 
             case pc32:
             case plt32:
-            case gotPcRel:
                 relocation.patchAddress.writeRam32(
                     relocation.targetAddress
                     + cast(ulong) relocation.addend
                     - relocation.patchAddress,
                 );
                 break;
+
+            case gotPcRel:
+                throw new Exception(
+                    "DMD codegen RAM relocation unsupported: R_X86_64_GOTPCREL",
+                );
 
             case tlsGd:
                 throw new Exception(
@@ -5028,10 +5034,14 @@ private enum X86_64Relocation : uint {
 }
 
 private void makeExecutable(ref RamExecutableImage image) @trusted {
-    import core.sys.posix.sys.mman: mprotect, PROT_EXEC, PROT_READ;
+    import core.sys.posix.sys.mman: mprotect, PROT_EXEC, PROT_READ, PROT_WRITE;
     import std.conv: text;
 
-    if (mprotect(image.memory, image.memorySize, PROT_READ | PROT_EXEC) != 0)
+    if (mprotect(
+            image.memory,
+            image.memorySize,
+            PROT_READ | PROT_WRITE | PROT_EXEC,
+        ) != 0)
         throw new Exception(text("DMD codegen RAM mprotect failed: ", errnoString));
 }
 
@@ -5046,6 +5056,13 @@ private void runEntrypoint(
         } catch (Throwable throwable) {
             throwUnittestRunnerThrowable(throwable);
         }
+    } else {
+        import std.conv: text;
+
+        throw new Exception(text(
+            "DMD codegen RAM missing unittest entrypoint: ",
+            entrypoint,
+        ));
     }
 }
 
@@ -5088,6 +5105,16 @@ private void* allocateRamImage(in size_t size) @trusted {
         throw new Exception(text("DMD codegen RAM mmap failed: ", errnoString));
 
     return memory;
+}
+
+private void release(ref RamExecutableImage image) @trusted {
+    import core.sys.posix.sys.mman: munmap;
+
+    if (image.memory && image.memorySize != 0)
+        munmap(image.memory, image.memorySize);
+
+    image.memory = null;
+    image.memorySize = 0;
 }
 
 private ulong baseAddress(in RamExecutableImage image) @safe pure nothrow {
@@ -5167,13 +5194,17 @@ private GeneratedObject[] generatedObjects(in string[] paths) @trusted {
     return ret;
 }
 
-private string unittestEntrypoint(in GeneratedObject object_) @safe pure {
-    return object_.bytes.objectFileUnittestEntrypoint;
+private string unittestEntrypoint(
+    in GeneratedObject object_,
+    in string expected,
+) @safe pure {
+    return object_.bytes.objectFileUnittestEntrypoint(expected);
 }
 
-private string objectFileUnittestEntrypoint(in ubyte[] bytes) @trusted pure {
-    import std.algorithm.searching: canFind;
-
+private string objectFileUnittestEntrypoint(
+    in ubyte[] bytes,
+    in string expected,
+) @trusted pure {
     if (!bytes.isElf64LittleEndianObject)
         return null;
 
@@ -5202,7 +5233,7 @@ private string objectFileUnittestEntrypoint(in ubyte[] bytes) @trusted pure {
                 continue;
 
             const name = stringTable.elfString(nameOffset);
-            if (name.canFind("__modtest"))
+            if (name == expected)
                 return name.idup;
         }
     }
