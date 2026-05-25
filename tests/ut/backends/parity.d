@@ -2509,6 +2509,67 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("dynamicArrayReturnValueAssignsStructField." ~ backend.text)
+    unittest {
+        runTests(q{
+            ubyte[] identity(ubyte[] values) {
+                return values;
+            }
+
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                void set(ubyte[] input) {
+                    values = identity(input);
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                ubyte[] replacement = [second, first];
+                auto box = Box(values);
+
+                box.set(replacement);
+
+                assert(box.values.length == 2);
+                assert(box.values[0] == second);
+                assert(box.values[1] == first);
+            }
+        }, backend);
+    }
+
+    @("dynamicArrayStructFieldReturnValueIndexesCallResult." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                ubyte[] get() {
+                    return values;
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                auto box = Box(values);
+
+                assert(box.get[1] == second);
+            }
+        }, backend);
+    }
+
     @("postIncrementSizeTIndex." ~ backend.text)
     unittest {
         runTests(q{

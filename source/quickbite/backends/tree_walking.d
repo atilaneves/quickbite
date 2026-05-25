@@ -470,7 +470,14 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
                 return true;
             }
 
-            value = runExpression(assign.e2).asLong;
+            const rhs = runExpression(assign.e2);
+            if (tryGetArray(rhs, array)) {
+                structArrays[currentThis][field] = array;
+                value = 0;
+                return true;
+            }
+
+            value = rhs.asLong;
             structScalars[currentThis][field] = value;
             return true;
         }
@@ -489,7 +496,21 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return true;
         }
 
-        value = runExpression(assign.e2).asLong;
+        long[] array;
+        if (tryEvalArrayExpression(assign.e2, array)) {
+            structArrays[instanceDecl][field] = array;
+            value = 0;
+            return true;
+        }
+
+        const rhs = runExpression(assign.e2);
+        if (tryGetArray(rhs, array)) {
+            structArrays[instanceDecl][field] = array;
+            value = 0;
+            return true;
+        }
+
+        value = rhs.asLong;
         structScalars[instanceDecl][field] = value;
         return true;
     }
@@ -722,87 +743,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         if (call is null)
             return false;
 
-        if (!callReturnsSupportedArrayExpression(call))
-            return false;
-
         return tryGetArray(runCallExpression(call), value);
-    }
-
-    private bool callReturnsSupportedArrayExpression(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        auto function_ = calledFunction(call);
-        if (function_ is null)
-            return false;
-
-        return statementReturnsSupportedArrayExpression(function_.fbody);
-    }
-
-    private imported!"dmd.func".FuncDeclaration calledFunction(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        if (auto var = call.e1.isVarExp)
-            return var.var.isFuncDeclaration;
-
-        if (auto dotVar = call.e1.isDotVarExp)
-            return dotVar.var.isFuncDeclaration;
-
-        return null;
-    }
-
-    private bool statementReturnsSupportedArrayExpression(
-        imported!"dmd.statement".Statement statement,
-    ) {
-        if (statement is null)
-            return false;
-
-        if (auto scope_ = statement.isScopeStatement)
-            return statementReturnsSupportedArrayExpression(scope_.statement);
-
-        if (auto compound = statement.isCompoundStatement) {
-            if (compound.statements is null)
-                return false;
-
-            foreach (child; *compound.statements)
-                if (statementReturnsSupportedArrayExpression(child))
-                    return true;
-
-            return false;
-        }
-
-        if (auto compound = statement.isCompoundDeclarationStatement) {
-            if (compound.statements is null)
-                return false;
-
-            foreach (child; *compound.statements)
-                if (statementReturnsSupportedArrayExpression(child))
-                    return true;
-
-            return false;
-        }
-
-        if (auto return_ = statement.isReturnStatement)
-            return supportedArrayReturnExpression(return_.exp);
-
-        return false;
-    }
-
-    private bool supportedArrayReturnExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        if (expression is null)
-            return false;
-
-        if (expression.isVarExp !is null)
-            return true;
-
-        if (expression.isSliceExp !is null)
-            return true;
-
-        if (auto call = expression.isCallExp)
-            return callReturnsSupportedArrayExpression(call);
-
-        return false;
     }
 
     private bool sliceArrayExpressionValue(
