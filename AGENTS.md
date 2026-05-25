@@ -23,7 +23,10 @@ Consult `ai/plans` for implementation plans.
 
 ## Git worktrees
 
-Worktree named "foo" → `./worktrees/foo` at repo root.
+Do work in a git worktree unless instructed otherwise. Name worktrees
+the same as their branch, e.g. worktree named "foo" →
+`./worktrees/foo` at repo root. Always use the `worktrees` directory
+in this repo unless instructed otherwise.
 
 ## TDD
 
