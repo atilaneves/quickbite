@@ -2355,6 +2355,23 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("__gsharedIntRead.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                __gshared int value = 41;
+
+                int answer() {
+                    return value + 1;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }, backend);
+        }
+    }
+
     @(text("intAddition.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {
