@@ -51,6 +51,11 @@ as possible. Fixtures that bytecode cannot yet run should exclude bytecode
 using the same mechanism currently used for the new tree walker. Remove those
 exclusions one behaviour at a time.
 
+When a bytecode-only test starts passing because bytecode now implements the
+required public behaviour, migrate that test into `tests/ut/backends/parity.d`
+in the same change. Keep bytecode-specific tests only for bytecode-only
+diagnostics, VM contracts, or known limitations.
+
 Implementation should be the dumbest green step:
 
 1. find unittest blocks in the analysed module
