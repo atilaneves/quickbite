@@ -2242,6 +2242,25 @@ unittest {
     }, ExecutorBackend.bytecode);
 }
 
+@("intBitwiseXor.bytecode")
+unittest {
+    runTests(q{
+        int mask() {
+            return 0x04;
+        }
+
+        int answer() {
+            // Keep one operand runtime-shaped so DMD does not constant-fold the
+            // bitwise XOR before bytecode sees it.
+            return 0x2e ^ mask;
+        }
+
+        unittest {
+            assert(answer == 0x2a);
+        }
+    }, ExecutorBackend.bytecode);
+}
+
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;

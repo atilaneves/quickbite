@@ -132,6 +132,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto bitwiseXor = expression.isXorExp) {
+            compileBinaryExpression(bitwiseXor.e1, bitwiseXor.e2, OpCode.bitwiseXor);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
