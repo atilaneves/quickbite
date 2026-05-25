@@ -70,6 +70,11 @@ that coupling must not cross the public module boundary.
 
 ## Backends
 
+Backends are independent implementations behind the common interface. A backend
+must not fall back to another backend for execution or diagnostics: unsupported
+behaviour must be reported as an explicit unsupported diagnostic from that
+backend, not hidden by delegating to a different executor.
+
 ### 1. IrInterpreterExecutor
 
 Pipeline: DMD → lower to IR → execute IR with long[] temporaries.
@@ -167,6 +172,25 @@ format every DMD-compatible assertion-context message.  To include IR in the
 array-comparison and boolean-comparison diagnostic parity tests, carry enough D
 value type information through lowering and execution to distinguish bool,
 char, high-bit unsigned values, arrays, and other non-`long` values.
+
+## Known PR 36 Follow-Ups
+
+The contextual unittest assertion diagnostics added in PR 36 are being merged
+with known follow-up work:
+
+- `DmdCtfe` reconstructs contextual assertion messages from the last statement
+  in a compound block only. If the failing assertion is followed by another
+  statement, it reports DMD's generic `Unittest assertion failed.` message.
+- `treeWalkingOld` can re-evaluate failed comparison assertion operands while
+  formatting the diagnostic. Side effects in operands can change the reported
+  values.
+- `BytecodeExecutor` stores an explicit assertion message before evaluating the
+  assertion condition. If the condition calls code that fails an assertion, the
+  outer explicit message can leak into the inner failure.
+
+Fix these with backend-local implementations. If a backend cannot honestly
+support a diagnostic behaviour yet, exclude it from that behaviour's tests
+rather than adding a fallback path.
 
 ## Benchmarking Harness
 
