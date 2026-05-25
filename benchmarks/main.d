@@ -79,8 +79,8 @@ int main(string[] args) {
 
     if (backendNames.length == 0)
         backendNames = dubFixtures.length > 0
-            ? ["ir", "treeWalkingOld"]
-            : ["ir", "treeWalkingOld", "dmd-ctfe"];
+            ? ["dmd-codegen", "ir", "treeWalkingOld"]
+            : ["dmd-codegen", "ir", "treeWalkingOld", "dmd-ctfe"];
 
     foreach (name; backendNames)
         if (name !in backends)
