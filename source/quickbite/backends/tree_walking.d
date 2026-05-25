@@ -883,7 +883,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             ));
         }
 
-        throw new Exception("Unittest assertion failed.");
+        import quickbite.unittest_assertions:
+            AssertionMessageMode,
+            failedAssertionMessage;
+
+        throw new Exception(failedAssertionMessage(AssertionMessageMode.context));
     }
 
     public override TestSummary runTestSummary(

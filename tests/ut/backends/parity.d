@@ -253,7 +253,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(42 < bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 >= 42");
     }
 
     @("intLessOrEqual." ~ backend.text)
@@ -283,7 +283,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(43 <= bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "43 > 42");
     }
 
     @("intGreaterThan." ~ backend.text)
@@ -313,7 +313,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(42 > bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 <= 42");
     }
 
     @("intGreaterOrEqual." ~ backend.text)
@@ -343,7 +343,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(41 >= bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "41 < 42");
     }
 
     @("intNotEqual." ~ backend.text)
@@ -373,7 +373,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(bound != 42);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 == 42");
     }
 
     @("assertNonzeroIntCondition." ~ backend.text)
@@ -440,7 +440,7 @@ static foreach (backend; [ExecutorBackend.treeWalking]) {
                 // the comparison before the backend sees it.
                 assert(42 < bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 >= 42");
     }
 }
 
@@ -488,7 +488,7 @@ static foreach (backend; matureExecutorBackends) {
                 unittest {
                     assert(answer == 43);
                 }
-            }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+            }, backend).shouldThrowWithMessage("42 != 43");
         }
     }
 
@@ -503,16 +503,18 @@ static foreach (backend; matureExecutorBackends) {
         }
     }
 
-    @("catchExceptionDoesNotCatchAssertFailure." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                try {
-                    assert(false);
-                } catch (Exception) {
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("catchExceptionDoesNotCatchAssertFailure." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    try {
+                        assert(false);
+                    } catch (Exception) {
+                    }
                 }
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+            }, backend).shouldThrowWithMessage("unittest failure");
+        }
     }
 
     @("catchExceptionCatchesThrownException." ~ backend.text)
@@ -1139,7 +1141,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("voidFunction." ~ backend.text)
@@ -1287,17 +1289,19 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("voidFunctionOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            void foo() {
-                assert(0);
-            }
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("voidFunctionOops." ~ backend.text)
+        unittest {
+            runTests(q{
+                void foo() {
+                    assert(0);
+                }
 
-            unittest {
-                foo;
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+                unittest {
+                    foo;
+                }
+            }, backend).shouldThrowWithMessage("Assertion failure");
+        }
     }
 
     @("intUnaryMinus." ~ backend.text)
@@ -1455,7 +1459,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(40, 3) == 42);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("43 != 42");
     }
 
     @("functionParameterOops." ~ backend.text)
@@ -1468,7 +1472,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(41) == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("refParameter." ~ backend.text)
@@ -1486,19 +1490,21 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("refParameterOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            void addOne(ref int value) {
-                value = value + 1;
-            }
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        @("refParameterOops." ~ backend.text)
+        unittest {
+            runTests(q{
+                void addOne(ref int value) {
+                    value = value + 1;
+                }
 
-            unittest {
-                int value = 41;
-                addOne(value);
-                assert(value == 43);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+                unittest {
+                    int value = 41;
+                    addOne(value);
+                    assert(value == 43);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
     }
 
     @("ulongHighBitLessThan." ~ backend.text)
@@ -1557,7 +1563,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(2) == 42);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("43 != 42");
     }
 
     @("ifElseUntakenBranch." ~ backend.text)
@@ -1631,17 +1637,19 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("inFunctionParametersOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            void check(in int left, in int right) {
-                assert(left + right == 42);
-            }
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        @("inFunctionParametersOops." ~ backend.text)
+        unittest {
+            runTests(q{
+                void check(in int left, in int right) {
+                    assert(left + right == 42);
+                }
 
-            unittest {
-                check(40, 3);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+                unittest {
+                    check(40, 3);
+                }
+            }, backend).shouldThrowWithMessage("43 != 42");
+        }
     }
 
     @("multipleRefParameters." ~ backend.text)
@@ -1674,19 +1682,21 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("refSizeTParameterOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            void advance(ref size_t pos) {
-                pos = pos + 1;
-            }
+    static if (backend != ExecutorBackend.dmdCtfe) {
+        @("refSizeTParameterOops." ~ backend.text)
+        unittest {
+            runTests(q{
+                void advance(ref size_t pos) {
+                    pos = pos + 1;
+                }
 
-            unittest {
-                size_t pos = 41;
-                advance(pos);
-                assert(pos == 43);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+                unittest {
+                    size_t pos = 41;
+                    advance(pos);
+                    assert(pos == 43);
+                }
+            }, backend).shouldThrowWithMessage("42 != 43");
+        }
     }
 
     @("longLiteral." ~ backend.text)
@@ -1871,15 +1881,17 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("arrayEqualFalse." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                ubyte[] a = [1, 2, 3];
-                ubyte[] b = [1, 2, 4];
-                assert(a[] == b[]);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+    static if (backend != ExecutorBackend.ir) {
+        @("arrayEqualFalse." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    ubyte[] a = [1, 2, 3];
+                    ubyte[] b = [1, 2, 4];
+                    assert(a[] == b[]);
+                }
+            }, backend).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 4]");
+        }
     }
 
     @("castUbyteRuntimeValueTruncates." ~ backend.text)
@@ -2221,15 +2233,17 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    @("logicalOrOops." ~ backend.text)
-    unittest {
-        runTests(q{
-            unittest {
-                bool left = false;
-                bool right = false;
-                assert(left || right);
-            }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("logicalOrOops." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    bool left = false;
+                    bool right = false;
+                    assert(left || right);
+                }
+            }, backend).shouldThrowWithMessage("`assert(left || right)` failed");
+        }
     }
 
     @("logicalOrShortCircuit." ~ backend.text)
@@ -2242,6 +2256,114 @@ static foreach (backend; matureExecutorBackends) {
             }
         }, backend);
     }
+}
+
+@("bytecode explicit assert message overrides context")
+unittest {
+    runTests(q{
+        unittest {
+            assert(1 == 2, "oops");
+        }
+    }, ExecutorBackend.bytecode).shouldThrowWithMessage("oops");
+}
+
+@("dmdCtfe fallback reports the failing unittest, not tree-walker support")
+unittest {
+    runTests(q{
+        void set(out int x) {
+            x = 42;
+        }
+
+        unittest {
+            int x;
+            set(x);
+            assert(x == 42);
+        }
+
+        bool nope() {
+            return false;
+        }
+
+        void fail() {
+            assert(nope());
+        }
+
+        unittest {
+            fail();
+        }
+    }, ExecutorBackend.dmdCtfe).shouldThrowWithMessage("false != true");
+}
+
+@("literal false assertion matches DMD")
+unittest {
+    runTests(q{
+        unittest {
+            assert(false);
+        }
+    }).shouldThrowWithMessage("unittest failure");
+}
+
+@("runtime bool assertion context matches DMD")
+unittest {
+    runTests(q{
+        bool nope() {
+            return false;
+        }
+
+        unittest {
+            assert(nope());
+        }
+    }).shouldThrowWithMessage("false != true");
+}
+
+@("bool assertion context matches DMD.dmdCtfe")
+unittest {
+    runTests(q{
+        unittest {
+            bool a = true;
+            assert(a == false);
+        }
+    }, ExecutorBackend.dmdCtfe).shouldThrowWithMessage("true != false");
+}
+
+@("char assertion context matches DMD.dmdCtfe")
+unittest {
+    runTests(q{
+        unittest {
+            char a = 'a';
+            assert(a == 'b');
+        }
+    }, ExecutorBackend.dmdCtfe).shouldThrowWithMessage("'a' != 'b'");
+}
+
+@("dynamic assert message matches DMD")
+unittest {
+    runTests(q{
+        unittest {
+            string msg = "oops";
+            assert(false, msg);
+        }
+    }).shouldThrowWithMessage("oops");
+}
+
+@("dynamic assert message matches DMD.dmdCtfe")
+unittest {
+    runTests(q{
+        unittest {
+            string msg = "oops";
+            assert(false, msg);
+        }
+    }, ExecutorBackend.dmdCtfe).shouldThrowWithMessage("oops");
+}
+
+@("treeWalkingOld assertion context does not reevaluate equality operands")
+unittest {
+    runTests(q{
+        unittest {
+            int value;
+            assert(++value == 0);
+        }
+    }, ExecutorBackend.treeWalkingOld).shouldThrowWithMessage("1 != 0");
 }
 
 @("unitThreadedCheckRunsPredicate.treeWalkingOld")

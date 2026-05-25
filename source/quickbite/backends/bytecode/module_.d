@@ -10,4 +10,5 @@ package(quickbite.backends.bytecode) struct BytecodeModule {
     public FuncDeclaration[] functions;
     public size_t[FuncDeclaration] functionIndexes;
     public size_t[FuncDeclaration] functionEntries;
+    public string[] assertMessages;
 }

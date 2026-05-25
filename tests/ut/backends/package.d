@@ -25,7 +25,6 @@ public enum evalBackends = [
     ExecutorBackend.treeWalkingOld,
     ExecutorBackend.treeWalking,
     ExecutorBackend.dmdCtfe,
-    ExecutorBackend.bytecode,
 ];
 
 public bool experimentalBackendTestsEnabled() {

@@ -123,8 +123,50 @@ public enum IntegerType {
 }
 
 public struct Assert_ {
+    import quickbite.unittest_assertions: AssertionMessageMode;
+
     uint condition;
     string message;
+    bool hasMessageValue;
+    uint messageValue;
+    AssertionMessageMode messageMode;
+    bool hasComparisonContext;
+    uint left;
+    uint right;
+    Operation comparison;
+
+    public this(in uint condition, in string message) @safe pure {
+        this.condition = condition;
+        this.message = message;
+        this.messageMode = AssertionMessageMode.plain;
+    }
+
+    public static Assert_ userAssert(
+        in uint condition,
+        in string message = null,
+    ) @safe pure {
+        Assert_ assert_;
+        assert_.condition = condition;
+        assert_.message = message;
+        assert_.messageMode = AssertionMessageMode.context;
+        return assert_;
+    }
+
+    public static Assert_ userComparisonAssert(
+        in uint condition,
+        in string message,
+        in uint left,
+        in uint right,
+        in Operation comparison,
+    ) @safe pure {
+        auto assert_ = userAssert(condition, message);
+        assert_.hasComparisonContext = true;
+        assert_.left = left;
+        assert_.right = right;
+        assert_.comparison = comparison;
+        return assert_;
+    }
+
 }
 
 public struct ArrayLiteral {

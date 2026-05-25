@@ -39,20 +39,14 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
-        return fallbackEvalExecutor.eval(input);
+        throw new Exception("eval not yet implemented for bytecode");
     }
 
     public override void runVoidReplCell(
         in string transcript,
         in string input,
     ) {
-        fallbackEvalExecutor.runVoidReplCell(transcript, input);
-    }
-
-    private imported!"quickbite.executor".Executor fallbackEvalExecutor() {
-        import quickbite.backends.tree_walking: TreeWalkingExecutor;
-
-        return new TreeWalkingExecutor;
+        throw new Exception("eval not yet implemented for bytecode");
     }
 }
 
@@ -82,6 +76,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
 
     long[] stack;
     size_t[] returnAddresses;
+    string explicitAssertMessage;
     size_t ip;
 
     while (ip < module_.code.length) {
@@ -163,14 +158,49 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 stack.executeBinaryOperation!((left, right) => left >= right);
                 ++ip;
                 break;
-            case OpCode.assertEqual:
+            case OpCode.setAssertMessage:
+                explicitAssertMessage = module_.assertMessages[
+                    cast(size_t) instruction.operand
+                ];
+                ++ip;
+                break;
+            case OpCode.assertCompare:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                if (left != right) {
-                    import std.conv: text;
+                const comparison = cast(OpCode) instruction.operand;
+                if (!comparisonHolds(left, right, comparison)) {
+                    if (explicitAssertMessage !is null)
+                        throw new AssertionFailure(explicitAssertMessage);
 
-                    throw new AssertionFailure(text(left, " != ", right));
+                    import quickbite.unittest_assertions:
+                        AssertionMessageMode,
+                        failedAssertionMessage;
+
+                    throw new AssertionFailure(failedAssertionMessage(
+                        AssertionMessageMode.context,
+                        left,
+                        right,
+                        comparisonOperator(comparison),
+                    ));
                 }
+                explicitAssertMessage = null;
+                ++ip;
+                break;
+            case OpCode.assertTrue:
+                const value = stack.popValue;
+                if (!value) {
+                    if (explicitAssertMessage !is null)
+                        throw new AssertionFailure(explicitAssertMessage);
+
+                    import quickbite.unittest_assertions:
+                        AssertionMessageMode,
+                        failedAssertionMessage;
+
+                    throw new AssertionFailure(failedAssertionMessage(
+                        AssertionMessageMode.context,
+                    ));
+                }
+                explicitAssertMessage = null;
                 ++ip;
                 break;
             case OpCode.ret:
@@ -179,6 +209,86 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
             case OpCode.halt:
                 return;
         }
+    }
+}
+
+private bool comparisonHolds(
+    in long left,
+    in long right,
+    in imported!"quickbite.backends.bytecode.opcode".OpCode op,
+) @safe pure {
+    import quickbite.backends.bytecode.opcode: OpCode;
+
+    with (OpCode) final switch (op) {
+        case equal:
+            return left == right;
+        case notEqual:
+            return left != right;
+        case lessThan:
+            return left < right;
+        case lessOrEqual:
+            return left <= right;
+        case greaterThan:
+            return left > right;
+        case greaterOrEqual:
+            return left >= right;
+        case setAssertMessage:
+        case pushInteger:
+        case call:
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case shiftRight:
+        case shiftLeft:
+        case bitwiseOr:
+        case bitwiseAnd:
+        case bitwiseXor:
+        case assertCompare:
+        case assertTrue:
+        case ret:
+        case halt:
+            return false;
+    }
+}
+
+private string comparisonOperator(
+    in imported!"quickbite.backends.bytecode.opcode".OpCode op,
+) @safe pure {
+    import quickbite.backends.bytecode.opcode: OpCode;
+
+    with (OpCode) final switch (op) {
+        case equal:
+            return "==";
+        case notEqual:
+            return "!=";
+        case lessThan:
+            return "<";
+        case lessOrEqual:
+            return "<=";
+        case greaterThan:
+            return ">";
+        case greaterOrEqual:
+            return ">=";
+        case setAssertMessage:
+        case pushInteger:
+        case call:
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case shiftRight:
+        case shiftLeft:
+        case bitwiseOr:
+        case bitwiseAnd:
+        case bitwiseXor:
+        case assertCompare:
+        case assertTrue:
+        case ret:
+        case halt:
+            return "==";
     }
 }
 

@@ -153,6 +153,7 @@ struct BodyLowerer {
     private StaticArrayAlias[] pendingRefStaticArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
     private uint[string] identifierTemporaries;
+    private string[string] stringLiteralLocals;
     private bool[string] arrayValueNames;
     private bool[VarDeclaration] lazyParameters;
     private bool[string] lazyParameterNames;
@@ -385,6 +386,118 @@ struct BodyLowerer {
         foreach (index; 0 .. stringLiteralLength(literal))
             message ~= cast(char) stringLiteralCodeUnit(literal, index);
         return message.idup;
+    }
+
+    private string assertMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (expression is null)
+            return null;
+
+        if (const message = stringLiteralInitializerMessage(expression))
+            return message;
+
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            return null;
+
+        return stringLiteralMessage(literal);
+    }
+
+    private string stringLiteralMessage(
+        imported!"dmd.expression".StringExp literal,
+    ) @safe {
+        char[] message;
+        foreach (index; 0 .. stringLiteralLength(literal))
+            message ~= cast(char) stringLiteralCodeUnit(literal, index);
+        return message.idup;
+    }
+
+    private string stringLiteralInitializerMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto cast_ = expression.isCastExp)
+            return stringLiteralInitializerMessage(cast_.e1);
+
+        auto variable = expression.isVarExp;
+        if (variable is null) {
+            import std.string: endsWith;
+
+            const chars = expressionChars(expression);
+            foreach (name, message; stringLiteralLocals)
+                if (chars.endsWith(name))
+                    return message;
+            return null;
+        }
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null || declaration._init is null)
+            return null;
+
+        if (const message = declarationName(declaration) in stringLiteralLocals)
+            return *message;
+
+        auto initializer = declaration._init.isExpInitializer;
+        if (initializer is null)
+            return null;
+
+        const message = stringLiteralExpressionMessage(initializer.exp);
+        if (message is null)
+            return null;
+
+        return message;
+    }
+
+    private string stringLiteralExpressionMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto literal = expression.isStringExp)
+            return stringLiteralMessage(literal);
+
+        if (auto cast_ = expression.isCastExp)
+            return stringLiteralExpressionMessage(cast_.e1);
+
+        if (auto blit = expression.isBlitExp)
+            return stringLiteralExpressionMessage(blit.e2);
+
+        return null;
+    }
+
+    private string assertMessage(imported!"dmd.expression".AssertExp assert_) @safe {
+        if (assert_.msg !is null)
+            return assertMessage(assert_.msg);
+
+        if (isLiteralFalse(assert_.e1))
+            return currentFunctionName == "<unittest>"
+                ? "unittest failure"
+                : "Assertion failure";
+
+        if (isLogicalExpression(assert_.e1)) {
+            import std.conv: text;
+
+            return text("`assert(", expressionChars(assert_.e1), ")` failed");
+        }
+
+        return null;
+    }
+
+    private bool isLogicalExpression(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        import dmd.tokens: EXP;
+
+        auto logical = expression.isLogicalExp;
+        return logical !is null &&
+            (logical.op == EXP.andAnd || logical.op == EXP.orOr);
+    }
+
+    private bool isLiteralFalse(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (auto integer = expression.isIntegerExp)
+            return integerValue(integer) == 0;
+
+        return false;
     }
 
     private bool tryLowerRuntimeTryCatch(
@@ -1335,11 +1448,46 @@ struct BodyLowerer {
             return lowerStructLiteral(literal, lowerer);
 
         if (auto assert_ = expression.isAssertExp) {
-            const condition = lowerExpression(assert_.e1, lowerer);
-            instructions ~= Instruction(Assert_(
+            uint condition;
+            uint left;
+            uint right;
+            Operation comparison;
+            const message = assertMessage(assert_);
+            const hasMessageValue = assert_.msg !is null && message is null;
+            uint messageValue;
+            if (hasMessageValue)
+                messageValue = lowerExpression(assert_.msg, lowerer);
+
+            if (tryLowerAssertComparison(
+                assert_.e1,
+                lowerer,
                 condition,
-                expressionChars(assert_.e1),
-            ));
+                left,
+                right,
+                comparison,
+            )) {
+                auto instruction = Assert_.userComparisonAssert(
+                    condition,
+                    message,
+                    left,
+                    right,
+                    comparison,
+                );
+                if (hasMessageValue) {
+                    instruction.hasMessageValue = true;
+                    instruction.messageValue = messageValue;
+                }
+                instructions ~= Instruction(instruction);
+                return condition;
+            }
+
+            condition = lowerExpression(assert_.e1, lowerer);
+            auto instruction = Assert_.userAssert(condition, message);
+            if (hasMessageValue) {
+                instruction.hasMessageValue = true;
+                instruction.messageValue = messageValue;
+            }
+            instructions ~= Instruction(instruction);
             return condition;
         }
 
@@ -1705,6 +1853,136 @@ struct BodyLowerer {
             operation,
         ));
         return destination;
+    }
+
+    bool tryLowerAssertComparison(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+        out uint condition,
+        out uint left,
+        out uint right,
+        out imported!"quickbite.ir.instruction".Operation operation,
+    ) @safe {
+        import dmd.tokens: EXP;
+
+        if (auto equal = expression.isEqualExp) {
+            if (equal.lowering !is null)
+                return false;
+            if (typeIsArray(equal.e1.type) && typeIsArray(equal.e2.type)) {
+                import quickbite.ir.instruction: ArrayEqual, Instruction,
+                    UnaryOp, UnaryOperation;
+
+                left = lowerExpression(equal.e1, lowerer);
+                right = lowerExpression(equal.e2, lowerer);
+                operation = equal.op == EXP.notEqual
+                    ? imported!"quickbite.ir.instruction".Operation.notEqual
+                    : imported!"quickbite.ir.instruction".Operation.equal;
+                const equalResult = allocateTemporary;
+                instructions ~= Instruction(ArrayEqual(
+                    equalResult,
+                    left,
+                    right,
+                    arrayDepth(equal.e1.type),
+                ));
+                if (equal.op == EXP.equal) {
+                    condition = equalResult;
+                    return true;
+                }
+
+                condition = allocateTemporary;
+                instructions ~= Instruction(UnaryOp(
+                    condition,
+                    equalResult,
+                    UnaryOperation.not,
+                ));
+                return true;
+            }
+            if (
+                structEqualityOperand(equal.e1) !is null ||
+                structEqualityOperand(equal.e2) !is null
+            )
+                return false;
+
+            operation = equal.op == EXP.notEqual
+                ? imported!"quickbite.ir.instruction".Operation.notEqual
+                : imported!"quickbite.ir.instruction".Operation.equal;
+            return lowerAssertBinaryExpression(
+                equal,
+                lowerer,
+                condition,
+                left,
+                right,
+                operation,
+            );
+        }
+
+        with (EXP) switch (expression.op) {
+            case lessThan:
+                operation = imported!"quickbite.ir.instruction".Operation.lessThan;
+                break;
+            case lessOrEqual:
+                operation = imported!"quickbite.ir.instruction".Operation.lessOrEqual;
+                break;
+            case greaterThan:
+                operation = imported!"quickbite.ir.instruction".Operation.greaterThan;
+                break;
+            case greaterOrEqual:
+                operation = imported!"quickbite.ir.instruction".Operation.greaterOrEqual;
+                break;
+            default:
+                return false;
+        }
+
+        auto comparison = castCmpExpression(expression);
+        if (comparisonUsesUnsignedOperand(comparison)) {
+            switch (operation) {
+                case imported!"quickbite.ir.instruction".Operation.lessThan:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedLessThan;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.lessOrEqual:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedLessOrEqual;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.greaterThan:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedGreaterThan;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedGreaterOrEqual;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return lowerAssertBinaryExpression(
+            comparison,
+            lowerer,
+            condition,
+            left,
+            right,
+            operation,
+        );
+    }
+
+    bool lowerAssertBinaryExpression(Expression)(
+        Expression expression,
+        ref Lowerer lowerer,
+        out uint condition,
+        out uint left,
+        out uint right,
+        in imported!"quickbite.ir.instruction".Operation operation,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Instruction;
+
+        left = lowerExpression(expression.e1, lowerer);
+        right = lowerExpression(expression.e2, lowerer);
+        condition = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            condition,
+            left,
+            right,
+            operation,
+        ));
+        return true;
     }
 
     uint lowerComparison(
@@ -4356,6 +4634,10 @@ struct BodyLowerer {
                     rememberLocalTemporary(variable, value);
                     return value;
                 }
+
+                if (const message = stringLiteralExpressionMessage(initializer.exp))
+                    stringLiteralLocals[declarationName(variable)] =
+                        message;
 
                 const value = lowerInitializerExpression(initializer.exp, lowerer);
                 rememberLocalTemporary(variable, value);

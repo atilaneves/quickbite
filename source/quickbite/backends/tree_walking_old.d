@@ -788,12 +788,8 @@ private struct BodyWalker {
         if (auto identity = expression.isIdentityExp)
             return runIdentityExpression(identity, interpreter);
 
-        if (auto assert_ = expression.isAssertExp) {
-            const cond = runExpression(assert_.e1, interpreter).asLong;
-            if (!cond)
-                throw new Exception("Unittest assertion failed.");
-            return Value(cond);
-        }
+        if (auto assert_ = expression.isAssertExp)
+            return runAssertExpression(assert_, interpreter);
 
         if (auto decl = expression.isDeclarationExp)
             return runDeclarationExpression(decl, interpreter);
@@ -7338,6 +7334,95 @@ private struct BodyWalker {
         if (equal.op == EXP.notEqual)
             return Value(left != right ? 1L : 0L);
         return Value(left == right ? 1L : 0L);
+    }
+
+    private Value runAssertExpression(
+        imported!"dmd.expression".AssertExp assert_,
+        ref Interpreter interpreter,
+    ) {
+        if (auto equal = assert_.e1.isEqualExp) {
+            import dmd.tokens: EXP;
+            import std.conv: text;
+
+            const left = runExpression(equal.e1, interpreter);
+            const right = runExpression(equal.e2, interpreter);
+            const cond = equal.op == EXP.notEqual
+                ? left != right
+                : left == right;
+            if (!cond) {
+                if (assert_.msg !is null)
+                    throw new Exception(assertMessage(assert_.msg));
+                const operator = equal.op == EXP.notEqual ? "==" : "!=";
+                throw new Exception(text(left, " ", operator, " ", right));
+            }
+            return Value(cond ? 1L : 0L);
+        }
+
+        const cond = runExpression(assert_.e1, interpreter).asLong;
+        if (!cond)
+            throw new Exception(assertFailureMessage(assert_, interpreter));
+        return Value(cond);
+    }
+
+    private string assertFailureMessage(
+        imported!"dmd.expression".AssertExp assert_,
+        ref Interpreter interpreter,
+    ) {
+        if (assert_.msg !is null)
+            return assertMessage(assert_.msg);
+
+        import dmd.tokens: EXP;
+        import quickbite.unittest_assertions:
+            AssertionMessageMode,
+            failedAssertionMessage;
+        import std.conv: text;
+
+        if (auto equal = assert_.e1.isEqualExp) {
+            const left = runExpression(equal.e1, interpreter);
+            const right = runExpression(equal.e2, interpreter);
+            const operator = equal.op == EXP.notEqual ? "==" : "!=";
+            return text(left, " ", operator, " ", right);
+        }
+
+        if (isComparisonExpression(assert_.e1)) {
+            auto comparison = assert_.e1.isBinExp;
+            return failedAssertionMessage(
+                AssertionMessageMode.context,
+                runExpression(comparison.e1, interpreter).asLong,
+                runExpression(comparison.e2, interpreter).asLong,
+                comparisonOperator(assert_.e1.op),
+            );
+        }
+
+        return failedAssertionMessage(AssertionMessageMode.context);
+    }
+
+    private string assertMessage(imported!"dmd.expression".Expression expression) {
+        if (auto literal = expression.isStringExp) {
+            char[] message;
+            foreach (codeUnit; stringLiteralElements(literal))
+                message ~= cast(char) codeUnit;
+            return message.idup;
+        }
+
+        return expressionChars(expression);
+    }
+
+    private string comparisonOperator(imported!"dmd.tokens".EXP op) @safe pure {
+        import dmd.tokens: EXP;
+
+        with (EXP) switch (op) {
+            case lessThan:
+                return "<";
+            case lessOrEqual:
+                return "<=";
+            case greaterThan:
+                return ">";
+            case greaterOrEqual:
+                return ">=";
+            default:
+                return "==";
+        }
     }
 
     private Value runIdentityExpression(
