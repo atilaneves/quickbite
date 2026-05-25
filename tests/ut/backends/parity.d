@@ -248,7 +248,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(42 < bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 >= 42");
     }
 
     @("intLessOrEqual." ~ backend.text)
@@ -278,7 +278,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(43 <= bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "43 > 42");
     }
 
     @("intGreaterThan." ~ backend.text)
@@ -308,7 +308,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(42 > bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 <= 42");
     }
 
     @("intGreaterOrEqual." ~ backend.text)
@@ -338,7 +338,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(41 >= bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "41 < 42");
     }
 
     @("intNotEqual." ~ backend.text)
@@ -368,7 +368,7 @@ static foreach (backend; matureExecutorBackends ~ [
                 // the comparison before the backend sees it.
                 assert(bound != 42);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 == 42");
     }
 
     @("assertNonzeroIntCondition." ~ backend.text)
@@ -435,7 +435,7 @@ static foreach (backend; [ExecutorBackend.treeWalking]) {
                 // the comparison before the backend sees it.
                 assert(42 < bound);
             }
-        }.expectBackendFailure(backend, "0 != 1");
+        }.expectBackendFailure(backend, "42 >= 42");
     }
 }
 
@@ -480,7 +480,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("throwingTest." ~ backend.text)
@@ -1128,7 +1128,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("voidFunction." ~ backend.text)
@@ -1444,7 +1444,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(40, 3) == 42);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("43 != 42");
     }
 
     @("functionParameterOops." ~ backend.text)
@@ -1457,7 +1457,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(41) == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("refParameter." ~ backend.text)
@@ -1487,7 +1487,7 @@ static foreach (backend; matureExecutorBackends) {
                 addOne(value);
                 assert(value == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("ulongHighBitLessThan." ~ backend.text)
@@ -1546,7 +1546,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 assert(answer(2) == 42);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("43 != 42");
     }
 
     @("ifElseUntakenBranch." ~ backend.text)
@@ -1630,7 +1630,7 @@ static foreach (backend; matureExecutorBackends) {
             unittest {
                 check(40, 3);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("43 != 42");
     }
 
     @("multipleRefParameters." ~ backend.text)
@@ -1675,7 +1675,7 @@ static foreach (backend; matureExecutorBackends) {
                 advance(pos);
                 assert(pos == 43);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("42 != 43");
     }
 
     @("longLiteral." ~ backend.text)
@@ -1868,7 +1868,7 @@ static foreach (backend; matureExecutorBackends) {
                 ubyte[] b = [1, 2, 4];
                 assert(a[] == b[]);
             }
-        }, backend).shouldThrowWithMessage("Unittest assertion failed.");
+        }, backend).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 4]");
     }
 
     @("castUbyteRuntimeValueTruncates." ~ backend.text)

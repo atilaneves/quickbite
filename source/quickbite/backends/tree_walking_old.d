@@ -791,7 +791,7 @@ private struct BodyWalker {
         if (auto assert_ = expression.isAssertExp) {
             const cond = runExpression(assert_.e1, interpreter).asLong;
             if (!cond)
-                throw new Exception("Unittest assertion failed.");
+                throw new Exception(assertFailureMessage(assert_, interpreter));
             return Value(cond);
         }
 
@@ -7338,6 +7338,67 @@ private struct BodyWalker {
         if (equal.op == EXP.notEqual)
             return Value(left != right ? 1L : 0L);
         return Value(left == right ? 1L : 0L);
+    }
+
+    private string assertFailureMessage(
+        imported!"dmd.expression".AssertExp assert_,
+        ref Interpreter interpreter,
+    ) {
+        if (assert_.msg !is null)
+            return assertMessage(assert_.msg);
+
+        import dmd.tokens: EXP;
+        import quickbite.unittest_assertions:
+            AssertionMessageMode,
+            failedAssertionMessage;
+        import std.conv: text;
+
+        if (auto equal = assert_.e1.isEqualExp) {
+            const left = runExpression(equal.e1, interpreter);
+            const right = runExpression(equal.e2, interpreter);
+            const operator = equal.op == EXP.notEqual ? "==" : "!=";
+            return text(left, " ", operator, " ", right);
+        }
+
+        if (isComparisonExpression(assert_.e1)) {
+            auto comparison = assert_.e1.isBinExp;
+            return failedAssertionMessage(
+                AssertionMessageMode.context,
+                runExpression(comparison.e1, interpreter).asLong,
+                runExpression(comparison.e2, interpreter).asLong,
+                comparisonOperator(assert_.e1.op),
+            );
+        }
+
+        return failedAssertionMessage(AssertionMessageMode.context);
+    }
+
+    private string assertMessage(imported!"dmd.expression".Expression expression) {
+        if (auto literal = expression.isStringExp) {
+            char[] message;
+            foreach (codeUnit; stringLiteralElements(literal))
+                message ~= cast(char) codeUnit;
+            return message.idup;
+        }
+
+        return expressionChars(expression);
+    }
+
+    private string comparisonOperator(imported!"dmd.tokens".EXP op) @safe pure {
+        import dmd.tokens: EXP;
+
+        with (EXP) switch (op) {
+            case lessThan:
+                return "<";
+            case lessOrEqual:
+                return "<=";
+            case greaterThan:
+                return ">";
+            case greaterOrEqual:
+                return ">=";
+            default:
+                return "==";
+        }
     }
 
     private Value runIdentityExpression(

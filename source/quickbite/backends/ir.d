@@ -6,6 +6,10 @@ private class UnittestAssertionFailure : Exception {
     public this() @safe pure {
         super("Unittest assertion failed.");
     }
+
+    public this(in string message) @safe pure {
+        super(message);
+    }
 }
 
 private class UserThrownException : Exception {
@@ -428,7 +432,7 @@ private InstructionEffect executeInstruction(
         (CastInt instruction) =>
             executeCastIntInstruction(temporaries, instruction),
         (Assert_ instruction) =>
-            executeAssertInstruction(temporaries, instruction),
+            executeAssertInstruction(temporaries, context, instruction),
         (const ArrayLiteral instruction) =>
             executeArrayLiteralInstruction(temporaries, context, instruction),
         (const AssocArrayLiteral instruction) =>
@@ -703,27 +707,126 @@ private InstructionEffect executeCastIntInstruction(
 
 private InstructionEffect executeAssertInstruction(
     ref long[] temporaries,
+    ref ExecutionContext context,
     in imported!"quickbite.ir.instruction".Assert_ instruction,
 ) @safe pure {
     return executeAssertInstruction(
         temporaries,
+        context,
         instruction.condition,
-        instruction.message,
+        instruction,
     );
 }
 
 private InstructionEffect executeAssertInstruction(
     in long[] temporaries,
+    ref ExecutionContext context,
     in uint condition,
-    in string message,
+    in imported!"quickbite.ir.instruction".Assert_ instruction,
 ) @safe pure {
     if (readTemporaryValue(temporaries, condition))
         return nextInstruction;
 
-    if (const exceptionMessage = thrownExceptionMessage(message))
+    if (const exceptionMessage = thrownExceptionMessage(instruction.message))
         throw new UserThrownException(exceptionMessage);
 
-    throw new UnittestAssertionFailure;
+    throw new UnittestAssertionFailure(assertionFailureMessage(
+        temporaries,
+        context,
+        instruction,
+    ));
+}
+
+private string assertionFailureMessage(
+    in long[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".Assert_ instruction,
+) @safe pure {
+    if (instruction.message.length != 0)
+        return instruction.message;
+
+    import quickbite.unittest_assertions: failedAssertionMessage;
+
+    if (!instruction.hasComparisonContext)
+        return failedAssertionMessage(instruction.messageMode);
+
+    if (instruction.hasArrayContext) {
+        import std.conv: text;
+
+        return text(
+            context.arrays[arrayIndex(temporaries, instruction.left)],
+            " ",
+            assertionInverseOperator(instruction.comparison),
+            " ",
+            context.arrays[arrayIndex(temporaries, instruction.right)],
+        );
+    }
+
+    return failedAssertionMessage(
+        instruction.messageMode,
+        readTemporaryValue(temporaries, instruction.left),
+        readTemporaryValue(temporaries, instruction.right),
+        assertionOperator(instruction.comparison),
+    );
+}
+
+private string assertionInverseOperator(
+    in imported!"quickbite.ir.instruction".Operation operation,
+) @safe pure {
+    switch (assertionOperator(operation)) {
+        case "==":
+            return "!=";
+        case "!=":
+            return "==";
+        case "<":
+            return ">=";
+        case "<=":
+            return ">";
+        case ">":
+            return "<=";
+        case ">=":
+            return "<";
+        default:
+            return "!=";
+    }
+}
+
+private string assertionOperator(
+    in imported!"quickbite.ir.instruction".Operation operation,
+) @safe pure {
+    import quickbite.ir.instruction: Operation;
+
+    with (Operation) final switch (operation) {
+        case equal:
+            return "==";
+        case notEqual:
+            return "!=";
+        case lessThan:
+        case unsignedLessThan:
+            return "<";
+        case lessOrEqual:
+        case unsignedLessOrEqual:
+            return "<=";
+        case greaterThan:
+        case unsignedGreaterThan:
+            return ">";
+        case greaterOrEqual:
+        case unsignedGreaterOrEqual:
+            return ">=";
+        case add:
+        case addDouble:
+        case powDouble:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case leftShift:
+        case rightShift:
+        case bitwiseAnd:
+        case bitwiseOr:
+        case bitwiseXor:
+            return "==";
+    }
 }
 
 private InstructionEffect executeArrayLiteralInstruction(

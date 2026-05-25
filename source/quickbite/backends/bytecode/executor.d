@@ -167,9 +167,47 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
                 const right = stack.popValue;
                 const left = stack.popValue;
                 if (left != right) {
-                    import std.conv: text;
+                    import quickbite.unittest_assertions:
+                        AssertionMessageMode,
+                        failedAssertionMessage;
 
-                    throw new AssertionFailure(text(left, " != ", right));
+                    throw new AssertionFailure(failedAssertionMessage(
+                        AssertionMessageMode.context,
+                        left,
+                        right,
+                        "==",
+                    ));
+                }
+                ++ip;
+                break;
+            case OpCode.assertCompare:
+                const right = stack.popValue;
+                const left = stack.popValue;
+                const comparison = cast(OpCode) instruction.operand;
+                if (!comparisonHolds(left, right, comparison)) {
+                    import quickbite.unittest_assertions:
+                        AssertionMessageMode,
+                        failedAssertionMessage;
+
+                    throw new AssertionFailure(failedAssertionMessage(
+                        AssertionMessageMode.context,
+                        left,
+                        right,
+                        comparisonOperator(comparison),
+                    ));
+                }
+                ++ip;
+                break;
+            case OpCode.assertTrue:
+                const value = stack.popValue;
+                if (!value) {
+                    import quickbite.unittest_assertions:
+                        AssertionMessageMode,
+                        failedAssertionMessage;
+
+                    throw new AssertionFailure(failedAssertionMessage(
+                        AssertionMessageMode.context,
+                    ));
                 }
                 ++ip;
                 break;
@@ -179,6 +217,86 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
             case OpCode.halt:
                 return;
         }
+    }
+}
+
+private bool comparisonHolds(
+    in long left,
+    in long right,
+    in imported!"quickbite.backends.bytecode.opcode".OpCode op,
+) @safe pure {
+    import quickbite.backends.bytecode.opcode: OpCode;
+
+    with (OpCode) final switch (op) {
+        case equal:
+            return left == right;
+        case notEqual:
+            return left != right;
+        case lessThan:
+            return left < right;
+        case lessOrEqual:
+            return left <= right;
+        case greaterThan:
+            return left > right;
+        case greaterOrEqual:
+            return left >= right;
+        case pushInteger:
+        case call:
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case shiftRight:
+        case shiftLeft:
+        case bitwiseOr:
+        case bitwiseAnd:
+        case bitwiseXor:
+        case assertEqual:
+        case assertCompare:
+        case assertTrue:
+        case ret:
+        case halt:
+            return false;
+    }
+}
+
+private string comparisonOperator(
+    in imported!"quickbite.backends.bytecode.opcode".OpCode op,
+) @safe pure {
+    import quickbite.backends.bytecode.opcode: OpCode;
+
+    with (OpCode) final switch (op) {
+        case equal:
+            return "==";
+        case notEqual:
+            return "!=";
+        case lessThan:
+            return "<";
+        case lessOrEqual:
+            return "<=";
+        case greaterThan:
+            return ">";
+        case greaterOrEqual:
+            return ">=";
+        case pushInteger:
+        case call:
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case shiftRight:
+        case shiftLeft:
+        case bitwiseOr:
+        case bitwiseAnd:
+        case bitwiseXor:
+        case assertEqual:
+        case assertCompare:
+        case assertTrue:
+        case ret:
+        case halt:
+            return "==";
     }
 }
 

@@ -67,16 +67,15 @@ private struct Compiler {
         }
 
         if (auto assert_ = expression.isAssertExp) {
-            if (auto equal = assert_.e1.isEqualExp) {
-                compileExpression(equal.e1);
-                compileExpression(equal.e2);
-                if (isEqualExpression(equal)) {
-                    compileAssertEqual;
-                    return;
-                }
-
-                module_.code ~= Instruction(OpCode.notEqual);
-                compileAssertCondition;
+            OpCode comparison;
+            if (assertComparison(assert_.e1, comparison)) {
+                auto binary = assert_.e1.isBinExp;
+                compileExpression(binary.e1);
+                compileExpression(binary.e2);
+                module_.code ~= Instruction(
+                    OpCode.assertCompare,
+                    comparison,
+                );
                 return;
             }
 
@@ -111,14 +110,23 @@ private struct Compiler {
     }
 
     private void compileAssertCondition() {
-        module_.code ~= Instruction(OpCode.pushInteger, 0);
-        module_.code ~= Instruction(OpCode.notEqual);
-        module_.code ~= Instruction(OpCode.pushInteger, 1);
-        compileAssertEqual;
+        module_.code ~= Instruction(OpCode.assertTrue);
     }
 
     private void compileAssertEqual() {
         module_.code ~= Instruction(OpCode.assertEqual);
+    }
+
+    private bool assertComparison(
+        imported!"dmd.expression".Expression expression,
+        out OpCode op,
+    ) {
+        if (auto equal = expression.isEqualExp) {
+            op = equalOpCode(equal);
+            return true;
+        }
+
+        return comparisonOpCode(expression, op);
     }
 
     private OpCode equalOpCode(imported!"dmd.expression".EqualExp equal) {
@@ -135,7 +143,7 @@ private struct Compiler {
         return equal.op == EXP.notEqual;
     }
 
-    private bool binaryOpCode(
+    private bool comparisonOpCode(
         imported!"dmd.expression".Expression expression,
         out OpCode op,
     ) {
@@ -153,6 +161,20 @@ private struct Compiler {
             case greaterOrEqual:
                 op = OpCode.greaterOrEqual;
                 return true;
+            default:
+                return false;
+        }
+    }
+
+    private bool binaryOpCode(
+        imported!"dmd.expression".Expression expression,
+        out OpCode op,
+    ) {
+        if (comparisonOpCode(expression, op))
+            return true;
+
+        import dmd.tokens: EXP;
+        with (EXP) switch (expression.op) {
             case add:
                 op = OpCode.add;
                 return true;

@@ -387,6 +387,22 @@ struct BodyLowerer {
         return message.idup;
     }
 
+    private string assertMessage(
+        imported!"dmd.expression".Expression expression,
+    ) @safe {
+        if (expression is null)
+            return null;
+
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            return expressionChars(expression);
+
+        char[] message;
+        foreach (index; 0 .. stringLiteralLength(literal))
+            message ~= cast(char) stringLiteralCodeUnit(literal, index);
+        return message.idup;
+    }
+
     private bool tryLowerRuntimeTryCatch(
         imported!"dmd.statement".TryCatchStatement tryCatch,
         ref Lowerer lowerer,
@@ -1335,11 +1351,41 @@ struct BodyLowerer {
             return lowerStructLiteral(literal, lowerer);
 
         if (auto assert_ = expression.isAssertExp) {
-            const condition = lowerExpression(assert_.e1, lowerer);
-            instructions ~= Instruction(Assert_(
+            uint condition;
+            uint left;
+            uint right;
+            Operation comparison;
+            bool arrayContext;
+            const message = assertMessage(assert_.msg);
+            if (tryLowerAssertComparison(
+                assert_.e1,
+                lowerer,
                 condition,
-                expressionChars(assert_.e1),
-            ));
+                left,
+                right,
+                comparison,
+                arrayContext,
+            )) {
+                instructions ~= Instruction(arrayContext
+                    ? Assert_.userArrayComparisonAssert(
+                        condition,
+                        message,
+                        left,
+                        right,
+                        comparison,
+                    )
+                    : Assert_.userComparisonAssert(
+                        condition,
+                        message,
+                        left,
+                        right,
+                        comparison,
+                    ));
+                return condition;
+            }
+
+            condition = lowerExpression(assert_.e1, lowerer);
+            instructions ~= Instruction(Assert_.userAssert(condition, message));
             return condition;
         }
 
@@ -1705,6 +1751,139 @@ struct BodyLowerer {
             operation,
         ));
         return destination;
+    }
+
+    bool tryLowerAssertComparison(
+        imported!"dmd.expression".Expression expression,
+        ref Lowerer lowerer,
+        out uint condition,
+        out uint left,
+        out uint right,
+        out imported!"quickbite.ir.instruction".Operation operation,
+        out bool arrayContext,
+    ) @safe {
+        import dmd.tokens: EXP;
+
+        arrayContext = false;
+        if (auto equal = expression.isEqualExp) {
+            if (equal.lowering !is null)
+                return false;
+            if (typeIsArray(equal.e1.type) && typeIsArray(equal.e2.type)) {
+                import quickbite.ir.instruction: ArrayEqual, Instruction,
+                    UnaryOp, UnaryOperation;
+
+                left = lowerExpression(equal.e1, lowerer);
+                right = lowerExpression(equal.e2, lowerer);
+                operation = equal.op == EXP.notEqual
+                    ? imported!"quickbite.ir.instruction".Operation.notEqual
+                    : imported!"quickbite.ir.instruction".Operation.equal;
+                arrayContext = true;
+                const equalResult = allocateTemporary;
+                instructions ~= Instruction(ArrayEqual(
+                    equalResult,
+                    left,
+                    right,
+                    arrayDepth(equal.e1.type),
+                ));
+                if (equal.op == EXP.equal) {
+                    condition = equalResult;
+                    return true;
+                }
+
+                condition = allocateTemporary;
+                instructions ~= Instruction(UnaryOp(
+                    condition,
+                    equalResult,
+                    UnaryOperation.not,
+                ));
+                return true;
+            }
+            if (
+                structEqualityOperand(equal.e1) !is null ||
+                structEqualityOperand(equal.e2) !is null
+            )
+                return false;
+
+            operation = equal.op == EXP.notEqual
+                ? imported!"quickbite.ir.instruction".Operation.notEqual
+                : imported!"quickbite.ir.instruction".Operation.equal;
+            return lowerAssertBinaryExpression(
+                equal,
+                lowerer,
+                condition,
+                left,
+                right,
+                operation,
+            );
+        }
+
+        with (EXP) switch (expression.op) {
+            case lessThan:
+                operation = imported!"quickbite.ir.instruction".Operation.lessThan;
+                break;
+            case lessOrEqual:
+                operation = imported!"quickbite.ir.instruction".Operation.lessOrEqual;
+                break;
+            case greaterThan:
+                operation = imported!"quickbite.ir.instruction".Operation.greaterThan;
+                break;
+            case greaterOrEqual:
+                operation = imported!"quickbite.ir.instruction".Operation.greaterOrEqual;
+                break;
+            default:
+                return false;
+        }
+
+        auto comparison = castCmpExpression(expression);
+        if (comparisonUsesUnsignedOperand(comparison)) {
+            switch (operation) {
+                case imported!"quickbite.ir.instruction".Operation.lessThan:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedLessThan;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.lessOrEqual:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedLessOrEqual;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.greaterThan:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedGreaterThan;
+                    break;
+                case imported!"quickbite.ir.instruction".Operation.greaterOrEqual:
+                    operation = imported!"quickbite.ir.instruction".Operation.unsignedGreaterOrEqual;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return lowerAssertBinaryExpression(
+            comparison,
+            lowerer,
+            condition,
+            left,
+            right,
+            operation,
+        );
+    }
+
+    bool lowerAssertBinaryExpression(Expression)(
+        Expression expression,
+        ref Lowerer lowerer,
+        out uint condition,
+        out uint left,
+        out uint right,
+        in imported!"quickbite.ir.instruction".Operation operation,
+    ) @safe {
+        import quickbite.ir.instruction: BinaryOp, Instruction;
+
+        left = lowerExpression(expression.e1, lowerer);
+        right = lowerExpression(expression.e2, lowerer);
+        condition = allocateTemporary;
+        instructions ~= Instruction(BinaryOp(
+            condition,
+            left,
+            right,
+            operation,
+        ));
+        return true;
     }
 
     uint lowerComparison(
