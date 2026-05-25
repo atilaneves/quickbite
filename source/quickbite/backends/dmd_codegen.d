@@ -10,12 +10,12 @@ __gshared void** _loadedHandles;
 __gshared uint _tempCounter;
 __gshared imported!"dmd.dtemplate".TemplateInstance[void*] _templateNextByInstance;
 
-// Object files accumulated across all fixture runs.  Linking every new
+// Generated objects accumulated across all fixture runs.  Linking every new
 // fixture against the full accumulated set avoids re-emitting TypeInfo and
 // other one-shot data symbols that were already emitted by an earlier run.
 // The symbol duplication this causes is harmless: TypeInfo initialisers are
 // weak-object (V) symbols; the linker silently picks one copy.
-__gshared string[] _accumulatedObjPaths;
+__gshared GeneratedObject[] _accumulatedObjects;
 // Tracks which fixture modules have already contributed objects so that
 // repeated benchmark iterations (warmup + timed) do not keep appending
 // duplicate object sets and blowing up the link command.
@@ -23,8 +23,13 @@ __gshared bool[void*] _accumulatedModules;
 
 struct CodegenSession {
     imported!"dmd.dmodule".Module entryModule;
-    string[] objPaths;
+    GeneratedObject[] objects;
     imported!"dmd.dmodule".Module[] modules;
+}
+
+private struct GeneratedObject {
+    string path;
+    const(ubyte)[] bytes;
 }
 
 private enum CodegenExecutionKind {
@@ -33,20 +38,20 @@ private enum CodegenExecutionKind {
 
 private struct CodegenExecution {
     CodegenExecutionKind kind;
-    string[] objPaths;
+    GeneratedObject[] objects;
     string soPath;
     string[] linkFiles;
     string entrypoint;
 
     private static CodegenExecution sharedLibrary(
-        in string[] objPaths,
+        in GeneratedObject[] objects,
         in string soPath,
         in string[] linkFiles,
         in string entrypoint,
     ) @safe {
         return CodegenExecution(
             CodegenExecutionKind.sharedLibrary,
-            objPaths.dup,
+            objects.dup,
             soPath.idup,
             linkFiles.dup,
             entrypoint.idup,
@@ -57,7 +62,7 @@ private struct CodegenExecution {
         final switch (kind) with (CodegenExecutionKind) {
             case sharedLibrary:
                 runSharedLibraryBridge(
-                    objPaths,
+                    objects.paths,
                     soPath,
                     linkFiles,
                     entrypoint,
@@ -310,7 +315,7 @@ private void runCodegenSession(
 ) @trusted {
     const entrypoint = session.unittestEntrypoint;
     auto execution = CodegenExecution.sharedLibrary(
-        session.accumulatedSharedLibraryObjPaths,
+        session.accumulatedSharedLibraryObjects,
         soPath,
         linkFiles,
         entrypoint,
@@ -331,14 +336,14 @@ private void runSharedLibraryBridge(
 private string unittestEntrypoint(
     CodegenSession session, // const fails: DMD Module helpers take mutable handles.
 ) @trusted {
-    foreach (objPath; session.objPaths)
-        if (const symbol = objPath.objectFileUnittestEntrypoint)
+    foreach (object_; session.objects)
+        if (const symbol = object_.unittestEntrypoint)
             return symbol;
 
     return modtestSymbol(session.entryModule);
 }
 
-private string[] accumulatedSharedLibraryObjPaths(
+private GeneratedObject[] accumulatedSharedLibraryObjects(
     CodegenSession session, // const fails: DMD Module helpers take mutable handles.
 ) @trusted {
     // Accumulate this fixture's objects on the first run only.  Repeated
@@ -351,10 +356,17 @@ private string[] accumulatedSharedLibraryObjPaths(
         foreach (generatedModule; session.modules)
             if (generatedModule.hasSnippetSourceFile)
                 _accumulatedModules[cast(void*) generatedModule] = true;
-        _accumulatedObjPaths ~= session.objPaths;
+        _accumulatedObjects ~= session.objects;
     }
 
-    return _accumulatedObjPaths;
+    return _accumulatedObjects;
+}
+
+private string[] paths(in GeneratedObject[] objects) @safe {
+    string[] ret;
+    foreach (object_; objects)
+        ret ~= object_.path;
+    return ret;
 }
 
 private string[] withInferredLinkFiles(
@@ -552,7 +564,7 @@ private CodegenSession generateCodegenSession(
         throwIfDmdErrors;
     }
 
-    return CodegenSession(module_, objPaths, modules);
+    return CodegenSession(module_, objPaths.generatedObjects, modules);
 }
 
 private void generateObjectFiles(imported!"dmd.dmodule".Module[] modules) @trusted {
@@ -4537,13 +4549,26 @@ private void throwUnittestRunnerThrowable(Throwable throwable) @safe pure {
     throw new Exception("Unittest assertion failed.");
 }
 
-private string objectFileUnittestEntrypoint(in string objPath) @trusted {
-    import std.algorithm.searching: canFind;
+private GeneratedObject[] generatedObjects(in string[] paths) @trusted {
     import std.file: read;
 
-    // Trust boundary: std.file.read returns mutable bytes, but this parser
-    // only reads from the object-file buffer.
-    const bytes = cast(const(ubyte)[]) read(objPath);
+    GeneratedObject[] ret;
+    foreach (path; paths) {
+        // Trust boundary: std.file.read returns mutable bytes, but the
+        // generated-object model treats them as read-only object-file input.
+        const bytes = cast(const(ubyte)[]) read(path);
+        ret ~= GeneratedObject(path.idup, bytes);
+    }
+    return ret;
+}
+
+private string unittestEntrypoint(in GeneratedObject object_) @safe pure {
+    return object_.bytes.objectFileUnittestEntrypoint;
+}
+
+private string objectFileUnittestEntrypoint(in ubyte[] bytes) @trusted pure {
+    import std.algorithm.searching: canFind;
+
     if (!bytes.isElf64LittleEndianObject)
         return null;
 

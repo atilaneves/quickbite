@@ -27,6 +27,70 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after generated-object boundary:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current head:
+
+  ```text
+  35e5317 Add DMD codegen execution adapter
+  ```
+
+- The execution-adapter slice was committed as `35e5317`.
+- The worktree now has one uncommitted implementation slice:
+  - `source/quickbite/backends/dmd_codegen.d`
+- Current source diff summary:
+  - `CodegenSession` now carries `GeneratedObject[]` instead of only object
+    paths.
+  - `GeneratedObject` stores the generated object path plus the object bytes
+    read immediately after DMD writes the file.
+  - The accumulated cross-fixture state is now `GeneratedObject[]`, so
+    `CodegenExecution` receives Quickbite-owned generated-object data.
+  - The shared-library bridge still projects generated objects back to paths
+    for the current `dmd -shared` fallback.
+  - The generated `__modtest` entrypoint resolver now scans bytes already held
+    by `GeneratedObject`; it no longer opens the object file itself.
+  - This still writes object files, links `module.so`, loads it, and calls the
+    generated unittest entrypoint through `dlsym`.
+
+- Verification after the latest source edit:
+
+  ```text
+  dub test
+  591 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  env QUICKBITE_EXPERIMENTAL_BACKEND_TESTS=1 ./bin/ut \
+    ut.compiler_api.runTests.runsFailingPackageModuleUnittest.dmdCodegen \
+    ut.compiler_api.runTestSummary.countsPassingSourceModule.dmdCodegen \
+    ut.minicereal.minicerealFileCanRunTwice.dmdCodegen
+  ```
+
+  ```text
+  3 test(s) run, 0 failed.
+  ```
+
+  ```sh
+  ./benchmarks/run.sh --backend=dmd-codegen --iterations=1
+  ```
+
+  It printed a `minicereal` / `dmd-codegen` row. As before, the first attempt
+  in the sandbox failed because Dub needed to update generated config under
+  `~/.dub`; rerunning with filesystem approval succeeded.
+
+Next recommended step:
+
+- Commit the generated-object boundary slice if the diff looks acceptable.
+- Then start a RAM object-image model behind `CodegenExecution`, using the
+  generated object bytes already stored in `GeneratedObject`.
+- Keep `sharedLibrary` as the fallback until a RAM executor can run the
+  smallest benchmark slice.
+- Do not add or modify tests without explicit approval.
+
+Historical notes below are retained for context.
+
 2026-05-25 handoff after execution abstraction:
 
 - Worktree: `worktrees/dmd-codegen-ram`.
