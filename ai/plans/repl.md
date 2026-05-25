@@ -19,6 +19,9 @@
   satisfies the REPL branch's expanded `Executor` interface. They currently
   delegate to `TreeWalkingExecutor`; this is only a merge compatibility shim
   for the existing all-backend eval tests, not real bytecode REPL support.
+- Post-merge plan audit: the PR 27 follow-up list below has been pruned to
+  remaining work. Test-name ordering is no longer listed as PR work; keep the
+  existing convention for new tests without spending a slice on renaming.
 
 ### What is done
 
@@ -26,7 +29,8 @@
   `SumType!(bool, byte, ubyte, short, ushort, int, uint, long, ulong)`.
   Each D integral type is preserved exactly — no normalisation to `long`.
   `Value(3u) != Value(3L)`, `Value(3) != Value(3L)`, etc.
-- `eval(in string input) -> Value` implemented on four backends:
+- `eval(in string input) -> Value` implemented on four real backends, with
+  one compatibility shim:
   - `treeWalking`: wraps input as `void f() { <prior> auto __r =
     <last>; }`, parses via DMD frontend, walks AST with existing
     `runStatement`/`runExpression`, returns `Value(cast(int) result)`.
@@ -39,13 +43,15 @@
     `getInteger()`.
   - `ir`: wraps as `auto f() { return <last>; }\nunittest { f(); }`,
     lowers via `lowerModule`, executes via `executeFunction`.
+  - `bytecode`: delegates to `treeWalking` as a compatibility shim only.
+    This keeps the existing all-backend eval tests green after `master`
+    introduced `ExecutorBackend.bytecode`; it is not bytecode REPL support.
   - `dmdCodegen`: throws `Exception("eval not yet implemented for
-    dmdCodegen")`. A separate worktree is implementing this backend
-    more broadly; `eval` will be added there.
-- `tests/ut/repl.d` — five eval tests parameterised over the four
-  implemented backends (`dmdCodegen` excluded via `static if`):
+    dmdCodegen")`.
+- `tests/ut/repl.d` — five eval tests parameterised over every
+  `ExecutorBackend` except `dmdCodegen`:
   `add0`, `add1`, `add2`, `arithmetic` (five runtime cases covering
-  +, -, *, /), `multiCell`. 560 tests, all pass.
+  +, -, *, /), `multiCell`.
 - `dub.sdl` has a `repl` configuration that builds `bin/repl`.
 - `repl/main.d` is now an interactive executable:
   - no args starts a REPL with banner `Quickbite REPL` and prompt `> `;
@@ -96,15 +102,10 @@
   - `1ddfa37 Keep REPL alive after diagnostics`
   - `f0a63d7 Avoid subprocess REPL tests`
   - `9aa1f4d Revert "Persist REPL declaration cells"`
-- Last known green state during this in-progress edit: `dub test` passed with
-  564 tests after adding the approved declaration persistence test and the
-  first structured API wiring. That was before the latest parser-classifier
-  change described below.
 - `ParseStatementFlags` is imported from `dmd.parse`, which is where the
   local DMD package exports it.
-- Verification after this update: focused REPL loop tests pass, the manual
-  `int x; x; x++; x` smoke test prints `0`, `0`, `1`, and the remaining PR
-  gate is a full `dub test` plus `benchmarks/run.sh`.
+- Verification after merging `master`: `dub test` passed with 682 tests and
+  `benchmarks/run.sh` passed on `fdbecb5`.
 
 ### What is fake
 
@@ -118,8 +119,10 @@
   minimal transcript strategy and should later move behind a structured
   frontend-owned session representation.
 - `incomplete` exists in the API but is not actually implemented yet.
-- Non-IR backends only have compatibility `evalReplCell` stubs that call
-  `eval(transcript ~ input)` and return `value`.
+- Non-IR real eval backends only have compatibility `evalReplCell` stubs that
+  call `eval(transcript ~ input)` and return `value`.
+- `bytecode.eval` and `bytecode.evalReplCell` delegate to `treeWalking`;
+  replacing that shim with real bytecode evaluation is separate bytecode work.
 - `dmdCodegen.eval` is still not implemented.
 
 ### Bad approach reverted
@@ -257,10 +260,6 @@ test first and wait for approval before editing tests.
       start interactive mode and exit successfully when stdin closes.
     - Cover this in the separate binary smoke script/program, not in
       `dub test`.
-17. Put backend names last in new unittest names.
-    - Use names such as
-      `repl.loop.acceptsTrailingNewlineInAtom.ir`, not
-      `ir.repl.loop.acceptsTrailingNewlineInAtom`.
 
 Immediate continuation after this PR:
 
