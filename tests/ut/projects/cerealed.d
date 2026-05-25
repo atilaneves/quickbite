@@ -53,9 +53,6 @@ static foreach (backend; projectBackends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.text)
     unittest {
-        if (backend.bailsOutNewTreeWalker)
-            return;
-
         q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(T) length;

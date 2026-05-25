@@ -48,6 +48,19 @@ Current progress:
    They include `ExecutorBackend.treeWalking`, but those entries bail
    out for now. Follow-up PRs should remove the bail-outs one behavior
    at a time and implement the missing new tree walker support.
+6. The `projects.cerealed.templateLengthPrefixUsesRequestedWidth`
+   `treeWalking` bailout has been removed on branch
+   `new-tree-walker-template-length`. The new walker now covers the
+   extracted behaviours needed by that fixture: uninitialised dynamic
+   array length, lowered range `foreach` as `ForStatement`, signed
+   less-than, local dynamic array append, ref dynamic array append
+   writeback, right shift, multiplication, and runtime `ubyte` cast
+   truncation. `dub test` passed for this branch.
+
+Handoff note for the next agent: continue with the next
+`ut.projects.cerealed` bailout or red project-inspired fixture. Spawn
+subagents and orchestrate the TDD loop below instead of doing the next
+implementation slice inline in the main thread.
 
 For each cerealed integration test that we run on all backends, we
 take the following steps:

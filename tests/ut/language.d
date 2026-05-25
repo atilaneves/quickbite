@@ -1690,7 +1690,7 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("Unittest assertion failed.");
     }
 
-    @("castUbyteTruncates." ~ backend.text)
+    @("castUbyteRuntimeValueTruncates." ~ backend.text)
     unittest {
         runTests(q{
             unittest {
@@ -2125,6 +2125,100 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
                 int[] arr = [a, b];
                 assert(arr[0] == 10);
                 assert(arr[1] == 20);
+            }
+        }, backend);
+    }
+
+    @("uninitializedDynamicArrayLength." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                assert(values.length == 0);
+            }
+        }, backend);
+    }
+
+    @("foreachRange." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int sum;
+                foreach (i; 0 .. 3)
+                    sum += i;
+                assert(sum == 3);
+            }
+        }, backend);
+    }
+
+    @("lessThan." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 2;
+                assert(value < 3);
+            }
+        }, backend);
+    }
+
+    @("localDynamicArrayAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                values ~= value;
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("refDynamicArrayParameterAppend." ~ backend.text)
+    unittest {
+        runTests(q{
+            void append(ref ubyte[] values, ubyte value) {
+                values ~= value;
+            }
+
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                append(values, value);
+                assert(values.length == 1);
+                assert(values[0] == value);
+            }
+        }, backend);
+    }
+
+    @("rightShift." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 8;
+                uint amount = 1;
+                assert((value >> amount) == 4);
+            }
+        }, backend);
+    }
+
+    @("multiplication." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int value = 7;
+                int factor = 6;
+                assert(value * factor == 42);
+            }
+        }, backend);
+    }
+
+    @("castUbyteTruncates." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                uint value = 0x102;
+                assert(cast(ubyte) value == 0x02);
             }
         }, backend);
     }
