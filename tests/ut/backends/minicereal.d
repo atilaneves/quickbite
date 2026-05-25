@@ -1,9 +1,9 @@
-module ut.minicereal;
+module ut.backends.minicereal;
 
-import quickbite: ExecutorBackend, runTests;
+
+import ut.backends;
 import std.conv: text;
-import ut.backends: experimentalBackendTestsEnabled, matureExecutorBackends;
-import unit_threaded;
+
 
 @("minicerealFileCanRunTwice.dmdCodegen")
 unittest {

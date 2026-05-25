@@ -1,12 +1,14 @@
-module ut.backend_parity;
+module ut.backends.parity;
+
+
+import ut.backends;
+
 
 private:
 
-import quickbite: ExecutorBackend, runTests;
 import std.conv: text;
 import std.meta: AliasSeq;
-import ut.backends: matureExecutorBackends;
-import unit_threaded;
+
 
 static foreach (backend; matureExecutorBackends) {
     @("ok." ~ backend.text)

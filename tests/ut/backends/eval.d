@@ -1,13 +1,14 @@
-module ut.eval;
+module ut.backends.eval;
+
+
+import ut.backends;
+
 
 private:
 
-import ut;
-import quickbite: executor;
 import quickbite.executor: Value;
 import std.conv: text;
 import std.typecons: tuple;
-import ut.backends: evalBackends;
 
 static foreach (backend; evalBackends) {
     @("eval.add0." ~ backend.text)

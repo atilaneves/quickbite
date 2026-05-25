@@ -1,10 +1,8 @@
-module ut.repl;
+module ut.backends.repl;
 
-private:
 
-import quickbite: ExecutorBackend, executor;
-import ut.backends: matureExecutorBackends;
-import unit_threaded;
+import ut.backends;
+
 
 @("repl.loop.evaluatesExpressionCellsUntilQuit")
 unittest {

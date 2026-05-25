@@ -1,9 +1,8 @@
-module ut.bytecode;
+module ut.backends.bytecode;
 
-private:
 
-import quickbite: ExecutorBackend, runTests;
-import unit_threaded;
+import ut.backends;
+
 
 @("voidFunctionReturnsToCaller.bytecode")
 unittest {

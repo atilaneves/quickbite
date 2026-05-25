@@ -54,13 +54,15 @@ public imported!"quickbite.ir.module_".Module lowerModule(
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
-    // Keyed by source content and import paths; prevents re-registering the
-    // same module in DMD's process-global table when multiple backends parse
-    // the same file with the same import context.
-    private imported!"dmd.dmodule".Module[string] sourceCache;
-
     private this() {
         import core.sync.mutex: Mutex;
+
+        mutex = new Mutex;
+        initializeDmdState;
+        initialized = true;
+    }
+
+    private void initializeDmdState() {
         import dmd.common.charactertables:
             IdentifierCharLookup,
             IdentifierTable;
@@ -69,7 +71,6 @@ final class Compiler {
         import dmd.globals: global;
         import std.algorithm.iteration: each;
 
-        mutex = new Mutex;
         initDMD;
         findImportPaths.each!addImport;
 
@@ -128,7 +129,6 @@ final class Compiler {
         global.errors = 0;
         global.warnings = 0;
         diagnostics.length = 0;
-        initialized = true;
     }
 
     void shutdown() {
@@ -161,19 +161,19 @@ final class Compiler {
     ParsedModule parseModule(in string source, in string[] importPaths) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
-        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
+        import dmd.frontend:
+            addImport,
+            deinitializeDMD,
+            fullSemantic,
+            dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
 
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        const key = cacheKey(source, importPaths);
-        if (auto cached = key in sourceCache) {
-            ParsedModule result;
-            result.module_ = *cached;
-            return result;
-        }
+        deinitializeDMD;
+        initializeDmdState;
 
         const originalPathLength = global.path.length;
         scope(exit) global.path.setDim(originalPathLength);
@@ -198,16 +198,7 @@ final class Compiler {
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
 
-        sourceCache[key] = parsed.module_;
-
         return parsed;
-    }
-
-    private string cacheKey(in string source, in string[] importPaths) const {
-        import std.array: join;
-        import std.conv: text;
-
-        return text(source, "\0", importPaths.join("\0"));
     }
 }
 
