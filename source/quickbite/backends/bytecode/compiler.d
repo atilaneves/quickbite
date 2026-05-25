@@ -94,6 +94,13 @@ private struct Compiler {
             return;
         }
 
+        if (auto subtract = expression.isMinExp) {
+            compileExpression(subtract.e1);
+            compileExpression(subtract.e2);
+            module_.code ~= Instruction(OpCode.subtract);
+            return;
+        }
+
         if (auto call = expression.isCallExp) {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
