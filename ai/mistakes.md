@@ -126,3 +126,7 @@
 - DMD declaration helpers are type-specific. Don't call a `VarDeclaration`
   helper such as `declarationName` with a `FuncDeclaration`; use the existing
   function helper instead.
+
+- For established interactive-tool behavior, check the closest precedent
+  before designing. For a Python-like REPL, use Python as the default baseline
+  and diverge only after explaining the concrete reason.

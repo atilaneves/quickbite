@@ -20,24 +20,13 @@ unittest {
     output.should == ["1", "2"];
 }
 
-@("repl.binary.evaluatesExpressionCells")
+@("repl.binary.cEvaluatesExpressionCellSilently")
 unittest {
-    import std.process: Redirect, pipeProcess, wait;
+    import std.process: execute;
 
-    auto repl = pipeProcess(
-        [replExecutable],
-        Redirect.stdin | Redirect.stdout,
-    );
-
-    repl.stdin.write("1\n2\n:q\n");
-    repl.stdin.close;
-
-    string output;
-    foreach (line; repl.stdout.byLine)
-        output ~= line.idup ~ "\n";
-
-    wait(repl.pid).should == 0;
-    output.should == "1\n2\n";
+    const result = execute([replExecutable, "-c", "1 + 2"]);
+    result.status.should == 0;
+    result.output.should == "";
 }
 
 private string replExecutable() {

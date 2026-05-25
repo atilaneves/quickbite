@@ -2,20 +2,34 @@ module repl.main;
 
 private:
 
-public int main() {
+public int main(string[] args) {
     import quickbite: ExecutorBackend, executor;
-    import quickbite.repl: runReplLoop;
     import std.stdio: stdin, writeln;
 
     auto active = executor(ExecutorBackend.ir);
-    string[] inputAtoms;
 
-    foreach (line; stdin.byLineCopy) {
-        inputAtoms ~= line;
+    if (args.length == 3 && args[1] == "-c") {
+        active.eval(args[2]);
+        return 0;
     }
 
-    foreach (line; runReplLoop(active, inputAtoms))
-        writeln(line);
+    writeln("Quickbite REPL");
+    writePrompt;
+
+    foreach (line; stdin.byLineCopy) {
+        if (line == ":q" || line == ":quit")
+            break;
+
+        writeln(active.eval(line).toString);
+        writePrompt;
+    }
 
     return 0;
+}
+
+private void writePrompt() {
+    import std.stdio: stdout, write;
+
+    write("> ");
+    stdout.flush;
 }
