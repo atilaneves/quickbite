@@ -61,6 +61,13 @@ final class Compiler {
 
     private this() {
         import core.sync.mutex: Mutex;
+
+        mutex = new Mutex;
+        initializeDmdState;
+        initialized = true;
+    }
+
+    private void initializeDmdState() {
         import dmd.common.charactertables:
             IdentifierCharLookup,
             IdentifierTable;
@@ -69,7 +76,6 @@ final class Compiler {
         import dmd.globals: global;
         import std.algorithm.iteration: each;
 
-        mutex = new Mutex;
         initDMD;
         findImportPaths.each!addImport;
 
@@ -128,7 +134,6 @@ final class Compiler {
         global.errors = 0;
         global.warnings = 0;
         diagnostics.length = 0;
-        initialized = true;
     }
 
     void shutdown() {
@@ -161,7 +166,10 @@ final class Compiler {
     ParsedModule parseModule(in string source, in string[] importPaths) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
-        import dmd.frontend: addImport, fullSemantic, dmdParseModule = parseModule;
+        import dmd.frontend:
+            addImport,
+            fullSemantic,
+            dmdParseModule = parseModule;
         import dmd.globals: global;
         import std.conv: text;
 

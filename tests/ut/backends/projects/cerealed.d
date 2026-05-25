@@ -1,8 +1,9 @@
-module ut.projects.cerealed;
+module ut.backends.projects.cerealed;
 
-private:
 
-import ut.projects;
+import ut.backends.projects;
+import std.conv: text;
+
 
 static foreach (backend; projectBackends) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~ backend.text)

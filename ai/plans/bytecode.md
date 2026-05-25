@@ -143,6 +143,23 @@ complement separate unless it is explicitly approved. Stop before locals,
 parameters, branches, or typed values unless those behaviours are explicitly
 approved.
 
+## Design Constraints From Review
+
+Keep review feedback aligned with the staged plan. The integer-only `long[]`
+value stack is an accepted current shortcut; do not treat boolean/integer
+separation as a blocker until the typed-value slice is approved.
+
+The bytecode artifact should not depend on DMD declaration identity at
+execution time. DMD AST and `FuncDeclaration` lookup belong in the compiler;
+compiled bytecode should expose bytecode-native function ids, entry offsets, or
+patched call targets to the executor.
+
+Before growing calls beyond the current zero-argument helper shape, make the
+stack and call result convention explicit. Either every call produces one VM
+value, including a future `Void` sentinel if the shared value model adds one,
+or function metadata must state the return arity. Expression statements should
+then discard results explicitly instead of relying on accidental stack shape.
+
 ## Remaining Work
 
 Grow bytecode by moving one approved behaviour at a time into parity coverage:
@@ -153,7 +170,10 @@ Grow bytecode by moving one approved behaviour at a time into parity coverage:
   needed for parity
 - implement integer unary operators, local variables, assignment, branches, and
   loops
-- add call arguments and a real frame model for locals and parameters
+- remove DMD declaration identity from executed bytecode before dependency
+  bytecode caching or cross-module bytecode execution work
+- add call arguments and a real frame model for locals and parameters, after
+  the call result and expression-statement discard convention is explicit
 - support void functions and explicit bare returns
 - replace the current integer-only value stack with typed values, first for
   booleans and integers, then for all D types needed by covered behaviours

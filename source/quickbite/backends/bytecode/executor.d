@@ -35,7 +35,6 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
         in string source,
     ) {
         import quickbite.frontend.compiler: parseModule;
-
         return testSummary(parseModule(source).module_);
     }
 

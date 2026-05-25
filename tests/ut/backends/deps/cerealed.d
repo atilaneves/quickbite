@@ -1,11 +1,9 @@
-module ut.cerealed;
+module ut.backends.deps.cerealed;
 
-private:
 
-import quickbite: ExecutorBackend, runTests, runTestsFromFile;
+import ut.backends;
 import std.conv: text;
-import ut.backends: matureExecutorBackends;
-import unit_threaded;
+
 
 private immutable string[] testFileNames = [
     "bugs.d",
