@@ -35,6 +35,8 @@ until all tests pass. Ask for feedback after the refactoring step.
 
 Stop and wait for approval before adding or modifying any test.
 
+Test behaviours, not implementations.
+
 ## Style
 
 - OTBS. For functions with many attributes, `{` on its own line is acceptable.
@@ -58,6 +60,7 @@ Stop and wait for approval before adding or modifying any test.
 - No `synchronized`.
 - Omit empty parens: `doStuff;` not `doStuff();`.
 - Functions below first use; variables close to use.
+- Do not use exceptions for control flow.
 
 # Testing
 
