@@ -70,20 +70,32 @@ private struct Compiler {
             if (auto equal = assert_.e1.isEqualExp) {
                 compileExpression(equal.e1);
                 compileExpression(equal.e2);
-                module_.code ~= Instruction(OpCode.assertEqual);
+                if (isEqualExpression(equal)) {
+                    compileAssertEqual;
+                    return;
+                }
+
+                module_.code ~= Instruction(OpCode.notEqual);
+                compileAssertCondition;
                 return;
             }
 
             compileExpression(assert_.e1);
-            module_.code ~= Instruction(OpCode.pushInteger, 1);
-            module_.code ~= Instruction(OpCode.assertEqual);
+            compileAssertCondition;
             return;
         }
 
         if (auto equal = expression.isEqualExp) {
             compileExpression(equal.e1);
             compileExpression(equal.e2);
-            module_.code ~= Instruction(OpCode.equal);
+            module_.code ~= Instruction(equalOpCode(equal));
+            return;
+        }
+
+        OpCode op;
+        if (binaryOpCode(expression, op)) {
+            auto binary = expression.isBinExp;
+            compileBinaryExpression(binary.e1, binary.e2, op);
             return;
         }
 
@@ -96,6 +108,94 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
+    }
+
+    private void compileAssertCondition() {
+        module_.code ~= Instruction(OpCode.pushInteger, 0);
+        module_.code ~= Instruction(OpCode.notEqual);
+        module_.code ~= Instruction(OpCode.pushInteger, 1);
+        compileAssertEqual;
+    }
+
+    private void compileAssertEqual() {
+        module_.code ~= Instruction(OpCode.assertEqual);
+    }
+
+    private OpCode equalOpCode(imported!"dmd.expression".EqualExp equal) {
+        return isNotEqualExpression(equal) ? OpCode.notEqual : OpCode.equal;
+    }
+
+    private bool isEqualExpression(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+        return equal.op == EXP.equal;
+    }
+
+    private bool isNotEqualExpression(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+        return equal.op == EXP.notEqual;
+    }
+
+    private bool binaryOpCode(
+        imported!"dmd.expression".Expression expression,
+        out OpCode op,
+    ) {
+        import dmd.tokens: EXP;
+        with (EXP) switch (expression.op) {
+            case lessThan:
+                op = OpCode.lessThan;
+                return true;
+            case lessOrEqual:
+                op = OpCode.lessOrEqual;
+                return true;
+            case greaterThan:
+                op = OpCode.greaterThan;
+                return true;
+            case greaterOrEqual:
+                op = OpCode.greaterOrEqual;
+                return true;
+            case add:
+                op = OpCode.add;
+                return true;
+            case min:
+                op = OpCode.subtract;
+                return true;
+            case mul:
+                op = OpCode.multiply;
+                return true;
+            case div:
+                op = OpCode.divide;
+                return true;
+            case mod:
+                op = OpCode.modulo;
+                return true;
+            case rightShift:
+                op = OpCode.shiftRight;
+                return true;
+            case leftShift:
+                op = OpCode.shiftLeft;
+                return true;
+            case or:
+                op = OpCode.bitwiseOr;
+                return true;
+            case and:
+                op = OpCode.bitwiseAnd;
+                return true;
+            case xor:
+                op = OpCode.bitwiseXor;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void compileBinaryExpression(
+        imported!"dmd.expression".Expression left,
+        imported!"dmd.expression".Expression right,
+        in OpCode op,
+    ) {
+        compileExpression(left);
+        compileExpression(right);
+        module_.code ~= Instruction(op);
     }
 
     private long functionIndex(imported!"dmd.func".FuncDeclaration function_) {
