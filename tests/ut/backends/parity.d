@@ -2288,6 +2288,36 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
         }, backend);
     }
 
+    @("dynamicArrayStructFieldReturnValue." ~ backend.text)
+    unittest {
+        runTests(q{
+            struct Box {
+                ubyte[] values;
+
+                this(ubyte[] input) {
+                    values = input;
+                }
+
+                ubyte[] get() {
+                    return values;
+                }
+            }
+
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] values = [first, second];
+                auto box = Box(values);
+
+                const result = box.get;
+
+                assert(result.length == 2);
+                assert(result[0] == first);
+                assert(result[1] == second);
+            }
+        }, backend);
+    }
+
     @("postIncrementSizeTIndex." ~ backend.text)
     unittest {
         runTests(q{

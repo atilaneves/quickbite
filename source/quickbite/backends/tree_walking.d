@@ -129,6 +129,11 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
             return Value(0L);
 
         if (auto dotVar = expression.isDotVarExp) {
+            long[] array;
+            if (structArrayExpressionValue(dotVar, array) ||
+                thisStructArrayExpressionValue(dotVar, array))
+                return Value(array);
+
             long value;
             if (scalarStructFieldValue(dotVar, value))
                 return Value(value);
