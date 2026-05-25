@@ -2,7 +2,7 @@ module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
 import quickbite.benchmarks: moduleDisplayName, populateDmdCodegenModuleSet;
-import quickbite.backends.dmd_codegen: DmdCodegen;
+import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
 import quickbite.backends.dmd_ctfe: DmdCtfe;
 import quickbite.backends.ir: IrExecutor;
 import quickbite.backends.tree_walking: TreeWalkingExecutor;
@@ -75,7 +75,7 @@ int main(string[] args) {
     backends["treeWalkingOld"] = new TreeWalkingExecutorOld;
     backends["treeWalking"]    = new TreeWalkingExecutor;
     backends["dmd-ctfe"]       = new DmdCtfe;
-    backends["dmd-codegen"]    = new DmdCodegen(linkFiles, importPaths);
+    backends["dmd-codegen"]    = new DmdCodegenSharedLib(linkFiles, importPaths);
 
     if (backendNames.length == 0)
         backendNames = dubFixtures.length > 0

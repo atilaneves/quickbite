@@ -27,6 +27,97 @@ tried, what happened, and why the result was insufficient.
 
 ## Current Handoff Snapshot
 
+2026-05-25 handoff after RAM executor direction discussion:
+
+- Worktree: `worktrees/dmd-codegen-ram`.
+- Branch: `dmd-codegen-ram`.
+- Current committed head:
+
+  ```text
+  4eef642 Report DMD codegen ready relocations
+  ```
+
+- Important: the worktree currently has an interrupted, uncommitted RAM
+  executor experiment in `source/quickbite/backends/dmd_codegen.d`. It changed
+  `CodegenExecution` to select a `ram` kind and added a large first-pass
+  `mmap`/relocation/execution implementation. That edit was intentionally
+  stopped during review because it bundled too many unknowns into one change.
+  Do not merge or build on that WIP as-is. Revert or set it aside before doing
+  the next focused step.
+- The committed RAM diagnostics are useful scaffolding, but they are not a
+  mergeable end state by themselves. The user does not care about diagnostics
+  as an intermediate deliverable. A mergeable unit should produce observable
+  behavior: generated DMD codegen objects running from RAM for at least one
+  approved test case.
+- Do not switch the existing `DmdCodegen` backend wholesale to RAM. Instead,
+  split the current shared-library implementation out first:
+  - Rename the existing public executor class from `DmdCodegen` to
+    `DmdCodegenSharedLib`.
+  - Keep the benchmark/backend name `dmd-codegen` mapped to the shared-library
+    implementation until the RAM executor is real enough to replace it.
+  - Update imports and direct constructor calls accordingly.
+  - Consider whether `ExecutorBackend.dmdCodegen` should keep pointing at the
+    shared-library executor for now, or whether a later change should add a
+    separate enum case once RAM has an approved test.
+- After that rename, add a separate RAM executor rather than mutating the
+  shared-library path:
+  - Introduce a new executor such as `DmdCodegenRam`.
+  - Share the common DMD semantic/codegen session creation between
+    `DmdCodegenSharedLib` and `DmdCodegenRam`.
+  - Keep object generation, generated-object bytes, and entrypoint discovery in
+    common code.
+  - Let `DmdCodegenSharedLib` continue to run through
+    `dmd -shared` / `dlopen` / `dlsym`.
+  - Let `DmdCodegenRam` consume the same `CodegenSession` and grow a RAM image
+    executor behind focused tests.
+- Add RAM tests gradually and only with explicit approval. Do not add
+  `DmdCodegenRam` to `matureExecutorBackends`. Start with one tiny behavior
+  test, then promote more cases as each missing capability is implemented.
+  Suggested progression:
+  - trivial unittest with local integer arithmetic,
+  - assertion failure propagation,
+  - function calls,
+  - module data and static data,
+  - arrays/slices,
+  - minicereal,
+  - cerealed benchmark fixtures.
+- Keep the shared-library executor as the stable fallback while RAM support is
+  incomplete. If many RAM tests fail, that is expected; expand RAM coverage one
+  approved test at a time rather than forcing the existing DMD-codegen suite
+  through the incomplete path.
+- The previous diagnostic commits may be retained as implementation support if
+  they help the RAM executor. They should not be presented as the reason to
+  merge. If diagnostics are no longer needed once RAM execution works, delete
+  or hide them.
+
+Progress after continuing this snapshot:
+
+- The interrupted uncommitted RAM executor WIP in
+  `source/quickbite/backends/dmd_codegen.d` was set aside by restoring that
+  file to committed head before making new edits.
+- The shared-library executor was renamed to `DmdCodegenSharedLib`.
+  `ExecutorBackend.dmdCodegen` and the benchmark name `dmd-codegen` still map
+  to this shared-library executor.
+- A compatibility alias, `public alias DmdCodegen = DmdCodegenSharedLib;`,
+  remains for existing callers. The test direct constructor call was left
+  unchanged because test edits require explicit approval.
+- Verification:
+
+  ```text
+  dub test
+  591 test(s) run, 0 failed.
+  ```
+
+Immediate next step:
+
+1. Ask for approval before adding the first `DmdCodegenRam` test.
+2. After approval, add the smallest RAM behavior test: a trivial unittest with
+   local integer arithmetic.
+3. Implement the dumbest separate `DmdCodegenRam` path needed to pass it,
+   without replacing the shared-library `dmd-codegen` backend mapping.
+
+Historical snapshot below is retained for evidence and context.
+
 2026-05-25 handoff after RAM ready-relocation diagnostic slice:
 
 - Worktree: `worktrees/dmd-codegen-ram`.

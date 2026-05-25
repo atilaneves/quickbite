@@ -205,7 +205,9 @@ private void registerLoadedHandlesCleanup() @trusted {
     _loadedHandlesCleanupRegistered = true;
 }
 
-public final class DmdCodegen : imported!"quickbite.executor".Executor {
+public alias DmdCodegen = DmdCodegenSharedLib;
+
+public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor {
     private string[] linkFiles;
     private string[] sourceImportPaths;
 

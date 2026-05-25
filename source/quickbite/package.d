@@ -58,7 +58,7 @@ public imported!"quickbite.executor".Executor executor(
             import quickbite.backends.dmd_ctfe: DmdCtfe;
             return new DmdCtfe;
         case ExecutorBackend.dmdCodegen:
-            import quickbite.backends.dmd_codegen: DmdCodegen;
-            return new DmdCodegen;
+            import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
+            return new DmdCodegenSharedLib;
     }
 }
