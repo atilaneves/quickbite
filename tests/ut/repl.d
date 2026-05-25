@@ -20,6 +20,18 @@ unittest {
     output.should == ["1", "2"];
 }
 
+@("repl.loop.declarationPersistsAcrossCells")
+unittest {
+    import quickbite.repl: runReplLoop;
+
+    auto output = runReplLoop(
+        executor(ExecutorBackend.ir),
+        ["int x;", "x", ":q"],
+    );
+
+    output.should == ["0"];
+}
+
 @("repl.binary.cEvaluatesExpressionCellSilently")
 unittest {
     import std.process: execute;
