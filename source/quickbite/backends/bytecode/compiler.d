@@ -76,12 +76,12 @@ private struct Compiler {
                 }
 
                 module_.code ~= Instruction(OpCode.notEqual);
-                compileAssertTrue;
+                compileAssertCondition;
                 return;
             }
 
             compileExpression(assert_.e1);
-            compileAssertTrue;
+            compileAssertCondition;
             return;
         }
 
@@ -92,85 +92,10 @@ private struct Compiler {
             return;
         }
 
-        if (isLessThanExpression(expression)) {
-            auto lessThan = expression.isBinExp;
-            compileBinaryExpression(lessThan.e1, lessThan.e2, OpCode.lessThan);
-            return;
-        }
-
-        if (isLessOrEqualExpression(expression)) {
-            auto lessOrEqual = expression.isBinExp;
-            compileBinaryExpression(
-                lessOrEqual.e1,
-                lessOrEqual.e2,
-                OpCode.lessOrEqual,
-            );
-            return;
-        }
-
-        if (isGreaterThanExpression(expression)) {
-            auto greaterThan = expression.isBinExp;
-            compileBinaryExpression(greaterThan.e1, greaterThan.e2, OpCode.greaterThan);
-            return;
-        }
-
-        if (isGreaterOrEqualExpression(expression)) {
-            auto greaterOrEqual = expression.isBinExp;
-            compileBinaryExpression(
-                greaterOrEqual.e1,
-                greaterOrEqual.e2,
-                OpCode.greaterOrEqual,
-            );
-            return;
-        }
-
-        if (auto add = expression.isAddExp) {
-            compileBinaryExpression(add.e1, add.e2, OpCode.add);
-            return;
-        }
-
-        if (auto subtract = expression.isMinExp) {
-            compileBinaryExpression(subtract.e1, subtract.e2, OpCode.subtract);
-            return;
-        }
-
-        if (auto multiply = expression.isMulExp) {
-            compileBinaryExpression(multiply.e1, multiply.e2, OpCode.multiply);
-            return;
-        }
-
-        if (auto divide = expression.isDivExp) {
-            compileBinaryExpression(divide.e1, divide.e2, OpCode.divide);
-            return;
-        }
-
-        if (auto modulo = expression.isModExp) {
-            compileBinaryExpression(modulo.e1, modulo.e2, OpCode.modulo);
-            return;
-        }
-
-        if (auto shiftRight = expression.isShrExp) {
-            compileBinaryExpression(shiftRight.e1, shiftRight.e2, OpCode.shiftRight);
-            return;
-        }
-
-        if (auto shiftLeft = expression.isShlExp) {
-            compileBinaryExpression(shiftLeft.e1, shiftLeft.e2, OpCode.shiftLeft);
-            return;
-        }
-
-        if (auto bitwiseOr = expression.isOrExp) {
-            compileBinaryExpression(bitwiseOr.e1, bitwiseOr.e2, OpCode.bitwiseOr);
-            return;
-        }
-
-        if (auto bitwiseAnd = expression.isAndExp) {
-            compileBinaryExpression(bitwiseAnd.e1, bitwiseAnd.e2, OpCode.bitwiseAnd);
-            return;
-        }
-
-        if (auto bitwiseXor = expression.isXorExp) {
-            compileBinaryExpression(bitwiseXor.e1, bitwiseXor.e2, OpCode.bitwiseXor);
+        OpCode op;
+        if (binaryOpCode(expression, op)) {
+            auto binary = expression.isBinExp;
+            compileBinaryExpression(binary.e1, binary.e2, op);
             return;
         }
 
@@ -185,7 +110,7 @@ private struct Compiler {
         throw new Exception(text("Unsupported bytecode expression: ", expression.op));
     }
 
-    private void compileAssertTrue() {
+    private void compileAssertCondition() {
         module_.code ~= Instruction(OpCode.pushInteger, 1);
         compileAssertEqual;
     }
@@ -200,46 +125,65 @@ private struct Compiler {
 
     private bool isEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
-
         return equal.op == EXP.equal;
     }
 
     private bool isNotEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
-
         return equal.op == EXP.notEqual;
     }
 
-    private bool isLessThanExpression(
+    private bool binaryOpCode(
         imported!"dmd.expression".Expression expression,
+        out OpCode op,
     ) {
         import dmd.tokens: EXP;
-
-        return expression.op == EXP.lessThan;
-    }
-
-    private bool isLessOrEqualExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.tokens: EXP;
-
-        return expression.op == EXP.lessOrEqual;
-    }
-
-    private bool isGreaterThanExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.tokens: EXP;
-
-        return expression.op == EXP.greaterThan;
-    }
-
-    private bool isGreaterOrEqualExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.tokens: EXP;
-
-        return expression.op == EXP.greaterOrEqual;
+        with (EXP) switch (expression.op) {
+            case lessThan:
+                op = OpCode.lessThan;
+                return true;
+            case lessOrEqual:
+                op = OpCode.lessOrEqual;
+                return true;
+            case greaterThan:
+                op = OpCode.greaterThan;
+                return true;
+            case greaterOrEqual:
+                op = OpCode.greaterOrEqual;
+                return true;
+            case add:
+                op = OpCode.add;
+                return true;
+            case min:
+                op = OpCode.subtract;
+                return true;
+            case mul:
+                op = OpCode.multiply;
+                return true;
+            case div:
+                op = OpCode.divide;
+                return true;
+            case mod:
+                op = OpCode.modulo;
+                return true;
+            case rightShift:
+                op = OpCode.shiftRight;
+                return true;
+            case leftShift:
+                op = OpCode.shiftLeft;
+                return true;
+            case or:
+                op = OpCode.bitwiseOr;
+                return true;
+            case and:
+                op = OpCode.bitwiseAnd;
+                return true;
+            case xor:
+                op = OpCode.bitwiseXor;
+                return true;
+            default:
+                return false;
+        }
     }
 
     private void compileBinaryExpression(
