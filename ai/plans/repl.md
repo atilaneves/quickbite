@@ -77,7 +77,8 @@
 - `source/quickbite/executor.d` now has a structured REPL API:
   `Repl.CellResult` with `Repl.CellStatus.incomplete`, `void_`, and `value`.
   `Executor` now exposes
-  `evalReplCell(in string transcript, in string input)`.
+  `runVoidReplCell(in string transcript, in string input)`, while the shared
+  frontend helper keeps `evalReplCell(...)` as a free function.
 - `source/quickbite/repl.d` now keeps a transcript and branches only on
   `Repl.CellStatus`. The `with` around the status switch is intentional.
   Do not use `with` for tiny one-off blocks, but keep it for these switches
@@ -96,6 +97,9 @@
   transcript state as `runReplLoop`. The previous interactive executable still
   called `active.eval(line)`, which is why manual input such as `int x;` kept
   failing even after the unit-loop work.
+- `source/quickbite/frontend/repl.d` now owns the shared cell classification
+  and dispatch logic. Backends only provide `runVoidReplCell`; the frontend
+  helper decides whether to call `eval` or the void-cell hook.
 - `source/quickbite/frontend/compiler.d` initializes DMD identifier character
   lookup tables. This fixed a segfault hit when the REPL used a raw DMD
   `Parser` for cell classification.
@@ -187,7 +191,7 @@ test first and wait for approval before editing tests.
      tests.
    - Replace this with a shell script or separate D smoke program that is
      run explicitly, not per normal unit-test run.
-5. Keep the binary as a thin client.
+5. Keep the binary as a thin client. [done for the backend hook split]
    - Move diagnostic handling and continuation behavior into the shared
      REPL loop/event layer.
    - `repl/main.d` should only handle I/O, prompts, and rendering returned
