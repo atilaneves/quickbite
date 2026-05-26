@@ -215,6 +215,20 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
     }
 }
 
+private struct ComparisonSpec {
+    public string op;
+    public string symbol;
+}
+
+private enum comparisonSpecs = [
+    ComparisonSpec("equal", "=="),
+    ComparisonSpec("notEqual", "!="),
+    ComparisonSpec("lessThan", "<"),
+    ComparisonSpec("lessOrEqual", "<="),
+    ComparisonSpec("greaterThan", ">"),
+    ComparisonSpec("greaterOrEqual", ">="),
+];
+
 private bool comparisonHolds(
     in imported!"quickbite.executor".Value left,
     in imported!"quickbite.executor".Value right,
@@ -222,36 +236,20 @@ private bool comparisonHolds(
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
-    with (OpCode) final switch (op) {
-        case equal:
-            return left == right;
-        case notEqual:
-            return left != right;
-        case lessThan:
-            return left.asLong < right.asLong;
-        case lessOrEqual:
-            return left.asLong <= right.asLong;
-        case greaterThan:
-            return left.asLong > right.asLong;
-        case greaterOrEqual:
-            return left.asLong >= right.asLong;
-        case setAssertMessage:
-        case pushValue:
-        case call:
-        case add:
-        case subtract:
-        case multiply:
-        case divide:
-        case modulo:
-        case shiftRight:
-        case shiftLeft:
-        case bitwiseOr:
-        case bitwiseAnd:
-        case bitwiseXor:
-        case assertCompare:
-        case assertTrue:
-        case ret:
-        case halt:
+    with (OpCode) switch (op) {
+        static foreach (comparison; comparisonSpecs) {
+            mixin("case " ~ comparison.op ~ ":");
+                static if (comparison.symbol == "==") {
+                    return left == right;
+                } else static if (comparison.symbol == "!=") {
+                    return left != right;
+                } else {
+                    return mixin(
+                        "left.asLong " ~ comparison.symbol ~ " right.asLong"
+                    );
+                }
+        }
+        default:
             return false;
     }
 }
@@ -261,36 +259,12 @@ private string comparisonOperator(
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
-    with (OpCode) final switch (op) {
-        case equal:
-            return "==";
-        case notEqual:
-            return "!=";
-        case lessThan:
-            return "<";
-        case lessOrEqual:
-            return "<=";
-        case greaterThan:
-            return ">";
-        case greaterOrEqual:
-            return ">=";
-        case setAssertMessage:
-        case pushValue:
-        case call:
-        case add:
-        case subtract:
-        case multiply:
-        case divide:
-        case modulo:
-        case shiftRight:
-        case shiftLeft:
-        case bitwiseOr:
-        case bitwiseAnd:
-        case bitwiseXor:
-        case assertCompare:
-        case assertTrue:
-        case ret:
-        case halt:
+    with (OpCode) switch (op) {
+        static foreach (comparison; comparisonSpecs) {
+            mixin("case " ~ comparison.op ~ ":");
+                return comparison.symbol;
+        }
+        default:
             return "==";
     }
 }
