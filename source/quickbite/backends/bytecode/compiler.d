@@ -62,7 +62,10 @@ private struct Compiler {
 
     private void compileExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp) {
-            module_.code ~= Instruction(OpCode.pushInteger, integer.getInteger);
+            module_.code ~= Instruction(
+                OpCode.pushValue,
+                literalValue(integer),
+            );
             return;
         }
 
@@ -252,5 +255,47 @@ private struct Compiler {
                 return function_;
 
         throw new Exception("Unsupported bytecode call target.");
+    }
+}
+
+private imported!"quickbite.executor".Value literalValue(
+    imported!"dmd.expression".IntegerExp integer,
+) @trusted {
+    import dmd.astenums: TY;
+    import quickbite.executor: Value;
+
+    assert(
+        integer.type !is null,
+        "Bytecode integer literals must have DMD semantic type information.",
+    );
+
+    const basetype = integer.type.toBasetype;
+    with (TY) switch (basetype.ty) {
+        case Tbool:
+            return Value(integer.getInteger != 0);
+        case Tint8:
+            return Value(cast(byte) integer.getInteger);
+        case Tuns8:
+            return Value(cast(ubyte) integer.getInteger);
+        case Tint16:
+            return Value(cast(short) integer.getInteger);
+        case Tuns16:
+            return Value(cast(ushort) integer.getInteger);
+        case Tint32:
+            return Value(cast(int) integer.getInteger);
+        case Tuns32:
+            return Value(cast(uint) integer.getInteger);
+        case Tint64:
+            return Value(cast(long) integer.getInteger);
+        case Tuns64:
+            return Value(cast(ulong) integer.getInteger);
+        case Tchar:
+            return Value(cast(char) integer.getInteger);
+        case Twchar:
+            return Value(cast(wchar) integer.getInteger);
+        case Tdchar:
+            return Value(cast(dchar) integer.getInteger);
+        default:
+            return Value(cast(long) integer.getInteger);
     }
 }

@@ -43,6 +43,25 @@ static foreach (backend; matureExecutorBackends) {
     }
 }
 
+@("cerealed.floatRoundTrip.ir")
+unittest {
+    import ut.dub_paths: dubImportPaths;
+
+    q{
+        import cerealed.cerealiser;
+        import cerealed.decerealiser;
+
+        unittest {
+            auto enc = Cerealiser();
+            float value = -4.3f;
+            enc ~= value;
+
+            auto dec = Decerealiser(enc.bytes);
+            assert(dec.value!float == value);
+        }
+    }.runTests(dubImportPaths, ExecutorBackend.ir);
+}
+
 @("cerealed.valueArrayUsesExplicitUbyteLengthWidth.treeWalkingOld")
 unittest {
     import ut.dub_paths: dubImportPaths;

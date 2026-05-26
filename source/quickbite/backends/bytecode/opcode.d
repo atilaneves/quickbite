@@ -3,7 +3,7 @@ module quickbite.backends.bytecode.opcode;
 private:
 
 public enum OpCode : ubyte {
-    pushInteger,
+    pushValue,
     call,
     add,
     subtract,
@@ -29,6 +29,25 @@ public enum OpCode : ubyte {
 }
 
 public struct Instruction {
+    import quickbite.executor: Value;
+
     public OpCode op;
     public long operand;
+    public Value valueOperand;
+
+    public this(in OpCode op) @safe pure {
+        this.op = op;
+    }
+
+    public this(in OpCode op, in long operand) @safe pure {
+        this.op = op;
+        this.operand = operand;
+        this.valueOperand = Value(operand);
+    }
+
+    public this(in OpCode op, in Value operand) @safe pure {
+        this.op = op;
+        this.valueOperand = operand;
+        this.operand = operand.asLong;
+    }
 }
