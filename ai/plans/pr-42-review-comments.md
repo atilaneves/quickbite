@@ -7,7 +7,7 @@ comment in a separate worker worktree and integrate the accepted changes here.
 - [x] Runtime floating-to-integer casts in the IR backend must convert
   numerically, not through floating bit patterns. Probe:
   `ut.backends.ir.eval.castsFloatingValueNumerically`.
-- [ ] Floating `-`, `*`, and `/` in the IR backend must use numeric floating
+- [x] Floating `-`, `*`, and `/` in the IR backend must use numeric floating
   values instead of integer operations over floating bit patterns. Probe:
   `ut.backends.ir.eval.floatingSubtractionUsesNumericValues`.
 - [ ] IR scalar equality must not treat integer values as equal to matching

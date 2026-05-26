@@ -1589,87 +1589,112 @@ private void executeBinaryInstruction(
 
     const leftValue = readTemporaryValue(temporaries, left);
     const rightValue = readTemporaryValue(temporaries, right);
-    long result;
-    Value valueResult;
+    long integerResult;
+    Value result;
+    bool hasResult;
 
     with (Operation)
     final switch (operation) {
         case add:
-            result = leftValue.asLong + rightValue.asLong;
+            integerResult = leftValue.asLong + rightValue.asLong;
             break;
         case addDouble:
-            valueResult = Value(leftValue.asDouble + rightValue.asDouble);
+            result = Value(leftValue.asDouble + rightValue.asDouble);
+            hasResult = true;
             break;
         case powDouble:
             import std.math: pow;
 
-            valueResult = Value(pow(leftValue.asDouble, rightValue.asDouble));
+            result = Value(pow(leftValue.asDouble, rightValue.asDouble));
+            hasResult = true;
             break;
         case subtract:
-            result = leftValue.asLong - rightValue.asLong;
+            if (leftValue.isFloating || rightValue.isFloating) {
+                result = Value(leftValue.asDouble - rightValue.asDouble);
+                hasResult = true;
+                break;
+            }
+
+            integerResult = leftValue.asLong - rightValue.asLong;
             break;
         case multiply:
-            result = leftValue.asLong * rightValue.asLong;
+            if (leftValue.isFloating || rightValue.isFloating) {
+                result = Value(leftValue.asDouble * rightValue.asDouble);
+                hasResult = true;
+                break;
+            }
+
+            integerResult = leftValue.asLong * rightValue.asLong;
             break;
         case divide:
+            if (leftValue.isFloating || rightValue.isFloating) {
+                result = Value(leftValue.asDouble / rightValue.asDouble);
+                hasResult = true;
+                break;
+            }
+
             const rightLong = rightValue.asLong;
             enforceNonZeroDivisor(rightLong);
-            result = leftValue.asLong / rightLong;
+            integerResult = leftValue.asLong / rightLong;
             break;
         case modulo:
             const rightLong = rightValue.asLong;
             enforceNonZeroDivisor(rightLong);
-            result = leftValue.asLong % rightLong;
+            integerResult = leftValue.asLong % rightLong;
             break;
         case leftShift:
-            result = leftValue.asLong << rightValue.asLong;
+            integerResult = leftValue.asLong << rightValue.asLong;
             break;
         case rightShift:
-            result = leftValue.asLong >> rightValue.asLong;
+            integerResult = leftValue.asLong >> rightValue.asLong;
             break;
         case bitwiseAnd:
-            result = leftValue.asLong & rightValue.asLong;
+            integerResult = leftValue.asLong & rightValue.asLong;
             break;
         case bitwiseOr:
-            result = leftValue.asLong | rightValue.asLong;
+            integerResult = leftValue.asLong | rightValue.asLong;
             break;
         case bitwiseXor:
-            result = leftValue.asLong ^ rightValue.asLong;
+            integerResult = leftValue.asLong ^ rightValue.asLong;
             break;
         case equal:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case notEqual:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case lessThan:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case unsignedLessThan:
-            result = cast(ulong) leftValue.asLong < cast(ulong) rightValue.asLong;
+            integerResult =
+                cast(ulong) leftValue.asLong < cast(ulong) rightValue.asLong;
             break;
         case lessOrEqual:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case unsignedLessOrEqual:
-            result = cast(ulong) leftValue.asLong <= cast(ulong) rightValue.asLong;
+            integerResult =
+                cast(ulong) leftValue.asLong <= cast(ulong) rightValue.asLong;
             break;
         case greaterThan:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case greaterOrEqual:
-            result = compareScalarValues(leftValue, rightValue, operation);
+            integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case unsignedGreaterOrEqual:
-            result = cast(ulong) leftValue.asLong >= cast(ulong) rightValue.asLong;
+            integerResult =
+                cast(ulong) leftValue.asLong >= cast(ulong) rightValue.asLong;
             break;
         case unsignedGreaterThan:
-            result = cast(ulong) leftValue.asLong > cast(ulong) rightValue.asLong;
+            integerResult =
+                cast(ulong) leftValue.asLong > cast(ulong) rightValue.asLong;
             break;
     }
 
     writeTemporaryValue(temporaries, destination) =
-        valueResult == Value.init ? Value(result) : valueResult;
+        hasResult ? result : Value(integerResult);
 }
 
 private bool compareScalarValues(

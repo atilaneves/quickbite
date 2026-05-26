@@ -128,3 +128,16 @@ unittest {
     auto ir = executor(ExecutorBackend.ir);
     ir.eval("double input = 7.75;\ncast(int) input").should == Value(7);
 }
+
+@("eval.floatingSubtractionUsesNumericValues")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval("double left = 7.75;\ndouble right = 2.25;\nleft - right");
+
+    result.should == Value(5.5);
+    result.should.not == Value(0);
+}
