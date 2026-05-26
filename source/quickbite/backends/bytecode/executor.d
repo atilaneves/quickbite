@@ -136,11 +136,13 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                stack ~= Value(left.asLong == right.asLong);
+                stack ~= Value(left == right);
                 ++ip;
                 break;
             case OpCode.notEqual:
-                stack.executeBinaryOperation!((left, right) => left != right);
+                const right = stack.popValue;
+                const left = stack.popValue;
+                stack ~= Value(left != right);
                 ++ip;
                 break;
             case OpCode.lessThan:
@@ -220,21 +222,19 @@ private bool comparisonHolds(
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
-    const leftLong = left.asLong;
-    const rightLong = right.asLong;
     with (OpCode) final switch (op) {
         case equal:
-            return leftLong == rightLong;
+            return left == right;
         case notEqual:
-            return leftLong != rightLong;
+            return left != right;
         case lessThan:
-            return leftLong < rightLong;
+            return left.asLong < right.asLong;
         case lessOrEqual:
-            return leftLong <= rightLong;
+            return left.asLong <= right.asLong;
         case greaterThan:
-            return leftLong > rightLong;
+            return left.asLong > right.asLong;
         case greaterOrEqual:
-            return leftLong >= rightLong;
+            return left.asLong >= right.asLong;
         case setAssertMessage:
         case pushValue:
         case call:
@@ -298,7 +298,29 @@ private string comparisonOperator(
 private void executeBinaryOperation(alias operation)(ref imported!"quickbite.executor".Value[] stack) @safe {
     const right = stack.popValue;
     const left = stack.popValue;
-    stack ~= imported!"quickbite.executor".Value(operation(left.asLong, right.asLong));
+    const result = operation(left.asLong, right.asLong);
+    static if (is(typeof(result) == bool)) {
+        stack ~= imported!"quickbite.executor".Value(result);
+    } else {
+        stack ~= integerBinaryResult(left, right, result);
+    }
+}
+
+private imported!"quickbite.executor".Value integerBinaryResult(
+    in imported!"quickbite.executor".Value left,
+    in imported!"quickbite.executor".Value right,
+    in long result,
+) @safe pure {
+    import quickbite.executor: Value;
+
+    if (
+        left == Value(cast(int) left.asLong) &&
+        right == Value(cast(int) right.asLong)
+    ) {
+        return Value(cast(int) result);
+    }
+
+    return Value(result);
 }
 
 private imported!"quickbite.executor".Value popValue(
