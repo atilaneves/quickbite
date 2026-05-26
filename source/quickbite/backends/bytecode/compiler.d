@@ -64,7 +64,7 @@ private struct Compiler {
         if (auto integer = expression.isIntegerExp) {
             module_.code ~= Instruction(
                 OpCode.pushValue,
-                integerLiteralValue(integer),
+                literalValue(integer),
             );
             return;
         }
@@ -258,7 +258,7 @@ private struct Compiler {
     }
 }
 
-private imported!"quickbite.executor".Value integerLiteralValue(
+private imported!"quickbite.executor".Value literalValue(
     imported!"dmd.expression".IntegerExp integer,
 ) @trusted {
     import dmd.astenums: TY;
