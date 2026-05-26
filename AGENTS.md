@@ -41,9 +41,10 @@ Test behaviours, not implementations.
 
 - OTBS. For functions with many attributes, `{` on its own line is acceptable.
 - Use UFCS liberally.
-- Local imports inside functions/types. `imported!"module"` only for parameter
-  and return types. Exception: unit test modules may use module-scope imports
-  to avoid repeating the same import in every test block.
+- Local imports inside functions/types. `imported!"module"` only for
+  parameter and return types. Exception: unit test modules may use
+  module-scope imports to avoid repeating the same import in every
+  test block. Unit test modules should not use `imported`.
 - Always re-read files before editing; another agent or person may have
   changed them in the meantime.
 - Trailing commas.
