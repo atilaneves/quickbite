@@ -76,3 +76,19 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value([1.1, 2.2]).should == Value([1.1, 2.2]);
     Value([2.2, 3.3]).should.not == Value([1.1, 2.2]);
 }
+
+@("value.mixed.bool.int")
+@safe pure unittest {
+    Value(false).should.not == Value(0);
+}
+
+@("value.mixed.ubyte.int")
+@safe pure unittest {
+    Value(cast(ubyte) 42).should.not == Value(42);
+}
+
+@("value.string")
+@safe pure unittest {
+    Value("foo").should == Value("foo");
+    Value("quux").should.not == Value("foo");
+}
