@@ -1677,14 +1677,14 @@ private void executeBinaryInstruction(
             break;
         case unsignedLessThan:
             integerResult =
-                cast(ulong) leftValue.asLong < cast(ulong) rightValue.asLong;
+                compareUnsignedScalarValues(leftValue, rightValue, operation);
             break;
         case lessOrEqual:
             integerResult = compareScalarValues(leftValue, rightValue, operation);
             break;
         case unsignedLessOrEqual:
             integerResult =
-                cast(ulong) leftValue.asLong <= cast(ulong) rightValue.asLong;
+                compareUnsignedScalarValues(leftValue, rightValue, operation);
             break;
         case greaterThan:
             integerResult = compareScalarValues(leftValue, rightValue, operation);
@@ -1694,11 +1694,11 @@ private void executeBinaryInstruction(
             break;
         case unsignedGreaterOrEqual:
             integerResult =
-                cast(ulong) leftValue.asLong >= cast(ulong) rightValue.asLong;
+                compareUnsignedScalarValues(leftValue, rightValue, operation);
             break;
         case unsignedGreaterThan:
             integerResult =
-                cast(ulong) leftValue.asLong > cast(ulong) rightValue.asLong;
+                compareUnsignedScalarValues(leftValue, rightValue, operation);
             break;
     }
 
@@ -1720,39 +1720,47 @@ private bool compareScalarValues(
         return !scalarValuesEqual(left, right);
 
     if (left.isFloating || right.isFloating)
-        return compareDoubles(left.asDouble, right.asDouble, operation);
+        return compareReals(left.asReal, right.asReal, operation);
 
     return compareLongs(left.asLong, right.asLong, operation);
 }
 
 private bool scalarValuesEqual(in Value left, in Value right) @safe pure {
-    if (left.isFloating || right.isFloating) {
-        if (left.asDouble == right.asDouble)
-            return true;
-
-        return floatingBitPatternEqual(left, right) ||
-            floatingBitPatternEqual(right, left);
-    }
+    if (left.isFloating || right.isFloating)
+        return left.asReal == right.asReal;
 
     return left.asLong == right.asLong;
 }
 
-private bool floatingBitPatternEqual(in Value bits, in Value floating) @safe pure {
-    if (!floating.isFloating)
-        return false;
+private bool compareUnsignedScalarValues(
+    in Value left,
+    in Value right,
+    in imported!"quickbite.ir.instruction".Operation operation,
+) @safe pure {
+    if (left.isFloating || right.isFloating)
+        return compareReals(
+            unsignedComparisonReal(left),
+            unsignedComparisonReal(right),
+            operation,
+        );
 
-    if (floating.isFloat32)
-        return floatFromBits(cast(uint) bits.asLong) == cast(float) floating.asDouble;
-
-    if (floating.isFloat64)
-        return doubleFromBits(bits.asLong) == floating.asDouble;
-
-    return false;
+    return compareUlongs(
+        cast(ulong) left.asLong,
+        cast(ulong) right.asLong,
+        operation,
+    );
 }
 
-private bool compareDoubles(
-    in double left,
-    in double right,
+private real unsignedComparisonReal(in Value value) @safe pure {
+    if (value.isFloating)
+        return value.asReal;
+
+    return cast(real) cast(ulong) value.asLong;
+}
+
+private bool compareReals(
+    in real left,
+    in real right,
     in imported!"quickbite.ir.instruction".Operation operation,
 ) @safe pure {
     import quickbite.ir.instruction: Operation;
@@ -1763,17 +1771,17 @@ private bool compareDoubles(
         case notEqual:
             return left != right;
         case lessThan:
+        case unsignedLessThan:
             return left < right;
         case lessOrEqual:
+        case unsignedLessOrEqual:
             return left <= right;
         case greaterThan:
+        case unsignedGreaterThan:
             return left > right;
         case greaterOrEqual:
-            return left >= right;
-        case unsignedLessThan:
-        case unsignedLessOrEqual:
         case unsignedGreaterOrEqual:
-        case unsignedGreaterThan:
+            return left >= right;
         case add:
         case addDouble:
         case powDouble:
@@ -1787,6 +1795,44 @@ private bool compareDoubles(
         case bitwiseOr:
         case bitwiseXor:
             throw new Exception("Unsupported floating comparison operation.");
+    }
+}
+
+private bool compareUlongs(
+    in ulong left,
+    in ulong right,
+    in imported!"quickbite.ir.instruction".Operation operation,
+) @safe pure {
+    import quickbite.ir.instruction: Operation;
+
+    with (Operation) final switch (operation) {
+        case unsignedLessThan:
+            return left < right;
+        case unsignedLessOrEqual:
+            return left <= right;
+        case unsignedGreaterThan:
+            return left > right;
+        case unsignedGreaterOrEqual:
+            return left >= right;
+        case equal:
+        case notEqual:
+        case lessThan:
+        case lessOrEqual:
+        case greaterThan:
+        case greaterOrEqual:
+        case add:
+        case addDouble:
+        case powDouble:
+        case subtract:
+        case multiply:
+        case divide:
+        case modulo:
+        case leftShift:
+        case rightShift:
+        case bitwiseAnd:
+        case bitwiseOr:
+        case bitwiseXor:
+            throw new Exception("Unsupported unsigned comparison operation.");
     }
 }
 
@@ -1926,8 +1972,17 @@ private void executeUnaryInstruction(
         case floatToUintBits:
             result = Value(floatBits(cast(float) sourceValue.asDouble));
             break;
+        case uintBitsToFloat:
+            result = Value(floatFromBits(cast(uint) sourceValue.asLong));
+            break;
         case doubleToUlongBits:
             result = Value(cast(ulong) doubleBits(sourceValue.asDouble));
+            break;
+        case ulongBitsToDouble:
+            result = Value(doubleFromBits(sourceValue.asLong));
+            break;
+        case ulongToDouble:
+            result = Value(cast(double) cast(ulong) sourceValue.asLong);
             break;
     }
 

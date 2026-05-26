@@ -82,7 +82,10 @@ public enum UnaryOperation {
     signbitDouble,
     sqrtDouble,
     floatToUintBits,
+    uintBitsToFloat,
     doubleToUlongBits,
+    ulongBitsToDouble,
+    ulongToDouble,
 }
 
 public struct Select {

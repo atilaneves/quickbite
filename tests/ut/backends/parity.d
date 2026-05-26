@@ -1742,6 +1742,19 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    ulong integer = ulong.max;
+                    double floating = 0.0;
+                    assert(integer > floating);
+                }
+            }, backend);
+        }
+    }
+
     @("structPassedToFunction." ~ backend.text)
     unittest {
         runTests(q{

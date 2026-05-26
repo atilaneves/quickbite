@@ -145,6 +145,12 @@ struct BodyLowerer {
         uint value;
     }
 
+    private struct PointerBitcastWriteback {
+        uint destination;
+        uint source;
+        imported!"quickbite.ir.instruction".UnaryOperation operation;
+    }
+
     private uint nextTemporary;
     private uint[VarDeclaration] localTemporaries;
     private imported!"quickbite.ir.instruction".UnaryOperation[VarDeclaration]
@@ -154,6 +160,7 @@ struct BodyLowerer {
     private ArrayElementAlias[] pendingRefArrayWritebacks;
     private StaticArrayAlias[] pendingRefStaticArrayWritebacks;
     private StructFieldAlias[] pendingRefStructWritebacks;
+    private PointerBitcastWriteback[] pendingRefPointerBitcastWritebacks;
     private uint[string] identifierTemporaries;
     private string[string] stringLiteralLocals;
     private bool[string] arrayValueNames;
@@ -1206,17 +1213,23 @@ struct BodyLowerer {
             auto savedArrayWritebacks = pendingRefArrayWritebacks;
             auto savedStaticArrayWritebacks = pendingRefStaticArrayWritebacks;
             auto savedStructWritebacks = pendingRefStructWritebacks;
+            auto savedPointerBitcastWritebacks =
+                pendingRefPointerBitcastWritebacks;
             pendingRefArrayWritebacks = [];
             pendingRefStaticArrayWritebacks = [];
             pendingRefStructWritebacks = [];
+            pendingRefPointerBitcastWritebacks = [];
             auto arguments = lowerCallArguments(call, lowerer);
             // auto: ArraySet emission needs mutable element values.
             auto arrayWritebacks = pendingRefArrayWritebacks;
             auto staticArrayWritebacks = pendingRefStaticArrayWritebacks;
             auto structWritebacks = pendingRefStructWritebacks;
+            auto pointerBitcastWritebacks = pendingRefPointerBitcastWritebacks;
             pendingRefArrayWritebacks = savedArrayWritebacks;
             pendingRefStaticArrayWritebacks = savedStaticArrayWritebacks;
             pendingRefStructWritebacks = savedStructWritebacks;
+            pendingRefPointerBitcastWritebacks =
+                savedPointerBitcastWritebacks;
 
             const destination = allocateTemporary;
             instructions ~= Instruction(Call(
@@ -1241,6 +1254,7 @@ struct BodyLowerer {
                     writeback.fieldName,
                     writeback.value,
                 ));
+            emitPointerBitcastWritebacks(pointerBitcastWritebacks);
             if (call.f.isCtorDeclaration !is null)
                 return arguments[0];
 
@@ -2335,6 +2349,117 @@ struct BodyLowerer {
         return (cast(uint) destination).nullable;
     }
 
+    imported!"std.typecons".Nullable!PointerBitcastWriteback
+    lowerRefPointerReadBitcastArgument(
+        imported!"dmd.expression".PtrExp pointer,
+        ref Lowerer lowerer,
+    ) @safe {
+        import std.typecons: nullable;
+
+        auto cast_ = pointer.e1.isCastExp;
+        if (cast_ !is null && typeIsPointer(cast_.to)) {
+            auto address = cast_.e1.isAddrExp;
+            if (address !is null && typeIsFloating(address.e1.type)) {
+                const operation = pointerReadBitcastOperation(
+                    cast_.to,
+                    pointer.e1,
+                );
+                if (!operation.isNull) {
+                    const writebackOperation =
+                        pointerWritebackBitcastOperation(operation.get);
+                    if (!writebackOperation.isNull) {
+                        const destination = lowerExpression(address.e1, lowerer);
+                        const source = lowerUnaryPointerReadBitcast(
+                            destination,
+                            operation.get,
+                        ).get;
+                        return PointerBitcastWriteback(
+                            destination,
+                            source,
+                            writebackOperation.get,
+                        ).nullable;
+                    }
+                }
+            }
+        }
+
+        auto variable = pointer.e1.isVarExp;
+        if (variable is null)
+            return typeof(return).init;
+
+        auto var = variable.var.isVarDeclaration;
+        if (var is null)
+            return typeof(return).init;
+
+        auto operation = var in pointerReadBitcasts;
+        if (operation is null)
+            return typeof(return).init;
+
+        const writebackOperation = pointerWritebackBitcastOperation(*operation);
+        if (writebackOperation.isNull)
+            return typeof(return).init;
+
+        const destination = lowerExpression(pointer.e1, lowerer);
+        const source = lowerUnaryPointerReadBitcast(destination, *operation).get;
+        return PointerBitcastWriteback(
+            destination,
+            source,
+            writebackOperation.get,
+        ).nullable;
+    }
+
+    imported!"std.typecons".Nullable!(
+        imported!"quickbite.ir.instruction".UnaryOperation,
+    ) pointerWritebackBitcastOperation(
+        in imported!"quickbite.ir.instruction".UnaryOperation operation,
+    ) @safe {
+        import quickbite.ir.instruction: UnaryOperation;
+        import std.typecons: nullable;
+
+        if (operation == UnaryOperation.floatToUintBits)
+            return UnaryOperation.uintBitsToFloat.nullable;
+
+        if (operation == UnaryOperation.doubleToUlongBits)
+            return UnaryOperation.ulongBitsToDouble.nullable;
+
+        return typeof(return).init;
+    }
+
+    bool refTargetFloatingBitcastOperations(
+        imported!"dmd.mtype".Type refTargetType,
+        out imported!"quickbite.ir.instruction".UnaryOperation readOperation,
+        out imported!"quickbite.ir.instruction".UnaryOperation writeOperation,
+    ) @safe {
+        import quickbite.ir.instruction: UnaryOperation;
+
+        if (typeIsUint32(refTargetType)) {
+            readOperation = UnaryOperation.floatToUintBits;
+            writeOperation = UnaryOperation.uintBitsToFloat;
+            return true;
+        }
+
+        if (typeIsUint64(refTargetType)) {
+            readOperation = UnaryOperation.doubleToUlongBits;
+            writeOperation = UnaryOperation.ulongBitsToDouble;
+            return true;
+        }
+
+        return false;
+    }
+
+    void emitPointerBitcastWritebacks(
+        in PointerBitcastWriteback[] writebacks,
+    ) @safe {
+        import quickbite.ir.instruction: Instruction, UnaryOp;
+
+        foreach (writeback; writebacks)
+            instructions ~= Instruction(UnaryOp(
+                writeback.destination,
+                writeback.source,
+                writeback.operation,
+            ));
+    }
+
     uint lowerStructEqualityExpression(
         imported!"dmd.expression".EqualExp equal,
         ref Lowerer lowerer,
@@ -2924,8 +3049,10 @@ struct BodyLowerer {
         // auto: keep the writeback arrays mutable for emission below.
         auto savedArrayWritebacks = pendingRefArrayWritebacks;
         auto savedStructWritebacks = pendingRefStructWritebacks;
+        auto savedPointerBitcastWritebacks = pendingRefPointerBitcastWritebacks;
         pendingRefArrayWritebacks = [];
         pendingRefStructWritebacks = [];
+        pendingRefPointerBitcastWritebacks = [];
         // `auto` because the IR call owns a mutable arguments array.
         auto arguments = lowerCallArgumentsForFunction(
             call,
@@ -2935,8 +3062,10 @@ struct BodyLowerer {
         // auto: keep the writeback arrays mutable for emission below.
         auto arrayWritebacks = pendingRefArrayWritebacks;
         auto structWritebacks = pendingRefStructWritebacks;
+        auto pointerBitcastWritebacks = pendingRefPointerBitcastWritebacks;
         pendingRefArrayWritebacks = savedArrayWritebacks;
         pendingRefStructWritebacks = savedStructWritebacks;
+        pendingRefPointerBitcastWritebacks = savedPointerBitcastWritebacks;
 
         result = allocateTemporary;
         size_t[] endJumpIndices;
@@ -2978,6 +3107,7 @@ struct BodyLowerer {
                     writeback.fieldName,
                     writeback.value,
                 ));
+            emitPointerBitcastWritebacks(pointerBitcastWritebacks);
 
             const endJumpIndex = instructions.length;
             instructions ~= Instruction(Jump(0));
@@ -3015,15 +3145,19 @@ struct BodyLowerer {
         // auto: keep the writeback arrays mutable for emission below.
         auto savedArrayWritebacks = pendingRefArrayWritebacks;
         auto savedStructWritebacks = pendingRefStructWritebacks;
+        auto savedPointerBitcastWritebacks = pendingRefPointerBitcastWritebacks;
         pendingRefArrayWritebacks = [];
         pendingRefStructWritebacks = [];
+        pendingRefPointerBitcastWritebacks = [];
         // `auto` because the IR call owns a mutable arguments array.
         auto arguments = lowerIndirectCallArguments(call, lowerer);
         // auto: keep the writeback arrays mutable for emission below.
         auto arrayWritebacks = pendingRefArrayWritebacks;
         auto structWritebacks = pendingRefStructWritebacks;
+        auto pointerBitcastWritebacks = pendingRefPointerBitcastWritebacks;
         pendingRefArrayWritebacks = savedArrayWritebacks;
         pendingRefStructWritebacks = savedStructWritebacks;
+        pendingRefPointerBitcastWritebacks = savedPointerBitcastWritebacks;
         result = allocateTemporary;
         instructions ~= Instruction(IndirectCall(
             result,
@@ -3042,6 +3176,7 @@ struct BodyLowerer {
                 writeback.fieldName,
                 writeback.value,
             ));
+        emitPointerBitcastWritebacks(pointerBitcastWritebacks);
         return true;
     }
 
@@ -4697,7 +4832,10 @@ struct BodyLowerer {
                     stringLiteralLocals[declarationName(variable)] =
                         message;
 
-                const value = lowerInitializerExpression(initializer.exp, lowerer);
+                const value = lowerTypedIntegerValue(
+                    lowerInitializerExpression(initializer.exp, lowerer),
+                    variable.type,
+                );
                 const bitcast = pointerReadBitcastOperation(
                     variable.type,
                     initializer.exp,
@@ -6246,8 +6384,23 @@ struct BodyLowerer {
         if (typeIsClass(cast_.to))
             return lowerExpression(cast_.e1, lowerer);
 
-        if (typeIsFloating(cast_.to))
-            return lowerExpression(cast_.e1, lowerer);
+        if (typeIsFloating(cast_.to)) {
+            const source = lowerExpression(cast_.e1, lowerer);
+            if (expressionHasUnsignedIntegerType(cast_.e1)) {
+                import quickbite.ir.instruction: Instruction, UnaryOp,
+                    UnaryOperation;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(UnaryOp(
+                    destination,
+                    source,
+                    UnaryOperation.ulongToDouble,
+                ));
+                return destination;
+            }
+
+            return source;
+        }
 
         if (typeIsBool(cast_.to))
             return lowerTruthValue(lowerExpression(cast_.e1, lowerer));
@@ -6543,9 +6696,55 @@ struct BodyLowerer {
             VarDeclaration parameter;
             if (i < parameters.length)
                 parameter = parameters[i];
+            auto refTargetType = parameter !is null
+                ? parameter.type
+                : i < typeParameters.length
+                    ? typeParameters[i].type
+                    : null;
 
             const isRef = callParameterIsRef(parameters, typeParameters, i);
             if (isRef) {
+                if (refTargetType !is null)
+                    if (auto variable = argument.isVarExp)
+                        if (auto var = variable.var.isVarDeclaration)
+                            if (typeIsFloating(var.type)) {
+                                import quickbite.ir.instruction: UnaryOperation;
+
+                                UnaryOperation readOperation;
+                                UnaryOperation writeOperation;
+                                const hasBitcast = refTargetFloatingBitcastOperations(
+                                    refTargetType,
+                                    readOperation,
+                                    writeOperation,
+                                );
+                                if (hasBitcast) {
+                                    if (auto temporary = var in localTemporaries) {
+                                        const source = lowerUnaryPointerReadBitcast(
+                                            *temporary,
+                                            readOperation,
+                                        ).get;
+                                        pendingRefPointerBitcastWritebacks ~=
+                                            PointerBitcastWriteback(
+                                                *temporary,
+                                                source,
+                                                writeOperation,
+                                            );
+                                        arguments ~= source;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                if (auto pointer = argument.isPtrExp) {
+                    const writeback =
+                        lowerRefPointerReadBitcastArgument(pointer, lowerer);
+                    if (!writeback.isNull) {
+                        pendingRefPointerBitcastWritebacks ~= writeback.get;
+                        arguments ~= writeback.get.source;
+                        continue;
+                    }
+                }
+
                 if (auto index = arrayElementAliasIndex(argument)) {
                     import quickbite.ir.instruction: ArrayIndex, Instruction;
 
@@ -6570,6 +6769,35 @@ struct BodyLowerer {
             }
 
             const source = lowerCallArgument(argument, parameter, lowerer);
+            if (
+                isRef &&
+                refTargetType !is null &&
+                temporaryHasFloatingLocal(source)
+            ) {
+                import quickbite.ir.instruction: UnaryOperation;
+
+                UnaryOperation readOperation;
+                UnaryOperation writeOperation;
+                const hasBitcast = refTargetFloatingBitcastOperations(
+                    refTargetType,
+                    readOperation,
+                    writeOperation,
+                );
+                if (hasBitcast) {
+                    const bitSource = lowerUnaryPointerReadBitcast(
+                        source,
+                        readOperation,
+                    ).get;
+                    pendingRefPointerBitcastWritebacks ~= PointerBitcastWriteback(
+                        source,
+                        bitSource,
+                        writeOperation,
+                    );
+                    arguments ~= bitSource;
+                    continue;
+                }
+            }
+
             if (isRef) {
                 if (auto variable = argument.isVarExp) {
                     if (auto var = variable.var.isVarDeclaration) {
@@ -6759,19 +6987,26 @@ struct BodyLowerer {
         in uint source,
         imported!"dmd.declaration".VarDeclaration parameter,
     ) @safe {
-        import quickbite.ir.instruction: CastInt, Instruction;
-
         if (parameter is null || parameterIsRef(parameter))
             return source;
 
-        if (!typeIsInteger(parameter.type))
+        return lowerTypedIntegerValue(source, parameter.type);
+    }
+
+    uint lowerTypedIntegerValue(
+        in uint source,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        import quickbite.ir.instruction: CastInt, Instruction;
+
+        if (!typeIsInteger(type))
             return source;
 
         const destination = allocateTemporary;
         instructions ~= Instruction(CastInt(
             destination,
             source,
-            integerType(parameter.type),
+            integerType(type),
         ));
         return destination;
     }
@@ -6931,6 +7166,14 @@ struct BodyLowerer {
         const result = nextTemporary;
         ++nextTemporary;
         return result;
+    }
+
+    bool temporaryHasFloatingLocal(in uint temporary) @safe {
+        foreach (variable, localTemporary; localTemporaries)
+            if (localTemporary == temporary && typeIsFloating(variable.type))
+                return true;
+
+        return false;
     }
 
     void rememberLocalTemporary(
@@ -7591,7 +7834,10 @@ private bool tryRuntimeMathUnaryOperation(
         case complement:
         case bitScanReverse:
         case floatToUintBits:
+        case uintBitsToFloat:
         case doubleToUlongBits:
+        case ulongBitsToDouble:
+        case ulongToDouble:
             return false;
     }
 }

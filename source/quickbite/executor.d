@@ -126,6 +126,31 @@ public struct Value {
         );
     }
 
+    public real asReal() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+                static if (is(T == const(float))) {
+                    return cast(real) value;
+                } else static if (is(T == const(double))) {
+                    return cast(real) value;
+                } else static if (is(T == const(real))) {
+                    return value;
+                } else static if (is(T == const(ifloat))) {
+                    return cast(real) value;
+                } else static if (is(T == const(idouble))) {
+                    return cast(real) value;
+                } else static if (is(T == const(ireal))) {
+                    return cast(real) value;
+                } else {
+                    return cast(real) asLong;
+                }
+            },
+        );
+    }
+
     public bool isFloating() const @safe pure {
         import std.sumtype: match;
 

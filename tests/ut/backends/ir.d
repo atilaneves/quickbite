@@ -155,6 +155,54 @@ unittest {
     result.should.not == Value(0);
 }
 
+@("eval.integerFloatEqualityIsNumeric")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval(
+        "long integer = 0x3ff0_0000_0000_0000L;\ndouble floating = 1.0;\ninteger == floating",
+    );
+
+    result.should == Value(0L);
+    result.should.not == Value(1L);
+}
+
+@("eval.ulongDoubleComparisonUsesNumericUnsignedValue")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            ulong integer = 0x8000_0000_0000_0000UL;
+            double floating = 9_223_372_036_854_775_808.0;
+
+            assert(integer == floating);
+            assert(integer <= floating);
+            assert(integer >= floating);
+            assert(!(integer < floating));
+            assert(!(integer > floating));
+        }
+    }, ExecutorBackend.ir);
+}
+
+@("eval.realComparisonPreservesRealPrecision")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval(
+        "real left = real.max;\nreal right = real.infinity;\nleft < right",
+    );
+
+    result.should == Value(1L);
+    result.should.not == Value(0L);
+}
+
 @("eval.fabsFloatPreservesReturnType")
 unittest {
     import quickbite: ExecutorBackend;
