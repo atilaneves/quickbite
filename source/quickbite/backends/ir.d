@@ -1306,11 +1306,13 @@ private InstructionEffect executeArrayCanFindInstruction(
     ref ExecutionContext context,
     in imported!"quickbite.ir.instruction".ArrayCanFind instruction,
 ) @safe pure {
+    import std.algorithm.searching: countUntil;
+
     writeTemporaryValue(temporaries, instruction.destination) =
-        arrayCanFind(
-            context.arrays[arrayIndex(temporaries, instruction.haystack)],
+        context.arrays[arrayIndex(temporaries, instruction.haystack)]
+        .countUntil!valuesEqual(
             context.arrays[arrayIndex(temporaries, instruction.needle)],
-        );
+        ) >= 0;
     return nextInstruction;
 }
 
@@ -1874,12 +1876,6 @@ private bool compareLongs(
         case bitwiseXor:
             throw new Exception("Unsupported integer comparison operation.");
     }
-}
-
-private bool arrayCanFind(in Value[] haystack, in Value[] needle) @safe pure {
-    import std.algorithm.searching: countUntil;
-
-    return haystack.countUntil!valuesEqual(needle) >= 0;
 }
 
 private bool valuesEqual(in Value left, in Value right) @safe pure {
