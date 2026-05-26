@@ -2302,8 +2302,8 @@ struct BodyLowerer {
             return false;
 
         if (
-            realLiteralValue(base) != doubleLiteralValue(2.0) ||
-            realLiteralValue(exponent) != doubleLiteralValue(3.0)
+            realLiteralValue(base) != realLiteralValue(2.0) ||
+            realLiteralValue(exponent) != realLiteralValue(3.0)
         )
             return false;
 
@@ -7242,7 +7242,7 @@ private imported!"quickbite.executor".Value realLiteralRuntimeValue(
     return Value(cast(real) real_.toReal());
 }
 
-private long doubleLiteralValue(double value) @trusted {
+private long realLiteralValue(double value) @trusted {
     return cast(long) *cast(ulong*) &value;
 }
 
