@@ -159,11 +159,96 @@ execution time. DMD AST and `FuncDeclaration` lookup belong in the compiler;
 compiled bytecode should expose bytecode-native function ids, entry offsets, or
 patched call targets to the executor.
 
-Before growing calls beyond the current zero-argument helper shape, make the
-stack and call result convention explicit. Either every call produces one VM
-value, including a future `Void` sentinel if the shared value model adds one,
-or function metadata must state the return arity. Expression statements should
-then discard results explicitly instead of relying on accidental stack shape.
+Make this boundary structural for the VM artifact and VM execution core.
+Bytecode representation modules, such as `opcode.d`, `module_.d`, and any
+future executor core that consumes compiled bytecode, must not import `dmd.*` or
+`imported!"dmd.*"`. The compiler and current public `BytecodeExecutor` adapter
+may depend on DMD until an explicit interface-split slice removes that need. Add
+a compile-time string-import guard over the VM-only modules so future changes
+fail during compilation if that boundary is crossed.
+
+The stack, call, and frame convention must be explicit before growing calls
+further. Bytecode already has narrow void-return-to-caller coverage in the early
+scalar parity group. Parameter, multiple-parameter, void-return, and failure
+fixtures exist for other backends; promote those fixtures to bytecode when their
+behaviour becomes the approved slice instead of adding duplicate scalar identity
+tests. Add narrower bytecode tests only for missing frame behaviours such as
+caller locals or temporaries surviving nested calls.
+
+Typed values must come with typed VM semantics. If a branch such as PR 42 moves
+bytecode storage from `long[]` to `Value[]`, arithmetic, comparisons,
+assertions, and constants must not merely project values through `asLong`.
+Either keep bytecode honestly scalar-long until the typed-value slice, or make
+typed operation semantics explicit through typed opcodes or compact type and
+operator metadata.
+
+Explicit assert messages must belong to the assert operation that owns them.
+Ambient VM-wide assert-message state is incorrect: an outer
+`assert(inner(), "outer")` currently leaks `"outer"` into an inner failing
+`assert(1 == 2)`. The red test should expect the inner failure context
+`"1 != 2"` and currently gets `"outer"`. Model assert messages as operands of
+`assertTrue`/`assertCompare`, or as scoped state saved and restored across
+condition evaluation and calls.
+
+Instruction operands must be domain typed. A function id, assert-message id,
+comparison operator, local slot, and literal value are different domains and
+should not all be accepted as plain `long` operands. Future typed bytecode must
+make invalid instruction construction fail at compile time instead of relying
+on opcode convention.
+
+## Review Red Tests
+
+Before changing bytecode design for these findings, add or promote focused
+tests that fail for the expected reason. Do not add duplicate coverage.
+
+- DMD-free bytecode artifact: add a compile-time string-import guard over the
+  bytecode representation modules and any VM execution core that consumes
+  compiled bytecode. It should fail if those files contain `import dmd.` or
+  `imported!"dmd.`. Do not include the current public `BytecodeExecutor` adapter
+  until an interface-split slice removes its `runParsedTests` dependency on DMD.
+- Call and frame convention: reuse existing bytecode parity tests for
+  parameters and returns instead of adding another scalar `identity` test.
+  Add a new red test only for an uncovered frame property, such as caller
+  locals or temporaries surviving a nested call.
+- Typed VM semantics: when moving bytecode to typed `Value` storage, promote
+  existing non-bytecode parity tests instead of inventing duplicates. Good
+  candidates are the dynamic array return/value tests around
+  `dynamicArrayReturnValue` and the integral type matrix.
+- Assert message scoping: add a bytecode red test equivalent to:
+
+  ```d
+  int one() {
+      return 1;
+  }
+
+  bool inner() {
+      // Keep one operand runtime-shaped so DMD does not constant-fold
+      // the inner assertion before bytecode sees it.
+      assert(one == 2);
+      return true;
+  }
+
+  unittest {
+      // The explicit outer message must not leak into the inner failure.
+      assert(inner(), "outer");
+  }
+  ```
+
+  It must expect the inner assertion context `"1 != 2"` and currently fails
+  with `"outer"`.
+- Instruction operand domains: add a VM contract test in
+  `tests/ut/backends/bytecode.d` that rejects plain integer operands for
+  opcodes whose operand domains are not integer literals:
+
+  ```d
+  static assert(!__traits(compiles, Instruction(OpCode.call, 0L)));
+  static assert(!__traits(compiles,
+      Instruction(OpCode.setAssertMessage, 0L)));
+  static assert(!__traits(compiles, Instruction(OpCode.assertCompare, 0L)));
+  ```
+
+  It currently fails at compile time because those invalid constructions
+  compile.
 
 ## Remaining Work
 
@@ -177,9 +262,12 @@ Grow bytecode by moving one approved behaviour at a time into parity coverage:
   loops
 - remove DMD declaration identity from executed bytecode before dependency
   bytecode caching or cross-module bytecode execution work
-- add call arguments and a real frame model for locals and parameters, after
-  the call result and expression-statement discard convention is explicit
-- support void functions and explicit bare returns
+- replace the current call implementation with an explicit bytecode ABI for
+  function ids, argument layout, frame bases, local slots, return arity, and
+  expression-statement discard; keep the existing parameter and void-return
+  parity coverage green while doing so
+- extend return coverage only when tests require new behaviours such as
+  non-trailing returns or returns through branch/loop control flow
 - replace the current integer-only value stack with typed values, first for
   booleans and integers, then for all D types needed by covered behaviours
 - support module state, struct values, arrays, slices, and references as tests
