@@ -1136,7 +1136,7 @@ private InstructionEffect executeArrayAppendArrayInstruction(
 }
 
 private InstructionEffect executeArrayAssumeSafeAppendInstruction(
-    ref long[] temporaries,
+    ref Value[] temporaries,
     ref ExecutionContext context,
     in imported!"quickbite.ir.instruction".ArrayAssumeSafeAppend instruction,
 ) @safe pure {
