@@ -18,7 +18,7 @@ int main(string[] args) {
         "ut.backends.pure_.structs",
         "ut.backends.pure_.minicereal",
         "ut.backends.pure_.projects.cerealed",
-        "ut.backends.contracts",
+        "ut.backends.api",
         "ut.backends.codegen",
         "ut.backends.repl",
         "ut.backends.deps.unit_threaded",
