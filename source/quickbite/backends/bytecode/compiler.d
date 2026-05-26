@@ -264,8 +264,10 @@ private imported!"quickbite.executor".Value literalValue(
     import dmd.astenums: TY;
     import quickbite.executor: Value;
 
-    if (integer.type is null)
-        return Value(cast(long) integer.getInteger);
+    assert(
+        integer.type !is null,
+        "Bytecode integer literals must have DMD semantic type information.",
+    );
 
     const basetype = integer.type.toBasetype;
     with (TY) switch (basetype.ty) {
