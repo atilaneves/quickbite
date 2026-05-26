@@ -253,6 +253,10 @@ public struct ArrayAppendArray {
     uint value;
 }
 
+public struct ArrayAssumeSafeAppend {
+    uint array;
+}
+
 public struct ArrayLength {
     uint destination;
     uint array;
@@ -360,6 +364,7 @@ public alias Instruction = SumType!(
     ArrayReferenceCopy,
     ArrayAppend,
     ArrayAppendArray,
+    ArrayAssumeSafeAppend,
     ArrayLength,
     ArraySetLength,
     ArrayConcat,

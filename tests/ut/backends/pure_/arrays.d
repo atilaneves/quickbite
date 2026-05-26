@@ -24,19 +24,17 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
-    static if (backend == ExecutorBackend.ir) {
-        @("nestedSliceAppendWritesThroughOuterSliceToOriginalArray." ~ backend.text)
-        unittest {
-            runTests(q{
-                unittest {
-                    int[] a = [0, 1, 2, 3, 4];
-                    int[] s = a[1 .. 3];
-                    int[] s2 = s[1 .. 2];
-                    s2 ~= 99;
-                    assert(a[3] == 99);
-                }
-            }, backend);
-        }
+    @("nestedSliceAppendKeepsOriginalArrayTail." ~ backend.text)
+    unittest {
+        runTests(q{
+            unittest {
+                int[] a = [0, 1, 2, 3, 4];
+                int[] s = a[1 .. 3];
+                int[] s2 = s[1 .. 2];
+                s2 ~= 99;
+                assert(a[3] == 3);
+            }
+        }, backend);
     }
 
     @("ubyteArrayAppendAssign." ~ backend.text)
