@@ -57,3 +57,8 @@ unittest {
     (Value(cast(creal) (1.0L + 2.0Li)) == Value(1.0L)).should == false;
     (Value.void_ == Value(0)).should == false;
 }
+
+@("value.toStringShowsDistinctScalarIdentity")
+unittest {
+    Value(8.0f).toString.should.not == Value(8.0).toString;
+}

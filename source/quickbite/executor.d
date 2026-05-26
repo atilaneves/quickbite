@@ -219,7 +219,21 @@ public struct Value {
     }
 
     public string toString() const @safe pure {
-        return data.toString;
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+                static if (is(T == const(float))) {
+                    return text(value, "f");
+                } else static if (is(T == const(double))) {
+                    return text(value, "d");
+                } else {
+                    return data.toString;
+                }
+            },
+        );
     }
 }
 

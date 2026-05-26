@@ -28,6 +28,6 @@ comment in a separate worker worktree and integrate the accepted changes here.
 - [x] `std.math.pow(float, float)` must not store a `double` `Value` when DMD's
   expression type is `float`. Probe:
   `ut.backends.ir.eval.powFloatDoesNotReturnDoubleValue`.
-- [ ] `Value.toString` must show enough scalar identity that distinct scalar
+- [x] `Value.toString` must show enough scalar identity that distinct scalar
   values such as `Value(8.0f)` and `Value(8.0)` do not print identically.
   Probe: `ut.value.value.toStringShowsDistinctScalarIdentity`.
