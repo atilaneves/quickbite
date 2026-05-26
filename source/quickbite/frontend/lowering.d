@@ -2302,8 +2302,8 @@ struct BodyLowerer {
             return false;
 
         if (
-            realLiteralValue(base) != realLiteralValue(2.0) ||
-            realLiteralValue(exponent) != realLiteralValue(3.0)
+            literalValue(base) != literalValue(2.0) ||
+            literalValue(exponent) != literalValue(3.0)
         )
             return false;
 
@@ -7207,7 +7207,7 @@ private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted
     return integer.getInteger();
 }
 
-private long realLiteralValue(imported!"dmd.expression".RealExp real_) @trusted {
+private long literalValue(imported!"dmd.expression".RealExp real_) @trusted {
     import dmd.astenums: TY;
 
     const basetype = real_.type.toBasetype;
@@ -7242,7 +7242,7 @@ private imported!"quickbite.executor".Value realLiteralRuntimeValue(
     return Value(cast(real) real_.toReal());
 }
 
-private long realLiteralValue(double value) @trusted {
+private long literalValue(double value) @trusted {
     return cast(long) *cast(ulong*) &value;
 }
 
