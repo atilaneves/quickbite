@@ -274,6 +274,7 @@ struct ExecutionContext {
     Value[string] staticArrays;
     Value[string] staticAssocArrays;
     ArrayAlias[] arrayAliases;
+    size_t[] safeAppendArrays;
 }
 
 struct AssocArray {
@@ -467,6 +468,8 @@ private InstructionEffect executeInstruction(
             executeArrayAppendInstruction(temporaries, context, instruction),
         (ArrayAppendArray instruction) =>
             executeArrayAppendArrayInstruction(temporaries, context, instruction),
+        (ArrayAssumeSafeAppend instruction) =>
+            executeArrayAssumeSafeAppendInstruction(temporaries, context, instruction),
         (ArrayLength instruction) =>
             executeArrayLengthInstruction(temporaries, context, instruction),
         (ArraySetLength instruction) =>
@@ -1129,6 +1132,20 @@ private InstructionEffect executeArrayAppendArrayInstruction(
         arrayIndex(temporaries, instruction.array),
         context.arrays[arrayIndex(temporaries, instruction.value)],
     );
+    return nextInstruction;
+}
+
+private InstructionEffect executeArrayAssumeSafeAppendInstruction(
+    ref Value[] temporaries,
+    ref ExecutionContext context,
+    in imported!"quickbite.ir.instruction".ArrayAssumeSafeAppend instruction,
+) @safe pure {
+    const array = arrayIndex(temporaries, instruction.array);
+    foreach (safeAppendArray; context.safeAppendArrays)
+        if (safeAppendArray == array)
+            return nextInstruction;
+
+    context.safeAppendArrays ~= array;
     return nextInstruction;
 }
 
@@ -2139,7 +2156,19 @@ private void appendArrayValue(
 ) @safe pure {
     const index = context.arrays[array].length;
     context.arrays[array] ~= value;
-    updateSliceArrayAlias(context, array, index, value);
+    if (arrayAllowsSafeAppend(context, array))
+        updateSliceArrayAlias(context, array, index, value);
+}
+
+private bool arrayAllowsSafeAppend(
+    in ExecutionContext context,
+    in size_t array,
+) @safe pure {
+    foreach (safeAppendArray; context.safeAppendArrays)
+        if (safeAppendArray == array)
+            return true;
+
+    return false;
 }
 
 private void updateSliceArrayAlias(

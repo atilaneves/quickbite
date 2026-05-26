@@ -2840,9 +2840,9 @@ struct BodyLowerer {
         ref uint result,
     ) @safe {
         import quickbite.ir.instruction:
-            ArrayLiteral, ArraySetLength, Assert_, BinaryOp, CastInt,
-            ConstInt, Instruction, Operation, StructNew, StructSet, UnaryOp,
-            UnaryOperation;
+            ArrayAssumeSafeAppend, ArrayLiteral, ArraySetLength, Assert_,
+            BinaryOp, CastInt, ConstInt, Instruction, Operation, StructNew,
+            StructSet, UnaryOp, UnaryOperation;
 
         const name = expressionChars(call.e1);
 
@@ -2851,8 +2851,8 @@ struct BodyLowerer {
 
             if (name.endsWith(".assumeSafeAppend")) {
                 enforceCallArgumentCount(call, 0);
-                result = allocateTemporary;
-                instructions ~= Instruction(ConstInt(result, 0));
+                result = lowerCallReceiver(call, lowerer);
+                instructions ~= Instruction(ArrayAssumeSafeAppend(result));
                 return true;
             }
 
@@ -3766,6 +3766,11 @@ struct BodyLowerer {
             return true;
         }
 
+        if (name == "clear") {
+            result = lowerAppenderClearCall(call, lowerer);
+            return true;
+        }
+
         if (name == "data" || name == "opSlice") {
             result = lowerAppenderArrayCall(call, lowerer);
             return true;
@@ -3799,6 +3804,42 @@ struct BodyLowerer {
             value,
         ));
         return array;
+    }
+
+    uint lowerAppenderClearCall(
+        imported!"dmd.expression".CallExp call,
+        ref Lowerer lowerer,
+    ) @safe {
+        import quickbite.ir.instruction:
+            ArrayAssumeSafeAppend, ArraySlice, ConstInt, Instruction,
+            StructGet, StructSet;
+
+        enforceCallArgumentCount(call, 0);
+        const appender = lowerCallReceiver(call, lowerer);
+        const data = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            data,
+            appender,
+            "_data",
+        ));
+        const array = allocateTemporary;
+        instructions ~= Instruction(StructGet(
+            array,
+            data,
+            "arr",
+        ));
+        const zero = allocateTemporary;
+        instructions ~= Instruction(ConstInt(zero, 0));
+        const slice = allocateTemporary;
+        instructions ~= Instruction(ArraySlice(
+            slice,
+            array,
+            zero,
+            zero,
+        ));
+        instructions ~= Instruction(StructSet(data, "arr", slice));
+        instructions ~= Instruction(ArrayAssumeSafeAppend(slice));
+        return slice;
     }
 
     uint lowerAppenderArrayCall(
