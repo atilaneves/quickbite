@@ -7,9 +7,16 @@ import quickbite.lang;
 
 @("value.void")
 @safe pure unittest {
-    Value(Void.init).should == Value(Void.init);
-    Value(Void.init).should.not == Value(false);
-    Value(Void.init).should.not == Value(0);
+    Value.void_.should == Value.void_;
+    Value.void_.should.not == Value(false);
+    Value.void_.should.not == Value(0);
+}
+
+@("value.initIsVoid")
+@safe pure unittest {
+    Value.init.should == Value.void_;
+    Value.init.should.not == Value(false);
+    Value.init.should.not == Value(0);
 }
 
 @("value.bool")

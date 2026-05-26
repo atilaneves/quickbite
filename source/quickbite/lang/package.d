@@ -32,6 +32,10 @@ public struct Value {
 
     private Data data;
 
+    public static Value void_() @safe pure {
+        return Value(Void.init);
+    }
+
     public this(T)(in T value) @safe pure
     if (!is(T == E[], E))
     {
@@ -65,4 +69,4 @@ private struct Array {
 }
 
 
-public struct Void {}
+private struct Void {}
