@@ -47,8 +47,9 @@ unittest {
     foreach (instruction; lowered.tests[0].instructions) {
         instruction.match!(
             (ConstInt instruction) {
-                if (instruction.value != 0)
-                    ids ~= instruction.value;
+                const value = instruction.value.asLong;
+                if (value != 0)
+                    ids ~= value;
             },
             (_) {},
         );

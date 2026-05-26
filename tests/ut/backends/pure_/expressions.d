@@ -432,6 +432,94 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    ulong integer = 0x8000_0000_0000_0000UL;
+                    double floating = 9_223_372_036_854_775_808.0;
+
+                    assert(integer == floating);
+                    assert(integer <= floating);
+                    assert(integer >= floating);
+                    assert(!(integer < floating));
+                    assert(!(integer > floating));
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("castsFloatingValueNumerically." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    double input = 7.75;
+                    assert(cast(int) input == 7);
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("intToFloatCastUsesFloatPrecision." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    int input = 16_777_217;
+                    float converted = cast(float) input;
+
+                    assert(converted == 16_777_216.0f);
+                    assert(converted != 16_777_217.0);
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("ulongToRealCastPreservesRealPrecision." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    ulong input = ulong.max;
+                    real converted = cast(real) input;
+
+                    assert(converted == 18_446_744_073_709_551_615.0L);
+                    assert(converted != cast(real) cast(double) input);
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("integerFloatEqualityIsNumeric." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    long integer = 0x3ff0_0000_0000_0000L;
+                    double floating = 1.0;
+
+                    assert(integer != floating);
+                }
+            }, backend);
+        }
+    }
+
+    static if (backend != ExecutorBackend.treeWalkingOld) {
+        @("realComparisonPreservesRealPrecision." ~ backend.text)
+        unittest {
+            runTests(q{
+                unittest {
+                    real left = real.max;
+                    real right = real.infinity;
+
+                    assert(left < right);
+                }
+            }, backend);
+        }
+    }
+
     @("castUbyteRuntimeValueTruncates." ~ backend.text)
     unittest {
         runTests(q{

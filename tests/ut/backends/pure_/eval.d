@@ -43,4 +43,72 @@ static foreach (backend; evalBackends) {
     unittest {
         executor(backend).eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("eval.preservesScalarValueTypes." ~ backend.text)
+        unittest {
+            executor(backend).eval("cast(ubyte) 3").should ==
+                Value(cast(ubyte) 3);
+            executor(backend).eval("cast(char) 65").should ==
+                Value(cast(char) 65);
+            executor(backend).eval("1.25").should == Value(1.25);
+        }
+    }
+
+    static if (
+        backend != ExecutorBackend.treeWalking &&
+        backend != ExecutorBackend.treeWalkingOld
+    ) {
+        @("eval.castsFloatingValueNumerically." ~ backend.text)
+        unittest {
+            executor(backend).eval("double input = 7.75;\ncast(int) input")
+                .should == Value(7);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("eval.floatingSubtractionUsesNumericValues." ~ backend.text)
+        unittest {
+            const result = executor(backend).eval(
+                "double left = 7.75;\ndouble right = 2.25;\nleft - right",
+            );
+
+            result.should == Value(5.5);
+            result.should.not == Value(0);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("eval.floatingUnaryMinusUsesNumericValue." ~ backend.text)
+        unittest {
+            const result = executor(backend).eval("double input = 7.75;\n-input");
+
+            result.should == Value(-7.75);
+            result.should.not == Value(0);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("eval.fabsFloatPreservesReturnType." ~ backend.text)
+        unittest {
+            const result = executor(backend).eval(
+                "import std.math: fabs;\nfloat input = -1.25f;\nfabs(input)",
+            );
+
+            result.should == Value(cast(float) 1.25);
+            result.should.not == Value(1.25);
+        }
+    }
+
+    static if (backend == ExecutorBackend.ir) {
+        @("eval.powFloatDoesNotReturnDoubleValue." ~ backend.text)
+        unittest {
+            const result = executor(backend).eval(
+                "import std.math: pow;\nfloat base = 2.0f;\nfloat exponent = 3.0f;\npow(base, exponent)",
+            );
+
+            result.should == Value(cast(float) 8.0);
+            result.should.not == Value(8.0);
+        }
+    }
 }

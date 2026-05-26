@@ -24,6 +24,17 @@ public string failedAssertionMessage(
     in long right,
     in string operator,
 ) @safe pure {
+    import quickbite.executor: Value;
+
+    return failedAssertionMessage(mode, Value(left), Value(right), operator);
+}
+
+public string failedAssertionMessage(
+    in AssertionMessageMode mode,
+    in imported!"quickbite.executor".Value left,
+    in imported!"quickbite.executor".Value right,
+    in string operator,
+) @safe pure {
     if (mode == AssertionMessageMode.plain)
         return failedAssertionMessage(mode);
 

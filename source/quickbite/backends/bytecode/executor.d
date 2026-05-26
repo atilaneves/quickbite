@@ -73,8 +73,9 @@ private imported!"quickbite.executor".TestSummary testSummary(
 
 private void execute(ref imported!"quickbite.backends.bytecode.module_".BytecodeModule module_) {
     import quickbite.backends.bytecode.opcode: OpCode;
+    import quickbite.executor: Value;
 
-    long[] stack;
+    Value[] stack;
     size_t[] returnAddresses;
     string explicitAssertMessage;
     size_t ip;
@@ -82,8 +83,8 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
     while (ip < module_.code.length) {
         const instruction = module_.code[ip];
         final switch (instruction.op) {
-            case OpCode.pushInteger:
-                stack ~= instruction.operand;
+            case OpCode.pushValue:
+                stack ~= instruction.valueOperand;
                 ++ip;
                 break;
             case OpCode.call:
@@ -135,11 +136,13 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
             case OpCode.equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                stack ~= left == right;
+                stack ~= Value(left == right);
                 ++ip;
                 break;
             case OpCode.notEqual:
-                stack.executeBinaryOperation!((left, right) => left != right);
+                const right = stack.popValue;
+                const left = stack.popValue;
+                stack ~= Value(left != right);
                 ++ip;
                 break;
             case OpCode.lessThan:
@@ -212,43 +215,41 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
     }
 }
 
+private struct ComparisonSpec {
+    public string op;
+    public string symbol;
+}
+
+private enum comparisonSpecs = [
+    ComparisonSpec("equal", "=="),
+    ComparisonSpec("notEqual", "!="),
+    ComparisonSpec("lessThan", "<"),
+    ComparisonSpec("lessOrEqual", "<="),
+    ComparisonSpec("greaterThan", ">"),
+    ComparisonSpec("greaterOrEqual", ">="),
+];
+
 private bool comparisonHolds(
-    in long left,
-    in long right,
+    in imported!"quickbite.executor".Value left,
+    in imported!"quickbite.executor".Value right,
     in imported!"quickbite.backends.bytecode.opcode".OpCode op,
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
-    with (OpCode) final switch (op) {
-        case equal:
-            return left == right;
-        case notEqual:
-            return left != right;
-        case lessThan:
-            return left < right;
-        case lessOrEqual:
-            return left <= right;
-        case greaterThan:
-            return left > right;
-        case greaterOrEqual:
-            return left >= right;
-        case setAssertMessage:
-        case pushInteger:
-        case call:
-        case add:
-        case subtract:
-        case multiply:
-        case divide:
-        case modulo:
-        case shiftRight:
-        case shiftLeft:
-        case bitwiseOr:
-        case bitwiseAnd:
-        case bitwiseXor:
-        case assertCompare:
-        case assertTrue:
-        case ret:
-        case halt:
+    with (OpCode) switch (op) {
+        static foreach (comparison; comparisonSpecs) {
+            mixin("case " ~ comparison.op ~ ":");
+                static if (comparison.symbol == "==") {
+                    return left == right;
+                } else static if (comparison.symbol == "!=") {
+                    return left != right;
+                } else {
+                    return mixin(
+                        "left.asLong " ~ comparison.symbol ~ " right.asLong"
+                    );
+                }
+        }
+        default:
             return false;
     }
 }
@@ -258,47 +259,47 @@ private string comparisonOperator(
 ) @safe pure {
     import quickbite.backends.bytecode.opcode: OpCode;
 
-    with (OpCode) final switch (op) {
-        case equal:
-            return "==";
-        case notEqual:
-            return "!=";
-        case lessThan:
-            return "<";
-        case lessOrEqual:
-            return "<=";
-        case greaterThan:
-            return ">";
-        case greaterOrEqual:
-            return ">=";
-        case setAssertMessage:
-        case pushInteger:
-        case call:
-        case add:
-        case subtract:
-        case multiply:
-        case divide:
-        case modulo:
-        case shiftRight:
-        case shiftLeft:
-        case bitwiseOr:
-        case bitwiseAnd:
-        case bitwiseXor:
-        case assertCompare:
-        case assertTrue:
-        case ret:
-        case halt:
+    with (OpCode) switch (op) {
+        static foreach (comparison; comparisonSpecs) {
+            mixin("case " ~ comparison.op ~ ":");
+                return comparison.symbol;
+        }
+        default:
             return "==";
     }
 }
 
-private void executeBinaryOperation(alias operation)(ref long[] stack) @safe {
+private void executeBinaryOperation(alias operation)(ref imported!"quickbite.executor".Value[] stack) @safe {
     const right = stack.popValue;
     const left = stack.popValue;
-    stack ~= operation(left, right);
+    const result = operation(left.asLong, right.asLong);
+    static if (is(typeof(result) == bool)) {
+        stack ~= imported!"quickbite.executor".Value(result);
+    } else {
+        stack ~= integerBinaryResult(left, right, result);
+    }
 }
 
-private long popValue(ref long[] stack) @safe {
+private imported!"quickbite.executor".Value integerBinaryResult(
+    in imported!"quickbite.executor".Value left,
+    in imported!"quickbite.executor".Value right,
+    in long result,
+) @safe pure {
+    import quickbite.executor: Value;
+
+    if (
+        left == Value(cast(int) left.asLong) &&
+        right == Value(cast(int) right.asLong)
+    ) {
+        return Value(cast(int) result);
+    }
+
+    return Value(result);
+}
+
+private imported!"quickbite.executor".Value popValue(
+    ref imported!"quickbite.executor".Value[] stack,
+) @safe {
     import std.exception: enforce;
 
     enforce(stack.length != 0, "Bytecode stack underflow.");

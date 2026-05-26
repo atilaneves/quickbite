@@ -41,3 +41,24 @@ unittest {
         }
     }
 }
+
+@("value.distinct_scalar_identity")
+unittest {
+    (Value(cast(char) 65) == Value(cast(ubyte) 65)).should == false;
+    (Value(cast(wchar) 65) == Value(cast(ushort) 65)).should == false;
+    (Value(cast(dchar) 65) == Value(cast(uint) 65)).should == false;
+    (Value(1.25f) == Value(1.25)).should == false;
+    (Value(1.25) == Value(1.25L)).should == false;
+    (Value(cast(ifloat) 1.25i) == Value(cast(float) 1.25)).should == false;
+    (Value(cast(idouble) 1.25i) == Value(cast(double) 1.25)).should == false;
+    (Value(cast(ireal) 1.25i) == Value(cast(real) 1.25)).should == false;
+    (Value(cast(cfloat) (1.0f + 2.0fi)) == Value(1.0f)).should == false;
+    (Value(cast(cdouble) (1.0 + 2.0i)) == Value(1.0)).should == false;
+    (Value(cast(creal) (1.0L + 2.0Li)) == Value(1.0L)).should == false;
+    (Value.void_ == Value(0)).should == false;
+}
+
+@("value.toStringShowsDistinctScalarIdentity")
+unittest {
+    Value(8.0f).toString.should.not == Value(8.0).toString;
+}
