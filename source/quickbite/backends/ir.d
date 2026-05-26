@@ -1915,7 +1915,6 @@ private void executeUnaryInstruction(
     const sourceValue = readTemporaryValue(temporaries, source);
     long integerResult;
     Value result;
-    const sourceLong = sourceValue.asLong;
 
     with (UnaryOperation)
     final switch (operation) {
@@ -1925,16 +1924,16 @@ private void executeUnaryInstruction(
                 break;
             }
 
-            integerResult = -sourceLong;
+            integerResult = -sourceValue.asLong;
             break;
         case not:
             integerResult = !sourceValue.isTruthy;
             break;
         case complement:
-            integerResult = ~sourceLong;
+            integerResult = ~sourceValue.asLong;
             break;
         case bitScanReverse:
-            integerResult = bitScanReverseValue(sourceLong);
+            integerResult = bitScanReverseValue(sourceValue.asLong);
             break;
         case fabsDouble:
             import std.math: fabs;
