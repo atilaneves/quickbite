@@ -1984,6 +1984,12 @@ private void executeUnaryInstruction(
         case ulongToDouble:
             result = Value(cast(double) cast(ulong) sourceValue.asLong);
             break;
+        case longToFloat:
+            result = Value(cast(float) sourceValue.asLong);
+            break;
+        case ulongToReal:
+            result = Value(cast(real) cast(ulong) sourceValue.asLong);
+            break;
     }
 
     writeTemporaryValue(temporaries, destination) =

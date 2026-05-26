@@ -129,6 +129,36 @@ unittest {
     ir.eval("double input = 7.75;\ncast(int) input").should == Value(7);
 }
 
+@("eval.intToFloatCastUsesFloatPrecision")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            int input = 16_777_217;
+            float converted = cast(float) input;
+
+            assert(converted == 16_777_216.0f);
+            assert(converted != 16_777_217.0);
+        }
+    }, ExecutorBackend.ir);
+}
+
+@("eval.ulongToRealCastPreservesRealPrecision")
+unittest {
+    import quickbite: ExecutorBackend, runTests;
+
+    runTests(q{
+        unittest {
+            ulong input = ulong.max;
+            real converted = cast(real) input;
+
+            assert(converted == 18_446_744_073_709_551_615.0L);
+            assert(converted != cast(real) cast(double) input);
+        }
+    }, ExecutorBackend.ir);
+}
+
 @("eval.floatingSubtractionUsesNumericValues")
 unittest {
     import quickbite: ExecutorBackend;

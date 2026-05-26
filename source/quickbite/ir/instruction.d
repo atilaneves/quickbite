@@ -86,6 +86,8 @@ public enum UnaryOperation {
     doubleToUlongBits,
     ulongBitsToDouble,
     ulongToDouble,
+    longToFloat,
+    ulongToReal,
 }
 
 public struct Select {

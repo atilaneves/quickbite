@@ -6386,6 +6386,22 @@ struct BodyLowerer {
 
         if (typeIsFloating(cast_.to)) {
             const source = lowerExpression(cast_.e1, lowerer);
+            if (
+                typeIsFloat32(cast_.to) &&
+                typeIsSignedInteger(cast_.e1.type)
+            ) {
+                import quickbite.ir.instruction: Instruction, UnaryOp,
+                    UnaryOperation;
+
+                const destination = allocateTemporary;
+                instructions ~= Instruction(UnaryOp(
+                    destination,
+                    source,
+                    UnaryOperation.longToFloat,
+                ));
+                return destination;
+            }
+
             if (expressionHasUnsignedIntegerType(cast_.e1)) {
                 import quickbite.ir.instruction: Instruction, UnaryOp,
                     UnaryOperation;
@@ -6394,7 +6410,9 @@ struct BodyLowerer {
                 instructions ~= Instruction(UnaryOp(
                     destination,
                     source,
-                    UnaryOperation.ulongToDouble,
+                    typeIsFloat80(cast_.to)
+                        ? UnaryOperation.ulongToReal
+                        : UnaryOperation.ulongToDouble,
                 ));
                 return destination;
             }
@@ -7838,6 +7856,8 @@ private bool tryRuntimeMathUnaryOperation(
         case doubleToUlongBits:
         case ulongBitsToDouble:
         case ulongToDouble:
+        case longToFloat:
+        case ulongToReal:
             return false;
     }
 }
@@ -8416,6 +8436,18 @@ private bool typeIsFloating(imported!"dmd.mtype".Type type) @trusted {
     return basetype.ty == TY.Tfloat32 ||
         basetype.ty == TY.Tfloat64 ||
         basetype.ty == TY.Tfloat80;
+}
+
+private bool typeIsFloat32(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tfloat32;
+}
+
+private bool typeIsFloat80(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tfloat80;
 }
 
 private bool typeIsUint32(imported!"dmd.mtype".Type type) @trusted {
