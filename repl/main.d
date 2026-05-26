@@ -3,13 +3,13 @@ module repl.main;
 private:
 
 public int main(string[] args) {
-    import quickbite: ExecutorBackend, executor;
+    import quickbite: ExecutorName, executor;
     import quickbite.frontend.repl: evalReplCell;
     import quickbite.executor: Repl;
     import std.conv: text;
     import std.stdio: stdin, writeln;
 
-    auto active = executor(ExecutorBackend.ir);
+    auto active = executor(ExecutorName.ir);
 
     if (args.length == 3 && args[1] == "-c") {
         evalReplCell(active, "", args[2]);

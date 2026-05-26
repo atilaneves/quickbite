@@ -2,7 +2,7 @@ module quickbite;
 
 private:
 
-public enum ExecutorBackend {
+public enum ExecutorName {
     ir,
     treeWalkingOld,
     treeWalking,
@@ -14,67 +14,67 @@ public enum ExecutorBackend {
 
 public void runTests(
     in string source,
-    in ExecutorBackend backend = ExecutorBackend.ir,
+    in ExecutorName executorName = ExecutorName.ir,
 ) {
-    executor(backend).runTests(source);
+    executor(executorName).runTests(source);
 }
 
 public void runTestsFromFile(
     in string filePath,
     in string[] importPaths,
-    in ExecutorBackend backend = ExecutorBackend.ir,
+    in ExecutorName executorName = ExecutorName.ir,
 ) {
     import std.file: readText;
-    runTests(filePath.readText, importPaths, backend);
+    runTests(filePath.readText, importPaths, executorName);
 }
 
 public void runTests(
     in string source,
     in string[] importPaths,
-    in ExecutorBackend backend = ExecutorBackend.ir,
+    in ExecutorName executorName = ExecutorName.ir,
 ) {
-    executor(backend).runTests(source, importPaths);
+    executor(executorName).runTests(source, importPaths);
 }
 
 public imported!"quickbite.executor".TestSummary runTestSummary(
     in string source,
-    in ExecutorBackend backend = ExecutorBackend.ir,
+    in ExecutorName executorName = ExecutorName.ir,
 ) {
-    return executor(backend).runTestSummary(source);
+    return executor(executorName).runTestSummary(source);
 }
 
 public imported!"quickbite.executor".Executor executor(
-    in ExecutorBackend backend,
+    in ExecutorName executorName,
 ) {
-    final switch (backend) {
-        case ExecutorBackend.ir:
-            import quickbite.backends.ir: IrExecutor;
+    final switch (executorName) {
+        case ExecutorName.ir:
+            import quickbite.executors.ir: IrExecutor;
             return new IrExecutor;
-        case ExecutorBackend.treeWalkingOld:
-            import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
+        case ExecutorName.treeWalkingOld:
+            import quickbite.executors.tree_walking_old: TreeWalkingExecutorOld;
             return new TreeWalkingExecutorOld;
-        case ExecutorBackend.treeWalking:
-            import quickbite.backends.tree_walking: TreeWalkingExecutor;
+        case ExecutorName.treeWalking:
+            import quickbite.executors.tree_walking: TreeWalkingExecutor;
             return new TreeWalkingExecutor;
-        case ExecutorBackend.dmdCtfe:
-            import quickbite.backends.dmd_ctfe: DmdCtfe;
+        case ExecutorName.dmdCtfe:
+            import quickbite.executors.dmd_ctfe: DmdCtfe;
             return new DmdCtfe;
-        case ExecutorBackend.dmdCodegen:
-            import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
+        case ExecutorName.dmdCodegen:
+            import quickbite.executors.dmd_codegen: DmdCodegenSharedLib;
             return new DmdCodegenSharedLib;
-        case ExecutorBackend.dmdCodegenRam:
+        case ExecutorName.dmdCodegenRam:
             import std.process: environment;
 
-            if (environment.get("QUICKBITE_EXPERIMENTAL_BACKEND_TESTS").length == 0)
+            if (environment.get("QUICKBITE_EXPERIMENTAL_EXECUTOR_TESTS").length == 0)
                 throw new Exception(
-                    "ExecutorBackend.dmdCodegenRam is experimental; set "
-                    ~ "QUICKBITE_EXPERIMENTAL_BACKEND_TESTS to use it.",
+                    "ExecutorName.dmdCodegenRam is experimental; set "
+                    ~ "QUICKBITE_EXPERIMENTAL_EXECUTOR_TESTS to use it.",
                 );
 
-            import quickbite.backends.dmd_codegen: DmdCodegenRam;
+            import quickbite.executors.dmd_codegen: DmdCodegenRam;
             return new DmdCodegenRam;
-        case ExecutorBackend.bytecode:
-            import quickbite.backends.bytecode: BytecodeExecutor;
+        case ExecutorName.bytecode:
+            import quickbite.executors.bytecode: BytecodeExecutor;
             return new BytecodeExecutor;
     }
 }

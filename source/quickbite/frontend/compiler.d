@@ -55,7 +55,7 @@ final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
     // Keyed by source content and import paths; prevents re-registering the
-    // same module in DMD's process-global table when multiple backends parse
+    // same module in DMD's process-global table when multiple executors parse
     // the same file with the same import context.
     private imported!"dmd.dmodule".Module[string] sourceCache;
 

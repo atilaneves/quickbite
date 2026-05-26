@@ -2,11 +2,11 @@ module benchmarks.main;
 
 import benchmarks.harness: measure, Result;
 import quickbite.benchmarks: moduleDisplayName, populateDmdCodegenModuleSet;
-import quickbite.backends.dmd_codegen: DmdCodegenSharedLib;
-import quickbite.backends.dmd_ctfe: DmdCtfe;
-import quickbite.backends.ir: IrExecutor;
-import quickbite.backends.tree_walking: TreeWalkingExecutor;
-import quickbite.backends.tree_walking_old: TreeWalkingExecutorOld;
+import quickbite.executors.dmd_codegen: DmdCodegenSharedLib;
+import quickbite.executors.dmd_ctfe: DmdCtfe;
+import quickbite.executors.ir: IrExecutor;
+import quickbite.executors.tree_walking: TreeWalkingExecutor;
+import quickbite.executors.tree_walking_old: TreeWalkingExecutorOld;
 import quickbite.executor: Executor;
 import quickbite.frontend.compiler: parseModule;
 
@@ -26,7 +26,7 @@ int main(string[] args) {
     size_t iterations = defaultIterations;
     string[] importPaths;
     string[] linkFiles;
-    string[] backendNames;
+    string[] executorNames;
     string dubPkg;
 
     auto info = getopt(
@@ -34,13 +34,13 @@ int main(string[] args) {
         "warmup",       "untimed iterations before sampling",          &warmup,
         "iterations",   "timed iterations per measurement",            &iterations,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
-        "backend",      "backend to measure (repeatable)",             &backendNames,
+        "executor",      "executor to measure (repeatable)",             &executorNames,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
             "usage: bench [--warmup=N] [--iterations=N]"
-            ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME]"
+            ~ " [--import-path=P ...] [--executor=NAME ...] [--dub=NAME]"
             ~ " [<module.d> ...]",
             info.options,
         );
@@ -70,26 +70,26 @@ int main(string[] args) {
 
     printRunHeader(warmup, iterations);
 
-    Executor[string] backends;
-    backends["ir"]             = new IrExecutor;
-    backends["treeWalkingOld"] = new TreeWalkingExecutorOld;
-    backends["treeWalking"]    = new TreeWalkingExecutor;
-    backends["dmd-ctfe"]       = new DmdCtfe;
-    backends["dmd-codegen"]    = new DmdCodegenSharedLib(linkFiles, importPaths);
+    Executor[string] executors;
+    executors["ir"]             = new IrExecutor;
+    executors["treeWalkingOld"] = new TreeWalkingExecutorOld;
+    executors["treeWalking"]    = new TreeWalkingExecutor;
+    executors["dmd-ctfe"]       = new DmdCtfe;
+    executors["dmd-codegen"]    = new DmdCodegenSharedLib(linkFiles, importPaths);
 
-    if (backendNames.length == 0)
-        backendNames = dubFixtures.length > 0
+    if (executorNames.length == 0)
+        executorNames = dubFixtures.length > 0
             ? ["dmd-codegen", "ir", "treeWalkingOld"]
             : ["dmd-codegen", "ir", "treeWalkingOld", "dmd-ctfe"];
 
-    foreach (name; backendNames)
-        if (name !in backends)
-            throw new Exception("unknown backend: " ~ name);
+    foreach (name; executorNames)
+        if (name !in executors)
+            throw new Exception("unknown executor: " ~ name);
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
-    foreach (name; backendNames) {
-        auto executor = backends[name];
+    foreach (name; executorNames) {
+        auto executor = executors[name];
         if (name == "dmd-codegen")
             populateDmdCodegenModuleSet(fixtures, importPaths);
 
@@ -132,8 +132,8 @@ int main(string[] args) {
         }
 
         if (dubModules.length > 0) {
-            foreach (name; backendNames) {
-                auto executor = backends[name];
+            foreach (name; executorNames) {
+                auto executor = executors[name];
                 try {
                     printRow(
                         dubPkg, name, warmup, iterations,
@@ -286,14 +286,14 @@ void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
         "%-32s %-14s %10s %10s %10s",
-        "fixture", "backend", "min", "median", "stddev",
+        "fixture", "executor", "min", "median", "stddev",
     );
     writeln;
 }
 
 void printRow(
     in string fixture,
-    in string backend,
+    in string executorName,
     in size_t warmup,
     in size_t iterations,
     scope void delegate() run,
@@ -305,7 +305,7 @@ void printRow(
     writefln(
         "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms",
         fixture,
-        backend,
+        executorName,
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,

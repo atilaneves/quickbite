@@ -10,7 +10,7 @@ public void populateDmdCodegenModuleSet(
     import std.file: readText;
 
     // DMD-codegen walks Module.amodules, so parse every fixture before the
-    // first timed run of this backend. Other benchmark backends keep their
+    // first timed run of this executor. Other benchmark executors keep their
     // existing per-fixture parse/skip behaviour.
     foreach (path; fixtures) {
         try {
