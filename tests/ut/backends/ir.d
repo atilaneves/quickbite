@@ -118,3 +118,13 @@ unittest {
     ir.eval("cast(char) 65").should == Value(cast(char) 65);
     ir.eval("1.25").should == Value(1.25);
 }
+
+@("eval.castsFloatingValueNumerically")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    ir.eval("double input = 7.75;\ncast(int) input").should == Value(7);
+}

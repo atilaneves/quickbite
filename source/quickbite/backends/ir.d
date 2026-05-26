@@ -1478,6 +1478,9 @@ private Value castInteger(
 ) @safe pure {
     import quickbite.ir.instruction: IntegerType;
 
+    if (source.isFloating)
+        return castFloatingToInteger(source.asDouble, target);
+
     const value = source.asLong;
     with (IntegerType)
     final switch (target) {
@@ -1503,6 +1506,39 @@ private Value castInteger(
             return Value(cast(wchar) value);
         case dchar_:
             return Value(cast(dchar) value);
+    }
+}
+
+private Value castFloatingToInteger(
+    in double source,
+    in imported!"quickbite.ir.instruction".IntegerType target,
+) @safe pure {
+    import quickbite.ir.instruction: IntegerType;
+
+    with (IntegerType)
+    final switch (target) {
+        case i8:
+            return Value(cast(byte) source);
+        case u8:
+            return Value(cast(ubyte) source);
+        case i16:
+            return Value(cast(short) source);
+        case u16:
+            return Value(cast(ushort) source);
+        case i32:
+            return Value(cast(int) source);
+        case u32:
+            return Value(cast(uint) source);
+        case i64:
+            return Value(cast(long) source);
+        case u64:
+            return Value(cast(ulong) source);
+        case char_:
+            return Value(cast(char) source);
+        case wchar_:
+            return Value(cast(wchar) source);
+        case dchar_:
+            return Value(cast(dchar) source);
     }
 }
 
