@@ -9,22 +9,22 @@ private:
 import std.typecons: tuple;
 
 static foreach (backend; backends) {
-    @("eval.add0." ~ backend.stringof, ShouldFail)
+    @("add0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
 
-    @("eval.add1." ~ backend.stringof, ShouldFail)
+    @("add1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
     }
 
-    @("eval.add2." ~ backend.stringof, ShouldFail)
+    @("add2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
     }
 
-    @("eval.arithmetic." ~ backend.stringof, ShouldFail)
+    @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
             tuple("4 + 5", 9),
@@ -37,12 +37,12 @@ static foreach (backend; backends) {
             newBackend!backend.eval(c[0]).should == Value(c[1]);
     }
 
-    @("eval.multiCell." ~ backend.stringof, ShouldFail)
+    @("multiCell." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
 
-    @("eval.preservesScalarValueTypes." ~ backend.stringof, ShouldFail)
+    @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(ubyte) 3").should ==
             Value(cast(ubyte) 3);
@@ -51,13 +51,13 @@ static foreach (backend; backends) {
         newBackend!backend.eval("1.25").should == Value(1.25);
     }
 
-    @("eval.castsFloatingValueNumerically." ~ backend.stringof, ShouldFail)
+    @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
             .should == Value(7);
     }
 
-    @("eval.floatingSubtractionUsesNumericValues." ~ backend.stringof, ShouldFail)
+    @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
             "double left = 7.75;\ndouble right = 2.25;\nleft - right",
@@ -67,7 +67,7 @@ static foreach (backend; backends) {
         result.should.not == Value(0);
     }
 
-    @("eval.floatingUnaryMinusUsesNumericValue." ~ backend.stringof, ShouldFail)
+    @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
 
@@ -75,7 +75,7 @@ static foreach (backend; backends) {
         result.should.not == Value(0);
     }
 
-    @("eval.fabsFloatPreservesReturnType." ~ backend.stringof, ShouldFail)
+    @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
             "import std.math: fabs;\nfloat input = -1.25f;\nfabs(input)",
@@ -85,7 +85,7 @@ static foreach (backend; backends) {
         result.should.not == Value(1.25);
     }
 
-    @("eval.powFloatDoesNotReturnDoubleValue." ~ backend.stringof, ShouldFail)
+    @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
             "import std.math: pow;\nfloat base = 2.0f;\nfloat exponent = 3.0f;\npow(base, exponent)",
@@ -94,9 +94,14 @@ static foreach (backend; backends) {
         result.should == Value(cast(float) 8.0);
         result.should.not == Value(8.0);
     }
+
+    @("stringLiteralIsArray." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval(q{ "abc" }).should == Value("abc");
+    }
 }
 
-@("eval.convertsLegacyValuePreservingUbyteType.Ctfe")
+@("convertsLegacyValuePreservingUbyteType.Ctfe")
 unittest {
     newBackend!Ctfe.eval("cast(ubyte) 3").should == Value(cast(ubyte) 3);
 }

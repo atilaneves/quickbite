@@ -87,6 +87,12 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value(cast(ubyte) 42).should.not == Value(42);
 }
 
+@("value.toString.integerType")
+@safe pure unittest {
+    Value(3).toString.should == "3: int";
+    Value(3u).toString.should == "3: uint";
+}
+
 @("value.string")
 @safe pure unittest {
     Value("foo").should == Value("foo");
