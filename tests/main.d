@@ -12,13 +12,16 @@ int main(string[] args) {
         "ut.backends.pure_.eval",
         "ut.backends.pure_.expressions",
         "ut.backends.pure_.control_flow",
+        "ut.backends.pure_.exceptions",
         "ut.backends.pure_.logic",
+        "ut.backends.pure_.math",
         "ut.backends.pure_.structs",
         "ut.backends.pure_.minicereal",
         "ut.backends.pure_.projects.cerealed",
-        "ut.backends.parity",
+        "ut.backends.contracts",
         "ut.backends.codegen",
         "ut.backends.repl",
+        "ut.backends.deps.unit_threaded",
         "ut.backends.deps.cerealed",
     );
 }
