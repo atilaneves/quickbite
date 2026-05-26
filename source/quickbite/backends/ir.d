@@ -1862,57 +1862,63 @@ private void executeUnaryInstruction(
     import quickbite.ir.instruction: UnaryOperation;
 
     const sourceValue = readTemporaryValue(temporaries, source);
-    long result;
-    Value valueResult;
+    long integerResult;
+    Value result;
     const sourceLong = sourceValue.asLong;
 
     with (UnaryOperation)
     final switch (operation) {
         case negate:
-            result = -sourceLong;
+            if (sourceValue.isFloating) {
+                result = Value(-sourceValue.asDouble);
+                break;
+            }
+
+            integerResult = -sourceLong;
             break;
         case not:
-            result = !sourceValue.isTruthy;
+            integerResult = !sourceValue.isTruthy;
             break;
         case complement:
-            result = ~sourceLong;
+            integerResult = ~sourceLong;
             break;
         case bitScanReverse:
-            result = bitScanReverseValue(sourceLong);
+            integerResult = bitScanReverseValue(sourceLong);
             break;
         case fabsDouble:
             import std.math: fabs;
 
-            valueResult = Value(fabs(sourceValue.asDouble));
+            result = Value(fabs(sourceValue.asDouble));
             break;
         case isInfinityDouble:
             import std.math: isInfinity;
 
-            result = isInfinity(sourceValue.asDouble) ? 1 : 0;
+            integerResult = isInfinity(sourceValue.asDouble) ? 1 : 0;
             break;
         case isNaNDouble:
             import std.math: isNaN;
 
-            result = isNaN(sourceValue.asDouble) ? 1 : 0;
+            integerResult = isNaN(sourceValue.asDouble) ? 1 : 0;
             break;
         case signbitDouble:
-            result = (cast(ulong) doubleBits(sourceValue.asDouble) & (1UL << 63)) != 0;
+            integerResult =
+                (cast(ulong) doubleBits(sourceValue.asDouble) & (1UL << 63)) != 0;
             break;
         case sqrtDouble:
             import std.math: sqrt;
 
-            valueResult = Value(sqrt(sourceValue.asDouble));
+            result = Value(sqrt(sourceValue.asDouble));
             break;
         case floatToUintBits:
-            valueResult = Value(floatBits(cast(float) sourceValue.asDouble));
+            result = Value(floatBits(cast(float) sourceValue.asDouble));
             break;
         case doubleToUlongBits:
-            valueResult = Value(cast(ulong) doubleBits(sourceValue.asDouble));
+            result = Value(cast(ulong) doubleBits(sourceValue.asDouble));
             break;
     }
 
     writeTemporaryValue(temporaries, destination) =
-        valueResult == Value.init ? Value(result) : valueResult;
+        result == Value.init ? Value(integerResult) : result;
 }
 
 private long doubleBits(in double value) @trusted pure nothrow {

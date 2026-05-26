@@ -141,3 +141,16 @@ unittest {
     result.should == Value(5.5);
     result.should.not == Value(0);
 }
+
+@("eval.floatingUnaryMinusUsesNumericValue")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval("double input = 7.75;\n-input");
+
+    result.should == Value(-7.75);
+    result.should.not == Value(0);
+}

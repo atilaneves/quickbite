@@ -13,7 +13,7 @@ comment in a separate worker worktree and integrate the accepted changes here.
 - [ ] IR scalar equality must not treat integer values as equal to matching
   floating bit patterns for ordinary D numeric comparison. Probe:
   `ut.backends.ir.eval.integerFloatEqualityIsNumeric`.
-- [ ] Unary minus on runtime floating IR values must negate the numeric value,
+- [x] Unary minus on runtime floating IR values must negate the numeric value,
   not the floating bit pattern. Probe:
   `ut.backends.ir.eval.floatingUnaryMinusUsesNumericValue`.
 - [ ] `std.math.fabs(float)` in the IR math-intrinsic path must preserve the
