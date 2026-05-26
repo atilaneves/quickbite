@@ -1307,10 +1307,12 @@ private InstructionEffect executeArrayCanFindInstruction(
     in imported!"quickbite.ir.instruction".ArrayCanFind instruction,
 ) @safe pure {
     import std.algorithm.searching: countUntil;
+    import quickbite.ir.instruction: Operation;
 
     writeTemporaryValue(temporaries, instruction.destination) =
         context.arrays[arrayIndex(temporaries, instruction.haystack)]
-        .countUntil!valuesEqual(
+        .countUntil!((left, right) =>
+            compareScalarValues(left, right, Operation.equal))(
             context.arrays[arrayIndex(temporaries, instruction.needle)],
         ) >= 0;
     return nextInstruction;
@@ -1878,12 +1880,6 @@ private bool compareLongs(
     }
 }
 
-private bool valuesEqual(in Value left, in Value right) @safe pure {
-    import quickbite.ir.instruction: Operation;
-
-    return compareScalarValues(left, right, Operation.equal);
-}
-
 private Value[] copyArrayValue(in Value[][] arrays, in size_t handle) @safe pure {
     if (handle < arrays.length)
         return arrays[handle].dup;
@@ -2046,11 +2042,16 @@ private bool arraysEqual(
     in uint depth,
 ) @safe pure {
     import std.algorithm.comparison: equal;
+    import quickbite.ir.instruction: Operation;
 
     enforceArrayHandle(arrays, left);
     enforceArrayHandle(arrays, right);
     if (depth <= 1)
-        return equal!valuesEqual(arrays[left], arrays[right]);
+        return equal!((leftValue, rightValue) =>
+            compareScalarValues(leftValue, rightValue, Operation.equal))(
+            arrays[left],
+            arrays[right],
+        );
 
     return equal!((leftValue, rightValue) => arraysEqual(
             arrays,
@@ -2094,8 +2095,10 @@ private size_t assocArrayIndex(in Value[] temporaries, in uint temporary) @safe 
 }
 
 private Value assocArrayValue(in AssocArray array, in Value key) @safe pure {
+    import quickbite.ir.instruction: Operation;
+
     foreach (index, existingKey; array.keys)
-        if (valuesEqual(existingKey, key))
+        if (compareScalarValues(existingKey, key, Operation.equal))
             return array.values[index];
 
     return Value(0);
@@ -2106,8 +2109,10 @@ private void writeAssocArrayValue(
     in Value key,
     in Value value,
 ) @safe pure {
+    import quickbite.ir.instruction: Operation;
+
     foreach (index, existingKey; array.keys) {
-        if (!valuesEqual(existingKey, key))
+        if (!compareScalarValues(existingKey, key, Operation.equal))
             continue;
 
         array.values[index] = value;
