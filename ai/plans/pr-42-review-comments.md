@@ -16,7 +16,7 @@ comment in a separate worker worktree and integrate the accepted changes here.
 - [x] Unary minus on runtime floating IR values must negate the numeric value,
   not the floating bit pattern. Probe:
   `ut.backends.ir.eval.floatingUnaryMinusUsesNumericValue`.
-- [ ] `std.math.fabs(float)` in the IR math-intrinsic path must preserve the
+- [x] `std.math.fabs(float)` in the IR math-intrinsic path must preserve the
   float return type. Probe:
   `ut.backends.ir.eval.fabsFloatPreservesReturnType`.
 - [ ] Mixed unsigned/floating comparisons must compare the numeric unsigned

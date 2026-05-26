@@ -154,3 +154,18 @@ unittest {
     result.should == Value(-7.75);
     result.should.not == Value(0);
 }
+
+@("eval.fabsFloatPreservesReturnType")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval(
+        "import std.math: fabs;\nfloat input = -1.25f;\nfabs(input)",
+    );
+
+    result.should == Value(cast(float) 1.25);
+    result.should.not == Value(1.25);
+}

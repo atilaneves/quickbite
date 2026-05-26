@@ -1888,6 +1888,11 @@ private void executeUnaryInstruction(
         case fabsDouble:
             import std.math: fabs;
 
+            if (sourceValue.isFloat32) {
+                result = Value(fabs(cast(float) sourceValue.asDouble));
+                break;
+            }
+
             result = Value(fabs(sourceValue.asDouble));
             break;
         case isInfinityDouble:
