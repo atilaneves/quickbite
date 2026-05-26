@@ -2302,8 +2302,8 @@ struct BodyLowerer {
             return false;
 
         if (
-            literalValue(base) != literalValue(2.0) ||
-            literalValue(exponent) != literalValue(3.0)
+            !literalValueEquals(base, 2.0) ||
+            !literalValueEquals(exponent, 3.0)
         )
             return false;
 
@@ -7207,24 +7207,6 @@ private long integerValue(imported!"dmd.expression".IntegerExp integer) @trusted
     return integer.getInteger();
 }
 
-private long literalValue(imported!"dmd.expression".RealExp real_) @trusted {
-    import dmd.astenums: TY;
-
-    const basetype = real_.type.toBasetype;
-
-    if (basetype.ty == TY.Tfloat32) {
-        float value = cast(float) real_.toReal();
-        return *cast(uint*) &value;
-    }
-
-    if (basetype.ty == TY.Tfloat64) {
-        double value = cast(double) real_.toReal();
-        return cast(long) *cast(ulong*) &value;
-    }
-
-    return real_.toInteger();
-}
-
 private imported!"quickbite.executor".Value realLiteralRuntimeValue(
     imported!"dmd.expression".RealExp real_,
 ) @trusted {
@@ -7242,8 +7224,16 @@ private imported!"quickbite.executor".Value realLiteralRuntimeValue(
     return Value(cast(real) real_.toReal());
 }
 
-private long literalValue(double value) @trusted {
-    return cast(long) *cast(ulong*) &value;
+private bool literalValueEquals(
+    imported!"dmd.expression".RealExp real_,
+    in double expected,
+) @trusted {
+    import dmd.astenums: TY;
+
+    if (real_.type.toBasetype.ty != TY.Tfloat64)
+        return false;
+
+    return cast(double) real_.toReal() == expected;
 }
 
 private imported!"dmd.expression".Expression[] arrayExpressionArguments(
