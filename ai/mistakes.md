@@ -164,3 +164,7 @@
 - Don't add backend-specific workarounds to make tests pass. A backend either
   implements the language behaviour properly enough for the test, or it should
   be left out of that test.
+
+- Don't write language-surface tests that encode behaviour different from DMD
+  CTFE or compiled D code. For `pure_` tests, CTFE is canonical unless the
+  completed dmd codegen backend proves compiled code behaves differently.

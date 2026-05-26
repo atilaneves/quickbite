@@ -536,19 +536,29 @@ static foreach (backend; matureExecutorBackends ~ [ExecutorBackend.treeWalking])
     }
 }
 
-@("structMethodReturnDoesNotSkipCallerStatements.treeWalking")
-unittest {
-    runTests(q{
-        struct Worker {
-            void stop() {
-                return;
-            }
-        }
+static foreach (backend; [
+    ExecutorBackend.treeWalking,
+    ExecutorBackend.dmdCtfe,
+]) {
+    @("structMethodReturnDoesNotSkipCallerStatements." ~ backend.text)
+    unittest {
+        static if (backend == ExecutorBackend.dmdCtfe)
+            enum expected = "unittest failure";
+        else
+            enum expected = "Unittest assertion failed.";
 
-        unittest {
-            Worker worker;
-            worker.stop;
-            assert(false);
-        }
-    }, ExecutorBackend.treeWalking).shouldThrowWithMessage("Unittest assertion failed.");
+        runTests(q{
+            struct Worker {
+                void stop() {
+                    return;
+                }
+            }
+
+            unittest {
+                Worker worker;
+                worker.stop;
+                assert(false);
+            }
+        }, backend).shouldThrowWithMessage(expected);
+    }
 }

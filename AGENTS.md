@@ -37,6 +37,13 @@ Stop and wait for approval before adding or modifying any test.
 
 Test behaviours, not implementations.
 
+Language-surface tests must match D's compiled-code behaviour. In `pure_`,
+`ExecutorBackend.dmdCtfe` is the canonical oracle for supported behaviour until
+the dmd codegen backend is complete; if CTFE disagrees with a backend, assume
+the backend or test is wrong unless compiled D code proves otherwise. Once dmd
+codegen is complete, resolve any CTFE/codegen disagreement against compiled
+code.
+
 ## Style
 
 - OTBS. For functions with many attributes, `{` on its own line is acceptable.

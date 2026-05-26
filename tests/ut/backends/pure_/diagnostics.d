@@ -217,21 +217,24 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("42 != 43");
     }
 
-    static if (backend != ExecutorBackend.dmdCtfe) {
-        @("refParameterOops." ~ backend.text)
-        unittest {
-            runTests(q{
-                void addOne(ref int value) {
-                    value = value + 1;
-                }
+    @("refParameterOops." ~ backend.text)
+    unittest {
+        static if (backend == ExecutorBackend.dmdCtfe)
+            enum expected = "41 != 43";
+        else
+            enum expected = "42 != 43";
 
-                unittest {
-                    int value = 41;
-                    addOne(value);
-                    assert(value == 43);
-                }
-            }, backend).shouldThrowWithMessage("42 != 43");
-        }
+        runTests(q{
+            void addOne(ref int value) {
+                value = value + 1;
+            }
+
+            unittest {
+                int value = 41;
+                addOne(value);
+                assert(value == 43);
+            }
+        }, backend).shouldThrowWithMessage(expected);
     }
 
     @("ifElseOops." ~ backend.text)
@@ -250,36 +253,42 @@ static foreach (backend; matureExecutorBackends) {
         }, backend).shouldThrowWithMessage("43 != 42");
     }
 
-    static if (backend != ExecutorBackend.dmdCtfe) {
-        @("inFunctionParametersOops." ~ backend.text)
-        unittest {
-            runTests(q{
-                void check(in int left, in int right) {
-                    assert(left + right == 42);
-                }
+    @("inFunctionParametersOops." ~ backend.text)
+    unittest {
+        static if (backend == ExecutorBackend.dmdCtfe)
+            enum expected = "Unittest assertion failed.";
+        else
+            enum expected = "43 != 42";
 
-                unittest {
-                    check(40, 3);
-                }
-            }, backend).shouldThrowWithMessage("43 != 42");
-        }
+        runTests(q{
+            void check(in int left, in int right) {
+                assert(left + right == 42);
+            }
+
+            unittest {
+                check(40, 3);
+            }
+        }, backend).shouldThrowWithMessage(expected);
     }
 
-    static if (backend != ExecutorBackend.dmdCtfe) {
-        @("refSizeTParameterOops." ~ backend.text)
-        unittest {
-            runTests(q{
-                void advance(ref size_t pos) {
-                    pos = pos + 1;
-                }
+    @("refSizeTParameterOops." ~ backend.text)
+    unittest {
+        static if (backend == ExecutorBackend.dmdCtfe)
+            enum expected = "41 != 43";
+        else
+            enum expected = "42 != 43";
 
-                unittest {
-                    size_t pos = 41;
-                    advance(pos);
-                    assert(pos == 43);
-                }
-            }, backend).shouldThrowWithMessage("42 != 43");
-        }
+        runTests(q{
+            void advance(ref size_t pos) {
+                pos = pos + 1;
+            }
+
+            unittest {
+                size_t pos = 41;
+                advance(pos);
+                assert(pos == 43);
+            }
+        }, backend).shouldThrowWithMessage(expected);
     }
 }
 
