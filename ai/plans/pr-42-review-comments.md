@@ -25,7 +25,7 @@ comment in a separate worker worktree and integrate the accepted changes here.
 - [ ] `real` comparisons must preserve real precision instead of converting
   both operands through `double`. Probe:
   `ut.backends.ir.eval.realComparisonPreservesRealPrecision`.
-- [ ] `std.math.pow(float, float)` must not store a `double` `Value` when DMD's
+- [x] `std.math.pow(float, float)` must not store a `double` `Value` when DMD's
   expression type is `float`. Probe:
   `ut.backends.ir.eval.powFloatDoesNotReturnDoubleValue`.
 - [ ] `Value.toString` must show enough scalar identity that distinct scalar

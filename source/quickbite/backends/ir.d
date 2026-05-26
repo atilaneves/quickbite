@@ -1605,6 +1605,15 @@ private void executeBinaryInstruction(
         case powDouble:
             import std.math: pow;
 
+            if (leftValue.isFloat32 && rightValue.isFloat32) {
+                result = Value(pow(
+                    cast(float) leftValue.asDouble,
+                    cast(float) rightValue.asDouble,
+                ));
+                hasResult = true;
+                break;
+            }
+
             result = Value(pow(leftValue.asDouble, rightValue.asDouble));
             hasResult = true;
             break;

@@ -169,3 +169,18 @@ unittest {
     result.should == Value(cast(float) 1.25);
     result.should.not == Value(1.25);
 }
+
+@("eval.powFloatDoesNotReturnDoubleValue")
+unittest {
+    import quickbite: ExecutorBackend;
+    import quickbite.executor: Value;
+    import ut.backends: executor;
+
+    auto ir = executor(ExecutorBackend.ir);
+    const result = ir.eval(
+        "import std.math: pow;\nfloat base = 2.0f;\nfloat exponent = 3.0f;\npow(base, exponent)",
+    );
+
+    result.should == Value(cast(float) 8.0);
+    result.should.not == Value(8.0);
+}
