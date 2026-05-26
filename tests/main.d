@@ -5,7 +5,7 @@ int main(string[] args) {
         "ut.value",
         "ut.compiler",
         "ut.backends",
-        "ut.backends.eval",
+        "ut.backends.pure_.eval",
         "ut.backends.parity",
         "ut.backends.bytecode",
         "ut.backends.ir",
