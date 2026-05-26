@@ -1,12 +1,10 @@
-module ut.backends.codegen;
+module ut.benchmarks;
 
 
-import ut.backends;
+import ut;
 
 
 private:
-
-import std.conv: text;
 
 @("benchmark.preParseReportsMissingFixture")
 unittest {
@@ -23,26 +21,5 @@ unittest {
     } catch (Exception e) {
         assert(e.msg.startsWith("failed to pre-parse missing_fixture: "));
         assert(e.msg.canFind("missing_fixture.d"));
-    }
-}
-
-static foreach (backend; dmdCodegenRamExecutorBackends) {
-    @(text("runTests.localIntegerArithmetic.", backend))
-    unittest {
-        if (experimentalBackendTestsEnabled) {
-            import quickbite: runTests;
-
-            runTests(q{
-                int input() {
-                    return 40;
-                }
-
-                unittest {
-                    int value = input;
-                    value += 2;
-                    assert(value == 42);
-                }
-            }, backend);
-        }
     }
 }

@@ -559,6 +559,23 @@ static foreach (backend; dmdCodegenRamExecutorBackends) {
         }
     }
 
+    @(text("intAddAssign.", backend))
+    unittest {
+        if (experimentalBackendTestsEnabled) {
+            runTests(q{
+                int input() {
+                    return 40;
+                }
+
+                unittest {
+                    int value = input;
+                    value += 2;
+                    assert(value == 42);
+                }
+            }, backend);
+        }
+    }
+
     @(text("intSubtraction.", backend))
     unittest {
         if (experimentalBackendTestsEnabled) {

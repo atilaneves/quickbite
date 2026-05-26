@@ -2,8 +2,10 @@ import unit_threaded;
 
 int main(string[] args) {
     return args.runTests!(
+        "ut.lang",
         "ut.value",
         "ut.compiler",
+        "ut.benchmarks",
         "ut.backends",
         "ut.backends.pure_.arrays",
         "ut.backends.pure_.diagnostics",
@@ -15,10 +17,6 @@ int main(string[] args) {
         "ut.backends.pure_.minicereal",
         "ut.backends.pure_.projects.cerealed",
         "ut.backends.parity",
-        "ut.backends.bytecode",
-        "ut.backends.ir",
-        "ut.backends.ctfe",
-        "ut.backends.codegen",
         "ut.backends.repl",
         "ut.backends.minicereal",
         "ut.backends.deps.cerealed",

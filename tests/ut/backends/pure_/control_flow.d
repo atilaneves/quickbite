@@ -71,6 +71,50 @@ static foreach (backend; matureExecutorBackends) {
         }, backend);
     }
 
+    @("functionPointerDispatchesToDistinctCallees." ~ backend.text)
+    unittest {
+        runTests(q{
+            int bAB() {
+                return 11;
+            }
+
+            int a_a() {
+                return 22;
+            }
+
+            unittest {
+                int function() first = &bAB;
+                int function() second = &a_a;
+                assert(first() == 11);
+                assert(second() == 22);
+            }
+        }, backend);
+    }
+
+    @("functionPointerCallCanEnterFunctionWithCallee." ~ backend.text)
+    unittest {
+        runTests(q{
+            int helper() {
+                return 7;
+            }
+
+            int first() {
+                return helper() + 10;
+            }
+
+            int second() {
+                return 13;
+            }
+
+            unittest {
+                int function() fp1 = &first;
+                int function() fp2 = &second;
+                assert(fp1() == 17);
+                assert(fp2() == 13);
+            }
+        }, backend);
+    }
+
     @("localIntReturn." ~ backend.text)
     unittest {
         runTests(q{
