@@ -63,7 +63,7 @@ private struct Compiler {
     private void compileExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp) {
             module_.code ~= Instruction(
-                OpCode.pushInteger,
+                OpCode.pushValue,
                 integerLiteralValue(integer),
             );
             return;

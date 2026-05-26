@@ -83,7 +83,7 @@ private void execute(ref imported!"quickbite.backends.bytecode.module_".Bytecode
     while (ip < module_.code.length) {
         const instruction = module_.code[ip];
         final switch (instruction.op) {
-            case OpCode.pushInteger:
+            case OpCode.pushValue:
                 stack ~= instruction.valueOperand;
                 ++ip;
                 break;
@@ -236,7 +236,7 @@ private bool comparisonHolds(
         case greaterOrEqual:
             return leftLong >= rightLong;
         case setAssertMessage:
-        case pushInteger:
+        case pushValue:
         case call:
         case add:
         case subtract:
@@ -275,7 +275,7 @@ private string comparisonOperator(
         case greaterOrEqual:
             return ">=";
         case setAssertMessage:
-        case pushInteger:
+        case pushValue:
         case call:
         case add:
         case subtract:

@@ -3,7 +3,7 @@ module quickbite.backends.bytecode.opcode;
 private:
 
 public enum OpCode : ubyte {
-    pushInteger,
+    pushValue,
     call,
     add,
     subtract,
