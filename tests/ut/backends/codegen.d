@@ -1,8 +1,10 @@
-module ut.backends.minicereal;
+module ut.backends.codegen;
 
 
 import ut.backends;
 
+
+private:
 
 @("minicerealFileCanRunTwice.dmdCodegen")
 unittest {

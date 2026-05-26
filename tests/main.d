@@ -17,8 +17,8 @@ int main(string[] args) {
         "ut.backends.pure_.minicereal",
         "ut.backends.pure_.projects.cerealed",
         "ut.backends.parity",
+        "ut.backends.codegen",
         "ut.backends.repl",
-        "ut.backends.minicereal",
         "ut.backends.deps.cerealed",
     );
 }
