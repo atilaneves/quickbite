@@ -812,4 +812,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("-42 != -43");
     }
+
+    @("intBitwiseComplement." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x2a;
+                assert(~value == -0x2b);
+            }
+        });
+    }
+
+    @("intBitwiseComplementFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x2a;
+                assert(~value == -0x2c);
+            }
+        }).shouldThrowWithMessage("-43 != -44");
+    }
 }
