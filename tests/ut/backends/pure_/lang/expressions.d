@@ -986,4 +986,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 <= 9255003132036915216");
     }
+
+    @("ulongHighBitGreaterOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value >= 0UL);
+            }
+        });
+    }
+
+    @("ulongHighBitGreaterOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value < 0UL);
+            }
+        }).shouldThrowWithMessage("9255003132036915216 >= 0");
+    }
 }
