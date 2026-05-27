@@ -31,6 +31,9 @@
 - Stop and wait for user feedback after writing or modifying a test. Do not
   apply the test diff and ask after — stop before.
 
+- When asking for approval to add or modify a test, show the exact proposed
+  test or diff before asking.
+
 - When converting a fixture to an unsupported-diagnostic test, keep the inner
   assertion for the intended supported behavior.
 
