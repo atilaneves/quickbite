@@ -1059,4 +1059,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9223372036854775808 == 9.22337e+18");
     }
+
+    @("castsFloatingValueNumerically." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double input = 7.75;
+                assert(cast(int) input == 7);
+            }
+        });
+    }
+
+    @("castsFloatingValueNumericallyFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double input = 7.75;
+                assert(cast(int) input == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
 }
