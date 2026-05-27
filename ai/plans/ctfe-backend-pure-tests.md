@@ -62,6 +62,17 @@ agent and subagents. Land one coherent migrated source-order slice per PR.
   exercise executor code as part of proving backend behaviour.
 - Do not add fallback paths. Unsupported shapes should stay unsupported until a
   test forces the exact next shape.
+- If making a migrated backend test pass requires inspecting a failed
+  diagnostic and then reconstructing a better diagnostic, stop. Do not
+  implement it. Report that the test is blocked until the backend can produce
+  the diagnostic through normal execution.
+- Rejected patterns for Ctfe backend migration:
+  - Parsing DMD diagnostic text.
+  - Detecting placeholder substrings such as `<double not supported>`.
+  - Walking unittest bodies after CTFE failure.
+  - Reconstructing operand values from declarations after failure.
+  - Adding fallback paths for one backend to mimic another backend.
+  - Treating a handoff note as permission to override this plan.
 - Keep the architecture guard in `tests/ut/backends/architecture.d` focused on
   backend source and backend tests.
 
@@ -88,6 +99,10 @@ When used, the conversion reviewer must check that:
 
 After implementation, spawn or reuse a reviewer subagent to review the
 production change before committing.
+
+If a task handoff contradicts this plan, `AGENTS.md`, or `ai/mistakes.md`,
+stop and ask. Do not treat the handoff as an exception unless the user
+explicitly approves the exact exception after seeing the conflicting rule.
 
 ## Subagent Workflow Per Migrated Slice
 
@@ -123,12 +138,19 @@ production change before committing.
    only that focused test pass:
    - Do not add general diagnostic filtering, assertion walking, fallback
      behaviour, executor integration, or support for a future fixture shape.
+   - For a single migrated assertion-diagnostic test, production changes should
+     be small and local. If the proposed implementation needs broad AST
+     walking, statement traversal, diagnostic parsing, or more than a few
+     focused helpers, stop and ask for review before editing.
    - Reuse existing backend/eval machinery instead of duplicating CTFE
      evaluation paths.
    - Stop once the focused test is green.
 7. The coordinator reviews the implementer diff. If the implementation is
    broader than the focused test requires, delete or delegate deletion until the
    focused test is the reason every remaining line exists.
+   Before committing, compare the production diff against the single failing
+   test. If any helper exists only to support future shapes, broad
+   reconstruction, or diagnostic cleanup, remove it before verification.
 8. Run the focused backend test including `ut.backends.architecture`. Run
    `dub test` before committing unless the session owner explicitly narrows
    verification to focused tests.
