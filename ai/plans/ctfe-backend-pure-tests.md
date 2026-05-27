@@ -2,20 +2,23 @@
 
 ## Summary
 
-Migrate existing `tests/ut/executors/pure_` coverage to Ctfe backend tests one
-test shape at a time. The executor tests are source material only: copy the D
-fixture shape and expected language behaviour, but do not import, call, or
+Migrate existing `tests/ut/executors/pure_` coverage to Ctfe backend tests in
+small source-order slices. The executor tests are source material only: copy the
+D fixture shape and expected language behaviour, but do not import, call, or
 exercise executor code from backend tests or backend implementation.
 
 Use branch/worktree `ctfe-pure-backend-tests` at
 `worktrees/ctfe-pure-backend-tests`. Use one shared slice worktree for the main
-agent and subagents. Land one migrated executor test per PR.
+agent and subagents. Land one coherent migrated source-order slice per PR.
 
 ## Key Changes
 
 - Treat existing backend `eval.d` coverage as complete.
 - Add unittest-style Ctfe backend tests under `tests/ut/backends/pure_`, using
   valid D source that contains `unittest` blocks.
+- When asking for test approval, show the exact proposed test bodies in a
+  language-tagged code block. A raw unified diff alone is not a readable
+  approval artifact.
 - Do not convert unittest fixtures into REPL-only snippets that are not valid D.
 - Each migrated positive test needs a matching negative assertion probe. Passing
   unittests do not print or throw, so the negative probe proves the unittest ran
@@ -86,10 +89,11 @@ When used, the conversion reviewer must check that:
 After implementation, spawn or reuse a reviewer subagent to review the
 production change before committing.
 
-## Subagent Workflow Per Migrated Test Shape
+## Subagent Workflow Per Migrated Slice
 
-1. The coordinator picks the next unmigrated executor pure test in source
-   order and assigns exactly one migration subagent.
+1. The coordinator picks the next unmigrated executor pure test or coherent
+   source-order group in source order and assigns exactly one migration
+   subagent when useful.
 2. The migration subagent mechanically copies the executor test shape into the
    backend test module:
    - Preserve the D fixture body as literally as possible.
@@ -133,14 +137,14 @@ production change before committing.
 10. Present implementation-review findings one by one; apply only approved
     fixes.
 11. Commit the completed migrated test and implementation as one commit.
-12. Stop after that single migrated executor test and create a PR. Do not start
-    the next migrated test in the same PR.
+12. Stop after that migrated slice and create a PR. Do not start the next
+    slice in the same PR.
 
 ## PR Boundary
 
-The orchestrator must stop after one migrated executor test and create a PR.
-Future work may relax this to several migrations in one PR after the process has
-proved trustworthy, but the current default is one test migration per PR.
+The orchestrator must stop after one migrated source-order slice and create a
+PR. A slice may contain a coherent group such as the integer binary operations
+in `expressions.d`; do not mix unrelated language areas in one PR.
 
 At that point:
 
@@ -185,7 +189,7 @@ At that point:
 - Scope includes all current `tests/ut/executors/pure_` tests, including
   minicereal and cerealed project-inspired tests.
 - Existing backend `eval.d` migration is accepted as complete.
-- One commit per migrated executor test.
+- One commit per migrated slice.
 - Shared slice worktree for main agent, implementer, and reviewer subagents.
 
 ## Handoff Status
@@ -243,5 +247,6 @@ Review feedback learned for this slice:
 - Generated backend test names should use stable numeric suffixes such as
   `intAdditionFailureMessage.0.Ctfe` and `intAdditionFailureMessage.1.Ctfe`.
 
-Next migration should continue with the next unmigrated test in
-`tests/ut/executors/pure_/lang/expressions.d`: `intSubtraction`.
+Next migration should continue with the next unmigrated source-order slice in
+`tests/ut/executors/pure_/lang/expressions.d`: the remaining integer binary
+operation tests after `intAddition`.
