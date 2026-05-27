@@ -154,12 +154,17 @@ explicitly approves the exact exception after seeing the conflicting rule.
 8. Run the focused backend test including `ut.backends.architecture`. Run
    `dub test` before committing unless the session owner explicitly narrows
    verification to focused tests.
-9. Spawn or reuse a reviewer subagent only after the focused implementation is
+9. For every migrated positive test that is green, run an audit poke before
+   committing: temporarily change the positive assertion's expected value so
+   the positive test fails, run that focused test, confirm the failure reports
+   the intended observed value or behavior, then restore the source to pristine
+   condition. Do not commit the poke.
+10. Spawn or reuse a reviewer subagent only after the focused implementation is
    minimal and green.
-10. Present implementation-review findings one by one; apply only approved
+11. Present implementation-review findings one by one; apply only approved
     fixes.
-11. Commit the completed migrated test and implementation as one commit.
-12. Stop after that migrated slice and create a PR. Do not start the next
+12. Commit the completed migrated test and implementation as one commit.
+13. Stop after that migrated slice and create a PR. Do not start the next
     slice in the same PR.
 
 ## PR Boundary
