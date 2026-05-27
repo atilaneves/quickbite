@@ -940,4 +940,30 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 < 9255003132036915216");
     }
+
+    @("longLiteral." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            long answer() {
+                return 2_147_483_648L;
+            }
+
+            unittest {
+                assert(answer > 0L);
+            }
+        });
+    }
+
+    @("longLiteralFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            long answer() {
+                return 2_147_483_648L;
+            }
+
+            unittest {
+                assert(answer <= 0L);
+            }
+        }).shouldThrowWithMessage("2147483648 > 0");
+    }
 }
