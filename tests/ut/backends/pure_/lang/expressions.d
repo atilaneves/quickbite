@@ -920,4 +920,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+
+    @("ulongHighBitLessThan." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL < value);
+            }
+        });
+    }
+
+    @("ulongHighBitLessThanFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL >= value);
+            }
+        }).shouldThrowWithMessage("0 < 9255003132036915216");
+    }
 }
