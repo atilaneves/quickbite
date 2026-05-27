@@ -778,4 +778,38 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+
+    @("intUnaryMinus." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            int answer() {
+                return -input;
+            }
+
+            unittest {
+                assert(answer == -42);
+            }
+        });
+    }
+
+    @("intUnaryMinusFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            int answer() {
+                return -input;
+            }
+
+            unittest {
+                assert(answer == -43);
+            }
+        }).shouldThrowWithMessage("-42 != -43");
+    }
 }
