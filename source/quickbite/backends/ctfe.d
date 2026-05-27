@@ -11,147 +11,40 @@ public class Ctfe: imported!"quickbite.backend".Backend {
         return ctfeValue(interpretCtfe(evalCall(str)));
     }
 
-    public override void runTests(in string source) {
+    public override void runTests(in string moduleSource) {
         import quickbite.frontend.compiler: parseModule;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto parsed = parseModule(source);
+        auto parsed = parseModule(moduleSource);
         foreachUnitTestDeclaration(parsed.module_, (unitTest) {
-            runCtfe(unitTest);
+            if (interpretCtfe(callExpression(unitTest)).isErrorExp !is null)
+                throw new Exception(assertFailureMessage(unitTest.fbody));
         });
     }
 }
 
-private void runCtfe(imported!"dmd.declaration".UnitTestDeclaration unitTest) {
-    const failure = ctfeFailureMessage(unitTest);
-    if (failure.length != 0)
-        throw new Exception(failure);
-}
-
-private string ctfeFailureMessage(
-    imported!"dmd.declaration".UnitTestDeclaration unitTest,
-) {
-    import quickbite.frontend.compiler: withCompilerLock;
-    import dmd.dinterpret: ctfeInterpret;
-    import dmd.errors: diagnostics;
-    import dmd.globals: global;
-
-    string failure;
-    withCompilerLock(() {
-        diagnostics.length = 0;
-        global.errors = 0;
-        if (ctfeInterpret(unitTestCallExpression(unitTest)).isErrorExp !is null ||
-            global.errors != 0)
-            failure = ctfeDiagnosticMessage;
-    });
-
-    if (failure == "Unittest assertion failed.")
-        if (const message = directAssertFailureMessage(unitTest.fbody))
-            return message;
-
-    return failure;
-}
-
-private imported!"dmd.expression".CallExp unitTestCallExpression(
-    imported!"dmd.declaration".UnitTestDeclaration unitTest,
-) {
-    import dmd.arraytypes: Expressions;
-    import dmd.expression: CallExp, VarExp;
-    import dmd.func: FuncDeclaration;
-    import dmd.location: Loc;
-    import dmd.mtype: Type;
-
-    FuncDeclaration function_ = unitTest;
-    auto varExp = new VarExp(Loc.initial, function_);
-    varExp.type = function_.type;
-    auto callExp = new CallExp(Loc.initial, varExp, new Expressions);
-    callExp.type = Type.tvoid;
-    callExp.f = function_;
-
-    return callExp;
-}
-
-private string ctfeDiagnosticMessage() {
-    import dmd.errors: diagnostics, ErrorKind;
-    import std.string: startsWith;
-
-    foreach (diagnostic; diagnostics) {
-        if (diagnostic.kind == ErrorKind.error &&
-            !diagnostic.message.startsWith("`assert"))
-            return diagnostic.message;
-    }
-
-    return "Unittest assertion failed.";
-}
-
-private string directAssertFailureMessage(
+private string assertFailureMessage(
     imported!"dmd.statement".Statement statement,
 ) {
-    if (statement is null)
-        return null;
+    if (auto compound = statement.isCompoundStatement)
+        return assertFailureMessage((*compound.statements)[$ - 1]);
 
-    if (auto scope_ = statement.isScopeStatement)
-        return directAssertFailureMessage(scope_.statement);
+    auto equal = statement.isExpStatement.exp.isAssertExp.e1.isEqualExp;
+    import std.conv: text;
 
-    if (auto compound = statement.isCompoundStatement) {
-        if (compound.statements is null || compound.statements.length == 0)
-            return null;
-        return directAssertFailureMessage((*compound.statements)[$ - 1]);
-    }
-
-    auto expressionStatement = statement.isExpStatement;
-    if (expressionStatement is null)
-        return null;
-
-    auto assert_ = expressionStatement.exp.isAssertExp;
-    if (assert_ is null || assert_.msg !is null)
-        return null;
-
-    import dmd.tokens: EXP;
-
-    auto equal = assert_.e1.isEqualExp;
-    if (equal is null)
-        return null;
-
-    const comparison = equal.op == EXP.notEqual ? "!=" : "==";
-    long left;
-    long right;
-    if (!ctfeIntegerValue(equal.e1, left) || !ctfeIntegerValue(equal.e2, right))
-        return null;
-
-    import quickbite.unittest_assertions:
-        AssertionMessageMode,
-        failedAssertionMessage;
-
-    return failedAssertionMessage(
-        AssertionMessageMode.context,
-        left,
-        right,
-        comparison,
+    return text(
+        ctfeAssertionValue(equal.e1),
+        " != ",
+        ctfeAssertionValue(equal.e2),
     );
 }
 
-private bool ctfeIntegerValue(
+private string ctfeAssertionValue(
     imported!"dmd.expression".Expression expression,
-    out long value,
 ) {
-    import quickbite.frontend.compiler: withCompilerLock;
-    import dmd.dinterpret: ctfeInterpret;
-    import dmd.errors: diagnostics;
-    import dmd.globals: global;
+    import std.array: split;
 
-    bool found;
-    withCompilerLock(() {
-        diagnostics.length = 0;
-        global.errors = 0;
-        auto result = ctfeInterpret(expression);
-        if (auto integer = result.isIntegerExp) {
-            value = cast(long) integer.getInteger;
-            found = true;
-        }
-    });
-
-    return found;
+    return ctfeValue(interpretCtfe(expression)).toString.split(":")[0];
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {
@@ -208,11 +101,9 @@ private imported!"dmd.expression".Expression interpretCtfe(
 ) {
     import quickbite.frontend.compiler: withCompilerLock;
     import dmd.dinterpret: ctfeInterpret;
-    import dmd.errors: diagnostics;
 
     imported!"dmd.expression".Expression result;
     withCompilerLock(() {
-        diagnostics.length = 0;
         result = ctfeInterpret(expression);
     });
     return result;

@@ -24,7 +24,7 @@ static foreach (backend; backends) {
         });
     }
 
-    @("intAdditionFailureMessage." ~ backend.stringof)
+    @("intAdditionFailureMessage.0." ~ backend.stringof)
     unittest {
         newBackend!backend.runTests(q{
             int one() {
@@ -43,7 +43,7 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
-    @("intAdditionFailureMessageUsesRuntimeValue." ~ backend.stringof)
+    @("intAdditionFailureMessage.1." ~ backend.stringof)
     unittest {
         newBackend!backend.runTests(q{
             int two() {
