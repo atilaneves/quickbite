@@ -725,3 +725,27 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 == 42");
     }
 }
+
+static foreach (backend; backends) {
+    @("distinguishesFloatingPointValues." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left != right);
+            }
+        });
+    }
+
+    @("distinguishesFloatingPointValuesFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left == right);
+            }
+        }).shouldThrowWithMessage("1.5 != 2.5");
+    }
+}
