@@ -194,18 +194,20 @@ At that point:
 
 ## Handoff Status
 
-Branch `ctfe-pure-backend-tests` contains the first migrated backend test:
-`expressions.d` / `intAddition`. PR 44 has been updated with the review-comment
-fixes for this slice.
+Completed migrations:
 
-Implemented in this slice:
+- PR 44 migrated `expressions.d` / `intAddition`.
+- PR 45 migrated the remaining integer binary-operation tests in the first
+  `expressions.d` group: `intSubtraction`, `intMultiplication`, `intDivision`,
+  `intModulo`, `intShiftRight`, `intShiftLeft`, `intBitwiseOr`,
+  `intBitwiseAnd`, and `intBitwiseXor`.
+
+Implemented so far:
 
 - Added backend-level `runTests(in string moduleSource)`.
 - Implemented `Ctfe.runTests` for valid-D unittest fixtures.
 - Added `tests/ut/backends/pure_/lang/expressions.d`.
-- Wired the new backend expressions module into `tests/main.d`.
-- Added the positive `intAddition` test and two negative diagnostic probes:
-  `42 != 43` and `7 != 8`.
+- Wired the backend expressions module into `tests/main.d`.
 - Added `parseModuleWithCheckActionContext` for Ctfe backend unittest parsing,
   keeping `CHECKACTION.context` scoped to that path instead of changing the
   default compiler API state.
@@ -214,16 +216,16 @@ Implemented in this slice:
 
 Verification completed:
 
-- Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
-- Focused verification passed:
+- PR 44 focused verification passed:
   `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
-- Narrow regression check passed after scoping `CHECKACTION.context`:
+- PR 44 narrow regression check passed after scoping `CHECKACTION.context`:
   `dub test -- ut.executors.api.runModulesTests.runsBothModules`.
-- A full `dub test` run was started by mistake and stopped; do not treat it as
-  verification for this PR.
-- PR 44 review threads were marked resolved after the branch update.
+- PR 45 focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
+- PR 45 full verification passed: `dub test`.
+- Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
 
-Review feedback learned for this slice:
+Review feedback learned:
 
 - The current `intAddition` backend tests only require running a unittest
   through CTFE, detecting a failed final equality assertion, and reporting the
@@ -247,6 +249,19 @@ Review feedback learned for this slice:
 - Generated backend test names should use stable numeric suffixes such as
   `intAdditionFailureMessage.0.Ctfe` and `intAdditionFailureMessage.1.Ctfe`.
 
+Remaining `expressions.d` source-order slices:
+
+1. Integer comparisons in the first `expressions.d` group: `intLessThan`,
+   `intLessOrEqual`, `intGreaterThan`, `intGreaterOrEqual`, and `intNotEqual`.
+2. The next mature-executor expression group, starting with
+   `distinguishesFloatingPointValues`, `evaluatesPow`, `intUnaryMinus`,
+   `intBitwiseComplement`, assignment operators, unsigned comparisons,
+   numeric casts, and truncation tests.
+3. The later expression fixtures after the helper definitions, starting with
+   `lessThan`, `rightShift`, `multiplication`, `castUbyteTruncates`,
+   `subtraction`, `subtractionDifferentValues`, pre-increment tests, and
+   `integralType`.
+
 Next migration should continue with the next unmigrated source-order slice in
-`tests/ut/executors/pure_/lang/expressions.d`: the remaining integer binary
-operation tests after `intAddition`.
+`tests/ut/executors/pure_/lang/expressions.d`: integer comparisons
+(`intLessThan` through `intNotEqual`).
