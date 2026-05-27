@@ -34,6 +34,11 @@
 - When asking for approval to add or modify a test, show the exact proposed
   test or diff before asking.
 
+- For test approval, prefer showing the proposed test code in a
+  language-tagged code block over a raw unified diff. Use a diff only when the
+  surrounding edit context matters, and still include the test body in a
+  syntax-highlighted block if readability would suffer.
+
 - When converting a fixture to an unsupported-diagnostic test, keep the inner
   assertion for the intended supported behavior.
 
