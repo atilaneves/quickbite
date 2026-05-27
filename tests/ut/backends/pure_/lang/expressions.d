@@ -832,4 +832,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("-43 != -44");
     }
+
+    @("intOrAssign." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x28u;
+                value |= 0x02u;
+                assert(value == 0x2au);
+            }
+        });
+    }
+
+    @("intOrAssignFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x28u;
+                value |= 0x02u;
+                assert(value == 0x2bu);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
 }
