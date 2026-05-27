@@ -10,6 +10,50 @@ public class Ctfe: imported!"quickbite.backend".Backend {
     public override Value eval(in string str) {
         return ctfeValue(interpretCtfe(evalCall(str)));
     }
+
+    public override void runTests(in string moduleSource) {
+        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        auto parsed = parseModuleWithCheckActionContext(moduleSource);
+        foreachUnitTestDeclaration(parsed.module_, (unitTest) {
+            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
+                throw new Exception(failure);
+        });
+    }
+}
+
+private string ctfeFailureMessage(
+    imported!"dmd.expression".Expression expression,
+) {
+    import quickbite.frontend.compiler: withCompilerLock;
+    import dmd.dinterpret: ctfeInterpret;
+    import dmd.errors: diagnostics;
+
+    string result;
+    withCompilerLock(() {
+        diagnostics.length = 0;
+        if (ctfeInterpret(expression).isErrorExp !is null)
+            result = diagnosticMessage;
+    });
+
+    return result;
+}
+
+private string diagnosticMessage() {
+    import dmd.errors: diagnostics, ErrorKind;
+    import std.algorithm.iteration: filter, map;
+    import std.array: array, join;
+
+    const messages = diagnostics
+        .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
+        .map!(diagnostic => diagnostic.message)
+        .array;
+
+    if (messages.length == 0)
+        return "DMD reported an error without a diagnostic message.";
+
+    return messages.join("\n");
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {
@@ -66,11 +110,9 @@ private imported!"dmd.expression".Expression interpretCtfe(
 ) {
     import quickbite.frontend.compiler: withCompilerLock;
     import dmd.dinterpret: ctfeInterpret;
-    import dmd.errors: diagnostics;
 
     imported!"dmd.expression".Expression result;
     withCompilerLock(() {
-        diagnostics.length = 0;
         result = ctfeInterpret(expression);
     });
     return result;

@@ -39,6 +39,10 @@ public ParsedModule parseModule(
     return compiler.parseModule(source, importPaths);
 }
 
+public ParsedModule parseModuleWithCheckActionContext(in string source) {
+    return compiler.parseModuleWithCheckActionContext(source, []);
+}
+
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }
@@ -164,6 +168,34 @@ final class Compiler {
     }
 
     ParsedModule parseModule(in string source, in string[] importPaths) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseModuleLocked(source, importPaths, null);
+    }
+
+    ParsedModule parseModuleWithCheckActionContext(
+        in string source,
+        in string[] importPaths,
+    ) {
+        import dmd.astenums: CHECKACTION;
+        import dmd.globals: global;
+
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        const originalCheckAction = global.params.checkAction;
+        global.params.checkAction = CHECKACTION.context;
+        scope(exit) global.params.checkAction = originalCheckAction;
+
+        return parseModuleLocked(source, importPaths, "checkaction=context");
+    }
+
+    private ParsedModule parseModuleLocked(
+        in string source,
+        in string[] importPaths,
+        in string cacheSalt,
+    ) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
         import dmd.frontend:
@@ -173,10 +205,7 @@ final class Compiler {
         import dmd.globals: global;
         import std.conv: text;
 
-        mutex.lock;
-        scope(exit) mutex.unlock;
-
-        const key = cacheKey(source, importPaths);
+        const key = cacheKey(source, importPaths, cacheSalt);
         if (auto cached = key in sourceCache) {
             ParsedModule result;
             result.module_ = *cached;
@@ -211,11 +240,15 @@ final class Compiler {
         return parsed;
     }
 
-    private string cacheKey(in string source, in string[] importPaths) const {
+    private string cacheKey(
+        in string source,
+        in string[] importPaths,
+        in string cacheSalt,
+    ) const {
         import std.array: join;
         import std.conv: text;
 
-        return text(source, "\0", importPaths.join("\0"));
+        return text(source, "\0", importPaths.join("\0"), "\0", cacheSalt);
     }
 }
 
