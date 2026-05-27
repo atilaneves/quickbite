@@ -238,9 +238,13 @@ Implemented so far:
   default compiler API state.
 - Removed post-failure unittest body walking for assertion diagnostics. Ctfe
   backend unittest failures now surface DMD diagnostics from CTFE execution.
-- PR 46 currently contains a rejected Ctfe backend fallback for DMD CTFE
-  floating-point assertion diagnostics that contain placeholders such as
-  `<double not supported>`. Do not keep or refine that fallback.
+- Removed the rejected PR 46 Ctfe backend fallback for DMD CTFE floating-point
+  assertion diagnostics that contain placeholders such as
+  `<double not supported>`. Do not restore or refine that fallback.
+- Marked `distinguishesFloatingPointValuesFailureMessage.Ctfe` with
+  `@ShouldFail(...)` explaining that DMD CTFE returns
+  `<double not supported>` because druntime's assert formatter uses runtime
+  `sprintf`.
 
 Verification completed:
 
@@ -260,6 +264,12 @@ Verification completed:
 - PR 46 full verification passed: `dub test`.
 - PR 46 benchmark smoke passed: `benchmarks/run.sh`.
 - Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
+- After removing the rejected PR 46 fallback, focused verification passed with
+  the expected-failure marker:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`
+  reported `43 test(s) run, 0 failed, 1/1 failing as expected`.
+- After adding the expected-failure marker, full verification passed:
+  `dub test` reported `873 test(s) run, 0 failed, 1/1 failing as expected`.
 
 Review feedback learned:
 
@@ -289,6 +299,14 @@ Review feedback learned:
   body to synthesize `42 != 43`.
 - Generated backend test names should use stable numeric suffixes such as
   `intAdditionFailureMessage.0.Ctfe` and `intAdditionFailureMessage.1.Ctfe`.
+- DMD's generated `core.internal.dassert._d_assert_fail` path has no suitable
+  Quickbite hook for CTFE floating-point formatting in this DMD version.
+  Do not spoof or shadow `core.internal.dassert` with import-path tricks, and
+  do not add a Quickbite-created hook. If a future DMD version exposes a real
+  supported hook, that is different and can be evaluated directly.
+- For similar DMD CTFE formatter limitations that Quickbite cannot control,
+  use `@ShouldFail("...")` with a specific reason string explaining the
+  upstream limitation. Do not leave a bare `@ShouldFail`.
 
 Remaining `expressions.d` source-order slices:
 
@@ -305,59 +323,28 @@ Next migration should continue with the next unmigrated source-order slice in
 `tests/ut/executors/pure_/lang/expressions.d`: the expression fixtures after
 `distinguishesFloatingPointValues`, starting with `evaluatesPow`.
 
-## Handoff After PR 46
+## Handoff After PR 46 Cleanup
 
 - Branch/worktree: `ctfe-pure-backend-tests` at
   `worktrees/ctfe-pure-backend-tests`.
-- Current implementation commit: `d009349 Migrate CTFE floating point
-  expression tests`.
+- Current implementation includes the PR 46 floating-point tests, removal of
+  the rejected fallback, and the expected-failure marker for DMD CTFE's
+  floating-point assert-message formatting limitation.
 - PR: <https://github.com/atilaneves/quickbite/pull/46>.
-- PR 46 review comments are unresolved and all target the fallback in
-  `source/quickbite/backends/ctfe.d`. The central review summary is that there
-  is too much code for one test and the implementation should fix the source of
-  the diagnostic instead.
-- PR branch was pushed after one transient GitHub 500 on the first push retry.
-- CI can be ignored while the repo is private, per `AGENTS.md`; local focused,
-  full, and benchmark verification all passed before PR creation.
-- Do not migrate more tests in PR 46. First replace the rejected fallback with a
-  proper floating-point assertion diagnostic implementation.
-
-## Handoff For Proper Floating-Point Diagnostics
-
-- Keep the two PR 46 tests unchanged:
-  `distinguishesFloatingPointValues.Ctfe` and
-  `distinguishesFloatingPointValuesFailureMessage.Ctfe`.
-- Remove the PR 46 fallback helpers from `source/quickbite/backends/ctfe.d`:
-  placeholder detection, diagnostic-string operator parsing, local floating
-  value collection, initializer unwrapping, and the `UnitTestDeclaration`
-  failure-message wrapper added only to support that fallback.
-- Preserve the existing Ctfe backend shape: parse with scoped
+- The cleanup leaves `Ctfe.runTests` in the simple shape: parse with scoped
   `CHECKACTION.context`, run the synthetic unittest call through
-  `ctfeInterpret`, and surface DMD diagnostics.
-- The real source of `<double not supported>` is druntime's generated
-  `core.internal.dassert._d_assert_fail` path. Its `miniFormat` floating branch
-  returns placeholders under `__ctfe` because it uses `sprintf` at runtime.
-- Implement the fix before CTFE failure is reported, not afterward. The
-  approved direction is a Quickbite-owned source-level hook in the Ctfe backend:
-  arrange for DMD's generated floating-point assert-message call to use a
-  CTFE-compatible formatter before interpretation.
-- It is acceptable to rewrite only the generated `_d_assert_fail` assert
-  message call before CTFE, using AST nodes and type information. It is not
-  acceptable to inspect the failed unittest body after CTFE returns an error or
-  to parse DMD diagnostic text.
-- The first implementation should support only scalar `float`, `double`, and
-  `real` comparison operands needed by the existing migrated test, with DMD's
-  inverse comparison convention, e.g. `==` reports `!=`.
-- Do not edit vendored DMD or druntime files. Do not import executor modules or
-  reuse executor `Value` types from the backend.
-- If the source-level hook cannot be implemented without fallback-style
-  diagnostic reconstruction, stop and report that the floating failure-message
-  test must be deferred instead of adding another workaround.
-- Required verification after the fix:
-  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`,
-  then temporarily poke `distinguishesFloatingPointValues.Ctfe` to fail and
-  confirm the focused command reports `1.5 != 2.5`, restore the poke, rerun the
-  focused command, then run `dub test` and `benchmarks/run.sh`.
-- After PR 46 review is addressed and merged, the next migration slice should
-  start from `evaluatesPow` in source order and should go through the same
-  approval and red-green flow.
+  `ctfeInterpret`, and surface DMD diagnostics directly.
+- The reason for `@ShouldFail` is upstream: druntime's generated
+  `core.internal.dassert._d_assert_fail` formatter returns
+  `<double not supported>` under CTFE for floating values because it relies on
+  runtime `sprintf`. Quickbite should not repair this after failure, shadow
+  druntime modules, or create an unofficial hook.
+- Current staged files after cleanup:
+  `source/quickbite/backends/ctfe.d`,
+  `tests/ut/backends/pure_/lang/expressions.d`, and this plan file.
+- Next agent should continue migrating source-order expression tests starting
+  from `evaluatesPow`. Continue migrations until a newly approved test is red.
+  If the red failure is an unsupported Quickbite Ctfe backend behavior, use the
+  normal minimal implementation flow. If the red failure is another upstream
+  DMD CTFE limitation Quickbite cannot control, mark that specific test with
+  `@ShouldFail("...")` and include a concrete reason string explaining why.

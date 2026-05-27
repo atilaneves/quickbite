@@ -17,26 +17,10 @@ public class Ctfe: imported!"quickbite.backend".Backend {
 
         auto parsed = parseModuleWithCheckActionContext(moduleSource);
         foreachUnitTestDeclaration(parsed.module_, (unitTest) {
-            if (const failure = ctfeFailureMessage(unitTest))
+            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
                 throw new Exception(failure);
         });
     }
-}
-
-private string ctfeFailureMessage(
-    imported!"dmd.func".UnitTestDeclaration unitTest,
-) {
-    const failure = ctfeFailureMessage(callExpression(unitTest));
-    if (!hasUnsupportedFloatingPointDiagnostic(failure))
-        return failure;
-
-    if (const message = floatingPointPlaceholderFailureMessage(
-        failure,
-        unitTest.fbody,
-    ))
-        return message;
-
-    return failure;
 }
 
 private string ctfeFailureMessage(
@@ -70,146 +54,6 @@ private string diagnosticMessage() {
         return "DMD reported an error without a diagnostic message.";
 
     return messages.join("\n");
-}
-
-private bool hasUnsupportedFloatingPointDiagnostic(in string diagnostic)
-@safe pure nothrow {
-    import std.algorithm.searching: canFind;
-
-    return diagnostic.canFind("<float not supported>") ||
-        diagnostic.canFind("<double not supported>") ||
-        diagnostic.canFind("<real not supported>");
-}
-
-private string floatingPointPlaceholderFailureMessage(
-    in string failure,
-    imported!"dmd.statement".Statement statement,
-) {
-    const operator = unsupportedFloatingPointComparison(failure);
-    if (operator is null)
-        return null;
-
-    const values = floatingPointLocalValues(statement);
-    if (values.length != 2)
-        return null;
-
-    import std.conv: text;
-    return text(values[0], " ", operator, " ", values[1]);
-}
-
-private string unsupportedFloatingPointComparison(in string failure)
-@safe pure nothrow {
-    import std.algorithm.searching: endsWith, startsWith;
-
-    enum placeholders = [
-        "<float not supported>",
-        "<double not supported>",
-        "<real not supported>",
-    ];
-
-    foreach (left; placeholders)
-    foreach (right; placeholders) {
-        const prefix = left ~ " ";
-        const suffix = " " ~ right;
-        if (!failure.startsWith(prefix) || !failure.endsWith(suffix))
-            continue;
-
-        const operator = failure[prefix.length .. $ - suffix.length];
-        if (isComparisonOperator(operator))
-            return operator;
-    }
-
-    return null;
-}
-
-private bool isComparisonOperator(in string operator) @safe pure nothrow {
-    switch (operator) {
-        case "==":
-        case "!=":
-        case "<":
-        case "<=":
-        case ">":
-        case ">=":
-            return true;
-        default:
-            return false;
-    }
-}
-
-private real[] floatingPointLocalValues(
-    imported!"dmd.statement".Statement statement,
-) {
-    if (statement is null)
-        return [];
-
-    if (auto scope_ = statement.isScopeStatement)
-        return floatingPointLocalValues(scope_.statement);
-
-    if (auto compoundDeclaration = statement.isCompoundDeclarationStatement) {
-        if (compoundDeclaration.statements is null)
-            return [];
-
-        real[] values;
-        foreach (child; *compoundDeclaration.statements)
-            values ~= floatingPointLocalValues(child);
-        return values;
-    }
-
-    if (auto compound = statement.isCompoundStatement) {
-        if (compound.statements is null)
-            return [];
-
-        real[] values;
-        foreach (child; *compound.statements)
-            values ~= floatingPointLocalValues(child);
-        return values;
-    }
-
-    auto expressionStatement = statement.isExpStatement;
-    if (expressionStatement is null)
-        expressionStatement = statement.isDtorExpStatement;
-    if (expressionStatement is null)
-        return [];
-
-    auto declaration = expressionStatement.exp.isDeclarationExp;
-    if (declaration is null)
-        return [];
-
-    auto variable = declaration.declaration.isVarDeclaration;
-    if (variable is null || variable.ident is null ||
-        variable.type is null || !isFloatingPointType(variable.type))
-        return [];
-
-    auto initializer = variable._init.isExpInitializer;
-    if (initializer is null)
-        return [];
-
-    if (auto real_ = unwrappedInitializerExpression(initializer.exp).isRealExp)
-        return [real_.toReal];
-
-    return [];
-}
-
-private imported!"dmd.expression".Expression unwrappedInitializerExpression(
-    imported!"dmd.expression".Expression expression,
-) {
-    if (auto construct = expression.isConstructExp)
-        return construct.e2;
-
-    return expression;
-}
-
-private bool isFloatingPointType(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    with (TY) switch (type.toBasetype.ty) {
-        case Tfloat32:
-        case Tfloat64:
-        case Tfloat80:
-            return true;
-        default:
-            return false;
-    }
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {

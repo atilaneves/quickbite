@@ -738,6 +738,10 @@ static foreach (backend; backends) {
         });
     }
 
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
     @("distinguishesFloatingPointValuesFailureMessage." ~ backend.stringof)
     unittest {
         newBackend!backend.runTests(q{
