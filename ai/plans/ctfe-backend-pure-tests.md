@@ -201,6 +201,9 @@ Completed migrations:
   `expressions.d` group: `intSubtraction`, `intMultiplication`, `intDivision`,
   `intModulo`, `intShiftRight`, `intShiftLeft`, `intBitwiseOr`,
   `intBitwiseAnd`, and `intBitwiseXor`.
+- PR 46 migrated the first floating-point expression slice:
+  `distinguishesFloatingPointValues` and
+  `distinguishesFloatingPointValuesFailureMessage`.
 
 Implemented so far:
 
@@ -213,6 +216,11 @@ Implemented so far:
   default compiler API state.
 - Removed post-failure unittest body walking for assertion diagnostics. Ctfe
   backend unittest failures now surface DMD diagnostics from CTFE execution.
+- Added a narrow Ctfe backend fallback for DMD CTFE floating-point assertion
+  diagnostics that contain placeholders such as `<double not supported>`.
+  This fallback only rewrites the focused local floating-literal shape exposed
+  by `distinguishesFloatingPointValuesFailureMessage.Ctfe`; normal CTFE
+  diagnostics remain the primary path.
 
 Verification completed:
 
@@ -223,6 +231,14 @@ Verification completed:
 - PR 45 focused verification passed:
   `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
 - PR 45 full verification passed: `dub test`.
+- PR 46 focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
+- PR 46 negative poke passed: temporarily changing the positive
+  `distinguishesFloatingPointValues.Ctfe` assertion to fail made the focused
+  command go red with `1.5 != 2.5`; the assertion was restored and the focused
+  command passed again.
+- PR 46 full verification passed: `dub test`.
+- PR 46 benchmark smoke passed: `benchmarks/run.sh`.
 - Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
 
 Review feedback learned:
@@ -238,6 +254,11 @@ Review feedback learned:
 - Do not keep general CTFE diagnostic filtering, broad assertion walking,
   fallback paths, or future unittest failure support without a test that
   forces it.
+- PR 46 is an intentionally narrow exception to the "no fallback paths" rule
+  above. DMD CTFE reports floating assertion operands as unsupported
+  placeholders even under `-checkaction=context`, while compiled D reports the
+  operand values. Keep this exception limited to the migrated floating-point
+  local-literal assertion shape unless a later approved test forces more.
 - If a CTFE assertion diagnostic lacks `-checkaction=context` values, check
   dmd-as-a-library initialization before changing tests. The CLI oracle already
   reports values for fixtures such as `assert(1 == 2)` when run as
@@ -251,17 +272,28 @@ Review feedback learned:
 
 Remaining `expressions.d` source-order slices:
 
-1. Integer comparisons in the first `expressions.d` group: `intLessThan`,
-   `intLessOrEqual`, `intGreaterThan`, `intGreaterOrEqual`, and `intNotEqual`.
-2. The next mature-executor expression group, starting with
-   `distinguishesFloatingPointValues`, `evaluatesPow`, `intUnaryMinus`,
+1. The next mature-executor expression group after
+   `distinguishesFloatingPointValues`: `evaluatesPow`, `intUnaryMinus`,
    `intBitwiseComplement`, assignment operators, unsigned comparisons,
    numeric casts, and truncation tests.
-3. The later expression fixtures after the helper definitions, starting with
+2. The later expression fixtures after the helper definitions, starting with
    `lessThan`, `rightShift`, `multiplication`, `castUbyteTruncates`,
    `subtraction`, `subtractionDifferentValues`, pre-increment tests, and
    `integralType`.
 
 Next migration should continue with the next unmigrated source-order slice in
-`tests/ut/executors/pure_/lang/expressions.d`: integer comparisons
-(`intLessThan` through `intNotEqual`).
+`tests/ut/executors/pure_/lang/expressions.d`: the expression fixtures after
+`distinguishesFloatingPointValues`, starting with `evaluatesPow`.
+
+## Handoff After PR 46
+
+- Branch/worktree: `ctfe-pure-backend-tests` at
+  `worktrees/ctfe-pure-backend-tests`.
+- Commit: `d009349 Migrate CTFE floating point expression tests`.
+- PR: <https://github.com/atilaneves/quickbite/pull/46>.
+- PR branch was pushed after one transient GitHub 500 on the first push retry.
+- CI can be ignored while the repo is private, per `AGENTS.md`; local focused,
+  full, and benchmark verification all passed before PR creation.
+- Do not migrate more tests in PR 46. The next slice should start from
+  `evaluatesPow` in source order and should go through the same approval and
+  red-green flow.
