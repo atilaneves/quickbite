@@ -1026,4 +1026,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9255003132036915216 > 0");
     }
+
+    @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong integer = 0x8000_0000_0000_0000UL;
+                double floating = 9_223_372_036_854_775_808.0;
+
+                assert(integer == floating);
+                assert(integer <= floating);
+                assert(integer >= floating);
+                assert(!(integer < floating));
+                assert(!(integer > floating));
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongDoubleComparisonUsesNumericUnsignedValueFailureMessage." ~
+        backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong integer = 0x8000_0000_0000_0000UL;
+                double floating = 9_223_372_036_854_775_808.0;
+
+                assert(integer != floating);
+            }
+        }).shouldThrowWithMessage("9223372036854775808 == 9.22337e+18");
+    }
 }
