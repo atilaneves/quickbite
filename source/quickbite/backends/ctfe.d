@@ -12,39 +12,48 @@ public class Ctfe: imported!"quickbite.backend".Backend {
     }
 
     public override void runTests(in string moduleSource) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto parsed = parseModule(moduleSource);
+        auto parsed = parseModuleWithCheckActionContext(moduleSource);
         foreachUnitTestDeclaration(parsed.module_, (unitTest) {
-            if (interpretCtfe(callExpression(unitTest)).isErrorExp !is null)
-                throw new Exception(assertFailureMessage(unitTest.fbody));
+            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
+                throw new Exception(failure);
         });
     }
 }
 
-private string assertFailureMessage(
-    imported!"dmd.statement".Statement statement,
-) {
-    if (auto compound = statement.isCompoundStatement)
-        return assertFailureMessage((*compound.statements)[$ - 1]);
-
-    auto equal = statement.isExpStatement.exp.isAssertExp.e1.isEqualExp;
-    import std.conv: text;
-
-    return text(
-        ctfeAssertionValue(equal.e1),
-        " != ",
-        ctfeAssertionValue(equal.e2),
-    );
-}
-
-private string ctfeAssertionValue(
+private string ctfeFailureMessage(
     imported!"dmd.expression".Expression expression,
 ) {
-    import std.array: split;
+    import quickbite.frontend.compiler: withCompilerLock;
+    import dmd.dinterpret: ctfeInterpret;
+    import dmd.errors: diagnostics;
 
-    return ctfeValue(interpretCtfe(expression)).toString.split(":")[0];
+    string result;
+    withCompilerLock(() {
+        diagnostics.length = 0;
+        if (ctfeInterpret(expression).isErrorExp !is null)
+            result = diagnosticMessage;
+    });
+
+    return result;
+}
+
+private string diagnosticMessage() {
+    import dmd.errors: diagnostics, ErrorKind;
+    import std.algorithm.iteration: filter, map;
+    import std.array: array, join;
+
+    const messages = diagnostics
+        .filter!(diagnostic => diagnostic.kind == ErrorKind.error)
+        .map!(diagnostic => diagnostic.message)
+        .array;
+
+    if (messages.length == 0)
+        return "DMD reported an error without a diagnostic message.";
+
+    return messages.join("\n");
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {

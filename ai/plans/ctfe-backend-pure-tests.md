@@ -9,7 +9,7 @@ exercise executor code from backend tests or backend implementation.
 
 Use branch/worktree `ctfe-pure-backend-tests` at
 `worktrees/ctfe-pure-backend-tests`. Use one shared slice worktree for the main
-agent and subagents. Land one commit per migrated executor test.
+agent and subagents. Land one migrated executor test per PR.
 
 ## Key Changes
 
@@ -22,7 +22,17 @@ agent and subagents. Land one commit per migrated executor test.
   and exposes the observed value through the failure diagnostic.
 - All negative assertion probes must check `-checkaction=context`-style failure
   messages. Always verify the actual CTFE engine output for the failing
-  assertion before encoding the expected diagnostic.
+  assertion before encoding the expected diagnostic. "Actual CTFE engine
+  output" means a real DMD command such as
+  `dmd -o- -checkaction=context fixture.d`, not only the current
+  dmd-as-a-library wrapper output.
+- If DMD CLI output and dmd-as-a-library output disagree, first check whether
+  Quickbite's DMD global state matches the CLI switches used by the oracle. For
+  assertion diagnostics, `global.params.checkAction` must be
+  `CHECKACTION.context`.
+- Failed unittest diagnostics must come from executing CTFE, thrown exceptions,
+  or DMD diagnostics. Do not walk the unittest body after failure to
+  reconstruct the diagnostic that should have happened.
 - Convert executor fixtures by preserving the D language behavior, not the
   executor plumbing:
   - Keep `unittest` blocks and assertions in the backend source.
@@ -92,6 +102,10 @@ production change before committing.
    verifier subagent.
 4. The verifier subagent runs the focused backend test and verifies the
    negative probe against real CTFE output:
+   - First run a real DMD CLI probe with `-checkaction=context` for the fixture
+     shape whose diagnostic will be encoded.
+   - If in-process CTFE disagrees with the CLI probe, inspect the DMD global
+     parameters before changing tests or adding backend diagnostic code.
    - If the focused test is green, report that no production code is currently
      justified.
    - If the focused test is red, report the exact failing test, observed
@@ -119,21 +133,14 @@ production change before committing.
 10. Present implementation-review findings one by one; apply only approved
     fixes.
 11. Commit the completed migrated test and implementation as one commit.
-12. Continue with the next executor test until the orchestrator decides the
-    session has reached one PR worth of work.
+12. Stop after that single migrated executor test and create a PR. Do not start
+    the next migrated test in the same PR.
 
 ## PR Boundary
 
-The orchestrator must stop after one PR-sized batch, using judgment rather than
-a fixed number. Default signals to stop and create a PR:
-
-- The batch contains several completed commits and a coherent language-feature
-  theme.
-- The diff is large enough that adding more tests would make review harder.
-- A natural file or feature boundary has been reached.
-- The next migrated test would require a substantially different Ctfe feature.
-- Review/implementation loops are getting long enough that the current work
-  should land independently.
+The orchestrator must stop after one migrated executor test and create a PR.
+Future work may relax this to several migrations in one PR after the process has
+proved trustworthy, but the current default is one test migration per PR.
 
 At that point:
 
@@ -162,7 +169,9 @@ At that point:
 - Run the focused unit-threaded test after adding each backend test.
 - Include `ut.backends.architecture` in focused backend verification.
 - Verify every negative assertion diagnostic against the actual CTFE engine
-  output before encoding the expected message.
+  output before encoding the expected message. Use a real DMD CLI probe with
+  `-checkaction=context`; do not treat current wrapper output as canonical when
+  it disagrees with the CLI.
 - Run `dub test` after every implementation/review cycle and before each
   commit, unless the session owner explicitly narrows verification to focused
   tests.
@@ -181,23 +190,34 @@ At that point:
 
 ## Handoff Status
 
-Branch `ctfe-pure-backend-tests` contains the first migration commit candidate:
-`expressions.d` / `intAddition`.
+Branch `ctfe-pure-backend-tests` contains the first migrated backend test:
+`expressions.d` / `intAddition`. PR 44 has been updated with the review-comment
+fixes for this slice.
 
 Implemented in this slice:
 
-- Added backend-level `runTests(in string source)`.
+- Added backend-level `runTests(in string moduleSource)`.
 - Implemented `Ctfe.runTests` for valid-D unittest fixtures.
 - Added `tests/ut/backends/pure_/lang/expressions.d`.
 - Wired the new backend expressions module into `tests/main.d`.
 - Added the positive `intAddition` test and two negative diagnostic probes:
   `42 != 43` and `7 != 8`.
+- Added `parseModuleWithCheckActionContext` for Ctfe backend unittest parsing,
+  keeping `CHECKACTION.context` scoped to that path instead of changing the
+  default compiler API state.
+- Removed post-failure unittest body walking for assertion diagnostics. Ctfe
+  backend unittest failures now surface DMD diagnostics from CTFE execution.
 
 Verification completed:
 
 - Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
 - Focused verification passed:
   `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
+- Narrow regression check passed after scoping `CHECKACTION.context`:
+  `dub test -- ut.executors.api.runModulesTests.runsBothModules`.
+- A full `dub test` run was started by mistake and stopped; do not treat it as
+  verification for this PR.
+- PR 44 review threads were marked resolved after the branch update.
 
 Review feedback learned for this slice:
 
@@ -212,6 +232,14 @@ Review feedback learned for this slice:
 - Do not keep general CTFE diagnostic filtering, broad assertion walking,
   fallback paths, or future unittest failure support without a test that
   forces it.
+- If a CTFE assertion diagnostic lacks `-checkaction=context` values, check
+  dmd-as-a-library initialization before changing tests. The CLI oracle already
+  reports values for fixtures such as `assert(1 == 2)` when run as
+  `dmd -o- -checkaction=context fixture.d`.
+- The fix for this slice was using a scoped parse path that temporarily sets
+  `global.params.checkAction = CHECKACTION.context` while parsing Ctfe backend
+  unittest fixtures, then surfacing DMD diagnostics, not re-walking the unittest
+  body to synthesize `42 != 43`.
 - Generated backend test names should use stable numeric suffixes such as
   `intAdditionFailureMessage.0.Ctfe` and `intAdditionFailureMessage.1.Ctfe`.
 
