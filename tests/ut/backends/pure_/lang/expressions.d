@@ -752,4 +752,30 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.5 != 2.5");
     }
+
+    @("evaluatesPow." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 8.0);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("evaluatesPowFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 9.0);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
 }
