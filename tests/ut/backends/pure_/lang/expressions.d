@@ -854,4 +854,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+
+    @("intSubtractAssign." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 44;
+                value -= 2;
+                assert(value == 42);
+            }
+        });
+    }
+
+    @("intSubtractAssignFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 44;
+                value -= 2;
+                assert(value == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
 }
