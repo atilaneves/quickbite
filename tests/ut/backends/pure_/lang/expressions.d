@@ -664,4 +664,34 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 <= 42");
     }
+
+    @("intGreaterOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 >= bound);
+            }
+        });
+    }
+
+    @("intGreaterOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(41 >= bound);
+            }
+        }).shouldThrowWithMessage("41 < 42");
+    }
 }
