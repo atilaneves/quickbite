@@ -898,4 +898,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+
+    @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 0);
+            }
+        });
+    }
+
+    @("ubyteAddAssignWrapsOnStoreFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 1);
+            }
+        }).shouldThrowWithMessage("0 != 1");
+    }
 }
