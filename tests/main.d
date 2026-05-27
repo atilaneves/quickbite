@@ -4,6 +4,7 @@ int main(string[] args) {
     return args.runTests!(
         "ut.lang",
         "ut.backends.pure_.lang.eval",
+        "ut.backends.pure_.lang.expressions",
         "ut.value",
         "ut.compiler",
         "ut.benchmarks",
