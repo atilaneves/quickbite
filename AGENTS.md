@@ -67,7 +67,7 @@ code.
 - Variables as close to their usage as possible.
 - Use `with` in `switch`/`final switch` with enums for more readability.
 
-### Production code
+### Production code (in `source`)
 
 - Local imports inside functions/types. `imported!"module"` only for
   parameter and return types.
@@ -75,7 +75,7 @@ code.
   explicitly with `public`/`private`.
 - Do not use exceptions for control flow.
 
-### Test modules
+### Test modules (in `tests`)
 
 - Use module-scope imports to avoid repeating the same import in every
   test block. Unit test modules should not use `imported`.

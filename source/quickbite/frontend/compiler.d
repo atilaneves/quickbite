@@ -43,6 +43,13 @@ public ParsedModule parseModuleWithCheckActionContext(in string source) {
     return compiler.parseModuleWithCheckActionContext(source, []);
 }
 
+public ParsedModule parseModuleWithCheckActionContext(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleWithCheckActionContext(source, importPaths);
+}
+
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }

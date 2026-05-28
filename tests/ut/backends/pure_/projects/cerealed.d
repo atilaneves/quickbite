@@ -2,6 +2,7 @@ module ut.backends.pure_.projects.cerealed;
 
 
 import ut.backends;
+import ut.dub_paths: dubImportPaths;
 
 
 private:
@@ -265,5 +266,34 @@ static foreach (backend; backends) {
                 assert(bytes[1] == 2);
             }
         }).shouldThrowWithMessage("1 != 2");
+    }
+
+    @ShouldFail(
+        "DMD CTFE cannot read cerealed's static child-class registry " ~
+        "`_childCerealisers` at compile time",
+    )
+    @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.cerealiser;
+
+            class Message {
+                ubyte value;
+
+                this(ubyte value) {
+                    this.value = value;
+                }
+            }
+
+            unittest {
+                auto enc = Cerealiser();
+                auto message = new Message(cast(ubyte) 42);
+
+                enc ~= message;
+
+                assert(enc.bytes.length == 1);
+                assert(enc.bytes[0] == 42);
+            }
+        }, dubImportPaths);
     }
 }
