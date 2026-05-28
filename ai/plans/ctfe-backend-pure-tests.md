@@ -274,6 +274,9 @@ Completed migrations:
   `intBitwiseAnd`, and `intBitwiseXor`.
 - PR 46 migrated the remaining source-order `expressions.d` slice through
   `ubyteLocalTruncatesOnStore`, after the earlier expression PRs.
+- Current `ctfe-pure-logic` branch migrated all source-order `logic.d`
+  fixtures, including the final dmd-codegen-only comparison-operands fixture
+  as `logicalAndComparisonOperands`.
 
 Implemented so far:
 
@@ -286,6 +289,8 @@ Implemented so far:
   default compiler API state.
 - Removed post-failure unittest body walking for assertion diagnostics. Ctfe
   backend unittest failures now surface DMD diagnostics from CTFE execution.
+- Added `tests/ut/backends/pure_/lang/logic.d`.
+- Wired the backend logic module into `tests/main.d`.
 - Removed the rejected PR 46 Ctfe backend fallback for DMD CTFE floating-point
   assertion diagnostics that contain placeholders such as
   `<double not supported>`. Do not restore or refine that fallback.
@@ -318,6 +323,13 @@ Verification completed:
   reported `43 test(s) run, 0 failed, 1/1 failing as expected`.
 - After adding the expected-failure marker, full verification passed:
   `dub test` reported `873 test(s) run, 0 failed, 1/1 failing as expected`.
+- Current `ctfe-pure-logic` branch focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.logic`.
+- Current `ctfe-pure-logic` branch full verification passed:
+  `dub test` reported
+  `947 test(s) run, 0 failed, 9/9 failing as expected`.
+- No true Ctfe backend gaps were found while migrating `logic.d`.
+- No new `@ShouldFail` fake reds were needed while migrating `logic.d`.
 
 Review feedback learned:
 
@@ -360,12 +372,13 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next MR should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/logic.d`.
+`tests/ut/executors/pure_/lang/control_flow.d`.
 
-Start by adding the Ctfe backend logic test module under
-`tests/ut/backends/pure_/lang/logic.d` and wiring it into `tests/main.d` if it
-does not already exist. Then migrate source-order logic fixtures one test at a
-time, using the same positive unittest, negative assertion probes, DMD oracle,
+Start by adding the Ctfe backend control-flow test module under
+`tests/ut/backends/pure_/lang/control_flow.d` and wiring it into
+`tests/main.d` if it does not already exist. Then migrate source-order
+control-flow fixtures one test at a time, using per-test `gpt-5.5` low
+subagents, the same positive unittest, negative assertion probes, DMD oracle,
 audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
 `dub test`, and per-migration commit rules.
 
@@ -388,7 +401,7 @@ audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
   repair this after failure, shadow druntime modules, or create an unofficial
   hook.
 - Next agent should start the next MR from
-  `tests/ut/executors/pure_/lang/logic.d`. Continue migrations one logic test
-  at a time until a true red is found. If no true red is found in `logic.d`,
-  create the PR for that module. Floating assertion formatter placeholders
-  remain expected-fail migration cases, not true reds.
+  `tests/ut/executors/pure_/lang/control_flow.d`. Continue migrations one
+  control-flow test at a time until a true red is found. If no true red is
+  found in `control_flow.d`, create the PR for that module. Floating assertion
+  formatter placeholders remain expected-fail migration cases, not true reds.
