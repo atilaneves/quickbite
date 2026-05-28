@@ -170,6 +170,8 @@ For future PR slices on this plan, the main agent should orchestrate only:
 3. Review the worker diff, verify, update this plan if needed, and commit.
 
 Do not choose the next CTFE target locally before the explorer has reported.
+Use medium reasoning for routine explorer and worker subagents unless a slice
+has a specific complexity that justifies a higher setting.
 
 ### 2026-05-28 Workflow Slice
 
