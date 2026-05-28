@@ -417,3 +417,25 @@ unittest {
     assert(sum == 9);
     assert(skipped == 3);
 }
+
+unittest {
+    uint matched;
+    uint fellThrough;
+
+    foreach (value; [0u, 1u, 3u]) {
+        switch (value) {
+        case 0:
+            matched += 10;
+            break;
+        case 1:
+            matched += 20;
+            break;
+        default:
+            fellThrough += value;
+            break;
+        }
+    }
+
+    assert(matched == 30);
+    assert(fellThrough == 3);
+}
