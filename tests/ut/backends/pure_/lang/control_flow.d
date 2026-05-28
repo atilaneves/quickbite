@@ -574,6 +574,84 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
 
+    @("foreachExpressionTupleBreakAndContinue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.meta: AliasSeq;
+
+            int helper(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int first = helper(1);
+                int second = helper(3);
+                int third = helper(5);
+                int sum;
+                foreach (value; AliasSeq!(first, second, third)) {
+                    if (value == second)
+                        continue;
+                    if (value == third)
+                        break;
+                    sum += value;
+                }
+                assert(sum == 2);
+            }
+        });
+    }
+
+    @("foreachExpressionTupleBreakAndContinueFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.meta: AliasSeq;
+
+            int helper(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int first = helper(1);
+                int second = helper(3);
+                int third = helper(5);
+                int sum;
+                foreach (value; AliasSeq!(first, second, third)) {
+                    if (value == second)
+                        continue;
+                    if (value == third)
+                        break;
+                    sum += value;
+                }
+                assert(sum == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("foreachExpressionTupleBreakAndContinueFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.meta: AliasSeq;
+
+            int helper(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int first = helper(2);
+                int second = helper(3);
+                int third = helper(5);
+                int sum;
+                foreach (value; AliasSeq!(first, second, third)) {
+                    if (value == second)
+                        continue;
+                    if (value == third)
+                        break;
+                    sum += value;
+                }
+                assert(sum == 2);
+            }
+        }).shouldThrowWithMessage("3 != 2");
+    }
+
     @("foreachArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
