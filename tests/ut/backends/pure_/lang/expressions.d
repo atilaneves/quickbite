@@ -2,6 +2,16 @@ module ut.backends.pure_.lang.expressions;
 
 
 import ut.backends;
+import dmd.target: CPU, target;
+
+
+private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
+    const originalCpu = target.cpu;
+    target.cpu = CPU.sse2;
+    scope(exit) target.cpu = originalCpu;
+
+    runBackendSourceFixtureTests!T(moduleSource);
+}
 
 
 static foreach (backend; backends) {
@@ -1565,5 +1575,79 @@ static foreach (backend; backends) {
                 assert(cast(bool) missing == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+
+    @("vectorScalarCastSplatsToStaticArray." ~ backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(7);
+
+                assert(values[0] == 7);
+                assert(values[1] == 7);
+                assert(values[2] == 7);
+                assert(values[3] == 7);
+            }
+        });
+    }
+
+    @("vectorScalarCastSplatsToStaticArrayFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(7);
+
+                assert(values[2] == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @("vectorScalarCastSplatsToStaticArrayFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(3);
+
+                assert(values[0] == 7);
+            }
+        }).shouldThrowWithMessage("3 != 7");
     }
 }

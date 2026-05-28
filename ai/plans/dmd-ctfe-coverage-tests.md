@@ -212,6 +212,8 @@ that shim.
 | `visitTryCatch` handler local goto | Covered | Worker 1 slice | Restart path covered. |
 | `visitTryFinally` body local goto | Covered | Worker 1 slice | Finalbody runs once. |
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
+| `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 
 Coverage workflow details:
 
@@ -630,6 +632,36 @@ After PR #70 was merged, a fresh `master` coverage run completed cleanly with
 677 tests run, 0 failed, 28/28 failing as expected, and
 1950/3764 = 51.81% executable-entry coverage. The delta is larger than the
 prior PR delta, but still short of the requested 10-point aim.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 2 Slice
+
+Added focused pure-backend CTFE tests for vector expressions:
+
+```text
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArray.Ctfe
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArrayFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArrayFailureMessage.1.Ctfe
+```
+
+The behavior test uses a mutable scalar from a helper call, casts it to
+`__vector(int[4])`, then reads the vector's `.array` property and verifies all
+lanes. This targets DMD CTFE's scalar `visit(VectorExp)` path and the
+`visit(VectorArrayExp)` vector-to-array conversion path.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArray.Ctfe
+```
+
+Coverage effect: focused coverage moved `visit(VectorExp)` and
+`visit(VectorArrayExp)` to partially covered. The `.lst` showed the scalar
+splat path, `interpretVectorToArray`, and the `VectorArrayExp` return path hit.
+
+Poke result: changing the behavior test assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
 
 ## Acceptance Criteria
 
