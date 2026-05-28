@@ -218,6 +218,8 @@ that shim.
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 | `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 | `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| `visit(SliceExp)` null zero-length slice | Covered | Worker 5 slice | See below. |
+| `resolveIndexing(IndexExp)` slice OOB diagnostic | Covered | Worker 5 slice | See below. |
 | `visit(DelegatePtrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.ptr` CTFE rejection. |
 | `visit(DelegateFuncptrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.funcptr` CTFE rejection. |
 | `visitWith(WithStatement)` local goto restart | Covered | dmd-ctfe-coverage-tests-5 Worker 4 | `with` body `goto` restart. |
@@ -697,6 +699,40 @@ restart loop around the `CTFEExp.isGotoExp(e)` branch.
 
 Poke result: changing the behavior test assertion from `42` to `43` failed the
 focused CTFE test with `42 != 43`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 5 Slice
+
+Added focused pure-backend CTFE tests for dynamic-array slice/index gaps:
+
+```text
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSlice.Ctfe
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSliceFailureMessage.0.Ctfe
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSliceFailureMessage.1.Ctfe
+ut.backends.pure_.lang.arrays.sliceIndexPastLengthDiagnostic.Ctfe
+```
+
+The zero-length slice fixture slices an uninitialized dynamic array with
+runtime-shaped equal bounds from `values.length`. The diagnostic fixture builds
+a runtime-shaped slice from a small array, then indexes past the slice length
+and verifies DMD CTFE's `index 3 exceeds array length 2` diagnostic.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSlice.Ctfe \
+    ut.backends.pure_.lang.arrays.sliceIndexPastLengthDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage hit the `visit(SliceExp)` `e1.op ==
+EXP.null_` zero-length return branch and the `resolveIndexing(IndexExp)`
+slice-index diagnostic branch.
+
+Poke result: changing the zero-length behavior assertion from `0` to `1`
+failed the focused CTFE test with `0 != 1`; changing the diagnostic expected
+substring to `index 2 exceeds array length 2` failed with the actual message
+`index 3 exceeds array length 2`. Both temporary pokes were reverted and the
 focused tests were rerun green.
 
 ## Acceptance Criteria

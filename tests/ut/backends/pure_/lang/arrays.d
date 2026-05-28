@@ -1105,6 +1105,71 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 1");
     }
 
+    @("nullDynamicArrayZeroLengthSlice." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 0);
+            }
+        });
+    }
+
+    @("nullDynamicArrayZeroLengthSliceFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 1);
+            }
+        }).shouldThrowWithMessage("0 != 1");
+    }
+
+    @("nullDynamicArrayZeroLengthSliceFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start + values.length;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 2);
+            }
+        }).shouldThrowWithMessage("0 != 2");
+    }
+
+    @("sliceIndexPastLengthDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t start = cast(size_t) value(1);
+                size_t stop = cast(size_t) value(3);
+                auto slice = values[start .. stop];
+                size_t index = cast(size_t) value(3);
+
+                assert(slice[index] == first);
+            }
+        }).shouldThrowWithMessage("index 3 exceeds array length 2");
+    }
+
     @("sliceAssignmentFromStringUpdatesArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
