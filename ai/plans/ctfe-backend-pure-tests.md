@@ -529,6 +529,31 @@ and per-module commit rules.
 - Next migration step should start from
   `tests/ut/executors/pure_/projects/cerealed.d`.
 
+## Handoff After Cerealed Project Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current
+  `tests/ut/executors/pure_/projects/cerealed.d` fixtures to
+  `tests/ut/backends/pure_/projects/cerealed.d`.
+- Added two negative assertion probes for each of the 4 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -unittest -checkaction=context` probes in this worktree.
+  Temporary probe source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.projects.cerealed`.
+- Audit poke passed: all 4 positive migrated cerealed project tests were
+  temporarily changed to fail, and unit-threaded reported all 4 failures in
+  one focused run. The poke was restored and focused verification passed
+  again.
+- Full verification passed: `dub test` reported
+  `1367 test(s) run, 0 failed, 27/27 failing as expected`.
+- This completes the current Ctfe backend pure migration order; no modules
+  remain.
+
 ## Handoff After Arrays Migration
 
 - Branch/worktree: `ctfe-backend-pure-tests` at
