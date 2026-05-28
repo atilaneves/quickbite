@@ -309,9 +309,12 @@ Review feedback learned:
   Do not spoof or shadow `core.internal.dassert` with import-path tricks, and
   do not add a Quickbite-created hook. If a future DMD version exposes a real
   supported hook, that is different and can be evaluated directly.
-- For similar DMD CTFE formatter limitations that Quickbite cannot control,
-  use `@ShouldFail("...")` with a specific reason string explaining the
-  upstream limitation. Do not leave a bare `@ShouldFail`.
+- For similar DMD CTFE floating-point formatter limitations that Quickbite
+  cannot control, use `@ShouldFail("...")` with a specific reason string
+  explaining the upstream limitation. Placeholders such as
+  `<float not supported>`, `<double not supported>`, and other floating scalar
+  variants are the same formatter limitation, not separate true reds. Do not
+  leave a bare `@ShouldFail`.
 
 Remaining `expressions.d` source-order slices:
 
@@ -340,10 +343,11 @@ Next migration should continue with the next unmigrated source-order slice in
   `CHECKACTION.context`, run the synthetic unittest call through
   `ctfeInterpret`, and surface DMD diagnostics directly.
 - The reason for `@ShouldFail` is upstream: druntime's generated
-  `core.internal.dassert._d_assert_fail` formatter returns
-  `<double not supported>` under CTFE for floating values because it relies on
-  runtime `sprintf`. Quickbite should not repair this after failure, shadow
-  druntime modules, or create an unofficial hook.
+  `core.internal.dassert._d_assert_fail` formatter returns placeholders such
+  as `<float not supported>` and `<double not supported>` under CTFE for
+  floating values because it relies on runtime `sprintf`. Quickbite should not
+  repair this after failure, shadow druntime modules, or create an unofficial
+  hook.
 - Current staged files after cleanup:
   `source/quickbite/backends/ctfe.d`,
   `tests/ut/backends/pure_/lang/expressions.d`, and this plan file.
