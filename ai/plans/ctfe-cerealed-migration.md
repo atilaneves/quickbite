@@ -127,10 +127,10 @@ Keep this section updated as files are tried.
 | `cerealiser_impl.d` | Passed | Added backend file fixture. |
 | `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
 | `compile_time.d` | Passed | Added backend file fixture. |
-| `decode.d` | Blocked | Added bool decode test; exhaustion should assert CTFE bounds diagnostic. |
+| `decode.d` | Blocked | Added bool decode test; exhaustion diagnostic asserted. |
 | `encode.d` | Blocked | Added int and float encode tests. |
-| `encode_decode.d` | Blocked | Added bool round-trip; exhaustion should assert CTFE bounds diagnostic. |
-| `enums.d` | Blocked | Added enum round-trip; exhaustion should assert CTFE bounds diagnostic. |
+| `encode_decode.d` | Blocked | Added bool round-trip; exhaustion diagnostic asserted. |
+| `enums.d` | Blocked | Added enum round-trip; exhaustion diagnostic asserted. |
 | `example.d` | Passed | Added dependency-free `Foo` round-trip example. |
 | `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
 | `nested.d` | Passed | Added dependency-free recursive nested AA byte layout. |
@@ -151,18 +151,18 @@ time.
 
 `decode.d` is blocked as a full fixture because exhausting a bool decoder reads
 past the end of cerealed's byte slice. DMD CTFE reports
-`array index 6 is out of bounds [0..6]`; assert that message.
+`array index 6 is out of bounds [0..6]`; this diagnostic is asserted.
 
 `encode.d` is blocked as a full fixture because cerealed's full test module
 still depends on dependency internals outside the extracted backend cases.
 
 `encode_decode.d` is blocked as a full fixture because its generic round-trip
 helper checks exhaustion after consuming all bytes. DMD CTFE reports
-`array index 5 is out of bounds [0..5]`; assert that message.
+`array index 5 is out of bounds [0..5]`; this diagnostic is asserted.
 
 `enums.d` is blocked as a full fixture because it checks exhaustion after
 consuming all enum bytes. DMD CTFE reports
-`array index 12 is out of bounds [0..12]`; assert that message.
+`array index 12 is out of bounds [0..12]`; this diagnostic is asserted.
 
 `range.d` is blocked as a full fixture because it reads the module-scope
 `gOutputBytes` buffer at compile time while testing output ranges.
