@@ -1112,4 +1112,39 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.67772e+07 == 1.67772e+07");
     }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongToRealCastPreservesRealPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong input = ulong.max;
+                real converted = cast(real) input;
+
+                assert(converted == 18_446_744_073_709_551_615.0L);
+                assert(converted != cast(real) cast(double) input);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongToRealCastPreservesRealPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong input = ulong.max;
+                real converted = cast(real) input;
+
+                assert(converted != 18_446_744_073_709_551_615.0L);
+            }
+        }).shouldThrowWithMessage(
+            "18446744073709551615 == 18446744073709551615",
+        );
+    }
 }
