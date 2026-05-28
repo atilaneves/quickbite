@@ -41,6 +41,9 @@ Remaining follow-up:
   signatures. For example, after declaring `int twice(int i)`, calling
   `twice("foo")` currently only reports that `twice` is not callable with
   `(string)` and does not tell the user that `twice` expects an `int`.
+- Add a very limited binary-level REPL test suite that runs `bin/repl` instead
+  of testing the binary through unit tests. Keep it small and separate from
+  normal `dub test` so subprocess startup does not affect unittest latency.
 
 ## Key Changes
 
