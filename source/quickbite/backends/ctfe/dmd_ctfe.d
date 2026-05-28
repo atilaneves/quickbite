@@ -17,6 +17,8 @@ public class Ctfe: imported!"quickbite.backend".Backend {
         import quickbite.frontend.repl: ReplCellKind;
 
         final switch (cell.kind) with (ReplCellKind) {
+            case incomplete:
+                throw new Exception("Incomplete REPL cell reached CTFE backend.");
             case noDisplay:
                 if (const failure = ctfeFailureMessage(
                     callExpression(replFunction(cell.source)),
