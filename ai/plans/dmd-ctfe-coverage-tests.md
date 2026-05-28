@@ -527,21 +527,24 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
-| Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
-| Final branch broad coverage | 1687 | 3764 | 44.82% |
+| Master broad baseline | 1688 | 3764 | 44.85% |
+| Final branch broad coverage | 1715 | 3764 | 45.56% |
 
-Delta: +1.33 percentage points.
+Delta: +0.72 percentage points.
 
-Method-level changes from the three new test slices:
+Method-level changes from the five new test slices:
 
-- `visitWith(WithStatement)` moved from whole method uncovered to partially
-  covered with 17 uncovered executable lines remaining in the final broad
-  audit.
-- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
-  to partially covered with 8 uncovered executable lines remaining in the final
+- `visitGoto(GotoStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch remaining uncovered.
+- `visitLabel(LabelStatement)` no longer appears in the uncovered audit table.
+- `visitTryCatch(TryCatchStatement)` has the catch-variable binding branch
+  covered and is partially covered with 21 uncovered executable lines
+  remaining in the final broad audit.
+- `visitWith(WithStatement)` has the `with (Enum)` body branch covered and is
+  partially covered with 15 uncovered executable lines remaining in the final
   broad audit.
-- `visit(CommaExp)` has additional coverage and is partially covered with 15
-  uncovered executable lines remaining in the final broad audit.
+- `visit(TypeidExp)` moved from whole method uncovered to partially covered
+  with 8 uncovered executable lines remaining in the final broad audit.
 
 Verification notes:
 
@@ -549,10 +552,10 @@ Verification notes:
   tests.
 - Assertion poke checks failed with the expected diagnostics.
 - Final selections used `dmd` 2.112.0 and `unit-threaded` 2.2.4.
-- `dub test` passed with 1433 tests run, 0 failed, and 31/31 failing as
-  expected.
+- `dub test -- --random` passed with 1445 tests run, 0 failed, and 31/31
+  failing as expected. Seed: `669684322`.
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
-  audit with 602 tests run, 0 failed, and 31/31 failing as expected.
+  audit with 614 tests run, 0 failed, and 31/31 failing as expected.
 
 ## Acceptance Criteria
 
