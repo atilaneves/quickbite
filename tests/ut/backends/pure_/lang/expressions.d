@@ -1463,6 +1463,43 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
+    @("hexStringCastToUshortArrayUsesBigEndianWords." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words.length == 2);
+                assert(words[0] == 0x1234);
+                assert(words[1] == 0x5678);
+            }
+        });
+    }
+
+    @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words[0] == 0x3412);
+            }
+        }).shouldThrowWithMessage("4660 != 13330");
+    }
+
+    @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words[1] == 0x7856);
+            }
+        }).shouldThrowWithMessage("22136 != 30806");
+    }
+
     @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

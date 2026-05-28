@@ -228,6 +228,11 @@ that shim.
 | `visit(DelegateFuncptrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.funcptr` CTFE rejection. |
 | `visitWith(WithStatement)` local goto restart | Covered | dmd-ctfe-coverage-tests-5 Worker 4 | `with` body `goto` restart. |
 | `visit(DeleteExp)` | Unsupported | dmd-ctfe-coverage-tests-5 Worker 6 | `delete` rejected by DMD 2.112 semantic analysis. |
+| Pointer relation across unrelated arrays | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Four-pointer false relation. |
+| Dynamic array length assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Grow, preserve, zero-fill, shrink. |
+| Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
+| Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
+| Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
 
 Coverage workflow details:
 
@@ -776,6 +781,62 @@ int bumpViaDelete(int seed) {
 
 Because DMD rejects `delete` during ordinary compilation, the uncovered CTFE
 visitor is not reachable from valid D source in this compiler version.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 8 Array/Cast Slice
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.arrays.fourPointerRelationAcrossUnrelatedArraysReturnsFalse.Ctfe
+ut.backends.pure_.lang.arrays.dynamicArrayLengthAssignmentResizesArray.Ctfe
+ut.backends.pure_.lang.arrays.multidimensionalStaticArraySliceBlockAssignRepeatsRow.Ctfe
+ut.backends.pure_.lang.arrays.overlappingSliceAssignmentIsRejectedAtCtfe.Ctfe
+ut.backends.pure_.lang.arrays.pointerSlicePastAllocatedBlockDiagnostic.Ctfe
+ut.backends.pure_.lang.expressions.hexStringCastToUshortArrayUsesBigEndianWords.Ctfe
+```
+
+The array fixtures use runtime-shaped seeds and bounds. The hex-string fixture
+uses a literal because the literal cast is the behavior under test.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.fourPointerRelationAcrossUnrelatedArraysReturnsFalse.Ctfe \
+    ut.backends.pure_.lang.arrays.dynamicArrayLengthAssignmentResizesArray.Ctfe \
+    ut.backends.pure_.lang.arrays.multidimensionalStaticArraySliceBlockAssignRepeatsRow.Ctfe \
+    ut.backends.pure_.lang.arrays.overlappingSliceAssignmentIsRejectedAtCtfe.Ctfe \
+    ut.backends.pure_.lang.arrays.pointerSlicePastAllocatedBlockDiagnostic.Ctfe \
+    ut.backends.pure_.lang.expressions.hexStringCastToUshortArrayUsesBigEndianWords.Ctfe
+```
+
+Coverage effect: focused coverage hit `interpretFourPointerRelation`, the
+dynamic-array length assignment branch in `interpretAssignCommon`, the
+recursive static-array block assignment path in `interpretAssignToSlice`, the
+array-overlap diagnostic, and the pointer-slice allocated-block diagnostic.
+The hex-string behavior test passes, but DMD 2.112 semantic cast handling
+normalizes this fixture before `dinterpret` reaches the hex-string array-cast
+branch, so those `visit(CastExp)` lines remained uncovered in this run.
+
+Poke results:
+
+- Changing the unrelated-array relation expectation failed with
+  `false != true`.
+- Changing the dynamic-array length expectation failed with `4 != 3`.
+- Changing the repeated-row expectation failed with `11 != 10`.
+- Changing the overlap diagnostic substring reported the actual
+  `overlapping slice assignment \`[1..3] = [0..2]\`` diagnostic.
+- Changing the pointer-slice diagnostic substring reported the actual
+  `pointer slice \`[1..3]\` exceeds allocated memory block \`[0..2]\``
+  diagnostic.
+- Changing the hex-string word expectation failed with `4660 != 13330`.
+
+Verification notes:
+
+- Focused behavior and paired failure-message tests passed.
+- `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
+- `dub test -- --random` passed with 1552 tests run, 0 failed, and 28/28
+  failing as expected. Seed: `1355646905`.
 
 ## Acceptance Criteria
 
