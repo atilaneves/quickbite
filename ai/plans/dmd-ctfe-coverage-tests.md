@@ -254,6 +254,7 @@ that shim.
 | `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
 | `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
 | `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
+| `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 
 Coverage workflow details:
 
@@ -806,6 +807,33 @@ compiled D behavior.
 Poke result: changing the behavior assertion from `'e'` to `'f'` failed the
 focused CTFE test with `'e' != 'f'`; the temporary poke was reverted and the
 focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 9
+
+Explorer recommendation 9 targeted the direct dynamic-array out-of-bounds
+diagnostic in `resolveIndexing(IndexExp)`.
+
+Added a focused pure-backend CTFE diagnostic test:
+
+```text
+ut.backends.pure_.lang.arrays.dynamicArrayIndexPastLengthDiagnostic.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.dynamicArrayIndexPastLengthDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage marked the non-slice indexing path and
+direct array out-of-bounds diagnostic as hit. The slice-index out-of-bounds
+branch remained untouched, confirming this test is distinct from the existing
+slice diagnostic.
+
+Poke result: changing the expected diagnostic substring from array index `3`
+to `2` failed the focused test with the expected diagnostic mismatch; the
+temporary poke was reverted and the focused test was rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 

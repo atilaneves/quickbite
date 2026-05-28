@@ -1350,6 +1350,23 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("index 3 exceeds array length 2");
     }
 
+    @("dynamicArrayIndexPastLengthDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1];
+                size_t index = cast(size_t) value(3);
+
+                assert(values[index] == first);
+            }
+        }).shouldThrowWithMessage("array index 3 is out of bounds `[0..2]`");
+    }
+
     @("overlappingSliceAssignmentIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
