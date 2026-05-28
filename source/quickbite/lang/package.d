@@ -28,6 +28,7 @@ public struct Value {
         real,
 
         Array,
+        AssocArray,
         Struct,
     );
 
@@ -42,7 +43,11 @@ public struct Value {
     }
 
     public this(T)(in T value) @safe pure
-    if (!is(T == E[], E) && !is(T == struct))
+    if (
+        !is(T == E[], E) &&
+        !is(T == V[K], V, K) &&
+        !is(T == struct)
+    )
     {
         data = Data(value);
     }
@@ -61,6 +66,10 @@ public struct Value {
         data = Data(Array(elements));
     }
 
+    public this(K, V)(in V[K] values) @safe pure {
+        data = Data(AssocArray(values));
+    }
+
     public bool opEquals(in Value other) const @safe pure {
         return data == other.data;
     }
@@ -72,7 +81,9 @@ public struct Value {
         return data.match!(
             (value) {
                 alias T = typeof(value);
-                static if (is(T == const(Struct))) {
+                static if (is(T == const(AssocArray))) {
+                    return value.toString;
+                } else static if (is(T == const(Struct))) {
                     return value.toString;
                 } else {
                     return text(value);
@@ -104,6 +115,8 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
+                } else static if (is(T == const(AssocArray))) {
+                    return value.toString;
                 } else static if (is(T == const(Struct))) {
                     return value.toString;
                 } else {
@@ -120,6 +133,38 @@ private struct Array {
 
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
+    }
+}
+
+
+private struct AssocArray {
+    public Entry[] entries;
+
+    public this(K, V)(in V[K] values) @safe pure {
+        foreach (key, value; values)
+            entries ~= Entry(Value(key), Value(value));
+    }
+
+    public string toString() const @safe pure {
+        string ret = "[";
+
+        foreach (i, entry; entries) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= entry.toString;
+        }
+
+        return ret ~ "]";
+    }
+}
+
+
+private struct Entry {
+    public Value key;
+    public Value value;
+
+    public string toString() const @safe pure {
+        return key.dText ~ ":" ~ value.dText;
     }
 }
 
