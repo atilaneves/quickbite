@@ -95,4 +95,18 @@ static foreach (backend; backends) {
         repl.submit("++x;").should == Value.void_;
         repl.submit("x").should == Value(1);
     }
+
+    @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int twice(int i) { return i; }");
+        void duplicateDeclaration() {
+            repl.submit("int twice(int i) { return i; }");
+        }
+        duplicateDeclaration.shouldThrow.msg.should ==
+            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+    }
 }

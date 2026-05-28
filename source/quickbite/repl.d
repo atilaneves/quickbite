@@ -24,10 +24,19 @@ public struct Repl {
             return Value.void_;
         }
 
-        const value = backend.evalRepl(cell);
+        const value = evalReplCell(cell);
         session.accept(cell);
         pendingInput = null;
         return value;
+    }
+
+    private imported!"quickbite.lang".Value evalReplCell(
+        in imported!"quickbite.frontend.repl".ReplCell cell,
+    ) {
+        try
+            return backend.evalRepl(cell);
+        catch (Exception exception)
+            throw new Exception(userDiagnostic(exception.msg));
     }
 }
 
@@ -49,4 +58,54 @@ public string[] runReplLoop(
     }
 
     return output;
+}
+
+private string userDiagnostic(in string diagnostic) @safe pure {
+    string result;
+    size_t index;
+    while (index < diagnostic.length) {
+        const replacement = syntheticNameReplacement(diagnostic[index .. $]);
+        if (replacement.consumed != 0) {
+            result ~= replacement.text;
+            index += replacement.consumed;
+            continue;
+        }
+
+        result ~= diagnostic[index];
+        ++index;
+    }
+
+    return result;
+}
+
+private struct SyntheticNameReplacement {
+    public size_t consumed;
+    public string text;
+}
+
+private SyntheticNameReplacement syntheticNameReplacement(in string input)
+@safe pure nothrow {
+    import std.algorithm.searching: startsWith;
+    import std.ascii: isDigit;
+
+    if (!input.startsWith("snippet_"))
+        return SyntheticNameReplacement.init;
+
+    size_t index = "snippet_".length;
+    while (index < input.length && input[index].isDigit)
+        ++index;
+
+    if (index == "snippet_".length)
+        return SyntheticNameReplacement.init;
+
+    if (index == input.length)
+        return SyntheticNameReplacement.init;
+
+    if (input[index .. $].startsWith(".d"))
+        return SyntheticNameReplacement(index + ".d".length, "<repl>");
+
+    if (input[index] == '.')
+        return SyntheticNameReplacement(index + 1, "");
+
+    return SyntheticNameReplacement.init;
 }

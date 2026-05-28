@@ -29,13 +29,16 @@ Completed in this PR:
 - Added incomplete-input buffering for multiline function declarations. For
   example, `int thrice(int i) {`, `return i * 3;`, `}` is buffered until the
   declaration is complete, and `thrice(14)` displays `42: int`.
+- Hid synthetic module names such as `snippet_1.` from user-visible REPL
+  diagnostics.
 
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
-- Hide synthetic module names such as `snippet_1.` from user-visible REPL
-  diagnostics. For example, duplicate declarations currently report
-  implementation detail names.
+- Improve function-call mismatch diagnostics so they include callable
+  signatures. For example, after declaring `int twice(int i)`, calling
+  `twice("foo")` currently only reports that `twice` is not callable with
+  `(string)` and does not tell the user that `twice` expects an `int`.
 - Add interactive command-history navigation, including up-arrow traversal of
   past commands.
 
