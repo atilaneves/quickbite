@@ -104,12 +104,14 @@ private struct Array {
 
 private struct Struct {
     public string typeName;
+    public string typeIdentity;
     public Field[] fields;
 
     public this(T)(in T value) @safe pure
     if (is(T == struct))
     {
         typeName = T.stringof;
+        typeIdentity = T.mangleof;
 
         static foreach (member; __traits(allMembers, T)) {
             fields ~= Field(member, Value(__traits(getMember, value, member)));

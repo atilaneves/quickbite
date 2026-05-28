@@ -85,8 +85,8 @@ without pausing for each test.
    and a different `Point` compares unequal.
 2. [done] Implement the minimal `Struct` arm and `Value(T)` construction for
    structs.
-3. Add a second approved struct test proving two distinct struct types with the
-   same fields compare unequal.
+3. [done] Add a second struct test proving two distinct struct types with the
+   same name and fields compare unequal.
 4. Add approved tests one category at a time for `AssocArray`, `Union`,
    `ClassRef`, `InterfaceRef`, `Pointer`, `Delegate`, and `FunctionRef`.
 5. After each green step, run the focused `ut.lang` test. After the edit
