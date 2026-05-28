@@ -104,6 +104,39 @@ Do not add tests for internal assertions, compiler consistency checks, frontend
 states that semantic analysis rewrites away, or impossible AST shapes. Record
 those gaps with the exact line or method and a short reason.
 
+## PR Coverage Report
+
+When creating a PR from this plan, report the `dmd.dinterpret` coverage
+percentage delta in the PR.
+
+Use the same broad coverage target on `master` and on the PR branch. For the
+current plan, the broad target is:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Calculate the percentage from executable entries in
+`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` in each checkout. Do not use the
+final DMD footer line; it rounds to a whole percentage and can hide small PR
+deltas.
+
+Executable entries are `.lst` lines whose seven-character counter prefix is
+either a run count or `0000000`. Count `0000000` as uncovered, and count any
+positive run count as covered. Report:
+
+- the `master` percentage;
+- the PR branch percentage;
+- the percentage-point delta;
+- all percentages and deltas with two digits after the decimal point;
+- the method-level coverage change that motivated the test, such as a visitor
+  moving from wholly uncovered to partially covered.
+
+Do not compare a focused single-test coverage run against the broad baseline.
+Focused runs are useful for proving that a specific fixture hits the intended
+lines, but their percentages are not comparable to the full `ut.backends.pure_`
+coverage percentage.
+
 ## Audit Log
 
 Keep an audit table in this plan or in a sibling coverage audit file. Each row
@@ -146,7 +179,81 @@ that shim.
 
 | DMD CTFE area | Coverage status | Test or reason | Notes |
 | --- | --- | --- | --- |
-| Coverage workflow | Covered | `scripts/dmd-ctfe-coverage.sh ut.backends.pure_.lang.expressions.intAddition.Ctfe` | Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to `tmp/dmd-ctfe-coverage`. |
+| Coverage workflow | Covered | Script smoke test | Fresh coverage works. |
+| `visit(CatExp)` | Covered | Array concatenation test | Was whole method. |
+| `visit(CatExp)` elem paths | Covered | Worker 1 slice | See details below. |
+| `visit(CatExp)` array wrap | Unsupported | Worker 1 | See below. |
+| `visit(AssocArrayLiteralExp)` | Covered | Worker 1 slice | Now partial. |
+| `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
+| `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
+| `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
+
+Coverage workflow details:
+
+- Test command:
+  `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.intAddition.Ctfe`
+- Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to
+  `tmp/dmd-ctfe-coverage`.
+
+`visit(CatExp)` details:
+
+- Test:
+  `ut.backends.pure_.lang.arrays.dynamicArrayConcatenation.Ctfe`
+- Binary dynamic-array concatenation covers the previously wholly uncovered
+  visitor.
+- Remaining uncovered lines in the method are branch-specific error, copy, and
+  `elem ~ array` paths.
+
+### 2026-05-28 Worker 1 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for branch gaps in
+`dmd.dinterpret`:
+
+- `ut.backends.pure_.lang.arrays.arrayElementConcatenatesWithDynamicArray.Ctfe`
+  covers scalar `elem ~ array` and `array ~ elem` `CatExp` paths with
+  runtime-shaped operands.
+- The associative-array literal test covers `visit(AssocArrayLiteralExp)` with
+  mutable keys and values.
+- `ut.backends.pure_.lang.control_flow.supportsGotoCase.Ctfe` covers
+  `visit(GotoCaseStatement)`.
+- `ut.backends.pure_.lang.control_flow.supportsGotoDefault.Ctfe` covers
+  `visit(GotoDefaultStatement)`.
+- `ut.backends.pure_.lang.control_flow.supportsDoWhileBreakAndContinue.Ctfe`
+  covers `visitDo(DoStatement)` break and continue paths.
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Pre-slice broad baseline | 1519 | 3764 | 40.36% |
+| Worker 1 slice | 1637 | 3764 | 43.49% |
+
+Delta: +3.13 percentage points.
+
+Method-level changes in the fresh audit:
+
+- `visit(AssocArrayLiteralExp)` moved from whole method uncovered to partially
+  covered with 17 uncovered executable lines remaining.
+- `visit(GotoCaseStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch uncovered.
+- `visit(GotoDefaultStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch uncovered.
+- `visitDo(DoStatement)` dropped from 16 to 10 uncovered executable lines.
+- `visit(CatExp)` dropped from 9 to 8 uncovered executable lines.
+
+Unsupported target:
+
+- `int[] row; int[][] rows; row ~ rows` and the equivalent static-row variant
+  both reach DMD CTFE's ``cannot be interpreted at compile time`` diagnostic.
+  No passing behavior test was kept for the array-of-arrays operand-wrapping
+  branch.
 
 ## Acceptance Criteria
 
@@ -158,3 +265,5 @@ that shim.
   defensive, unsupported, or pending.
 - Final verification includes focused tests for each added fixture and a full
   `dub test`.
+- PR reporting includes the `master` and PR branch `dmd.dinterpret` coverage
+  percentages from the same broad coverage target.

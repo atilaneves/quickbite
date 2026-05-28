@@ -118,6 +118,195 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("30 != 31");
     }
 
+    @("supportsGotoCase." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto case 2;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 30);
+            }
+        });
+    }
+
+    @("supportsGotoCaseFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto case 2;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 31);
+            }
+        }).shouldThrowWithMessage("30 != 31");
+    }
+
+    @("supportsGotoCaseFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 2;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto case 2;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 30);
+            }
+        }).shouldThrowWithMessage("20 != 30");
+    }
+
+    @("supportsGotoDefault." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto default;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 40);
+            }
+        });
+    }
+
+    @("supportsGotoDefaultFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto default;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 41);
+            }
+        }).shouldThrowWithMessage("40 != 41");
+    }
+
+    @("supportsGotoDefaultFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 2;
+                int result;
+                switch (value) {
+                    case 1:
+                        result += 10;
+                        goto default;
+                    case 2:
+                        result += 20;
+                        break;
+                    default:
+                        result += 30;
+                        break;
+                }
+                assert(result == 40);
+            }
+        }).shouldThrowWithMessage("20 != 40");
+    }
+
+    @("supportsDoWhileBreakAndContinue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int i;
+                int sum;
+                do {
+                    ++i;
+                    if (i == 2)
+                        continue;
+                    if (i == 5)
+                        break;
+                    sum += i;
+                } while (i < 6);
+                assert(sum == 8);
+            }
+        });
+    }
+
+    @("supportsDoWhileBreakAndContinueFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int i;
+                int sum;
+                do {
+                    ++i;
+                    if (i == 2)
+                        continue;
+                    if (i == 5)
+                        break;
+                    sum += i;
+                } while (i < 6);
+                assert(sum == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("supportsDoWhileBreakAndContinueFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int i;
+                int sum;
+                do {
+                    ++i;
+                    if (i == 3)
+                        continue;
+                    if (i == 5)
+                        break;
+                    sum += i;
+                } while (i < 6);
+                assert(sum == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
     @("functionPointerHashCollisionDetected." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -492,6 +492,172 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("20 != 21");
     }
 
+    @("dynamicArrayConcatenation." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined.length == 2);
+                assert(combined[0] == first);
+                assert(combined[1] == second);
+            }
+        });
+    }
+
+    @("dynamicArrayConcatenationFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("dynamicArrayConcatenationFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined[1] == first);
+            }
+        }).shouldThrowWithMessage("42 != 10");
+    }
+
+    @("arrayElementConcatenatesWithDynamicArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte value(ubyte seed) {
+                return cast(ubyte)(seed + 1);
+            }
+
+            unittest {
+                ubyte first = value(9);
+                ubyte second = value(first);
+                ubyte[] tail = [second];
+
+                const leftElement = first ~ tail;
+                const rightElement = tail ~ first;
+
+                assert(leftElement.length == 2);
+                assert(leftElement[0] == 10);
+                assert(leftElement[1] == 11);
+                assert(rightElement.length == 2);
+                assert(rightElement[0] == 11);
+                assert(rightElement[1] == 10);
+            }
+        });
+    }
+
+    @("arrayElementConcatenatesWithDynamicArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte value(ubyte seed) {
+                return cast(ubyte)(seed + 1);
+            }
+
+            unittest {
+                ubyte first = value(9);
+                ubyte second = value(first);
+                ubyte[] tail = [second];
+
+                const combined = first ~ tail;
+
+                assert(combined.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("arrayElementConcatenatesWithDynamicArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ubyte value(ubyte seed) {
+                return cast(ubyte)(seed + 1);
+            }
+
+            unittest {
+                ubyte first = value(9);
+                ubyte second = value(first);
+                ubyte[] tail = [second];
+
+                const combined = tail ~ first;
+
+                assert(combined[1] == 11);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
+    @("assocArrayLiteralKeepsRuntimeKeysAndValues." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] values = [first: first + 30, second: second + 30];
+
+                assert(values.length == 2);
+                assert(values[first] == 40);
+                assert(values[second] == 41);
+            }
+        });
+    }
+
+    @("assocArrayLiteralKeepsRuntimeKeysAndValuesFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] values = [first: first + 30, second: second + 30];
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("assocArrayLiteralKeepsRuntimeKeysAndValuesFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] values = [first: first + 30, second: second + 30];
+
+                assert(values[second] == 42);
+            }
+        }).shouldThrowWithMessage("41 != 42");
+    }
+
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
