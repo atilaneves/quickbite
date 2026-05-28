@@ -174,6 +174,8 @@ Use medium reasoning for routine explorer and worker subagents unless a slice
 has a specific complexity that justifies a higher setting.
 For this PR, use the single PR worktree for sequential workers instead of
 creating one worktree per worker.
+Create the PR once coverage improvement starts moving only incrementally
+despite valid additive slices; do not grind indefinitely chasing a large delta.
 
 ### 2026-05-28 Workflow Slice
 
