@@ -326,6 +326,72 @@ static foreach (backend; backends) {
         }, dubImportPaths);
     }
 
+    @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed;
+
+            private enum MyEnum {
+                foo,
+                bar,
+                baz,
+            }
+
+            unittest {
+                auto enc = Cerealiser();
+                enc ~= MyEnum.bar;
+                enc ~= MyEnum.baz;
+                enc ~= MyEnum.foo;
+
+                assert(
+                    enc.bytes ==
+                    [0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0]
+                );
+
+                auto dec = Decerealizer(enc.bytes);
+                assert(dec.value!MyEnum == MyEnum.bar);
+                assert(dec.value!MyEnum == MyEnum.baz);
+                assert(dec.value!MyEnum == MyEnum.foo);
+            }
+        }, dubImportPaths);
+    }
+
+    @ShouldFail(
+        "DMD CTFE reports cerealed enum exhaustion as an uncaught bounds " ~
+        "error instead of catchable RangeError",
+    )
+    @("projects.cerealed.roundTripEnumExhaustionThrowsRangeError." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed;
+            import core.exception: RangeError;
+
+            private enum MyEnum {
+                foo,
+                bar,
+                baz,
+            }
+
+            unittest {
+                auto enc = Cerealiser();
+                enc ~= MyEnum.bar;
+                enc ~= MyEnum.baz;
+                enc ~= MyEnum.foo;
+
+                auto dec = Decerealizer(enc.bytes);
+                dec.value!MyEnum;
+                dec.value!MyEnum;
+                dec.value!MyEnum;
+
+                try {
+                    dec.value!ubyte;
+                    assert(false);
+                } catch (RangeError) {
+                }
+            }
+        }, dubImportPaths);
+    }
+
     @ShouldFail(
         "DMD CTFE reports cerealed round-trip exhaustion as an uncaught " ~
         "bounds error instead of catchable RangeError",
