@@ -118,6 +118,86 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("5 != 8");
     }
 
+    @("throwExpressionInConditionalIsCaught." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string makeMessage(int value) {
+                return value == 7 ? "expected" : "other";
+            }
+
+            int choose(int value, bool shouldThrow) {
+                return shouldThrow
+                    ? throw new Exception(makeMessage(value))
+                    : value + 1;
+            }
+
+            unittest {
+                int seed;
+                int normal = choose(seed + 7, seed != 0);
+                assert(normal == 8);
+
+                int length;
+                try {
+                    choose(normal - 1, normal == 8);
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 8);
+            }
+        });
+    }
+
+    @("throwExpressionInConditionalIsCaughtFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string makeMessage(int value) {
+                return value == 7 ? "expected" : "other";
+            }
+
+            int choose(int value, bool shouldThrow) {
+                return shouldThrow
+                    ? throw new Exception(makeMessage(value))
+                    : value + 1;
+            }
+
+            unittest {
+                int seed;
+                int normal = choose(seed + 7, seed != 0);
+
+                int length;
+                try {
+                    choose(normal - 1, normal == 8);
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("throwExpressionInConditionalIsCaughtFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string makeMessage(int value) {
+                return value == 7 ? "expected" : "other";
+            }
+
+            int choose(int value, bool shouldThrow) {
+                return shouldThrow
+                    ? throw new Exception(makeMessage(value))
+                    : value + 1;
+            }
+
+            unittest {
+                int seed;
+                int normal = choose(seed + 7, seed != 0);
+                assert(normal == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
     @("catchExceptionCatchesThrownExceptionFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -436,6 +516,127 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage(
             "uncaught CTFE exception `object.Exception(\"domain failure\")`"
         );
+    }
+
+    @("tryFinallyRunsFinalbody." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 2;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 13);
+            }
+        });
+    }
+
+    @("tryFinallyRunsFinalbodyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 2;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 14);
+            }
+        }).shouldThrowWithMessage("13 != 14");
+    }
+
+    @("tryFinallyRunsFinalbodyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 3;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 13);
+            }
+        }).shouldThrowWithMessage("18 != 13");
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatch." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 8);
+                assert(value == 13);
+            }
+        });
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(value == 14);
+            }
+        }).shouldThrowWithMessage("13 != 14");
     }
 
     @("finallyRunsAfterReturn." ~ backend.stringof)

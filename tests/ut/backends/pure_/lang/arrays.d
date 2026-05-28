@@ -658,6 +658,276 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("41 != 42");
     }
 
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKey." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values.length == 2);
+                assert(values[duplicate] == 20);
+                assert(values[other] == 30);
+            }
+        });
+    }
+
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKeyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKeyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values[duplicate] == 10);
+            }
+        }).shouldThrowWithMessage("20 != 10");
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteral." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int keySum;
+                int valueSum;
+
+                foreach (key; values.keys) {
+                    keySum += key;
+                }
+
+                foreach (entry; values.values) {
+                    valueSum += entry;
+                }
+
+                assert(keySum == 21);
+                assert(valueSum == 81);
+            }
+        });
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteralFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int keySum;
+
+                foreach (key; values.keys) {
+                    keySum += key;
+                }
+
+                assert(keySum == 22);
+            }
+        }).shouldThrowWithMessage("21 != 22");
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteralFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int valueSum;
+
+                foreach (entry; values.values) {
+                    valueSum += entry;
+                }
+
+                assert(valueSum == 82);
+            }
+        }).shouldThrowWithMessage("81 != 82");
+    }
+
+    @("assocArrayRemoveRuntimeKey." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                assert(values.remove(removeKey) == true);
+                assert(values.remove(removeKey) == false);
+                assert(values.length == 1);
+                assert(values[remainingKey] == 41);
+            }
+        });
+    }
+
+    @("assocArrayRemoveRuntimeKeyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                assert(values.remove(removeKey) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("assocArrayRemoveRuntimeKeyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                values.remove(removeKey);
+
+                assert(values.length == 2);
+            }
+        }).shouldThrowWithMessage("1 != 2");
+    }
+
+    @("arrayOperationAddsRuntimeElements." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums.length == 2);
+                assert(sums[0] == 50);
+                assert(sums[1] == 62);
+            }
+        });
+    }
+
+    @("arrayOperationAddsRuntimeElementsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("arrayOperationAddsRuntimeElementsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums[1] == 63);
+            }
+        }).shouldThrowWithMessage("62 != 63");
+    }
+
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -686,6 +956,52 @@ static foreach (backend; backends) {
                 assert(values.length == 0);
             }
         }).shouldThrowWithMessage("1 != 0");
+    }
+
+    @("newDynamicArrayUsesRuntimeLength." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values.length == len);
+                assert(values[1] == 42);
+            }
+        });
+    }
+
+    @("newDynamicArrayUsesRuntimeLengthFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("newDynamicArrayUsesRuntimeLengthFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values[1] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
     }
 
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
@@ -787,6 +1103,371 @@ static foreach (backend; backends) {
                 assert(tail.length == 1);
             }
         }).shouldThrowWithMessage("2 != 1");
+    }
+
+    @("sliceAssignmentFromStringUpdatesArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text.length == 4);
+                assert(text[0] == 'a');
+                assert(text[1] == 'x');
+                assert(text[2] == 'y');
+                assert(text[3] == 'd');
+
+                int[] values = [10, 11, 12, 13];
+                values[start .. stop] = [21, 22];
+
+                assert(values.length == 4);
+                assert(values[0] == 10);
+                assert(values[1] == 21);
+                assert(values[2] == 22);
+                assert(values[3] == 13);
+            }
+        });
+    }
+
+    @("sliceAssignmentFromStringUpdatesArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text.length == 5);
+            }
+        }).shouldThrowWithMessage("4 != 5");
+    }
+
+    @("sliceAssignmentFromStringUpdatesArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text[2] == 'z');
+            }
+        }).shouldThrowWithMessage("'y' != 'z'");
+    }
+
+    @("pointerArithmeticOverDynamicArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int offset(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = offset(10);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                int step = offset(2);
+                int one = offset(1);
+                int* p = &values[0];
+                int* q = p + step;
+                int* r = one + p;
+                int* s = q - 1;
+
+                assert(*q == 12);
+                assert(*r == 11);
+                assert(*s == 11);
+                assert(q - p == 2);
+                assert((p + 3) - r == 2);
+            }
+        });
+    }
+
+    @("pointerArithmeticOverDynamicArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int offset(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = offset(10);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                int step = offset(2);
+                int* p = &values[0];
+                int* q = p + step;
+
+                assert(*q == 13);
+            }
+        }).shouldThrowWithMessage("12 != 13");
+    }
+
+    @("pointerArithmeticOverDynamicArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int offset(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = offset(10);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                int step = offset(2);
+                int* p = &values[0];
+                int* q = p + step;
+
+                assert(q - p == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("leftIntegralAddsToPointer." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = values.ptr;
+                int* q = 1 + p;
+
+                assert(*q == values[1]);
+            }
+        });
+    }
+
+    @("leftIntegralAddsToPointerFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = values.ptr;
+                int* q = 1 + p;
+
+                assert(*q == values[2]);
+            }
+        }).shouldThrowWithMessage("11 != 12");
+    }
+
+    @("pointerIndexReadsDynamicArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t index = cast(size_t) value(2);
+                int* p = values.ptr;
+                int found = p[index];
+
+                assert(found == values[2]);
+            }
+        });
+    }
+
+    @("pointerIndexReadsDynamicArrayFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t index = cast(size_t) value(2);
+                int* p = values.ptr;
+                int found = p[index];
+
+                assert(found == values[1]);
+            }
+        }).shouldThrowWithMessage("12 != 11");
+    }
+
+    @("pointerComparisonWithinArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[0];
+                int* middle = &values[1];
+                int* q = &values[2];
+
+                assert(p < q);
+                assert(p <= p);
+                assert(q > p);
+                assert(q >= middle);
+                assert(p == &values[0]);
+                assert(q != p);
+            }
+        });
+    }
+
+    @("pointerComparisonWithinArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[0];
+                int* q = &values[2];
+
+                assert((p < q) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("pointerComparisonWithinArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[0];
+                int* q = &values[2];
+
+                assert((q == p) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("fourPointerRelationAcrossArraysReturnsFalse." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t len = cast(size_t) value(1);
+                int* lp = left.ptr;
+                int* rp = right.ptr;
+
+                bool inside = lp >= rp && lp + len <= rp + len;
+
+                assert(inside == false);
+            }
+        });
+    }
+
+    @("fourPointerRelationAcrossArraysReturnsFalseFailureMessage." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t len = cast(size_t) value(1);
+                int* lp = left.ptr;
+                int* rp = right.ptr;
+
+                bool inside = lp >= rp && lp + len <= rp + len;
+
+                assert(inside == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("pointerSliceFromDynamicArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[1];
+                size_t start = 0;
+                size_t stop = 2;
+
+                auto slice = p[start .. stop];
+
+                assert(slice.length == 2);
+                assert(slice[1] == values[2]);
+            }
+        });
+    }
+
+    @("pointerSliceFromDynamicArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[1];
+                size_t start = 0;
+                size_t stop = 2;
+
+                auto slice = p[start .. stop];
+
+                assert(slice.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("pointerSliceFromDynamicArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = &values[1];
+                size_t start = 0;
+                size_t stop = 2;
+
+                auto slice = p[start .. stop];
+
+                assert(slice[1] == values[1]);
+            }
+        }).shouldThrowWithMessage("12 != 11");
     }
 
     @("dynamicArrayReturnValue." ~ backend.stringof)

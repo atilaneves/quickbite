@@ -557,6 +557,70 @@ Verification notes:
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
   audit with 614 tests run, 0 failed, and 31/31 failing as expected.
 
+### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
+
+Branch `dmd-ctfe-coverage-tests-4` added additive CTFE coverage tests in eight
+commits after `master`:
+
+1. `throwExpressionInConditionalIsCaught` covers `visit(ThrowExp)` and the
+   `interpretThrow` class-reference path for a throw expression in a
+   conditional that is caught.
+2. `pointerArithmeticOverDynamicArray`, `pointerComparisonWithinArray`, and
+   `pointerSliceFromDynamicArray` cover pointer arithmetic and difference,
+   pointer comparison, and pointer slicing over dynamic arrays. The
+   left-integral `n + p` form remains normalized before CTFE.
+3. `assocArrayLiteralKeepsLastDuplicateRuntimeKey`,
+   `assocArrayKeysAndValuesUseRuntimeLiteral`,
+   `assocArrayRemoveRuntimeKey`, and `arrayOperationAddsRuntimeElements` add
+   associative-array helper and array-operation behavior coverage. The first
+   three hit the target helper branches; the array-operation test is valid
+   additive behavior but did not hit the expected
+   `interpretCommon.evaluate` array branch.
+4. `newDynamicArrayUsesRuntimeLength` and
+   `sliceAssignmentFromStringUpdatesArray` cover dynamic array `NewExp`
+   allocation and `interpretAssignToSlice` paths.
+5. `nestedDelegateCallUsesCapturedValue` and
+   `arrayPointerCastDereferencesFirstElement` cover delegate and pointer-cast
+   expressions. `typeidNameReadsTypeName` was rejected because DMD CTFE and
+   semantic analysis reject that fixture.
+6. `tryFinallyRunsFinalbody` and `tryFinallyRunsFinalbodyBeforeCatch` cover
+   `visitTryFinally` normal execution, finalbody execution, and result
+   propagation paths.
+7. `newStructPointerInitializesFields` and `newStructPointerRunsConstructor`
+   cover `visit(NewExp)` struct pointer field initialization and constructor
+   paths.
+8. `leftIntegralAddsToPointer`, `pointerIndexReadsDynamicArray`,
+   `fourPointerRelationAcrossArraysReturnsFalse`,
+   `sliceCastToPointerDereferencesFirstElement`, and
+   `pointerCastToBoolReflectsNullness` add pointer and cast extras. The
+   left-integral branch remains normalized before CTFE; the other tests hit
+   their intended pointer index, four-pointer relation, slice-to-pointer cast,
+   and pointer-to-bool cast paths.
+
+Every added behavior test was assertion-poked and failed with the expected
+assertion diagnostics, then the poke was reverted and the tests were rerun
+green.
+
+Final verification:
+
+- `dub test -- --random` passed with 1509 tests run, 0 failed, and 31/31
+  failing as expected. Seed: `1510666851`.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 677 tests run,
+  0 failed, and 31/31 failing as expected.
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Recorded master baseline | 1715 | 3764 | 45.56% |
+| Final branch broad coverage | 1950 | 3764 | 51.81% |
+
+Delta against the recorded baseline: +6.25 percentage points. A comparable
+`master` coverage run on the current checkout failed twice with linker error
+`SHT_SYMTAB_SHNDX has 0 entries, but the symbol table associated has 80532`, so
+PR reporting should use the last recorded master baseline above. This delta is
+larger than the prior PR delta, but still short of the requested 10-point aim.
+
 ## Acceptance Criteria
 
 - Fresh coverage for `dmd.dinterpret` can be generated from this repository.
