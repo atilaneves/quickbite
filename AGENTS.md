@@ -96,7 +96,10 @@ a test failure, first check with `--seed` (using the seed in the
 output to the last `dub test --random`) to investigate the cause of
 failure in that particular ordering.
 
-Run `ci.sh` before creating a PR.
+Run `ci.sh` before creating a PR. If the benchmarks fail to run
+properly for any backend, identify why and come up with a D language
+feature unit test that exposes the flaw in that backend's
+implementation.
 
 No per-test process spawning, network access, or repeated dependency
 resolution unless explicitly approved.
