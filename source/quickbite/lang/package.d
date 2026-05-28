@@ -31,10 +31,14 @@ public struct Value {
         Struct,
     );
 
-    private Data data;
+    private Data data = Data(Void.init);
 
     public static Value void_() @safe pure {
         return Value(Void.init);
+    }
+
+    private this(in Void value) @safe pure {
+        data = Data(value);
     }
 
     public this(T)(in T value) @safe pure
@@ -44,7 +48,7 @@ public struct Value {
     }
 
     public this(T)(in T value) @safe pure
-    if (is(T == struct))
+    if (is(T == struct) && !is(T == Void))
     {
         data = Data(Struct(value));
     }
