@@ -147,4 +147,55 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalAndCall." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert(left && right);
+            }
+        });
+    }
+
+    @("logicalAndCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert((left && right) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalAndCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return false;
+            }
+
+            unittest {
+                assert((left && right) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
