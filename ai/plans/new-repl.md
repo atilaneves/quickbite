@@ -31,16 +31,22 @@ Completed in this PR:
   declaration is complete, and `thrice(14)` displays `42: int`.
 - Hid synthetic module names such as `snippet_1.` from user-visible REPL
   diagnostics.
+- Added GNU readline-backed terminal input to the REPL binary, including
+  up-arrow traversal of past commands.
 
 Remaining follow-up:
 
+- Next PR: add a very limited binary-level REPL test suite that runs
+  `bin/repl` under a pseudo-TTY instead of testing the binary through unit
+  tests. Keep it small and separate from normal `dub test` so subprocess
+  startup does not affect unittest latency. The first test should capture the
+  user-visible reason for the line-editing library: enter an expression, press
+  up-arrow, press Enter, and verify the recalled command executes again.
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
 - Improve function-call mismatch diagnostics so they include callable
   signatures. For example, after declaring `int twice(int i)`, calling
   `twice("foo")` currently only reports that `twice` is not callable with
   `(string)` and does not tell the user that `twice` expects an `int`.
-- Add interactive command-history navigation, including up-arrow traversal of
-  past commands.
 
 ## Key Changes
 
@@ -77,6 +83,8 @@ Remaining follow-up:
   - Support both `--backend ctfe` and `-b ctfe`.
   - Unknown backend names print a concise diagnostic and exit with status `1`.
   - Do not use executor factories or executor names in the REPL binary.
+  - Use a line-editing library for terminal input so interactive sessions get
+    command-history navigation.
 - Tests:
   - Replace `ut.executors.repl` with `ut.backends.repl`.
   - Remove `ut.executors.repl` from `tests/main.d`.
