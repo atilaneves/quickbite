@@ -405,6 +405,39 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Foo {
+                int i;
+            }
+
+            ubyte[] cerealize(Foo value) {
+                ubyte[] bytes;
+                foreach_reverse (i; 0 .. int.sizeof)
+                    bytes ~= cast(ubyte)(value.i >> (i * 8));
+                return bytes;
+            }
+
+            T decerealize(T)(const(ubyte)[] bytes) if (is(T == Foo)) {
+                int value;
+                foreach (byte_; bytes) {
+                    value <<= 8;
+                    value |= byte_;
+                }
+                return T(value);
+            }
+
+            unittest {
+                auto foo = Foo(5);
+                auto bytes = foo.cerealize;
+
+                assert(bytes == [0, 0, 0, 5]);
+                assert(bytes.decerealize!Foo == foo);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
