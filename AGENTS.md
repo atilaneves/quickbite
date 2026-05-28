@@ -89,7 +89,11 @@ code.
 
 # Testing
 
-Run `dub test` after every editing session.
+Run `dub test -- --random` after every editing session. We're using
+`--random` because in this project the tests run serially. If there's
+a test failure, first check with `--seed` (using the seed in the
+output to the last `dub test --random`) to investigate the cause of
+failure in that particular ordering.
 
 Run `bin/bench.sh` before creating a PR to make sure the benchmarks still work.
 

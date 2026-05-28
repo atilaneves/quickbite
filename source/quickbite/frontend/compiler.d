@@ -165,6 +165,9 @@ final class Compiler {
         import dmd.globals: global;
 
         mutex.lock;
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
         scope(exit) {
             global.errors = 0;
             global.warnings = 0;
