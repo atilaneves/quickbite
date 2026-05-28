@@ -397,7 +397,7 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next migration step should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/math.d`.
+`tests/ut/executors/pure_/minicereal.d`.
 
 Start by adding the matching Ctfe backend test module and wiring it into
 `tests/main.d` if it does not already exist. Then migrate the whole source
@@ -477,6 +477,31 @@ and per-module commit rules.
   `1241 test(s) run, 0 failed, 9/9 failing as expected`.
 - Next migration step should start from
   `tests/ut/executors/pure_/lang/math.d`.
+
+## Handoff After Math Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/math.d` fixtures to
+  `tests/ut/backends/pure_/lang/math.d`.
+- Added two negative assertion probes for each of the 15 migrated positive
+  tests.
+- Verified all migrated negative diagnostic shapes against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- Marked 18 floating-point negative diagnostic probes with `@ShouldFail`
+  because DMD CTFE reports `<double not supported>` through druntime's
+  `sprintf`-based assert formatter. No true Ctfe backend gaps were found.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.math`.
+- Audit poke passed: all 15 positive migrated math tests were temporarily
+  changed to fail with `assert(false)`, and unit-threaded reported all 15
+  failures in one focused run. The poke was restored.
+- Full verification passed: `dub test` reported
+  `1286 test(s) run, 0 failed, 27/27 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/minicereal.d`.
 
 ## Handoff After Arrays Migration
 
