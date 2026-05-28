@@ -10,6 +10,11 @@ alias backends = imported!"std.meta".AliasSeq!(
     Ctfe,
 );
 
+alias backendsWith(Extra...) = imported!"std.meta".AliasSeq!(
+    backends,
+    Extra,
+);
+
 
 auto newBackend(T)() {
     return new T;
