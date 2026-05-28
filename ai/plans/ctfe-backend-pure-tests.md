@@ -397,7 +397,7 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next migration step should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/exceptions.d`.
+`tests/ut/executors/pure_/lang/math.d`.
 
 Start by adding the matching Ctfe backend test module and wiring it into
 `tests/main.d` if it does not already exist. Then migrate the whole source
@@ -451,6 +451,32 @@ and per-module commit rules.
 - Full verification passed: `dub test`.
 - Next migration step should start from
   `tests/ut/executors/pure_/lang/diagnostics.d`.
+
+## Handoff After Diagnostics Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/diagnostics.d` fixtures
+  to `tests/ut/backends/pure_/lang/diagnostics.d`.
+- Preserved diagnostic failures directly with expected CTFE diagnostics instead
+  of adding unrelated probes for already-failing behavior.
+- Kept one positive migrated test, `ok.Ctfe`; the migrated `oops.Ctfe` case
+  and added `okFailureMessage.0.Ctfe` probe cover its negative assertion
+  behavior.
+- Verified all unique diagnostic strings against real DMD CLI output with
+  `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.diagnostics`.
+- Audit poke passed: the one positive migrated diagnostics test was
+  temporarily changed to fail, and unit-threaded reported exactly one failure
+  in the focused run. The poke was restored.
+- Full verification passed: `dub test` reported
+  `1241 test(s) run, 0 failed, 9/9 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/math.d`.
 
 ## Handoff After Arrays Migration
 
