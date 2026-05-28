@@ -1175,4 +1175,32 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("4607182418800017408 != 1");
     }
+
+    @("realComparisonPreservesRealPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                real left = real.max;
+                real right = real.infinity;
+
+                assert(left < right);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("realComparisonPreservesRealPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                real left = real.max;
+                real right = real.infinity;
+
+                assert(left >= right);
+            }
+        }).shouldThrowWithMessage("1.18973e+4932 < inf");
+    }
 }
