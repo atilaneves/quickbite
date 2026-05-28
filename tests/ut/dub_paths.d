@@ -20,33 +20,6 @@ public string[] dubImportPaths() @safe {
     return ret;
 }
 
-public string cerealSrcDir() @safe {
-    return packageImportPath("cerealed");
-}
-
-public string cerealTestsDir() @safe {
-    import std.path: dirName;
-
-    return packageUnusedSource("cerealed", "tests/utils.d").dirName;
-}
-
-private string cerealPackageDir() @safe {
-    return packageDir("cerealed");
-}
-
-private string conceptsSrcDir() @safe {
-    return packageImportPath("concepts");
-}
-
-private string packageDir(in string name) @safe {
-    import std.exception: enforce;
-    import std.conv: text;
-
-    const found = name in dubDescription.packageDirs;
-    enforce(found !is null, text("dub describe did not return package: ", name));
-    return *found;
-}
-
 private string packageImportPath(in string name) @safe {
     import std.exception: enforce;
     import std.conv: text;
@@ -55,20 +28,6 @@ private string packageImportPath(in string name) @safe {
     enforce(found !is null, text("dub describe did not return package: ", name));
     enforce(found.length == 1, text("dub describe returned multiple import paths for ", name));
     return (*found)[0];
-}
-
-private string packageUnusedSource(in string name, in string path) @safe {
-    import std.algorithm.searching: endsWith;
-    import std.exception: enforce;
-    import std.conv: text;
-
-    const found = name in dubDescription.packageUnusedSources;
-    enforce(found !is null, text("dub describe did not return package: ", name));
-    foreach (source; *found)
-        if (source.endsWith(path))
-            return source;
-
-    throw new Exception(text("dub describe did not return ", path, " for ", name));
 }
 
 private DubDescription dubDescription() @safe {
