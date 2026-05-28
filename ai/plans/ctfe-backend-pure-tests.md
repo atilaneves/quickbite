@@ -396,15 +396,156 @@ Review feedback learned:
   variants are the same formatter limitation, not separate true reds. Do not
   leave a bare `@ShouldFail`.
 
-Next MR should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/structs.d`.
+All modules in the current Ctfe backend pure migration order have been
+migrated. No next migration module remains.
 
-Start by adding the matching Ctfe backend test module and wiring it into
-`tests/main.d` if it does not already exist. Then migrate the whole source
-module at once, keeping tests in their original order and using the same
-positive unittest, negative assertion probes, DMD oracle, broad audit-poke,
-`@ShouldFail` formatter-placeholder, focused verification, full `dub test`,
-and per-module commit rules.
+## Handoff After Structs Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/structs.d` fixtures to
+  `tests/ut/backends/pure_/lang/structs.d`.
+- Added two negative assertion probes for each of the 24 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.structs`.
+- Audit poke passed: all 24 positive migrated structs tests were temporarily
+  changed to fail with `assert(false)`, and unit-threaded reported all 24
+  failures in one focused run. The poke was restored.
+- Full verification passed: `dub test`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/exceptions.d`.
+
+## Handoff After Exceptions Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/exceptions.d` fixtures
+  to `tests/ut/backends/pure_/lang/exceptions.d`.
+- Added two negative assertion probes for each migrated positive observable
+  assertion where practical.
+- Preserved thrown-exception behavior directly with expected CTFE exception
+  diagnostics instead of inventing unrelated assertion probes.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.exceptions`.
+- Audit poke passed: all 12 positive migrated exceptions tests were
+  temporarily changed to fail, and unit-threaded reported all 12 failures in
+  one focused run. The poke was restored.
+- Full verification passed: `dub test`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/diagnostics.d`.
+
+## Handoff After Diagnostics Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/diagnostics.d` fixtures
+  to `tests/ut/backends/pure_/lang/diagnostics.d`.
+- Preserved diagnostic failures directly with expected CTFE diagnostics instead
+  of adding unrelated probes for already-failing behavior.
+- Kept one positive migrated test, `ok.Ctfe`; the migrated `oops.Ctfe` case
+  and added `okFailureMessage.0.Ctfe` probe cover its negative assertion
+  behavior.
+- Verified all unique diagnostic strings against real DMD CLI output with
+  `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.diagnostics`.
+- Audit poke passed: the one positive migrated diagnostics test was
+  temporarily changed to fail, and unit-threaded reported exactly one failure
+  in the focused run. The poke was restored.
+- Full verification passed: `dub test` reported
+  `1241 test(s) run, 0 failed, 9/9 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/math.d`.
+
+## Handoff After Math Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/math.d` fixtures to
+  `tests/ut/backends/pure_/lang/math.d`.
+- Added two negative assertion probes for each of the 15 migrated positive
+  tests.
+- Verified all migrated negative diagnostic shapes against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- Marked 18 floating-point negative diagnostic probes with `@ShouldFail`
+  because DMD CTFE reports `<double not supported>` through druntime's
+  `sprintf`-based assert formatter. No true Ctfe backend gaps were found.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.math`.
+- Audit poke passed: all 15 positive migrated math tests were temporarily
+  changed to fail with `assert(false)`, and unit-threaded reported all 15
+  failures in one focused run. The poke was restored.
+- Full verification passed: `dub test` reported
+  `1286 test(s) run, 0 failed, 27/27 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/minicereal.d`.
+
+## Handoff After Minicereal Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/minicereal.d` fixtures to
+  `tests/ut/backends/pure_/minicereal.d`.
+- Kept `tests/minicereal.d` as source material through a local backend test
+  helper and did not import, call, or exercise executor APIs.
+- Added two negative assertion probes for each of the 23 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -verrors=0 -J. -o- -checkaction=context` probes in this worktree.
+  Temporary probe source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.minicereal`.
+- Audit poke passed: a temporary failing unittest appended by
+  `minicerealSource` made all 23 positive minicereal backend tests fail, while
+  the negative probes still passed. The poke was restored and focused
+  verification passed again.
+- Full verification passed: `dub test` reported
+  `1355 test(s) run, 0 failed, 27/27 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/projects/cerealed.d`.
+
+## Handoff After Cerealed Project Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current
+  `tests/ut/executors/pure_/projects/cerealed.d` fixtures to
+  `tests/ut/backends/pure_/projects/cerealed.d`.
+- Added two negative assertion probes for each of the 4 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -unittest -checkaction=context` probes in this worktree.
+  Temporary probe source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.projects.cerealed`.
+- Audit poke passed: all 4 positive migrated cerealed project tests were
+  temporarily changed to fail, and unit-threaded reported all 4 failures in
+  one focused run. The poke was restored and focused verification passed
+  again.
+- Full verification passed: `dub test` reported
+  `1367 test(s) run, 0 failed, 27/27 failing as expected`.
+- This completes the current Ctfe backend pure migration order; no modules
+  remain.
 
 ## Handoff After Arrays Migration
 
