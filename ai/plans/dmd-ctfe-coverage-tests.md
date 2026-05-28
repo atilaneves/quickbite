@@ -187,6 +187,9 @@ that shim.
 | `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
+| `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
+| `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
+| `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
 
 Coverage workflow details:
 
@@ -254,6 +257,159 @@ Unsupported target:
   both reach DMD CTFE's ``cannot be interpreted at compile time`` diagnostic.
   No passing behavior test was kept for the array-of-arrays operand-wrapping
   branch.
+
+### 2026-05-28 Worker 2 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+statement visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.structs.withStructInstanceUsesRuntimeShapedFields.Ctfe
+```
+
+- The test covers valid `with (structInstance)` behavior with mutable struct
+  fields and a mutable local value so the field updates are interpreted at
+  CTFE.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.structs.withStructInstanceUsesRuntimeShapedFields.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitWith(WithStatement)` moved from whole method uncovered to partially
+  covered. The focused run leaves 17 uncovered executable lines, including
+  resume-target handling, `with(Enum)` or `with(Type)` body execution, and
+  exceptional-expression paths.
+
+### 2026-05-28 Worker 3 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+statement visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.control_flow.foreachExpressionTupleBreakAndContinue.Ctfe
+```
+
+- The test covers valid non-static `foreach` over an expression tuple built
+  from mutable locals via `AliasSeq`, with local `continue` and `break`
+  handling in the unrolled loop body.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.control_flow.foreachExpressionTupleBreakAndContinue.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
+  to partially covered. The focused run leaves 8 uncovered executable lines,
+  including resume-target handling, exceptional-expression paths, and the
+  return/thrown-expression forwarding path.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `2 != 3` diagnostic, then the
+  focused tests passed again after reverting the poke.
+- At the time of this focused slice, `dub test` had an unrelated
+  order-sensitive failure in `ut.executors.deps.cerealed.cerealed.decode.d.ir`;
+  the final branch verification below passed after restoring DMD 2.112.0 while
+  keeping unit-threaded 2.2.4.
+
+### 2026-05-28 Worker 4 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+expression visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.expressions.commaExpressionSequencesOperands.Ctfe
+```
+
+- The test covers valid D comma expression-statement behavior with a mutable
+  local initialized from a helper function, sequencing `+=` and `++` side
+  effects before returning the final local value.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.expressions.commaExpressionSequencesOperands.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visit(CommaExp)` moved from whole method uncovered to partially covered.
+  The focused run leaves 22 uncovered executable lines, including declaration
+  stack-frame handling, temporary-variable/lvalue handling, and
+  exceptional-expression paths.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `6 != 7` diagnostic, then the
+  focused tests passed again after reverting the poke.
+- At the time of this focused slice, `dub test` had an unrelated
+  order-sensitive failure in `ut.executors.deps.cerealed.cerealed.decode.d.ir`,
+  reporting `No function body to execute: gc_inFinalizer`; the final branch
+  verification below passed after restoring DMD 2.112.0 while keeping
+  unit-threaded 2.2.4.
+
+### 2026-05-28 Final PR Broad Coverage Summary
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
+| Final branch broad coverage | 1687 | 3764 | 44.82% |
+
+Delta: +1.33 percentage points.
+
+Method-level changes from the three new test slices:
+
+- `visitWith(WithStatement)` moved from whole method uncovered to partially
+  covered with 17 uncovered executable lines remaining in the final broad
+  audit.
+- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
+  to partially covered with 8 uncovered executable lines remaining in the final
+  broad audit.
+- `visit(CommaExp)` has additional coverage and is partially covered with 15
+  uncovered executable lines remaining in the final broad audit.
+
+Verification notes:
+
+- Focused tests passed for the added behavior tests and paired failure-message
+  tests.
+- Assertion poke checks failed with the expected diagnostics.
+- Final selections used `dmd` 2.112.0 and `unit-threaded` 2.2.4.
+- `dub test` passed with 1433 tests run, 0 failed, and 31/31 failing as
+  expected.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
+  audit with 602 tests run, 0 failed, and 31/31 failing as expected.
 
 ## Acceptance Criteria
 

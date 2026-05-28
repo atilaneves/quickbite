@@ -899,6 +899,63 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("commaExpressionSequencesOperands." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 2;
+            }
+
+            int answer() {
+                int value = seed;
+                value += 3, ++value;
+                return value;
+            }
+
+            unittest {
+                assert(answer == 6);
+            }
+        });
+    }
+
+    @("commaExpressionSequencesOperandsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 2;
+            }
+
+            int answer() {
+                int value = seed;
+                value += 3, ++value;
+                return value;
+            }
+
+            unittest {
+                assert(answer == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+
+    @("commaExpressionSequencesOperandsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 4;
+            }
+
+            int answer() {
+                int value = seed;
+                value += 3, ++value;
+                return value;
+            }
+
+            unittest {
+                assert(answer == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -513,6 +513,84 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("withStructInstanceUsesRuntimeShapedFields." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int total(Point point) {
+                auto scale = 2;
+                with (point) {
+                    x += scale;
+                    y += x;
+                    return x + y;
+                }
+            }
+
+            unittest {
+                Point point;
+                point.x = 3;
+                point.y = 5;
+                assert(total(point) == 15);
+            }
+        });
+    }
+
+    @("withStructInstanceUsesRuntimeShapedFieldsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int total(Point point) {
+                auto scale = 2;
+                with (point) {
+                    x += scale;
+                    y += x;
+                    return x + y;
+                }
+            }
+
+            unittest {
+                Point point;
+                point.x = 3;
+                point.y = 5;
+                assert(total(point) == 18);
+            }
+        }).shouldThrowWithMessage("15 != 18");
+    }
+
+    @("withStructInstanceUsesRuntimeShapedFieldsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            int total(Point point) {
+                auto scale = 2;
+                with (point) {
+                    x += scale;
+                    y += x;
+                    return x + y;
+                }
+            }
+
+            unittest {
+                Point point;
+                point.x = 4;
+                point.y = 1;
+                assert(total(point) == 12);
+            }
+        }).shouldThrowWithMessage("13 != 12");
+    }
+
     @("structFieldDefaultsToZero." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
