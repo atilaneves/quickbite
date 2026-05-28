@@ -2,6 +2,7 @@
 
 import os
 import pty
+import re
 import select
 import signal
 import subprocess
@@ -105,8 +106,12 @@ def send(fd: int, text: bytes) -> None:
     os.write(fd, text)
 
 
+_ANSI_ESCAPE = re.compile(rb"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
 def terminal_text(transcript: bytearray) -> bytes:
-    return bytes(transcript).replace(b"\r\n", b"\n")
+    result = bytes(transcript).replace(b"\r\n", b"\n").replace(b"\r", b"")
+    return _ANSI_ESCAPE.sub(b"", result)
 
 
 def terminate(pid: int) -> None:
