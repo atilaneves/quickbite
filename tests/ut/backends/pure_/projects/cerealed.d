@@ -934,51 +934,6 @@ static foreach (backend; backends) {
         });
     }
 
-    @ShouldFail(
-        "DMD CTFE reports byte round-trip exhaustion as an uncaught " ~
-        "bounds error instead of catchable RangeError",
-    )
-    @("projects.cerealed.roundTripBoolExhaustionThrowsRangeError." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import core.exception: RangeError;
-
-            struct Writer {
-                ubyte[] bytes;
-
-                void writeBool(bool value) {
-                    bytes ~= value ? 1 : 0;
-                }
-            }
-
-            struct Reader {
-                ubyte[] bytes;
-                size_t index;
-
-                bool readBool() {
-                    return bytes[index++] == 1;
-                }
-            }
-
-            unittest {
-                Writer writer;
-                bool[] values = [true, true, false, false, true];
-                foreach (value; values)
-                    writer.writeBool(value);
-
-                auto reader = Reader(writer.bytes);
-                foreach (value; values)
-                    reader.readBool;
-
-                try {
-                    reader.readBool;
-                    assert(false);
-                } catch (RangeError) {
-                }
-            }
-        });
-    }
-
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1073,6 +1028,49 @@ static foreach (backend; backends) {
 
                 assert(writer.bytes.length == 1);
                 assert(writer.bytes[0] == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; runtimeBackends) {
+    @("projects.cerealed.roundTripBoolExhaustionThrowsRangeError." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeBool(bool value) {
+                    bytes ~= value ? 1 : 0;
+                }
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
+
+            unittest {
+                Writer writer;
+                bool[] values = [true, true, false, false, true];
+                foreach (value; values)
+                    writer.writeBool(value);
+
+                auto reader = Reader(writer.bytes);
+                foreach (value; values)
+                    reader.readBool;
+
+                try {
+                    reader.readBool;
+                    assert(false);
+                } catch (RangeError) {
+                }
             }
         });
     }

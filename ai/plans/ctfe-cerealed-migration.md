@@ -101,6 +101,17 @@ Plain CTFE remains the correctness oracle for supported `pure_` behaviour.
 `CtfePlus` exists to run more cerealed-derived runtime behaviour, not to replace
 or weaken CTFE semantics.
 
+Before expanding `CtfePlus` beyond the first approximation, separate the CTFE
+backend's exception contract:
+
+- `Ctfe` should throw a CTFE-specific exception when it cannot handle a
+  construct such as `malloc`.
+- Unittest failures should use a dedicated exception type, distinct from CTFE
+  unsupported behaviour.
+- Treat an `AssertError` raised directly by a unittest body as a unittest
+  failure. Do not use that classification for arbitrary `AssertError`s raised
+  elsewhere, such as inside a function called by the unittest.
+
 ## TDD Rules
 
 Follow the repo TDD rules for every slice:
