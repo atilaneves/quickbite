@@ -555,6 +555,39 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeArray(ref ubyte[] bytes, ubyte[] values) {
+                bytes ~= cast(ubyte) values.length;
+                foreach (value; values)
+                    bytes ~= value;
+            }
+
+            ubyte[] readArray(ubyte[] bytes, ref size_t index) {
+                const length = bytes[index++];
+                ubyte[] values;
+                foreach (_; 0 .. length)
+                    values ~= bytes[index++];
+                return values;
+            }
+
+            unittest {
+                ubyte[] values = [3, 1, 4, 1, 5, 9];
+                ubyte[] bytes;
+
+                writeArray(bytes, values);
+
+                assert(bytes.length == values.length + ubyte.sizeof);
+                assert(bytes[0] == values.length);
+
+                size_t index;
+                assert(readArray(bytes, index) == values);
+                assert(index == bytes.length);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",

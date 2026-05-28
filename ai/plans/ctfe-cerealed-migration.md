@@ -132,6 +132,7 @@ Keep this section updated as files are tried.
 | `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
 | `nested.d` | Passed | Added dependency-free recursive nested AA byte layout. |
 | `pointers.d` | Passed | Added dependency-free pointer-to-int byte layout. |
+| `property.d` | Passed | Added dependency-free `ubyte` length array round-trip. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
