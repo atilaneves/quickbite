@@ -95,7 +95,7 @@ a test failure, first check with `--seed` (using the seed in the
 output to the last `dub test --random`) to investigate the cause of
 failure in that particular ordering.
 
-Run `bin/bench.sh` before creating a PR to make sure the benchmarks still work.
+Run `ci.sh` before creating a PR.
 
 No per-test process spawning, network access, or repeated dependency
 resolution unless explicitly approved.
