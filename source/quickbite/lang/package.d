@@ -28,6 +28,7 @@ public struct Value {
         real,
 
         Array,
+        Struct,
     );
 
     private Data data;
@@ -37,9 +38,15 @@ public struct Value {
     }
 
     public this(T)(in T value) @safe pure
-    if (!is(T == E[], E))
+    if (!is(T == E[], E) && !is(T == struct))
     {
         data = Data(value);
+    }
+
+    public this(T)(in T value) @safe pure
+    if (is(T == struct))
+    {
+        data = Data(Struct(value));
     }
 
     public this(T)(in T[] values) @safe pure {
@@ -92,6 +99,28 @@ private struct Array {
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
     }
+}
+
+
+private struct Struct {
+    public string typeName;
+    public Field[] fields;
+
+    public this(T)(in T value) @safe pure
+    if (is(T == struct))
+    {
+        typeName = T.stringof;
+
+        static foreach (member; __traits(allMembers, T)) {
+            fields ~= Field(member, Value(__traits(getMember, value, member)));
+        }
+    }
+}
+
+
+private struct Field {
+    public string name;
+    public Value value;
 }
 
 

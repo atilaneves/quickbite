@@ -77,6 +77,17 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value([2.2, 3.3]).should.not == Value([1.1, 2.2]);
 }
 
+@("value.struct.sameTypeFields")
+@safe pure unittest {
+    static struct Point {
+        int x;
+        int y;
+    }
+
+    Value(Point(1, 2)).should == Value(Point(1, 2));
+    Value(Point(2, 3)).should.not == Value(Point(1, 2));
+}
+
 @("value.mixed.bool.int")
 @safe pure unittest {
     Value(false).should.not == Value(0);
