@@ -1203,4 +1203,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.18973e+4932 < inf");
     }
+
+    @("castUbyteRuntimeValueTruncates." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int value = 258;
+                assert(cast(ubyte) value == 2);
+            }
+        });
+    }
+
+    @("castUbyteRuntimeValueTruncatesFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int value = 258;
+                assert(cast(ubyte) value == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
 }
