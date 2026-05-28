@@ -1147,4 +1147,32 @@ static foreach (backend; backends) {
             "18446744073709551615 == 18446744073709551615",
         );
     }
+
+    @("integerFloatEqualityIsNumeric." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                long integer = 0x3ff0_0000_0000_0000L;
+                double floating = 1.0;
+
+                assert(integer != floating);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("integerFloatEqualityIsNumericFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                long integer = 0x3ff0_0000_0000_0000L;
+                double floating = 1.0;
+
+                assert(integer == floating);
+            }
+        }).shouldThrowWithMessage("4607182418800017408 != 1");
+    }
 }
