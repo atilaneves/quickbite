@@ -588,6 +588,91 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Unit {
+                ushort us;
+                ubyte ub1;
+                ubyte ub2;
+            }
+
+            struct Packet {
+                ubyte ub1;
+                ushort length;
+                ubyte ub2;
+                Unit[] units;
+            }
+
+            void writeUshort(ref ubyte[] bytes, ushort value) {
+                foreach_reverse (i; 0 .. ushort.sizeof)
+                    bytes ~= cast(ubyte)(value >> (i * 8));
+            }
+
+            ushort readUshort(ubyte[] bytes, ref size_t index) {
+                ushort value;
+                foreach (_; 0 .. ushort.sizeof) {
+                    value <<= 8;
+                    value |= bytes[index++];
+                }
+                return value;
+            }
+
+            ubyte[] encode(Packet packet) {
+                ubyte[] bytes;
+                bytes ~= packet.ub1;
+                writeUshort(bytes, packet.length);
+                bytes ~= packet.ub2;
+                foreach (unit; packet.units) {
+                    writeUshort(bytes, unit.us);
+                    bytes ~= unit.ub1;
+                    bytes ~= unit.ub2;
+                }
+                return bytes;
+            }
+
+            Packet decode(ubyte[] bytes) {
+                size_t index;
+                Packet packet;
+                packet.ub1 = bytes[index++];
+                packet.length = readUshort(bytes, index);
+                packet.ub2 = bytes[index++];
+                foreach (_; 0 .. packet.length)
+                    packet.units ~= Unit(
+                        readUshort(bytes, index),
+                        bytes[index++],
+                        bytes[index++],
+                    );
+                return packet;
+            }
+
+            unittest {
+                auto packet = Packet(
+                    3,
+                    4,
+                    9,
+                    [
+                        Unit(7, 1, 2),
+                        Unit(6, 2, 3),
+                        Unit(5, 4, 5),
+                        Unit(4, 9, 8),
+                    ],
+                );
+                ubyte[] bytes = [
+                    3, 0, 4, 9,
+                    0, 7, 1, 2,
+                    0, 6, 2, 3,
+                    0, 5, 4, 5,
+                    0, 4, 9, 8,
+                ];
+
+                assert(packet.encode == bytes);
+                assert(bytes.decode == packet);
+                assert(bytes.decode.units.length == bytes.decode.length);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
