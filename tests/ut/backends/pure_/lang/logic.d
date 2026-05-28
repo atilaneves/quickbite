@@ -75,4 +75,43 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalNotCall." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady);
+            }
+        });
+    }
+
+    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return true;
+            }
+
+            unittest {
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
