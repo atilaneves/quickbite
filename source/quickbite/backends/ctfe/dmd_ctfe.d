@@ -11,13 +11,6 @@ public class Ctfe: imported!"quickbite.backend".Backend {
         return ctfeValue(interpretCtfe(evalCall(str)));
     }
 
-    public override void runTests(in string moduleSource) {
-        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
-
-        auto parsed = parseModuleWithCheckActionContext(moduleSource);
-        runParsedTests(parsed.module_);
-    }
-
     public override void runParsedTests(
         imported!"dmd.dmodule".Module module_,
     ) {
