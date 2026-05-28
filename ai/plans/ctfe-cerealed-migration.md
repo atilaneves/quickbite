@@ -120,4 +120,4 @@ Keep this section updated as files are tried.
 
 | Cerealed file | Status | Notes |
 | --- | --- | --- |
-| `compile_time.d` | Pending | First backend file fixture target. |
+| `compile_time.d` | Passed | Added backend file fixture using DUB import paths. |

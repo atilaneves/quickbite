@@ -21,9 +21,28 @@ auto newBackend(T)() {
 }
 
 public void runBackendSourceFixtureTests(T)(in string moduleSource) {
+    runBackendSourceFixtureTests!T(moduleSource, []);
+}
+
+public void runBackendSourceFixtureTests(T)(
+    in string moduleSource,
+    in string[] importPaths,
+) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource);
+    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto backend = newBackend!T;
+    backend.runParsedTests(parsed.module_);
+}
+
+public void runBackendFileFixtureTests(T)(
+    in string filePath,
+    in string[] importPaths,
+) {
+    import std.file: readText;
+    import quickbite.frontend.compiler: parseModule;
+
+    auto parsed = parseModule(filePath.readText, importPaths);
     auto backend = newBackend!T;
     backend.runParsedTests(parsed.module_);
 }
