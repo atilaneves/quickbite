@@ -1092,6 +1092,90 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("1 != 2");
     }
 
+    @("switchBreaksOuterLoop." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 1:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 14);
+            }
+        });
+    }
+
+    @("switchBreaksOuterLoopFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 1:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 15);
+            }
+        }).shouldThrowWithMessage("14 != 15");
+    }
+
+    @("switchBreaksOuterLoopFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(2); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 0:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 14);
+            }
+        }).shouldThrowWithMessage("11 != 14");
+    }
+
     @("voidFunctionExplicitReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

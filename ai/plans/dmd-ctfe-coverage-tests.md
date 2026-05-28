@@ -218,6 +218,7 @@ that shim.
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 | `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 | `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| Non-array control/exception/delegate/typeid branches | Covered | dmd-ctfe-coverage-tests-5 Worker 10 | See below. |
 | `visitContinue` labeled continue | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `labeledContinueSkipsToOuterForIncrement.Ctfe`; hits outer continue propagation through `visitFor`. |
 | `visit(NewExp)` class allocation and `visit(CallExp)` virtual call | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `classVirtualCallUsesDynamicClass.Ctfe`; dynamic override dispatch uses constructor-derived field. |
 | `visit(TypeidExp)` type form and `DotVarExp.name` | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `typeidTypeNameReturnsIdentifier.Ctfe`; DMD CTFE name is `Widget`. |
@@ -843,6 +844,54 @@ Verification notes:
 - `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
 - `dub test -- --random` passed with 1552 tests run, 0 failed, and 28/28
   failing as expected. Seed: `1355646905`.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 10 Non-Array Slice
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.tryFinallyGotoOutOfBodyRunsFinally.Ctfe
+ut.backends.pure_.lang.exceptions.catchHandlerGotoLeavesHandler.Ctfe
+ut.backends.pure_.lang.exceptions.finallyThrowChainsBodyException.Ctfe
+ut.backends.pure_.lang.control_flow.switchBreaksOuterLoop.Ctfe
+ut.backends.pure_.lang.expressions.structMemberDelegateCallUsesReceiver.Ctfe
+ut.backends.pure_.lang.diagnostics.typeidNullClassReferenceReportsDiagnostic.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.tryFinallyGotoOutOfBodyRunsFinally.Ctfe \
+    ut.backends.pure_.lang.exceptions.catchHandlerGotoLeavesHandler.Ctfe \
+    ut.backends.pure_.lang.exceptions.finallyThrowChainsBodyException.Ctfe \
+    ut.backends.pure_.lang.control_flow.switchBreaksOuterLoop.Ctfe \
+    ut.backends.pure_.lang.expressions.structMemberDelegateCallUsesReceiver.Ctfe \
+    ut.backends.pure_.lang.diagnostics.typeidNullClassReferenceReportsDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage hit the catch-handler goto target-outside
+branch, try/finally body goto target-outside branch, finalbody exception
+chaining, switch break propagation above the switch, delegate receiver
+interpretation and `DelegateExp` reconstruction, and the null class-reference
+`typeid` diagnostic. Local DMD CTFE chains a finally-thrown exception behind
+the body exception, so the encoded assertion is `47`.
+
+Poke results:
+
+- Changing the try/finally external-goto expectation failed with `14 != 15`.
+- Changing the catch-handler external-goto expectation failed with `9 != 10`.
+- Changing the finally/body exception-chain expectation failed with `47 != 48`.
+- Changing the switch outer-break expectation failed with `14 != 15`.
+- Changing the struct member delegate expectation failed with `10 != 11`.
+- Changing the null `typeid` diagnostic substring reported the actual
+  `null pointer dereference evaluating typeid. \`thing\` is \`null\``
+  diagnostic.
+
+Verification notes:
+
+- Focused behavior and paired failure-message tests passed.
+- `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
 
 ## Acceptance Criteria
 

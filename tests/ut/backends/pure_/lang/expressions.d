@@ -1212,6 +1212,77 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("23 != 21");
     }
 
+    @("structMemberDelegateCallUsesReceiver." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(3) == 10);
+            }
+        });
+    }
+
+    @("structMemberDelegateCallUsesReceiverFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(3) == 11);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
+    @("structMemberDelegateCallUsesReceiverFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(4) == 10);
+            }
+        }).shouldThrowWithMessage("11 != 10");
+    }
+
     @("delegatePtrPropertyIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

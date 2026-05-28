@@ -346,6 +346,19 @@ static foreach (backend; backends) {
             "class `thing` is `null` and cannot be dereferenced");
     }
 
+    @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                Thing thing;
+                assert(typeid(thing) is typeid(Thing));
+            }
+        }).shouldThrowWithMessage(
+            "null pointer dereference evaluating typeid. `thing` is `null`");
+    }
+
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(
