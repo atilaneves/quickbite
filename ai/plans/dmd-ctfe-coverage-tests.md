@@ -153,6 +153,18 @@ Suggested columns:
 Update the table as tests are approved and added. Do not leave uncovered
 reachable methods as undocumented backlog.
 
+## Subagent Workflow
+
+For future PR slices on this plan, the main agent should orchestrate only:
+
+1. Ask an explorer subagent to inspect the fresh coverage audit, DMD CTFE
+   source, and nearby tests, then recommend the next reachable additive test
+   target.
+2. Spawn a worker subagent for the chosen commit-sized test slice.
+3. Review the worker diff, verify, update this plan if needed, and commit.
+
+Do not choose the next CTFE target locally before the explorer has reported.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -190,6 +202,8 @@ that shim.
 | `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
+| `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
+| `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 
 Coverage workflow details:
 
@@ -372,6 +386,135 @@ Verification notes:
   verification below passed after restoring DMD 2.112.0 while keeping
   unit-threaded 2.2.4.
 
+### 2026-05-28 Worker 5 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for direct `goto` to a label:
+
+- Tests:
+
+```text
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabel.Ctfe
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabelFailureMessage.0.Ctfe
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabelFailureMessage.1.Ctfe
+```
+
+- The behavior test uses a helper and mutable local values so DMD CTFE executes
+  a direct `GotoStatement` and the target `LabelStatement` body instead of
+  relying on all-literal folding.
+- Intended DMD CTFE methods: `visitGoto(GotoStatement)` and
+  `visitLabel(LabelStatement)`.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabel.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitGoto(GotoStatement)` moved from whole method uncovered to partially
+  covered, with only the resume-target branch left uncovered.
+- `visitLabel(LabelStatement)` no longer appears in the uncovered audit table;
+  the focused `.lst` shows all executable lines in that method covered.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `8 != 9` diagnostic, then the
+  focused tests passed again after reverting the poke.
+
+### 2026-05-28 Worker 6 CTFE Slice
+
+Explorer recommendation 1 targeted `visitTryCatch(TryCatchStatement)` in
+`dmd.dinterpret`, specifically the catch-variable binding branch:
+`ctfeGlobals.stack.push(ca.var); setValue(ca.var, ex.thrown);`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObject.Ctfe
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObjectFailureMessage.0.Ctfe
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObjectFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObject.Ctfe
+```
+
+Coverage effect: focused coverage marked both target executable lines as hit
+once:
+
+- `ctfeGlobals.stack.push(ca.var);`
+- `setValue(ca.var, ex.thrown);`
+
+Poke result: changing the behavior test assertion from `8` to `9` failed the
+focused CTFE test with `8 != 9`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 Worker 7 CTFE Slice
+
+Explorer recommendation 2 targeted `visitWith(WithStatement)` in
+`dmd.dinterpret`, specifically `with (Enum)` body execution through
+`if (s.exp.op == EXP.scope_ || s.exp.op == EXP.type)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.withEnumExecutesBody.Ctfe
+ut.backends.pure_.lang.structs.withEnumExecutesBodyFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.withEnumExecutesBodyFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.withEnumExecutesBody.Ctfe
+```
+
+Coverage effect: focused coverage marked the target `with (Enum)` body
+execution line as hit:
+
+- `result = interpretStatement(pue, s._body, istate);`
+
+Poke result: changing the behavior test assertion from `10` to `11` failed the
+focused CTFE test with `10 != 11`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 Worker 8 CTFE Slice
+
+Explorer recommendation 1 targeted `visit(TypeidExp)` in `dmd.dinterpret`,
+specifically the class-reference path that interprets the operand and rebuilds
+`typeid` from the dynamic class.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClass.Ctfe
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClassFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClassFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClass.Ctfe
+```
+
+Coverage effect: focused coverage moved `visit(TypeidExp)` from whole-method
+uncovered to partially covered, with the dynamic class-reference path hit once.
+The focused audit reports 8 uncovered executable lines remaining for null,
+internal-error, exception, and fallback paths.
+
+Poke result: changing the behavior test assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
 ### 2026-05-28 Final PR Broad Coverage Summary
 
 Broad coverage command:
@@ -384,21 +527,24 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
-| Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
-| Final branch broad coverage | 1687 | 3764 | 44.82% |
+| Master broad baseline | 1688 | 3764 | 44.85% |
+| Final branch broad coverage | 1715 | 3764 | 45.56% |
 
-Delta: +1.33 percentage points.
+Delta: +0.72 percentage points.
 
-Method-level changes from the three new test slices:
+Method-level changes from the five new test slices:
 
-- `visitWith(WithStatement)` moved from whole method uncovered to partially
-  covered with 17 uncovered executable lines remaining in the final broad
-  audit.
-- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
-  to partially covered with 8 uncovered executable lines remaining in the final
+- `visitGoto(GotoStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch remaining uncovered.
+- `visitLabel(LabelStatement)` no longer appears in the uncovered audit table.
+- `visitTryCatch(TryCatchStatement)` has the catch-variable binding branch
+  covered and is partially covered with 21 uncovered executable lines
+  remaining in the final broad audit.
+- `visitWith(WithStatement)` has the `with (Enum)` body branch covered and is
+  partially covered with 15 uncovered executable lines remaining in the final
   broad audit.
-- `visit(CommaExp)` has additional coverage and is partially covered with 15
-  uncovered executable lines remaining in the final broad audit.
+- `visit(TypeidExp)` moved from whole method uncovered to partially covered
+  with 8 uncovered executable lines remaining in the final broad audit.
 
 Verification notes:
 
@@ -406,10 +552,10 @@ Verification notes:
   tests.
 - Assertion poke checks failed with the expected diagnostics.
 - Final selections used `dmd` 2.112.0 and `unit-threaded` 2.2.4.
-- `dub test` passed with 1433 tests run, 0 failed, and 31/31 failing as
-  expected.
+- `dub test -- --random` passed with 1445 tests run, 0 failed, and 31/31
+  failing as expected. Seed: `669684322`.
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
-  audit with 602 tests run, 0 failed, and 31/31 failing as expected.
+  audit with 614 tests run, 0 failed, and 31/31 failing as expected.
 
 ## Acceptance Criteria
 

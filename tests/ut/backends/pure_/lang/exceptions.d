@@ -73,6 +73,51 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("catchExceptionBindsCaughtObject." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int length;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+                assert(length == 8);
+            }
+        });
+    }
+
+    @("catchExceptionBindsCaughtObjectFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int length;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+                assert(length == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("catchExceptionBindsCaughtObjectFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int length;
+                try {
+                    throw new Exception("other");
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+                assert(length == 8);
+            }
+        }).shouldThrowWithMessage("5 != 8");
+    }
+
     @("catchExceptionCatchesThrownExceptionFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -250,6 +250,60 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("20 != 40");
     }
 
+    @("supportsDirectGotoLabel." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(2);
+                goto target;
+                total += bump(99);
+            target:
+                total += bump(4);
+                assert(total == 8);
+            }
+        });
+    }
+
+    @("supportsDirectGotoLabelFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(2);
+                goto target;
+                total += bump(99);
+            target:
+                total += bump(4);
+                assert(total == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("supportsDirectGotoLabelFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(3);
+                goto target;
+                total += bump(99);
+            target:
+                total += bump(4);
+                assert(total == 8);
+            }
+        }).shouldThrowWithMessage("9 != 8");
+    }
+
     @("supportsDoWhileBreakAndContinue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

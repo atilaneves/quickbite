@@ -956,6 +956,59 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("8 != 9");
     }
 
+    @("typeidClassReferenceUsesDynamicClass." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {}
+            class Child : Base {}
+
+            int classify(int seed) {
+                Base value = new Child;
+                return typeid(value) is typeid(Child) ? seed + 4 : seed;
+            }
+
+            unittest {
+                assert(classify(3) == 7);
+            }
+        });
+    }
+
+    @("typeidClassReferenceUsesDynamicClassFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {}
+            class Child : Base {}
+
+            int classify(int seed) {
+                Base value = new Child;
+                return typeid(value) is typeid(Child) ? seed + 4 : seed;
+            }
+
+            unittest {
+                assert(classify(3) == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @("typeidClassReferenceUsesDynamicClassFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {}
+            class Child : Base {}
+
+            int classify(int seed) {
+                Base value = new Child;
+                return typeid(value) is typeid(Child) ? seed + 4 : seed;
+            }
+
+            unittest {
+                assert(classify(4) == 7);
+            }
+        }).shouldThrowWithMessage("8 != 7");
+    }
+
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
