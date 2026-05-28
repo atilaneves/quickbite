@@ -228,9 +228,8 @@ Completed migrations:
   `expressions.d` group: `intSubtraction`, `intMultiplication`, `intDivision`,
   `intModulo`, `intShiftRight`, `intShiftLeft`, `intBitwiseOr`,
   `intBitwiseAnd`, and `intBitwiseXor`.
-- PR 46 migrated the first floating-point expression slice:
-  `distinguishesFloatingPointValues` and
-  `distinguishesFloatingPointValuesFailureMessage`.
+- PR 46 migrated the remaining source-order `expressions.d` slice through
+  `ubyteLocalTruncatesOnStore`, after the earlier expression PRs.
 
 Implemented so far:
 
@@ -316,20 +315,15 @@ Review feedback learned:
   variants are the same formatter limitation, not separate true reds. Do not
   leave a bare `@ShouldFail`.
 
-Remaining `expressions.d` source-order slices:
+Next MR should move to the next module in the migration order:
+`tests/ut/executors/pure_/lang/logic.d`.
 
-1. The next mature-executor expression group after
-   `distinguishesFloatingPointValues`: `evaluatesPow`, `intUnaryMinus`,
-   `intBitwiseComplement`, assignment operators, unsigned comparisons,
-   numeric casts, and truncation tests.
-2. The later expression fixtures after the helper definitions, starting with
-   `lessThan`, `rightShift`, `multiplication`, `castUbyteTruncates`,
-   `subtraction`, `subtractionDifferentValues`, pre-increment tests, and
-   `integralType`.
-
-Next migration should continue with the next unmigrated source-order slice in
-`tests/ut/executors/pure_/lang/expressions.d`: the expression fixtures after
-`distinguishesFloatingPointValues`, starting with `evaluatesPow`.
+Start by adding the Ctfe backend logic test module under
+`tests/ut/backends/pure_/lang/logic.d` and wiring it into `tests/main.d` if it
+does not already exist. Then migrate source-order logic fixtures one test at a
+time, using the same positive unittest, negative assertion probe, DMD oracle,
+audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
+`dub test`, and per-migration commit rules.
 
 ## Handoff After PR 46 Cleanup
 
@@ -348,12 +342,8 @@ Next migration should continue with the next unmigrated source-order slice in
   floating values because it relies on runtime `sprintf`. Quickbite should not
   repair this after failure, shadow druntime modules, or create an unofficial
   hook.
-- Current staged files after cleanup:
-  `source/quickbite/backends/ctfe.d`,
-  `tests/ut/backends/pure_/lang/expressions.d`, and this plan file.
-- Next agent should continue migrating source-order expression tests starting
-  from `evaluatesPow`. Continue migrations until a newly approved test is red.
-  If the red failure is an unsupported Quickbite Ctfe backend behavior, use the
-  normal minimal implementation flow. If the red failure is another upstream
-  DMD CTFE limitation Quickbite cannot control, mark that specific test with
-  `@ShouldFail("...")` and include a concrete reason string explaining why.
+- Next agent should start the next MR from
+  `tests/ut/executors/pure_/lang/logic.d`. Continue migrations one logic test
+  at a time until a true red is found. If no true red is found in `logic.d`,
+  create the PR for that module. Floating assertion formatter placeholders
+  remain expected-fail migration cases, not true reds.
