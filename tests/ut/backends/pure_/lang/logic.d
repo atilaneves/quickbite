@@ -394,4 +394,43 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+
+    @("logicalAndComparisonOperands." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            unittest {
+                assert(input > 41 && input < 43);
+            }
+        });
+    }
+
+    @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            unittest {
+                assert((input > 41 && input < 43) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 41;
+            }
+
+            unittest {
+                assert((input > 41 && input < 43) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
