@@ -895,6 +895,38 @@ Verification notes:
 - Focused behavior and paired failure-message tests passed.
 - `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
 
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Final Summary
+
+Branch `dmd-ctfe-coverage-tests-5` added additive CTFE coverage tests across
+arrays, control flow, exceptions, diagnostics, structs, class dispatch,
+delegates, vectors, and typeid behavior. Every kept behavior or diagnostic
+test was poked to prove it failed for the expected reason, then reverted and
+rerun green. The `DeleteExp` target was documented as unreachable because DMD
+2.112 rejects the surface-language `delete` fixture before CTFE.
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Recorded branch baseline | 1950 | 3764 | 51.81% |
+| Final branch broad coverage | 2126 | 3764 | 56.48% |
+
+Delta against the recorded baseline: +4.67 percentage points. The branch did
+not reach the 10-point aim; after multiple valid additive slices the broad
+coverage gains were moving incrementally, so this slice should be sent as a PR
+instead of grinding indefinitely.
+
+Final broad coverage verification:
+
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 747 tests run,
+  0 failed, and 28/28 failing as expected.
+
 ## Acceptance Criteria
 
 - Fresh coverage for `dmd.dinterpret` can be generated from this repository.
