@@ -223,6 +223,7 @@ that shim.
 | `visit(DelegatePtrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.ptr` CTFE rejection. |
 | `visit(DelegateFuncptrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.funcptr` CTFE rejection. |
 | `visitWith(WithStatement)` local goto restart | Covered | dmd-ctfe-coverage-tests-5 Worker 4 | `with` body `goto` restart. |
+| `visit(DeleteExp)` | Unsupported | dmd-ctfe-coverage-tests-5 Worker 6 | `delete` rejected by DMD 2.112 semantic analysis. |
 
 Coverage workflow details:
 
@@ -734,6 +735,43 @@ failed the focused CTFE test with `0 != 1`; changing the diagnostic expected
 substring to `index 2 exceeds array length 2` failed with the actual message
 `index 3 exceeds array length 2`. Both temporary pokes were reverted and the
 focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 6 Slice
+
+Explorer recommendation targeted the whole uncovered
+`Interpreter.visit(DeleteExp)` method in `dmd.dinterpret`.
+
+No test was kept. DMD 2.112 rejects the proposed surface-language fixture before
+CTFE or semantic interpretation can reach `DeleteExp`:
+
+```text
+/tmp/quickbite_delete_ctfe.d(14): Error: undefined identifier `delete`
+/tmp/quickbite_delete_ctfe.d(14): Error: declaration
+`quickbite_delete_ctfe.bumpViaDelete.box` is already defined
+```
+
+Rejected fixture shape:
+
+```d
+class Box {
+    int[] sink;
+
+    ~this() {
+        sink[0] += 1;
+    }
+}
+
+int bumpViaDelete(int seed) {
+    int[] values = [seed];
+    auto box = new Box;
+    box.sink = values;
+    delete box;
+    return values[0];
+}
+```
+
+Because DMD rejects `delete` during ordinary compilation, the uncovered CTFE
+visitor is not reachable from valid D source in this compiler version.
 
 ## Acceptance Criteria
 
