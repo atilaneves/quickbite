@@ -1,130 +1,51 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pexpect==4.9.0", "pytest==8.4.1"]
+# ///
 
 import os
-import pty
 import re
-import select
-import signal
-import subprocess
-import sys
-import time
+
+import pexpect
+import pytest
+
+_ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+TIMEOUT = 10
+UP_ARROW = "\x1b[A"
 
 
-TIMEOUT_SECONDS = 10.0
-
-
-def main() -> int:
+def test_repl() -> None:
     repl = os.path.join(os.getcwd(), "bin", "repl")
     if not os.path.exists(repl):
-        print(
-            "bin/repl does not exist; run `dub build -c repl` first",
-            file=sys.stderr,
-        )
-        return 1
+        pytest.skip("bin/repl does not exist; run `dub build -c repl` first")
 
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execv(repl, [repl])
-
-    transcript = bytearray()
-    status = None
+    child = pexpect.spawn(repl, timeout=TIMEOUT, encoding="utf-8")
     try:
-        offset, _ = read_until(fd, transcript, 0, b"Quickbite REPL\n> ")
-        send(fd, b"1 + 2\n")
-        offset, chunk = read_until(fd, transcript, offset, b"> ")
-        assert_chunk(chunk, b"1 + 2\n3: int\n> ")
-        send(fd, b"\x1b[A\n")
-        offset, chunk = read_until(fd, transcript, offset, b"> ")
-        assert_chunk(chunk, b"1 + 2\n3: int\n> ")
-        send(fd, b":q\n")
-        _, status = os.waitpid(pid, 0)
+        child.expect_exact("Quickbite REPL")
+        child.expect_exact("> ")
+
+        child.sendline("1 + 2")
+        child.expect_exact("> ")
+        output = clean(child.before)
+        assert "3: int" in output
+
+        child.sendline(UP_ARROW)
+        child.expect_exact("> ")
+        output = clean(child.before)
+        assert "3: int" in output
+
+        child.sendline(":q")
+        child.expect(pexpect.EOF)
     finally:
-        if status is None:
-            terminate(pid)
-        os.close(fd)
+        child.close(force=True)
 
-    if status != 0:
-        print(transcript.decode(errors="replace"), file=sys.stderr)
-        return subprocess.CalledProcessError(status, repl).returncode
-
-    return 0
+    assert child.exitstatus == 0
 
 
-def read_until(
-    fd: int,
-    transcript: bytearray,
-    offset: int,
-    needle: bytes,
-) -> tuple[int, bytes]:
-    deadline = time.monotonic() + TIMEOUT_SECONDS
-    while True:
-        observed = terminal_text(transcript)
-        index = observed.find(needle, offset)
-        if index != -1:
-            end = index + len(needle)
-            return end, observed[offset:end]
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                "timed out waiting for "
-                + repr(needle)
-                + "\n"
-                + transcript.decode(errors="replace")
-            )
-
-        readable, _, _ = select.select([fd], [], [], remaining)
-        if not readable:
-            continue
-
-        chunk = os.read(fd, 4096)
-        if not chunk:
-            raise EOFError(
-                "repl exited before "
-                + repr(needle)
-                + "\n"
-                + transcript.decode(errors="replace")
-            )
-
-        transcript.extend(chunk)
-
-
-def assert_chunk(actual: bytes, expected: bytes) -> None:
-    if actual == expected:
-        return
-
-    raise AssertionError(
-        "terminal chunk mismatch\n"
-        + "--- expected ---\n"
-        + expected.decode(errors="replace")
-        + "\n--- actual ---\n"
-        + actual.decode(errors="replace")
-    )
-
-
-def send(fd: int, text: bytes) -> None:
-    os.write(fd, text)
-
-
-_ANSI_ESCAPE = re.compile(rb"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-
-def terminal_text(transcript: bytearray) -> bytes:
-    result = bytes(transcript).replace(b"\r\n", b"\n").replace(b"\r", b"")
-    return _ANSI_ESCAPE.sub(b"", result)
-
-
-def terminate(pid: int) -> None:
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-    try:
-        os.waitpid(pid, 0)
-    except ChildProcessError:
-        pass
+def clean(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text).replace("\r", "")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(pytest.main([__file__, "-v"]))

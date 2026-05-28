@@ -6,4 +6,4 @@ dub test -- --random
 dmd -unittest -checkaction=context -main -run tests/example.d
 bin/bench.sh
 dub build -c repl
-tests/run_repl.py
+uv run tests/run_repl.py
