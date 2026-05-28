@@ -286,6 +286,47 @@ static foreach (backend; backends) {
         }, dubImportPaths);
     }
 
+    @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.cerealiser;
+
+            unittest {
+                auto cereal = Cerealiser();
+                int first = 3;
+                int second = -1_000_000;
+
+                cereal ~= first;
+                cereal ~= second;
+
+                assert(
+                    cereal.bytes ==
+                    [0x0, 0x0, 0x0, 0x3, 0xff, 0xf0, 0xbd, 0xc0]
+                );
+            }
+        }, dubImportPaths);
+    }
+
+    @ShouldFail(
+        "DMD CTFE does not support cerealed's float pointer " ~
+        "reinterpretation cast",
+    )
+    @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.cerealiser;
+
+            unittest {
+                auto cereal = Cerealiser();
+                float value = 1.0f;
+
+                cereal ~= value;
+
+                assert(cereal.bytes.length == 4);
+            }
+        }, dubImportPaths);
+    }
+
     @ShouldFail(
         "DMD CTFE reports cerealed bool exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
