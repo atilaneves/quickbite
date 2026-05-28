@@ -3,6 +3,7 @@ import unit_threaded;
 int main(string[] args) {
     return args.runTests!(
         "ut.lang",
+        "ut.repl_cli",
         "ut.backends.architecture",
         "ut.backends.pure_.lang.eval",
         "ut.backends.pure_.lang.expressions",
