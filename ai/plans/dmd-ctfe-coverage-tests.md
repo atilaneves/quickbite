@@ -250,6 +250,7 @@ that shim.
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
 | `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
+| `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
 
 Coverage workflow details:
 
@@ -704,6 +705,18 @@ branch as hit, then covered catch-variable stack binding for the base handler.
 Poke result: changing the behavior assertion from `9` to `10` failed the
 focused CTFE test with `9 != 10`; the temporary poke was reverted and the
 focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 5
+
+Explorer recommendation 5 targeted `visitTryFinally(TryFinallyStatement)`,
+specifically a normal body followed by a throwing `finally` block.
+
+No test was kept. The candidate behavior was valid D and was poke-checked:
+changing the expected assertion from `10` to `11` failed with `10 != 11`.
+However, focused coverage for the candidate left `visitTryFinally` whole-method
+uncovered, including `Expression ey = interpretStatement(s.finalbody, istate);`
+and the `ey.isThrownExceptionExp()` branch. The temporary additive tests were
+reverted.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 
