@@ -591,6 +591,75 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("13 != 12");
     }
 
+    @("withEnumExecutesBody." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Mode {
+                off = 2,
+                on = 5,
+            }
+
+            int selectedTotal(int seed) {
+                int total = seed;
+                with (Mode) {
+                    total += cast(int) on;
+                    total += cast(int) off;
+                }
+                return total;
+            }
+
+            unittest {
+                assert(selectedTotal(3) == 10);
+            }
+        });
+    }
+
+    @("withEnumExecutesBodyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Mode {
+                off = 2,
+                on = 5,
+            }
+
+            int selectedTotal(int seed) {
+                int total = seed;
+                with (Mode) {
+                    total += cast(int) on;
+                    total += cast(int) off;
+                }
+                return total;
+            }
+
+            unittest {
+                assert(selectedTotal(3) == 11);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
+    @("withEnumExecutesBodyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Mode {
+                off = 2,
+                on = 5,
+            }
+
+            int selectedTotal(int seed) {
+                int total = seed;
+                with (Mode) {
+                    total += cast(int) on;
+                    total += cast(int) off;
+                }
+                return total;
+            }
+
+            unittest {
+                assert(selectedTotal(4) == 10);
+            }
+        }).shouldThrowWithMessage("11 != 10");
+    }
+
     @("structFieldDefaultsToZero." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

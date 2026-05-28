@@ -203,6 +203,7 @@ that shim.
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
 | `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
+| `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 
 Coverage workflow details:
 
@@ -452,6 +453,36 @@ once:
 
 Poke result: changing the behavior test assertion from `8` to `9` failed the
 focused CTFE test with `8 != 9`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 Worker 7 CTFE Slice
+
+Explorer recommendation 2 targeted `visitWith(WithStatement)` in
+`dmd.dinterpret`, specifically `with (Enum)` body execution through
+`if (s.exp.op == EXP.scope_ || s.exp.op == EXP.type)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.withEnumExecutesBody.Ctfe
+ut.backends.pure_.lang.structs.withEnumExecutesBodyFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.withEnumExecutesBodyFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.withEnumExecutesBody.Ctfe
+```
+
+Coverage effect: focused coverage marked the target `with (Enum)` body
+execution line as hit:
+
+- `result = interpretStatement(pue, s._body, istate);`
+
+Poke result: changing the behavior test assertion from `10` to `11` failed the
+focused CTFE test with `10 != 11`; the temporary poke was reverted and the
 focused tests were rerun green.
 
 ### 2026-05-28 Final PR Broad Coverage Summary
