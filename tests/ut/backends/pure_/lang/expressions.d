@@ -1009,6 +1009,71 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("8 != 7");
     }
 
+    @("nestedDelegateCallUsesCapturedValue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int apply(int seed) {
+                int captured = seed + 2;
+
+                int nested(int value) {
+                    captured += value;
+                    return captured;
+                }
+
+                int delegate(int) dg = &nested;
+                return dg(5) + dg(1);
+            }
+
+            unittest {
+                assert(apply(3) == 21);
+            }
+        });
+    }
+
+    @("nestedDelegateCallUsesCapturedValueFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int apply(int seed) {
+                int captured = seed + 2;
+
+                int nested(int value) {
+                    captured += value;
+                    return captured;
+                }
+
+                int delegate(int) dg = &nested;
+                return dg(5) + dg(1);
+            }
+
+            unittest {
+                assert(apply(3) == 22);
+            }
+        }).shouldThrowWithMessage("21 != 22");
+    }
+
+    @("nestedDelegateCallUsesCapturedValueFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int apply(int seed) {
+                int captured = seed + 2;
+
+                int nested(int value) {
+                    captured += value;
+                    return captured;
+                }
+
+                int delegate(int) dg = &nested;
+                return dg(5) + dg(1);
+            }
+
+            unittest {
+                assert(apply(4) == 21);
+            }
+        }).shouldThrowWithMessage("23 != 21");
+    }
+
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1354,5 +1419,65 @@ static foreach (backend; backends) {
                 assert(value == 3);
             }
         }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("arrayPointerCastDereferencesFirstElement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1];
+                int* original = &values[0];
+                void* erased = cast(void*) original;
+                int* restored = cast(int*) erased;
+
+                assert(*restored == 41);
+                assert(*(restored + 1) == 42);
+            }
+        });
+    }
+
+    @("arrayPointerCastDereferencesFirstElementFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1];
+                int* original = &values[0];
+                void* erased = cast(void*) original;
+                int* restored = cast(int*) erased;
+
+                assert(*restored == 42);
+            }
+        }).shouldThrowWithMessage("41 != 42");
+    }
+
+    @("arrayPointerCastDereferencesFirstElementFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1];
+                int* original = &values[0];
+                void* erased = cast(void*) original;
+                int* restored = cast(int*) erased;
+
+                assert(*(restored + 1) == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
     }
 }
