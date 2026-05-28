@@ -124,12 +124,8 @@ private string withCandidateSignatures(
     in string source,
     in string diagnostic,
 ) {
-    import std.algorithm.searching: canFind;
     import std.array: join;
     import std.conv: text;
-
-    if (!diagnostic.canFind("callable using argument types"))
-        return diagnostic;
 
     const signatures = candidateSignatures(source);
     if (signatures.length == 0)
@@ -170,16 +166,120 @@ private string[] candidateSignatures(in string source) {
         if (call is null)
             return;
 
-        const name = expressionChars(call.e1);
-        if (parsed.module_.members is null)
+        auto callee = call.e1.isIdentifierExp;
+        if (callee is null)
             return;
 
-        foreach (member; *parsed.module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == name)
-                appendOverloadSignatures(result, function_);
-        }
+        auto candidates = candidateFunctions(parsed.module_, callee.ident);
+        if (candidates.length == 0)
+            return;
+
+        completeSemanticForDiagnostics(parsed.module_);
+        if (!callArgumentsHaveTypes(call) || hasMatchingCandidate(call, candidates))
+            return;
+
+        result = candidateSignatures(candidates);
     });
+
+    return result;
+}
+
+private imported!"dmd.func".FuncDeclaration[] candidateFunctions(
+    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.identifier".Identifier identifier,
+) {
+    imported!"dmd.func".FuncDeclaration[] result;
+    if (module_.members is null)
+        return result;
+
+    foreach (member; *module_.members) {
+        auto function_ = member.isFuncDeclaration;
+        if (function_ !is null && function_.ident is identifier)
+            appendOverloads(result, function_);
+    }
+
+    return result;
+}
+
+private void appendOverloads(
+    ref imported!"dmd.func".FuncDeclaration[] functions,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    auto current = function_;
+    while (current !is null) {
+        functions ~= current;
+        auto next = current.overnext;
+        current = next is null ? null : next.isFuncDeclaration;
+    }
+}
+
+private void completeSemanticForDiagnostics(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: fullSemantic;
+    import dmd.globals: global;
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+
+    const oldGagged = global.startGagging;
+    module_.fullSemantic;
+    global.endGagging(oldGagged);
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+}
+
+private bool callArgumentsHaveTypes(
+    imported!"dmd.expression".CallExp call,
+) {
+    if (call.arguments is null)
+        return true;
+
+    foreach (argument; *call.arguments) {
+        if (argument is null || argument.type is null)
+            return false;
+    }
+
+    return true;
+}
+
+private bool hasMatchingCandidate(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    import dmd.astenums: MATCH;
+    import dmd.typesem: callMatch;
+
+    foreach (candidate; candidates) {
+        auto type = candidate.type is null ? null : candidate.type.isTypeFunction;
+        if (type is null)
+            continue;
+
+        if (callMatch(
+            candidate,
+            type,
+            null,
+            call.argumentList,
+            0,
+            null,
+            candidate._scope,
+        ) > MATCH.nomatch)
+            return true;
+    }
+
+    return false;
+}
+
+private string[] candidateSignatures(
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    string[] result;
+    foreach (candidate; candidates)
+        result ~= fullSignature(candidate);
 
     return result;
 }
@@ -210,18 +310,6 @@ private imported!"dmd.expression".CallExp replReturnCall(
     return null;
 }
 
-private void appendOverloadSignatures(
-    ref string[] signatures,
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    auto current = function_;
-    while (current !is null) {
-        signatures ~= fullSignature(current);
-        auto next = current.overnext;
-        current = next is null ? null : next.isFuncDeclaration;
-    }
-}
-
 private imported!"dmd.func".FuncDeclaration findFunctionDeclaration(
     imported!"dmd.dmodule".Module module_,
     in string name,
@@ -235,14 +323,6 @@ private imported!"dmd.func".FuncDeclaration findFunctionDeclaration(
     }
 
     return null;
-}
-
-private string expressionChars(
-    imported!"dmd.expression".Expression expression,
-) @trusted {
-    import std.string: fromStringz;
-
-    return fromStringz(expression.toChars).idup;
 }
 
 private string fullSignature(

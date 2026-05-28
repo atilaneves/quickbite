@@ -146,6 +146,9 @@
   such as suffix checks, delimiter counting, keyword checks, or regexes. Ask
   the frontend/eval API for structured cell status instead.
 
+- Do not classify DMD diagnostics by searching the rendered diagnostic text.
+  Use DMD AST nodes, symbols, and semantic helpers as the protocol.
+
 - Do not use failed REPL evaluation as control flow to distinguish
   expressions from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.

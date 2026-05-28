@@ -38,8 +38,8 @@ Completed in this PR:
   verifies the recalled command executes again.
 - Added `ci.sh` to run randomized unit tests, benchmarks, and the standalone
   REPL smoke test before PRs.
-- Improved function-call mismatch diagnostics so they include callable
-  signatures, including overload candidates.
+- Improved function-call mismatch diagnostics so they use DMD AST/semantic
+  matching to include callable signatures, including overload candidates.
 
 Remaining follow-up:
 
