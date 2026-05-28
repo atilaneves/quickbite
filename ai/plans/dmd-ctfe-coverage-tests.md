@@ -189,6 +189,7 @@ that shim.
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
 | `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
+| `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
 
 Coverage workflow details:
 
@@ -327,6 +328,46 @@ Verification notes:
 - `dub test` still has an unrelated order-sensitive failure in
   `ut.executors.deps.cerealed.cerealed.decode.d.ir`; that test passes when run
   alone.
+
+### 2026-05-28 Worker 4 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+expression visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.expressions.commaExpressionSequencesOperands.Ctfe
+```
+
+- The test covers valid D comma expression-statement behavior with a mutable
+  local initialized from a helper function, sequencing `+=` and `++` side
+  effects before returning the final local value.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.expressions.commaExpressionSequencesOperands.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visit(CommaExp)` moved from whole method uncovered to partially covered.
+  The focused run leaves 22 uncovered executable lines, including declaration
+  stack-frame handling, temporary-variable/lvalue handling, and
+  exceptional-expression paths.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `6 != 7` diagnostic, then the
+  focused tests passed again after reverting the poke.
+- `dub test` still has an unrelated order-sensitive failure in
+  `ut.executors.deps.cerealed.cerealed.decode.d.ir`, reporting
+  `No function body to execute: gc_inFinalizer`.
 
 ## Acceptance Criteria
 
