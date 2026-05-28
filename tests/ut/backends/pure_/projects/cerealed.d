@@ -778,6 +778,55 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeInt(ref ubyte[] bytes, int value) {
+                foreach_reverse (i; 0 .. int.sizeof)
+                    bytes ~= cast(ubyte)(value >> (i * 8));
+            }
+
+            int readInt(ubyte[] bytes, ref size_t index) {
+                int value;
+                foreach (_; 0 .. int.sizeof) {
+                    value <<= 8;
+                    value |= bytes[index++];
+                }
+                return value;
+            }
+
+            ubyte[] encode(int[2] values) {
+                ubyte[] bytes;
+                foreach (value; values)
+                    writeInt(bytes, value);
+                return bytes;
+            }
+
+            int[2] decode(ubyte[] bytes) {
+                int[2] values;
+                size_t index;
+                foreach (ref value; values)
+                    value = readInt(bytes, index);
+                return values;
+            }
+
+            unittest {
+                int[2] original;
+                original[0] = 34;
+                original[1] = 45;
+
+                ubyte[] bytes = original.encode;
+
+                assert(bytes == [
+                    0, 0, 0, 34,
+                    0, 0, 0, 45,
+                ]);
+                assert(bytes.length == original.length * int.sizeof);
+                assert(bytes.decode == original);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",

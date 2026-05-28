@@ -136,6 +136,7 @@ Keep this section updated as files are tried.
 | `protocol_unit.d` | Passed | Added dependency-free length-field packet round-trip. |
 | `range.d` | Blocked | Added dependency-free input range byte layout. |
 | `reset.d` | Blocked | Added dependency-free reader reset slice test. |
+| `static_array.d` | Blocked | Added dependency-free static array no-length round-trip. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
@@ -162,3 +163,6 @@ uncaught bounds error.
 `reset.d` is blocked as a full fixture because its empty decerealiser test
 indexes a null byte array at compile time, which DMD CTFE reports as an
 uncaught bounds error instead of a catchable `RangeError`.
+
+`static_array.d` is blocked as a full fixture because DMD CTFE reports
+`[void, void][0]` as used before initialized while running the module.
