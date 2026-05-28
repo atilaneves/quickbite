@@ -1,18 +1,29 @@
 # Plan: REPL
 
+## Goal
+
+When the REPL uses the CTFE backend, it should behave like DMD CTFE does in
+real life. Any behavioral deviation from real CTFE is a bug in the REPL or in
+how Quickbite drives DMD. For example, CTFE can `pragma(msg)` a
+`[1, 2, 3].map!(x => x * 2)` expression successfully, so a CTFE-backed REPL
+must not treat that language behavior as unsupported just because the current
+`Value` display path cannot represent the result yet.
+
 ## Priority Work
 
 Pick these items up before any other REPL follow-up.
 
-- Keep failed REPL import/eval cells from poisoning the session. For example,
-  `import std;` currently reports DMD/CTFE diagnostics from `core.atomic`:
+- Make `import std;` work in the REPL when the CTFE backend is selected. Real
+  CTFE accepts `import std;`, but the REPL currently reports DMD/CTFE
+  diagnostics from `core.atomic`:
   `function
   core.internal.atomic.atomicFetchAdd!(MemoryOrder.seq, true, uint)`
   `.atomicFetchAdd has no return statement, but is expected to return a value
-  of type uint`, followed by template-instantiation errors. The worse behavior
-  is that none of `std` is available afterward. A failed no-display cell must
-  not be accepted into REPL history, and later valid cells should still see the
-  last known-good session state.
+  of type uint`, followed by template-instantiation errors. This disagreement
+  with real CTFE means the REPL is driving DMD incorrectly.
+- Keep failed REPL eval cells from poisoning the session. A failed no-display
+  cell must not be accepted into REPL history, and later valid cells should
+  still see the last known-good session state.
 - Support C pointer values and pointer-to-integer casts in REPL cells without
   corrupting the session parser state. This currently fails after importing
   `core.stdc.stdlib`, allocating with `malloc`, casting the pointer to `int`,
@@ -38,10 +49,11 @@ Pick these items up before any other REPL follow-up.
   type `int` is not an expression
   >
   ```
-- Support runtime side-effect cells such as `std.stdio.File` writes. The REPL
-  currently lets the session continue after constructing a file handle and
-  calling `writeln`, but no file is written. Printing the `File` value itself
-  is separate `Value` work and is out of scope for this REPL plan:
+- Surface CTFE diagnostics for runtime-only side-effect cells such as
+  `std.stdio.File` writes. Real CTFE rejects this code because `fopen64` and
+  `malloc` cannot be interpreted at compile time. The REPL currently lets the
+  session continue after constructing a file handle and calling `writeln`, but
+  no file is written and no diagnostic is shown:
 
   ```text
   Quickbite REPL
@@ -55,6 +67,10 @@ Pick these items up before any other REPL follow-up.
   $ cat /tmp/haha.txt
   cat: /tmp/haha.txt: No such file or directory
   ```
+
+  The correct CTFE-backend behavior is to report DMD's compile-time
+  interpretation failure for the cell and leave the last known-good session
+  state intact, not to make `File.writeln` execute.
 
 ## Summary
 
