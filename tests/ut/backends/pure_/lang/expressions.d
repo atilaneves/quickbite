@@ -1421,6 +1421,45 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
+    @("sliceCastToPointerDereferencesFirstElement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1, first + 2];
+                size_t start = cast(size_t) value(1);
+                auto tail = values[start .. $];
+                int* p = cast(int*) tail;
+
+                assert(*p == values[start]);
+            }
+        });
+    }
+
+    @("sliceCastToPointerDereferencesFirstElementFailureMessage." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1, first + 2];
+                size_t start = cast(size_t) value(1);
+                auto tail = values[start .. $];
+                int* p = cast(int*) tail;
+
+                assert(*p == values[start + 1]);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("arrayPointerCastDereferencesFirstElement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1479,5 +1518,52 @@ static foreach (backend; backends) {
                 assert(*(restored + 1) == 43);
             }
         }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("pointerCastToBoolReflectsNullness." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1];
+                int* present = &values[0];
+                int* missing = null;
+
+                assert(cast(bool) present == true);
+                assert(cast(bool) missing == false);
+            }
+        });
+    }
+
+    @("pointerCastToBoolReflectsNullnessFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1];
+                int* present = &values[0];
+
+                assert(cast(bool) present == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("pointerCastToBoolReflectsNullnessFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int* missing = null;
+
+                assert(cast(bool) missing == true);
+            }
+        }).shouldThrowWithMessage("false != true");
     }
 }

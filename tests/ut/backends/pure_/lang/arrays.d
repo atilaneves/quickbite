@@ -1227,6 +1227,80 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
+    @("leftIntegralAddsToPointer." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = values.ptr;
+                int* q = 1 + p;
+
+                assert(*q == values[1]);
+            }
+        });
+    }
+
+    @("leftIntegralAddsToPointerFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                int* p = values.ptr;
+                int* q = 1 + p;
+
+                assert(*q == values[2]);
+            }
+        }).shouldThrowWithMessage("11 != 12");
+    }
+
+    @("pointerIndexReadsDynamicArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t index = cast(size_t) value(2);
+                int* p = values.ptr;
+                int found = p[index];
+
+                assert(found == values[2]);
+            }
+        });
+    }
+
+    @("pointerIndexReadsDynamicArrayFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t index = cast(size_t) value(2);
+                int* p = values.ptr;
+                int found = p[index];
+
+                assert(found == values[1]);
+            }
+        }).shouldThrowWithMessage("12 != 11");
+    }
+
     @("pointerComparisonWithinArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1283,6 +1357,51 @@ static foreach (backend; backends) {
                 int* q = &values[2];
 
                 assert((q == p) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("fourPointerRelationAcrossArraysReturnsFalse." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t len = cast(size_t) value(1);
+                int* lp = left.ptr;
+                int* rp = right.ptr;
+
+                bool inside = lp >= rp && lp + len <= rp + len;
+
+                assert(inside == false);
+            }
+        });
+    }
+
+    @("fourPointerRelationAcrossArraysReturnsFalseFailureMessage." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t len = cast(size_t) value(1);
+                int* lp = left.ptr;
+                int* rp = right.ptr;
+
+                bool inside = lp >= rp && lp + len <= rp + len;
+
+                assert(inside == true);
             }
         }).shouldThrowWithMessage("false != true");
     }
