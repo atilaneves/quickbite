@@ -875,15 +875,9 @@ static foreach (backend; backends) {
         });
     }
 
-    @ShouldFail(
-        "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
-        "error instead of catchable RangeError",
-    )
-    @("projects.cerealed.roundTripEnumExhaustionThrowsRangeError." ~ backend.stringof)
+    @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import core.exception: RangeError;
-
             private enum MyEnum {
                 foo,
                 bar,
@@ -925,13 +919,9 @@ static foreach (backend; backends) {
                 reader.readEnum;
                 reader.readEnum;
 
-                try {
-                    reader.readEnum;
-                    assert(false);
-                } catch (RangeError) {
-                }
+                reader.readEnum;
             }
-        });
+        }).shouldThrowWithMessage("array index 12 is out of bounds `[0..12]`");
     }
 
     @ShouldFail(

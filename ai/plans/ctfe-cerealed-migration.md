@@ -130,7 +130,7 @@ Keep this section updated as files are tried.
 | `decode.d` | Blocked | Added bool decode test; exhaustion should assert CTFE bounds diagnostic. |
 | `encode.d` | Blocked | Added int and float encode tests. |
 | `encode_decode.d` | Blocked | Added bool round-trip; exhaustion should assert CTFE bounds diagnostic. |
-| `enums.d` | Blocked | Added enum round-trip; exhaustion should assert CTFE bounds diagnostic. |
+| `enums.d` | Blocked | Added enum round-trip; exhaustion diagnostic asserted. |
 | `example.d` | Passed | Added dependency-free `Foo` round-trip example. |
 | `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
 | `nested.d` | Passed | Added dependency-free recursive nested AA byte layout. |
@@ -162,7 +162,7 @@ helper checks exhaustion after consuming all bytes. DMD CTFE reports
 
 `enums.d` is blocked as a full fixture because it checks exhaustion after
 consuming all enum bytes. DMD CTFE reports
-`array index 12 is out of bounds [0..12]`; assert that message.
+`array index 12 is out of bounds [0..12]`; this diagnostic is asserted.
 
 `range.d` is blocked as a full fixture because it reads the module-scope
 `gOutputBytes` buffer at compile time while testing output ranges.
