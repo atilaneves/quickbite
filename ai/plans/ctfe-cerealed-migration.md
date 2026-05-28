@@ -138,6 +138,9 @@ Keep this section updated as files are tried.
 | `reset.d` | Blocked | Added dependency-free reader reset slice test. |
 | `static_array.d` | Blocked | Added dependency-free static array no-length round-trip. |
 | `structs.d` | Blocked | Added dependency-free bit-packed struct header round-trip. |
+| `utils.d` | Passed | Added backend file fixture. |
+
+Every cerealed file listed in this migration plan has now been tried.
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
