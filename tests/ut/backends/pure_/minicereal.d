@@ -10,12 +10,12 @@ private:
 static foreach (backend; backends) {
     @("minicerealFile." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource);
+        runBackendSourceFixtureTests!backend(minicerealSource);
     }
 
     @("minicerealFileFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 int value = 42;
                 assert(value == 43);
@@ -25,7 +25,7 @@ static foreach (backend; backends) {
 
     @("minicerealFileFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] values = [0x2au];
                 ubyte[] expected = [0x2bu];
@@ -36,7 +36,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeUbyte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] output;
                 encode!ubyte(0x2au, output);
@@ -48,7 +48,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeUbyteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] output;
                 encode!ubyte(0x2au, output);
@@ -59,7 +59,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeUbyteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] output;
                 encode!ubyte(0x2au, output);
@@ -70,7 +70,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf = [0x2au];
                 size_t pos = 0;
@@ -82,7 +82,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf = [0x2au];
                 size_t pos = 0;
@@ -93,7 +93,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf = [0x2au];
                 size_t pos = 0;
@@ -105,7 +105,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyteAtOffset." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0x99u, 0x2au];
                 size_t pos = 1;
@@ -117,7 +117,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyteAtOffsetFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0x99u, 0x2au];
                 size_t pos = 1;
@@ -128,7 +128,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeUbyteAtOffsetFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0x99u, 0x2au];
                 size_t pos = 1;
@@ -140,7 +140,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeNegativeInt." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
                 size_t pos = 0;
@@ -152,7 +152,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeNegativeIntFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
                 size_t pos = 0;
@@ -163,7 +163,7 @@ static foreach (backend; backends) {
 
     @("minicerealDecodeNegativeIntFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
                 size_t pos = 0;
@@ -175,7 +175,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripNegativeInt." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = -42;
                 ubyte[] buf;
@@ -188,7 +188,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripNegativeIntFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = -42;
                 ubyte[] buf;
@@ -201,7 +201,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripNegativeIntFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = -7;
                 ubyte[] buf;
@@ -214,7 +214,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeHighBitUlongBytes." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf;
                 encode(0x8070605040302010UL, buf);
@@ -235,7 +235,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeHighBitUlongBytesFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf;
                 encode(0x8070605040302010UL, buf);
@@ -259,7 +259,7 @@ static foreach (backend; backends) {
 
     @("minicerealEncodeHighBitUlongBytesFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 ubyte[] buf;
                 encode(0x0102030405060708UL, buf);
@@ -273,7 +273,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDefaultBytes." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 assert(cereal.bytes.length == 0);
@@ -283,7 +283,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDefaultBytesFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 assert(cereal.bytes.length == 1);
@@ -293,7 +293,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDefaultBytesFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 ubyte[] expected = [0x2au];
@@ -304,7 +304,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBytesAppend." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= 0x2au;
@@ -316,7 +316,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBytesAppendFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= 0x2au;
@@ -327,7 +327,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBytesAppendFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= 0x2au;
@@ -338,7 +338,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructAppendByte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= cast(ubyte) 42;
@@ -351,7 +351,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructAppendByteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= cast(ubyte) 42;
@@ -363,7 +363,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructAppendByteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes ~= cast(ubyte) 42;
@@ -376,7 +376,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructIndexWriteByte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [0];
@@ -389,7 +389,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructIndexWriteByteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [0];
@@ -402,7 +402,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructIndexWriteByteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [0];
@@ -415,7 +415,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -427,7 +427,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -438,7 +438,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -449,7 +449,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyteBytesEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -461,7 +461,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyteBytesEqualFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -473,7 +473,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUbyteBytesEqualFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x07u);
@@ -485,7 +485,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutMultipleIntegralWidths." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -498,7 +498,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutMultipleIntegralWidthsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -511,7 +511,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutMultipleIntegralWidthsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -524,7 +524,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutIntBytesSliceEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(0x01020304);
@@ -536,7 +536,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutIntBytesSliceEqualFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(0x01020304);
@@ -548,7 +548,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutIntBytesSliceEqualFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(0x01020304);
@@ -560,7 +560,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutUshortMiddleBytesSliceEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -574,7 +574,7 @@ static foreach (backend; backends) {
     @("minicerealPutUshortMiddleBytesSliceEqualFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -588,7 +588,7 @@ static foreach (backend; backends) {
     @("minicerealPutUshortMiddleBytesSliceEqualFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -601,7 +601,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBoundedSliceBytes." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [1, 2, 3, 4];
@@ -613,7 +613,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBoundedSliceBytesFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [1, 2, 3, 4];
@@ -625,7 +625,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructBoundedSliceBytesFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [1, 2, 3, 4];
@@ -637,7 +637,7 @@ static foreach (backend; backends) {
 
     @("minicerealPutIntTailBytesDollarSliceEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -651,7 +651,7 @@ static foreach (backend; backends) {
     @("minicerealPutIntTailBytesDollarSliceEqualFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -665,7 +665,7 @@ static foreach (backend; backends) {
     @("minicerealPutIntTailBytesDollarSliceEqualFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x99u);
@@ -678,7 +678,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripUbyte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -691,7 +691,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripUbyteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -703,7 +703,7 @@ static foreach (backend; backends) {
 
     @("minicerealRoundTripUbyteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -716,7 +716,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructRoundTripInt." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(42);
@@ -729,7 +729,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructRoundTripIntFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(42);
@@ -741,7 +741,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructRoundTripIntFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put(42);
@@ -754,7 +754,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDecodeKnownInt." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [4u, 3u, 2u, 1u];
@@ -767,7 +767,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDecodeKnownIntFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [4u, 3u, 2u, 1u];
@@ -779,7 +779,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructDecodeKnownIntFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.bytes = [4u, 3u, 2u, 1u];
@@ -792,7 +792,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructRoundTripHighBitUlong." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = 0x8070605040302010UL;
                 Minicereal cereal;
@@ -809,7 +809,7 @@ static foreach (backend; backends) {
     @("minicerealStructRoundTripHighBitUlongFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = 0x8070605040302010UL;
                 Minicereal cereal;
@@ -826,7 +826,7 @@ static foreach (backend; backends) {
     @("minicerealStructRoundTripHighBitUlongFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 const value = 0x8070605040302010UL;
                 Minicereal cereal;
@@ -840,7 +840,7 @@ static foreach (backend; backends) {
 
     @("minicerealStructRoundTripsIntegralTypes." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -869,7 +869,7 @@ static foreach (backend; backends) {
     @("minicerealStructRoundTripsIntegralTypesFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);
@@ -890,7 +890,7 @@ static foreach (backend; backends) {
     @("minicerealStructRoundTripsIntegralTypesFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(minicerealSource(q{
+        runBackendSourceFixtureTests!backend(minicerealSource(q{
             unittest {
                 Minicereal cereal;
                 cereal.put!ubyte(0x2au);

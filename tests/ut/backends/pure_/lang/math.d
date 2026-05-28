@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("evaluatesRuntimePowDoubleInputs." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: pow;
 
             unittest {
@@ -36,7 +36,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: pow;
 
             unittest {
@@ -53,7 +53,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: pow;
 
             unittest {
@@ -67,7 +67,7 @@ static foreach (backend; backends) {
 
     @("doesNotTreatUserNamedPowAsMathIntrinsic." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double pow(double base, double exponent) {
                 return base + exponent;
             }
@@ -87,7 +87,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double pow(double base, double exponent) {
                 return base + exponent;
             }
@@ -107,7 +107,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double pow(double base, double exponent) {
                 return base + exponent;
             }
@@ -122,7 +122,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSqrtInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -138,7 +138,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -154,7 +154,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -166,7 +166,7 @@ static foreach (backend; backends) {
 
     @("evaluatesDifferentRuntimeSqrtInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -183,7 +183,7 @@ static foreach (backend; backends) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -200,7 +200,7 @@ static foreach (backend; backends) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -212,7 +212,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -229,7 +229,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -246,7 +246,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -258,7 +258,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeNonPerfectSqrtInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -277,7 +277,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -295,7 +295,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: sqrt;
 
             unittest {
@@ -308,7 +308,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeFabsDoubleInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -326,7 +326,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -342,7 +342,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -354,7 +354,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeFabsPositiveDoubleInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -371,7 +371,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -388,7 +388,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: fabs;
 
             unittest {
@@ -400,7 +400,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeIsNaNDoubleInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isNaN;
 
             unittest {
@@ -415,7 +415,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isNaN;
 
             unittest {
@@ -427,7 +427,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isNaN;
 
             unittest {
@@ -439,7 +439,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeIsInfinityDoubleInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isInfinity;
 
             unittest {
@@ -461,7 +461,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isInfinity;
 
             unittest {
@@ -474,7 +474,7 @@ static foreach (backend; backends) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: isInfinity;
 
             unittest {
@@ -486,7 +486,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitDoubleInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -507,7 +507,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -519,7 +519,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -531,7 +531,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitNanInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -546,7 +546,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -558,7 +558,7 @@ static foreach (backend; backends) {
 
     @("evaluatesRuntimeSignbitNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: signbit;
 
             unittest {
@@ -570,7 +570,7 @@ static foreach (backend; backends) {
 
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return true;
             }
@@ -585,7 +585,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return true;
             }
@@ -600,7 +600,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return true;
             }
@@ -614,7 +614,7 @@ static foreach (backend; backends) {
 
     @("callsUserNamedIsNaNForNanInput." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return false;
             }
@@ -628,7 +628,7 @@ static foreach (backend; backends) {
 
     @("callsUserNamedIsNaNForNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return false;
             }
@@ -642,7 +642,7 @@ static foreach (backend; backends) {
 
     @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isNaN(double value) {
                 return false;
             }
@@ -656,7 +656,7 @@ static foreach (backend; backends) {
 
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double sqrt(double value) {
                 return value + 1.0;
             }
@@ -680,7 +680,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double sqrt(double value) {
                 return value + 1.0;
             }
@@ -703,7 +703,7 @@ static foreach (backend; backends) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             double sqrt(double value) {
                 return value + 1.0;
             }

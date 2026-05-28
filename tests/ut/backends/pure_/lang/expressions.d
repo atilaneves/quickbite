@@ -7,7 +7,7 @@ import ut.backends;
 static foreach (backend; backends) {
     @("intAddition." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int one() {
                 return 1;
             }
@@ -26,7 +26,7 @@ static foreach (backend; backends) {
 
     @("intAdditionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int one() {
                 return 1;
             }
@@ -45,7 +45,7 @@ static foreach (backend; backends) {
 
     @("intAdditionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -64,7 +64,7 @@ static foreach (backend; backends) {
 
     @("intSubtraction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -83,7 +83,7 @@ static foreach (backend; backends) {
 
     @("intSubtractionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -102,7 +102,7 @@ static foreach (backend; backends) {
 
     @("intSubtractionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -121,7 +121,7 @@ static foreach (backend; backends) {
 
     @("intMultiplication." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -140,7 +140,7 @@ static foreach (backend; backends) {
 
     @("intMultiplicationFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -159,7 +159,7 @@ static foreach (backend; backends) {
 
     @("intMultiplicationFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -178,7 +178,7 @@ static foreach (backend; backends) {
 
     @("intDivision." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -197,7 +197,7 @@ static foreach (backend; backends) {
 
     @("intDivisionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -216,7 +216,7 @@ static foreach (backend; backends) {
 
     @("intDivisionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int two() {
                 return 2;
             }
@@ -235,7 +235,7 @@ static foreach (backend; backends) {
 
     @("intModulo." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int divisor() {
                 return 44;
             }
@@ -254,7 +254,7 @@ static foreach (backend; backends) {
 
     @("intModuloFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int divisor() {
                 return 44;
             }
@@ -273,7 +273,7 @@ static foreach (backend; backends) {
 
     @("intModuloFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int divisor() {
                 return 44;
             }
@@ -292,7 +292,7 @@ static foreach (backend; backends) {
 
     @("intShiftRight." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 2;
             }
@@ -311,7 +311,7 @@ static foreach (backend; backends) {
 
     @("intShiftRightFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 2;
             }
@@ -330,7 +330,7 @@ static foreach (backend; backends) {
 
     @("intShiftRightFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 4;
             }
@@ -349,7 +349,7 @@ static foreach (backend; backends) {
 
     @("intShiftLeft." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 1;
             }
@@ -368,7 +368,7 @@ static foreach (backend; backends) {
 
     @("intShiftLeftFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 1;
             }
@@ -387,7 +387,7 @@ static foreach (backend; backends) {
 
     @("intShiftLeftFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int shift() {
                 return 1;
             }
@@ -406,7 +406,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseOr." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x06;
             }
@@ -425,7 +425,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseOrFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x06;
             }
@@ -444,7 +444,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseOrFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x06;
             }
@@ -463,7 +463,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseAnd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x2f;
             }
@@ -482,7 +482,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseAndFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x2f;
             }
@@ -501,7 +501,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseAndFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x2f;
             }
@@ -520,7 +520,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseXor." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x04;
             }
@@ -539,7 +539,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseXorFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x04;
             }
@@ -558,7 +558,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseXorFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 0x04;
             }
@@ -577,7 +577,7 @@ static foreach (backend; backends) {
 
     @("intLessThan." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -592,7 +592,7 @@ static foreach (backend; backends) {
 
     @("intLessThanFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -607,7 +607,7 @@ static foreach (backend; backends) {
 
     @("intLessOrEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -622,7 +622,7 @@ static foreach (backend; backends) {
 
     @("intLessOrEqualFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -637,7 +637,7 @@ static foreach (backend; backends) {
 
     @("intGreaterThan." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -652,7 +652,7 @@ static foreach (backend; backends) {
 
     @("intGreaterThanFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -667,7 +667,7 @@ static foreach (backend; backends) {
 
     @("intGreaterOrEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -682,7 +682,7 @@ static foreach (backend; backends) {
 
     @("intGreaterOrEqualFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -697,7 +697,7 @@ static foreach (backend; backends) {
 
     @("intNotEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -712,7 +712,7 @@ static foreach (backend; backends) {
 
     @("intNotEqualFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -729,7 +729,7 @@ static foreach (backend; backends) {
 static foreach (backend; backends) {
     @("distinguishesFloatingPointValues." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 double left = 1.5;
                 double right = 2.5;
@@ -744,7 +744,7 @@ static foreach (backend; backends) {
     )
     @("distinguishesFloatingPointValuesFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 double left = 1.5;
                 double right = 2.5;
@@ -755,7 +755,7 @@ static foreach (backend; backends) {
 
     @("evaluatesPow." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: pow;
 
             unittest {
@@ -770,7 +770,7 @@ static foreach (backend; backends) {
     )
     @("evaluatesPowFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             import std.math: pow;
 
             unittest {
@@ -781,7 +781,7 @@ static foreach (backend; backends) {
 
     @("intUnaryMinus." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 42;
             }
@@ -798,7 +798,7 @@ static foreach (backend; backends) {
 
     @("intUnaryMinusFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 42;
             }
@@ -815,7 +815,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseComplement." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x2a;
                 assert(~value == -0x2b);
@@ -825,7 +825,7 @@ static foreach (backend; backends) {
 
     @("intBitwiseComplementFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x2a;
                 assert(~value == -0x2c);
@@ -835,7 +835,7 @@ static foreach (backend; backends) {
 
     @("intOrAssign." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x28u;
                 value |= 0x02u;
@@ -846,7 +846,7 @@ static foreach (backend; backends) {
 
     @("intOrAssignFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x28u;
                 value |= 0x02u;
@@ -857,7 +857,7 @@ static foreach (backend; backends) {
 
     @("intSubtractAssign." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 44;
                 value -= 2;
@@ -868,7 +868,7 @@ static foreach (backend; backends) {
 
     @("intSubtractAssignFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 44;
                 value -= 2;
@@ -879,7 +879,7 @@ static foreach (backend; backends) {
 
     @("intAddAssign." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 40;
                 value += 2;
@@ -890,7 +890,7 @@ static foreach (backend; backends) {
 
     @("intAddAssignFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 40;
                 value += 2;
@@ -901,7 +901,7 @@ static foreach (backend; backends) {
 
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte value = 255;
                 value += 1;
@@ -912,7 +912,7 @@ static foreach (backend; backends) {
 
     @("ubyteAddAssignWrapsOnStoreFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte value = 255;
                 value += 1;
@@ -923,7 +923,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitLessThan." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL < value);
@@ -933,7 +933,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitLessThanFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL >= value);
@@ -943,7 +943,7 @@ static foreach (backend; backends) {
 
     @("longLiteral." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             long answer() {
                 return 2_147_483_648L;
             }
@@ -956,7 +956,7 @@ static foreach (backend; backends) {
 
     @("longLiteralFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             long answer() {
                 return 2_147_483_648L;
             }
@@ -969,7 +969,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitLessOrEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL <= value);
@@ -979,7 +979,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitLessOrEqualFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(0UL > value);
@@ -989,7 +989,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitGreaterOrEqual." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value >= 0UL);
@@ -999,7 +999,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitGreaterOrEqualFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value < 0UL);
@@ -1009,7 +1009,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitGreaterThan." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value > 0UL);
@@ -1019,7 +1019,7 @@ static foreach (backend; backends) {
 
     @("ulongHighBitGreaterThanFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto value = 0x8070605040302010UL;
                 assert(value <= 0UL);
@@ -1029,7 +1029,7 @@ static foreach (backend; backends) {
 
     @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ulong integer = 0x8000_0000_0000_0000UL;
                 double floating = 9_223_372_036_854_775_808.0;
@@ -1050,7 +1050,7 @@ static foreach (backend; backends) {
     @("ulongDoubleComparisonUsesNumericUnsignedValueFailureMessage." ~
         backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ulong integer = 0x8000_0000_0000_0000UL;
                 double floating = 9_223_372_036_854_775_808.0;
@@ -1062,7 +1062,7 @@ static foreach (backend; backends) {
 
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 double input = 7.75;
                 assert(cast(int) input == 7);
@@ -1072,7 +1072,7 @@ static foreach (backend; backends) {
 
     @("castsFloatingValueNumericallyFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 double input = 7.75;
                 assert(cast(int) input == 8);
@@ -1086,7 +1086,7 @@ static foreach (backend; backends) {
     )
     @("intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int input = 16_777_217;
                 float converted = cast(float) input;
@@ -1103,7 +1103,7 @@ static foreach (backend; backends) {
     )
     @("intToFloatCastUsesFloatPrecisionFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int input = 16_777_217;
                 float converted = cast(float) input;
@@ -1119,7 +1119,7 @@ static foreach (backend; backends) {
     )
     @("ulongToRealCastPreservesRealPrecision." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ulong input = ulong.max;
                 real converted = cast(real) input;
@@ -1136,7 +1136,7 @@ static foreach (backend; backends) {
     )
     @("ulongToRealCastPreservesRealPrecisionFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ulong input = ulong.max;
                 real converted = cast(real) input;
@@ -1150,7 +1150,7 @@ static foreach (backend; backends) {
 
     @("integerFloatEqualityIsNumeric." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 long integer = 0x3ff0_0000_0000_0000L;
                 double floating = 1.0;
@@ -1166,7 +1166,7 @@ static foreach (backend; backends) {
     )
     @("integerFloatEqualityIsNumericFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 long integer = 0x3ff0_0000_0000_0000L;
                 double floating = 1.0;
@@ -1178,7 +1178,7 @@ static foreach (backend; backends) {
 
     @("realComparisonPreservesRealPrecision." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 real left = real.max;
                 real right = real.infinity;
@@ -1194,7 +1194,7 @@ static foreach (backend; backends) {
     )
     @("realComparisonPreservesRealPrecisionFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 real left = real.max;
                 real right = real.infinity;
@@ -1206,7 +1206,7 @@ static foreach (backend; backends) {
 
     @("castUbyteRuntimeValueTruncates." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 258;
                 assert(cast(ubyte) value == 2);
@@ -1216,7 +1216,7 @@ static foreach (backend; backends) {
 
     @("castUbyteRuntimeValueTruncatesFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 258;
                 assert(cast(ubyte) value == 3);
@@ -1226,7 +1226,7 @@ static foreach (backend; backends) {
 
     @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int source = 258;
                 ubyte value = cast(ubyte) source;
@@ -1237,7 +1237,7 @@ static foreach (backend; backends) {
 
     @("ubyteLocalTruncatesOnStoreFailureMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int source = 258;
                 ubyte value = cast(ubyte) source;

@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int one() {
                 return 1;
             }
@@ -27,7 +27,7 @@ static foreach (backend; backends) {
 
     @("intLessThanOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -42,7 +42,7 @@ static foreach (backend; backends) {
 
     @("intLessOrEqualOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -57,7 +57,7 @@ static foreach (backend; backends) {
 
     @("intGreaterThanOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -72,7 +72,7 @@ static foreach (backend; backends) {
 
     @("intGreaterOrEqualOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -87,7 +87,7 @@ static foreach (backend; backends) {
 
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bound() {
                 return 42;
             }
@@ -102,7 +102,7 @@ static foreach (backend; backends) {
 
     @("ok." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 return 42;
             }
@@ -115,7 +115,7 @@ static foreach (backend; backends) {
 
     @("oops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 return 42;
             }
@@ -128,7 +128,7 @@ static foreach (backend; backends) {
 
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 return 7;
             }
@@ -141,7 +141,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int value = 42;
                 return value;
@@ -155,7 +155,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {
                 assert(0);
             }
@@ -168,7 +168,7 @@ static foreach (backend; backends) {
 
     @("functionParametersOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int left, int right) {
                 return left + right;
             }
@@ -181,7 +181,7 @@ static foreach (backend; backends) {
 
     @("functionParameterOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 return value + 1;
             }
@@ -194,7 +194,7 @@ static foreach (backend; backends) {
 
     @("refParameterOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void addOne(ref int value) {
                 value = value + 1;
             }
@@ -209,7 +209,7 @@ static foreach (backend; backends) {
 
     @("ifElseOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -225,7 +225,7 @@ static foreach (backend; backends) {
 
     @("inFunctionParametersOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void check(in int left, in int right) {
                 assert(left + right == 42);
             }
@@ -238,7 +238,7 @@ static foreach (backend; backends) {
 
     @("refSizeTParameterOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void advance(ref size_t pos) {
                 pos = pos + 1;
             }
@@ -253,7 +253,7 @@ static foreach (backend; backends) {
 
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 assert(1 == 2, "oops");
             }
@@ -262,7 +262,7 @@ static foreach (backend; backends) {
 
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 assert(false);
             }
@@ -271,7 +271,7 @@ static foreach (backend; backends) {
 
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool nope() {
                 return false;
             }
@@ -284,7 +284,7 @@ static foreach (backend; backends) {
 
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool a = true;
                 assert(a == false);
@@ -294,7 +294,7 @@ static foreach (backend; backends) {
 
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 char a = 'a';
                 assert(a == 'b');
@@ -304,7 +304,7 @@ static foreach (backend; backends) {
 
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 string msg = "oops";
                 assert(false, msg);

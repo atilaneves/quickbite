@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("supportsContinue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 for (int i = 0; i < 4; ++i) {
@@ -24,7 +24,7 @@ static foreach (backend; backends) {
 
     @("supportsContinueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 for (int i = 0; i < 4; ++i) {
@@ -39,7 +39,7 @@ static foreach (backend; backends) {
 
     @("supportsContinueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 for (int i = 0; i < 3; ++i) {
@@ -54,7 +54,7 @@ static foreach (backend; backends) {
 
     @("supportsSwitch." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 2;
                 int result;
@@ -76,7 +76,7 @@ static foreach (backend; backends) {
 
     @("supportsSwitchFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 2;
                 int result;
@@ -98,7 +98,7 @@ static foreach (backend; backends) {
 
     @("supportsSwitchFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 3;
                 int result;
@@ -120,7 +120,7 @@ static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetected." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 // bAB and a_a produce the same Bernstein hash (602706).
                 static int bAB() {
@@ -139,7 +139,7 @@ static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetectedFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 // bAB and a_a produce the same Bernstein hash (602706).
                 static int bAB() {
@@ -158,7 +158,7 @@ static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetectedFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 // bAB and a_a produce the same Bernstein hash (602706).
                 static int bAB() {
@@ -177,7 +177,7 @@ static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCallees." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bAB() {
                 return 11;
             }
@@ -197,7 +197,7 @@ static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCalleesFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bAB() {
                 return 11;
             }
@@ -217,7 +217,7 @@ static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCalleesFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int bAB() {
                 return 11;
             }
@@ -237,7 +237,7 @@ static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCallee." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int helper() {
                 return 7;
             }
@@ -261,7 +261,7 @@ static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCalleeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int helper() {
                 return 7;
             }
@@ -285,7 +285,7 @@ static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCalleeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int helper() {
                 return 8;
             }
@@ -309,7 +309,7 @@ static foreach (backend; backends) {
 
     @("localIntReturn." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int value = 42;
                 return value;
@@ -323,7 +323,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int value = 42;
                 return value;
@@ -337,7 +337,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int value = 7;
                 return value;
@@ -351,7 +351,7 @@ static foreach (backend; backends) {
 
     @("voidFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {}
 
             unittest {
@@ -362,7 +362,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {
                 assert(false);
             }
@@ -375,7 +375,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {}
 
             unittest {
@@ -387,7 +387,7 @@ static foreach (backend; backends) {
 
     @("foreachArray." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 int sum = 0;
@@ -400,7 +400,7 @@ static foreach (backend; backends) {
 
     @("foreachArrayFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 int sum = 0;
@@ -413,7 +413,7 @@ static foreach (backend; backends) {
 
     @("foreachArrayFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2, 4];
                 int sum = 0;
@@ -426,7 +426,7 @@ static foreach (backend; backends) {
 
     @("foreachEmptyArray." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [];
                 int count = 0;
@@ -439,7 +439,7 @@ static foreach (backend; backends) {
 
     @("foreachEmptyArrayFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [];
                 int count = 0;
@@ -452,7 +452,7 @@ static foreach (backend; backends) {
 
     @("foreachEmptyArrayFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [7];
                 int count = 0;
@@ -465,7 +465,7 @@ static foreach (backend; backends) {
 
     @("whileNeverRuns." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 while (i > 0) {
@@ -482,7 +482,7 @@ static foreach (backend; backends) {
 
     @("whileNeverRunsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 while (i > 0) {
@@ -499,7 +499,7 @@ static foreach (backend; backends) {
 
     @("whileNeverRunsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 while (i > 0) {
@@ -516,7 +516,7 @@ static foreach (backend; backends) {
 
     @("whileRunsOnce." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -535,7 +535,7 @@ static foreach (backend; backends) {
 
     @("whileRunsOnceFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -554,7 +554,7 @@ static foreach (backend; backends) {
 
     @("whileRunsOnceFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -573,7 +573,7 @@ static foreach (backend; backends) {
 
     @("while_." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -592,7 +592,7 @@ static foreach (backend; backends) {
 
     @("whileFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -611,7 +611,7 @@ static foreach (backend; backends) {
 
     @("whileFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer() {
                 int i = 0;
                 int result = 0;
@@ -630,7 +630,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturn." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {
                 return;
             }
@@ -643,7 +643,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturnFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {
                 assert(false);
                 return;
@@ -657,7 +657,7 @@ static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturnFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void foo() {
                 return;
                 assert(false);
@@ -672,7 +672,7 @@ static foreach (backend; backends) {
 
     @("functionParameter." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 return value + 1;
             }
@@ -685,7 +685,7 @@ static foreach (backend; backends) {
 
     @("functionParameterFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 return value + 1;
             }
@@ -698,7 +698,7 @@ static foreach (backend; backends) {
 
     @("functionParameterFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 return value + 1;
             }
@@ -711,7 +711,7 @@ static foreach (backend; backends) {
 
     @("functionParameters." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int left, int right) {
                 return left + right;
             }
@@ -724,7 +724,7 @@ static foreach (backend; backends) {
 
     @("functionParametersFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int left, int right) {
                 return left + right;
             }
@@ -737,7 +737,7 @@ static foreach (backend; backends) {
 
     @("functionParametersFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int left, int right) {
                 return left + right;
             }
@@ -750,7 +750,7 @@ static foreach (backend; backends) {
 
     @("refParameter." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void addOne(ref int value) {
                 value = value + 1;
             }
@@ -765,7 +765,7 @@ static foreach (backend; backends) {
 
     @("refParameterFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void addOne(ref int value) {
                 value = value + 1;
             }
@@ -780,7 +780,7 @@ static foreach (backend; backends) {
 
     @("refParameterFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void addOne(ref int value) {
                 value = value + 1;
             }
@@ -795,7 +795,7 @@ static foreach (backend; backends) {
 
     @("ifBodyAssignment." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     value = 2;
@@ -811,7 +811,7 @@ static foreach (backend; backends) {
 
     @("ifBodyAssignmentFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     value = 2;
@@ -827,7 +827,7 @@ static foreach (backend; backends) {
 
     @("ifBodyAssignmentFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     value = 2;
@@ -843,7 +843,7 @@ static foreach (backend; backends) {
 
     @("ifElse." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -860,7 +860,7 @@ static foreach (backend; backends) {
 
     @("ifElseFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -877,7 +877,7 @@ static foreach (backend; backends) {
 
     @("ifElseFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -894,7 +894,7 @@ static foreach (backend; backends) {
 
     @("ifElseUntakenBranch." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int zero() {
                 return 0;
             }
@@ -914,7 +914,7 @@ static foreach (backend; backends) {
 
     @("ifElseUntakenBranchFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int zero() {
                 return 0;
             }
@@ -934,7 +934,7 @@ static foreach (backend; backends) {
 
     @("ifElseUntakenBranchFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int zero() {
                 return 0;
             }
@@ -954,7 +954,7 @@ static foreach (backend; backends) {
 
     @("earlyReturn." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -971,7 +971,7 @@ static foreach (backend; backends) {
 
     @("earlyReturnFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -988,7 +988,7 @@ static foreach (backend; backends) {
 
     @("earlyReturnFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 42;
@@ -1005,7 +1005,7 @@ static foreach (backend; backends) {
 
     @("multipleEarlyReturns." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 41;
@@ -1026,7 +1026,7 @@ static foreach (backend; backends) {
 
     @("multipleEarlyReturnsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 41;
@@ -1047,7 +1047,7 @@ static foreach (backend; backends) {
 
     @("multipleEarlyReturnsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
                 if (value == 1)
                     return 41;
@@ -1068,7 +1068,7 @@ static foreach (backend; backends) {
 
     @("inFunctionParameters." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void check(in int left, in int right) {
                 assert(left + right == 42);
             }
@@ -1081,7 +1081,7 @@ static foreach (backend; backends) {
 
     @("inFunctionParametersFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void check(in int left, in int right) {
                 assert(left + right == 43);
             }
@@ -1094,7 +1094,7 @@ static foreach (backend; backends) {
 
     @("inFunctionParametersFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void check(in int left, in int right) {
                 assert(left + right == 8);
             }
@@ -1107,7 +1107,7 @@ static foreach (backend; backends) {
 
     @("multipleRefParameters." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void add(int left, ref int right) {
                 right = left + right;
             }
@@ -1122,7 +1122,7 @@ static foreach (backend; backends) {
 
     @("multipleRefParametersFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void add(int left, ref int right) {
                 right = left + right;
             }
@@ -1137,7 +1137,7 @@ static foreach (backend; backends) {
 
     @("multipleRefParametersFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void add(int left, ref int right) {
                 right = left + right;
             }
@@ -1152,7 +1152,7 @@ static foreach (backend; backends) {
 
     @("refSizeTParameter." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void advance(ref size_t pos) {
                 pos = pos + 1;
             }
@@ -1167,7 +1167,7 @@ static foreach (backend; backends) {
 
     @("refSizeTParameterFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void advance(ref size_t pos) {
                 pos = pos + 1;
             }
@@ -1182,7 +1182,7 @@ static foreach (backend; backends) {
 
     @("refSizeTParameterFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void advance(ref size_t pos) {
                 pos = pos + 1;
             }
@@ -1197,7 +1197,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShape." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int value() {
                 int ret = 42;
                 return ret;
@@ -1211,7 +1211,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int value() {
                 int ret = 42;
                 return ret;
@@ -1225,7 +1225,7 @@ static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int value() {
                 int ret = 7;
                 return ret;
@@ -1239,7 +1239,7 @@ static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShape." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int identity(int value) {
                 return value;
             }
@@ -1252,7 +1252,7 @@ static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int identity(int value) {
                 return value;
             }
@@ -1265,7 +1265,7 @@ static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int identity(int value) {
                 return value;
             }
@@ -1278,7 +1278,7 @@ static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShape." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 1;
             }
@@ -1296,7 +1296,7 @@ static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 1;
             }
@@ -1314,7 +1314,7 @@ static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 2;
             }
@@ -1332,7 +1332,7 @@ static foreach (backend; backends) {
 
     @("whileDmdCodegenShape." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 while (value < 42)
@@ -1344,7 +1344,7 @@ static foreach (backend; backends) {
 
     @("whileDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 while (value < 42)
@@ -1356,7 +1356,7 @@ static foreach (backend; backends) {
 
     @("whileDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 while (value < 7)
@@ -1368,7 +1368,7 @@ static foreach (backend; backends) {
 
     @("foreachRange." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 foreach (i; 0 .. 3)
@@ -1380,7 +1380,7 @@ static foreach (backend; backends) {
 
     @("foreachRangeFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 foreach (i; 0 .. 3)
@@ -1392,7 +1392,7 @@ static foreach (backend; backends) {
 
     @("foreachRangeFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int sum;
                 foreach (i; 0 .. 4)
@@ -1404,7 +1404,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturn." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int add(int a, int b) {
                 return a + b;
             }
@@ -1418,7 +1418,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int add(int a, int b) {
                 return a + b;
             }
@@ -1432,7 +1432,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int add(int a, int b) {
                 return a + b;
             }
@@ -1446,7 +1446,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValues." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int sub(int a, int b) {
                 return a - b;
             }
@@ -1460,7 +1460,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValuesFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int sub(int a, int b) {
                 return a - b;
             }
@@ -1474,7 +1474,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValuesFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int sub(int a, int b) {
                 return a - b;
             }
@@ -1488,7 +1488,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParam." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int firstElement(int[] arr) {
                 return arr[0];
             }
@@ -1503,7 +1503,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int firstElement(int[] arr) {
                 return arr[0];
             }
@@ -1518,7 +1518,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int firstElement(int[] arr) {
                 return arr[0];
             }
@@ -1533,7 +1533,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElement." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int secondElement(int[] arr) {
                 return arr[1];
             }
@@ -1548,7 +1548,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElementFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int secondElement(int[] arr) {
                 return arr[1];
             }
@@ -1563,7 +1563,7 @@ static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElementFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int secondElement(int[] arr) {
                 return arr[1];
             }
@@ -1578,7 +1578,7 @@ static foreach (backend; backends) {
 
     @("refParamWriteback." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1593,7 +1593,7 @@ static foreach (backend; backends) {
 
     @("refParamWritebackFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1608,7 +1608,7 @@ static foreach (backend; backends) {
 
     @("refParamWritebackFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1623,7 +1623,7 @@ static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1638,7 +1638,7 @@ static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1653,7 +1653,7 @@ static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void increment(ref int x) {
                 x += 1;
             }
@@ -1668,7 +1668,7 @@ static foreach (backend; backends) {
 
     @("structMethodReturnDoesNotSkipCallerStatements." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Worker {
                 void stop() {
                     return;

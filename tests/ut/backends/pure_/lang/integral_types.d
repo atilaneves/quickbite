@@ -23,7 +23,7 @@ static foreach (backend; backends) {
     static foreach (T; IntegralTypes) {
         @("integralType." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {
-            newBackend!backend.runTests(text(
+            runBackendSourceFixtureTests!backend(text(
                 "alias T = ",
                 T.stringof,
                 ";",
@@ -50,7 +50,7 @@ static foreach (backend; backends) {
 
     @("integralTypeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             alias T = byte;
 
             T identity(T value) {
@@ -71,7 +71,7 @@ static foreach (backend; backends) {
 
     @("integralTypeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             alias T = ubyte;
 
             T identity(T value) {
@@ -92,7 +92,7 @@ static foreach (backend; backends) {
 
     @("integralTypeFailureMessage.uint.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             alias T = uint;
 
             T identity(T value) {

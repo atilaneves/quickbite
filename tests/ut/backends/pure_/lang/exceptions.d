@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("throwingTest." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 throw new Exception("boom");
             }
@@ -18,7 +18,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 try {
                     assert(false);
@@ -30,7 +30,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownException." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {
@@ -45,7 +45,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownExceptionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {
@@ -60,7 +60,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownExceptionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {
@@ -75,7 +75,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownExceptionFromCalledFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f() {
                 throw new Exception("expected");
             }
@@ -94,7 +94,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownExceptionFromCalledFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f() {
                 throw new Exception("expected");
             }
@@ -113,7 +113,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrownExceptionFromCalledFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f() {
                 throw new Exception("expected");
             }
@@ -132,7 +132,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrowAfterCalleeSideEffect." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker) {
                 marker = 1;
                 throw new Exception("expected");
@@ -157,7 +157,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrowAfterCalleeSideEffectFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker) {
                 marker = 1;
                 throw new Exception("expected");
@@ -180,7 +180,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesThrowAfterCalleeSideEffectFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker) {
                 marker = 1;
                 throw new Exception("expected");
@@ -203,7 +203,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesNestedBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void g(ref int marker, bool shouldThrow) {
                 if (shouldThrow) {
                     marker = 1;
@@ -240,7 +240,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesNestedBranchThrowFromCalledFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void g(ref int marker, bool shouldThrow) {
                 if (shouldThrow) {
                     marker = 1;
@@ -266,7 +266,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesNestedBranchThrowFromCalledFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void g(ref int marker, bool shouldThrow) {
                 if (shouldThrow) {
                     marker = 1;
@@ -298,7 +298,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker, int value) {
                 if (value == 1) {
                     marker = 1;
@@ -330,7 +330,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker, int value) {
                 if (value == 1) {
                     marker = 1;
@@ -357,7 +357,7 @@ static foreach (backend; backends) {
 
     @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void f(ref int marker, int value) {
                 if (value == 1) {
                     marker = 1;
@@ -384,7 +384,7 @@ static foreach (backend; backends) {
 
     @("throwPreservesExceptionMessage." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 throw new Exception("domain failure");
             }
@@ -395,7 +395,7 @@ static foreach (backend; backends) {
 
     @("finallyRunsAfterReturn." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int setAndReturn(ref int value) {
                 try {
                     return 1;
@@ -414,7 +414,7 @@ static foreach (backend; backends) {
 
     @("finallyRunsAfterReturnFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int setAndReturn(ref int value) {
                 try {
                     return 1;
@@ -432,7 +432,7 @@ static foreach (backend; backends) {
 
     @("finallyRunsAfterReturnFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int setAndReturn(ref int value) {
                 try {
                     return 1;
@@ -451,7 +451,7 @@ static foreach (backend; backends) {
 
     @("finallyReturnCapturesValueBeforeFinally." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readThenMutate(ref int value) {
                 try {
                     return value;
@@ -470,7 +470,7 @@ static foreach (backend; backends) {
 
     @("finallyReturnCapturesValueBeforeFinallyFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readThenMutate(ref int value) {
                 try {
                     return value;
@@ -488,7 +488,7 @@ static foreach (backend; backends) {
 
     @("finallyReturnCapturesValueBeforeFinallyFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readThenMutate(ref int value) {
                 try {
                     return value;
@@ -507,7 +507,7 @@ static foreach (backend; backends) {
 
     @("finallyBranchReturnsCaptureValueBeforeFinally." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readBranchThenMutate(ref int value, bool chooseFirst) {
                 try {
                     if (chooseFirst)
@@ -533,7 +533,7 @@ static foreach (backend; backends) {
 
     @("finallyBranchReturnsCaptureValueBeforeFinallyFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readBranchThenMutate(ref int value, bool chooseFirst) {
                 try {
                     if (chooseFirst)
@@ -554,7 +554,7 @@ static foreach (backend; backends) {
 
     @("finallyBranchReturnsCaptureValueBeforeFinallyFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int readBranchThenMutate(ref int value, bool chooseFirst) {
                 try {
                     if (chooseFirst)
@@ -575,7 +575,7 @@ static foreach (backend; backends) {
 
     @("catchHandlerRuns." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {
@@ -590,7 +590,7 @@ static foreach (backend; backends) {
 
     @("catchHandlerRunsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {
@@ -605,7 +605,7 @@ static foreach (backend; backends) {
 
     @("catchHandlerRunsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 try {

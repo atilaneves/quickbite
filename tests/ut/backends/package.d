@@ -15,9 +15,10 @@ auto newBackend(T)() {
     return new T;
 }
 
-public void runTests(T)(T backend, in string moduleSource) {
+public void runBackendSourceFixtureTests(T)(in string moduleSource) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
     auto parsed = parseModuleWithCheckActionContext(moduleSource);
+    auto backend = newBackend!T;
     backend.runParsedTests(parsed.module_);
 }

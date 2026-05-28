@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("nestedSliceWritesPropagateToOriginalArray." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[1 .. 4];
@@ -22,7 +22,7 @@ static foreach (backend; backends) {
 
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[1 .. 4];
@@ -35,7 +35,7 @@ static foreach (backend; backends) {
 
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[2 .. 5];
@@ -48,7 +48,7 @@ static foreach (backend; backends) {
 
     @("nestedSliceAppendKeepsOriginalArrayTail." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[1 .. 3];
@@ -61,7 +61,7 @@ static foreach (backend; backends) {
 
     @("nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[1 .. 3];
@@ -74,7 +74,7 @@ static foreach (backend; backends) {
 
     @("nestedSliceAppendKeepsOriginalArrayTailFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] a = [0, 1, 2, 3, 4];
                 int[] s = a[1 .. 4];
@@ -87,7 +87,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayAppendAssign." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto values = [0x2au];
                 values ~= 0x2bu;
@@ -98,7 +98,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayAppendAssignFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto values = [0x2au];
                 values ~= 0x2bu;
@@ -109,7 +109,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayAppendAssignFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto values = [0x2au];
                 values ~= 0x2bu;
@@ -121,7 +121,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexRead." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 assert(values[1] == 0x2au);
@@ -131,7 +131,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 assert(values[1] == 0x2bu);
@@ -141,7 +141,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexReadFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 assert(values[0] == 0x2au);
@@ -151,7 +151,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexWrite." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x00u];
                 values[1] = 0x2au;
@@ -162,7 +162,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexWriteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x00u];
                 values[1] = 0x2au;
@@ -173,7 +173,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayIndexWriteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x00u];
                 values[0] = 0x28u;
@@ -184,7 +184,7 @@ static foreach (backend; backends) {
 
     @("refUbyteArrayParameterAppend." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendAnswer(ref ubyte[] values) {
                 values ~= 0x2au;
             }
@@ -200,7 +200,7 @@ static foreach (backend; backends) {
 
     @("refUbyteArrayParameterAppendFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendAnswer(ref ubyte[] values) {
                 values ~= 0x2au;
             }
@@ -215,7 +215,7 @@ static foreach (backend; backends) {
 
     @("refUbyteArrayParameterAppendFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendAnswer(ref ubyte[] values) {
                 values ~= 0x2au;
             }
@@ -230,7 +230,7 @@ static foreach (backend; backends) {
 
     @("arrayLength." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 assert(arr.length == 3);
@@ -240,7 +240,7 @@ static foreach (backend; backends) {
 
     @("arrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 assert(arr.length == 4);
@@ -250,7 +250,7 @@ static foreach (backend; backends) {
 
     @("arrayLengthFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1, 2];
                 assert(arr.length == 3);
@@ -260,7 +260,7 @@ static foreach (backend; backends) {
 
     @("emptyArrayLength." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [];
                 assert(arr.length == 0);
@@ -270,7 +270,7 @@ static foreach (backend; backends) {
 
     @("emptyArrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [];
                 assert(arr.length == 1);
@@ -280,7 +280,7 @@ static foreach (backend; backends) {
 
     @("emptyArrayLengthFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] arr = [1];
                 assert(arr.length == 0);
@@ -290,7 +290,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualTrue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2, 3];
                 ubyte[] b = [1, 2, 3];
@@ -301,7 +301,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualTrueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2, 3];
                 ubyte[] b = [1, 2, 4];
@@ -312,7 +312,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualTrueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2];
                 ubyte[] b = [1, 2, 3];
@@ -323,7 +323,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualFalse." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2, 3];
                 ubyte[] b = [1, 2, 4];
@@ -334,7 +334,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualFalseFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2, 3];
                 ubyte[] b = [1, 2, 3];
@@ -345,7 +345,7 @@ static foreach (backend; backends) {
 
     @("arrayEqualFalseFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] a = [1, 2, 3];
                 ubyte[] b = [1, 2, 4];
@@ -356,7 +356,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayLiteralTruncatesElements." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 258;
                 ubyte[] arr = [cast(ubyte) value];
@@ -367,7 +367,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayLiteralTruncatesElementsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 258;
                 ubyte[] arr = [cast(ubyte) value];
@@ -378,7 +378,7 @@ static foreach (backend; backends) {
 
     @("ubyteArrayLiteralTruncatesElementsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value = 259;
                 ubyte[] arr = [cast(ubyte) value];
@@ -389,7 +389,7 @@ static foreach (backend; backends) {
 
     @("localDynamicArrayAppend." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values;
                 ubyte value = 42;
@@ -402,7 +402,7 @@ static foreach (backend; backends) {
 
     @("localDynamicArrayAppendFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values;
                 ubyte value = 42;
@@ -414,7 +414,7 @@ static foreach (backend; backends) {
 
     @("localDynamicArrayAppendFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values;
                 ubyte value = 42;
@@ -426,7 +426,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralElements." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] arr = [1, 2];
                 assert(arr[0] == 1);
@@ -437,7 +437,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralElementsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] arr = [1, 2];
                 assert(arr[0] == 2);
@@ -447,7 +447,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralElementsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int[] arr = [1, 2];
                 assert(arr[1] == 3);
@@ -457,7 +457,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralVariableElements." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int a = 10;
                 int b = 20;
@@ -470,7 +470,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralVariableElementsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int a = 10;
                 int b = 20;
@@ -482,7 +482,7 @@ static foreach (backend; backends) {
 
     @("arrayLiteralVariableElementsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 int a = 10;
                 int b = 20;
@@ -494,7 +494,7 @@ static foreach (backend; backends) {
 
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values;
                 assert(values.length == 0);
@@ -504,7 +504,7 @@ static foreach (backend; backends) {
 
     @("uninitializedDynamicArrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values;
                 assert(values.length == 1);
@@ -514,7 +514,7 @@ static foreach (backend; backends) {
 
     @("uninitializedDynamicArrayLengthFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x2au];
                 assert(values.length == 0);
@@ -524,7 +524,7 @@ static foreach (backend; backends) {
 
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append(ref ubyte[] values, ubyte value) {
                 values ~= value;
             }
@@ -541,7 +541,7 @@ static foreach (backend; backends) {
 
     @("refDynamicArrayParameterAppendFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append(ref ubyte[] values, ubyte value) {
                 values ~= value;
             }
@@ -557,7 +557,7 @@ static foreach (backend; backends) {
 
     @("refDynamicArrayParameterAppendFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append(ref ubyte[] values, ubyte value) {
                 values ~= value;
             }
@@ -573,7 +573,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceFromRuntimeBounds." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte first = cast(ubyte) 10;
                 ubyte second = cast(ubyte)(first + 32);
@@ -591,7 +591,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceFromRuntimeBoundsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte first = cast(ubyte) 10;
                 ubyte second = cast(ubyte)(first + 32);
@@ -608,7 +608,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceFromRuntimeBoundsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte first = cast(ubyte) 10;
                 ubyte second = cast(ubyte)(first + 32);
@@ -625,7 +625,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -646,7 +646,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -665,7 +665,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -684,7 +684,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceReturnValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] tail(ubyte[] values, size_t start, size_t stop) {
                 return values[start .. stop];
             }
@@ -706,7 +706,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceReturnValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] tail(ubyte[] values, size_t start, size_t stop) {
                 return values[start .. stop];
             }
@@ -727,7 +727,7 @@ static foreach (backend; backends) {
 
     @("dynamicArraySliceReturnValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] tail(ubyte[] values, size_t start, size_t stop) {
                 return values[start .. stop];
             }
@@ -748,7 +748,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueIndexesCallResult." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -765,7 +765,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueIndexesCallResultFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -782,7 +782,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueIndexesCallResultFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -799,7 +799,7 @@ static foreach (backend; backends) {
 
     @("postIncrementSizeTIndex." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 size_t index = 0;
@@ -811,7 +811,7 @@ static foreach (backend; backends) {
 
     @("postIncrementSizeTIndexFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 size_t index = 0;
@@ -823,7 +823,7 @@ static foreach (backend; backends) {
 
     @("postIncrementSizeTIndexFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
                 size_t index = 0;

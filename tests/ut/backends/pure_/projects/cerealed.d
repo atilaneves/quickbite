@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -32,7 +32,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -54,7 +54,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -76,7 +76,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 const value = bytes[position];
                 ++position;
@@ -99,7 +99,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 const value = bytes[position];
                 ++position;
@@ -121,7 +121,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 const value = bytes[position];
                 ++position;
@@ -143,7 +143,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 return bytes[position++];
             }
@@ -164,7 +164,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 return bytes[position++];
             }
@@ -184,7 +184,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
                 return bytes[position++];
             }
@@ -204,7 +204,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(T) length;
                 foreach (i; 0 .. T.sizeof)
@@ -227,7 +227,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(T) length;
                 foreach (i; 0 .. T.sizeof)
@@ -248,7 +248,7 @@ static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(T) length;
                 foreach (i; 0 .. T.sizeof)
