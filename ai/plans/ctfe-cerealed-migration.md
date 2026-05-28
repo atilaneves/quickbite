@@ -7,8 +7,8 @@ CTFE backend path while preserving fast, useful unittest feedback.
 
 This is not a plan to force the plain `Ctfe` backend to run all cerealed tests.
 The migration uses real cerealed modules as discovery input, extracts focused
-backend `pure_` tests from the behaviours they expose, and records unsupported
-runtime gaps as expected failures for a later `CtfePlus` backend.
+backend `pure_` tests from the behaviours they expose, and records true
+unsupported runtime gaps for a later `CtfePlus` backend.
 
 ## Current Baseline
 
@@ -73,8 +73,10 @@ For each module:
   cerealed-inspired behaviour.
 - Add extracted behaviours that plain CTFE handles as normal backend `pure_`
   tests.
-- Add extracted behaviours that plain CTFE does not handle as `@ShouldFail`
-  backend `pure_` tests with a concrete reason.
+- Add extracted behaviours where plain CTFE reports a useful diagnostic as
+  negative backend `pure_` tests that assert the exact message.
+- Use `@ShouldFail` only for real gaps that still need future implementation,
+  not for intentional CTFE diagnostics.
 
 Do not add a broad opt-in probe harness or a full always-on cerealed matrix.
 The workflow is deliberately one module at a time so each committed test has a
@@ -82,16 +84,17 @@ clear reason to exist.
 
 ## CtfePlus Follow-Up
 
-Do not introduce `CtfePlus` up front.
+`CtfePlus` is future work for runtime features that DMD CTFE cannot execute,
+such as `malloc`.
 
-After every cerealed module has been tried, review the extracted `@ShouldFail`
-tests. Introduce `CtfePlus` only when there is a concrete unsupported runtime
-gap to implement.
+After every cerealed module has been tried, review the remaining
+`@ShouldFail` tests and promote the first concrete unsupported runtime feature
+into the initial `CtfePlus` slice.
 
 `CtfePlus` should:
 
 - Implement `quickbite.backend.Backend`.
-- Delegate to plain CTFE first.
+- Let plain CTFE handle everything it can.
 - Add only the minimal missing support proven by an extracted expected-failing
   test.
 - Join the normal `ut.backends.backends` matrix only once it passes the
@@ -124,10 +127,10 @@ Keep this section updated as files are tried.
 | `cerealiser_impl.d` | Passed | Added backend file fixture. |
 | `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
 | `compile_time.d` | Passed | Added backend file fixture. |
-| `decode.d` | Blocked | Added bool decode test and exhaustion `@ShouldFail`. |
+| `decode.d` | Blocked | Added bool decode test; exhaustion should assert CTFE bounds diagnostic. |
 | `encode.d` | Blocked | Added int and float encode tests. |
-| `encode_decode.d` | Blocked | Added bool round-trip and exhaustion `@ShouldFail`. |
-| `enums.d` | Blocked | Added enum round-trip and exhaustion `@ShouldFail`. |
+| `encode_decode.d` | Blocked | Added bool round-trip; exhaustion should assert CTFE bounds diagnostic. |
+| `enums.d` | Blocked | Added enum round-trip; exhaustion should assert CTFE bounds diagnostic. |
 | `example.d` | Passed | Added dependency-free `Foo` round-trip example. |
 | `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
 | `nested.d` | Passed | Added dependency-free recursive nested AA byte layout. |
@@ -147,19 +150,19 @@ child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
 time.
 
 `decode.d` is blocked as a full fixture because exhausting a bool decoder reads
-past the end of cerealed's byte slice; DMD CTFE reports that as an uncaught
-bounds error instead of a catchable `RangeError`.
+past the end of cerealed's byte slice. DMD CTFE reports
+`array index 6 is out of bounds [0..6]`; assert that message.
 
 `encode.d` is blocked as a full fixture because cerealed's full test module
 still depends on dependency internals outside the extracted backend cases.
 
 `encode_decode.d` is blocked as a full fixture because its generic round-trip
-helper also checks for catchable exhaustion after consuming all bytes, which
-DMD CTFE reports as an uncaught bounds error.
+helper checks exhaustion after consuming all bytes. DMD CTFE reports
+`array index 5 is out of bounds [0..5]`; assert that message.
 
-`enums.d` is blocked as a full fixture because it also checks for catchable
-exhaustion after consuming all enum bytes, which DMD CTFE reports as an
-uncaught bounds error.
+`enums.d` is blocked as a full fixture because it checks exhaustion after
+consuming all enum bytes. DMD CTFE reports
+`array index 12 is out of bounds [0..12]`; assert that message.
 
 `range.d` is blocked as a full fixture because it reads the module-scope
 `gOutputBytes` buffer at compile time while testing output ranges.
