@@ -1867,6 +1867,56 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
+    @("conditionalExpressionTreatsNonNullPointerAsTrue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int classify(int seed) {
+                int[] values = [seed, seed + 1];
+                int* p = &values[0];
+
+                return p ? *p + 1 : 0;
+            }
+
+            unittest {
+                assert(classify(41) == 42);
+            }
+        });
+    }
+
+    @("conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int classify(int seed) {
+                int[] values = [seed, seed + 1];
+                int* p = &values[0];
+
+                return p ? *p + 1 : 0;
+            }
+
+            unittest {
+                assert(classify(41) == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int classify(int seed) {
+                int[] values = [seed, seed + 1];
+                int* p = &values[0];
+
+                return p ? *p + 1 : 0;
+            }
+
+            unittest {
+                assert(classify(7) == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
     @("newScalarPointerDereferencesRuntimeValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

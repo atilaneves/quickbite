@@ -248,6 +248,7 @@ that shim.
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
+| `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
 
 Coverage workflow details:
 
@@ -646,6 +647,34 @@ fills omitted entries with `defaultInit` before CTFE sees the
 `ex = copyLiteral(basis).copy();` uncovered. The apparent range-basis spelling
 `[0 .. 4: 0, 1: seed, 3: seed + 2]` is rejected by DMD 2.112, so this target
 is recorded as not reachable through normal D syntax.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 3
+
+Explorer recommendation 3 targeted the pointer-condition normalization path in
+`visit(CondExp)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe
+```
+
+Coverage effect: focused coverage marked the pointer branch in
+`visit(CondExp)` as hit, including `isPointer(e.econd.type)`,
+`econd.op != EXP.null_`, and `IntegerExp.createBool(true)`.
+
+Poke result: changing the behavior assertion from `42` to `43` failed the
+focused CTFE test with `42 != 43`; the temporary poke was reverted and the
+focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 
