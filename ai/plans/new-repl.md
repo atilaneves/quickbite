@@ -33,15 +33,14 @@ Completed in this PR:
   diagnostics.
 - Added GNU readline-backed terminal input to the REPL binary, including
   up-arrow traversal of past commands.
+- Added a standalone pseudo-TTY smoke test at `tests/run_repl.py` that runs
+  `bin/repl`, enters an expression, presses up-arrow, presses Enter, and
+  verifies the recalled command executes again.
+- Added `ci.sh` to run randomized unit tests, benchmarks, and the standalone
+  REPL smoke test before PRs.
 
 Remaining follow-up:
 
-- Next PR: add a very limited binary-level REPL test suite that runs
-  `bin/repl` under a pseudo-TTY instead of testing the binary through unit
-  tests. Keep it small and separate from normal `dub test` so subprocess
-  startup does not affect unittest latency. The first test should capture the
-  user-visible reason for the line-editing library: enter an expression, press
-  up-arrow, press Enter, and verify the recalled command executes again.
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
 - Improve function-call mismatch diagnostics so they include callable
   signatures. For example, after declaring `int twice(int i)`, calling
@@ -90,6 +89,8 @@ Remaining follow-up:
   - Remove `ut.executors.repl` from `tests/main.d`.
   - Do not add subprocess REPL tests to normal `dub test`.
   - Unit-test CLI option parsing without spawning `bin/repl`.
+  - Keep binary-level pseudo-TTY REPL checks in standalone scripts such as
+    `tests/run_repl.py`, outside the normal unittest build.
 
 ## Test Plan
 
@@ -121,7 +122,9 @@ Verification after implementation:
   `int x;`, `++x;`, `x`, a multiline function declaration, a call to that
   function, and `:q` into `bin/repl` and verify expression output appears while
   no-display cells stay quiet.
-- Run `bin/bench.sh` before preparing a PR.
+- Run `tests/run_repl.py` after `dub build -c repl` to verify interactive
+  terminal command history through a pseudo-TTY.
+- Run `ci.sh` before preparing a PR.
 
 ## Assumptions
 
