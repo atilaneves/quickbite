@@ -1079,4 +1079,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+
+    @ShouldFail(
+        "DMD CTFE returns <float not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("intToFloatCastUsesFloatPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int input = 16_777_217;
+                float converted = cast(float) input;
+
+                assert(converted == 16_777_216.0f);
+                assert(converted != 16_777_217.0);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <float not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("intToFloatCastUsesFloatPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int input = 16_777_217;
+                float converted = cast(float) input;
+
+                assert(converted != 16_777_216.0);
+            }
+        }).shouldThrowWithMessage("1.67772e+07 == 1.67772e+07");
+    }
 }
