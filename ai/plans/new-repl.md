@@ -46,11 +46,14 @@ Completed in this PR:
 
 Remaining follow-up:
 
-- Support REPL display for CTFE expression results that are not currently
-  representable as `quickbite.lang.Value`. For example, after
-  `import std.algorithm;`, `[1, 2, 3].map!(x => x * 2)` currently reports
-  `Unsupported CTFE eval result.` instead of displaying the evaluated range or
-  a useful representation.
+- Fix REPL display for valid CTFE results that are not currently converted to a
+  user-facing value. For example, after `import std.algorithm;`,
+  `[1, 2, 3].map!(x => x * 2)` currently reports
+  `Unsupported CTFE eval result.`. That diagnostic is wrong: real CTFE supports
+  the same operation when materialized, such as
+  `static assert(func([1, 2, 3]) == [2, 4, 6]);` with a function that returns
+  `ints.map!(x => x * 2).array`. Treat this as a REPL conversion/rendering bug,
+  not an unsupported CTFE evaluation.
 
 ## Key Changes
 
