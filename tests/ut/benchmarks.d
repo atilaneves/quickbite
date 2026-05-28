@@ -1,10 +1,22 @@
 module ut.benchmarks;
 
 
+import benchmarks.cli: run;
 import ut;
 
 
 private:
+
+@("benchmark.cliRejectsOldOptionSpelling")
+unittest {
+    run(["bench", "--executor=dmd-ctfe", "--help"])
+        .shouldThrowWithMessage("Unrecognized option --executor=dmd-ctfe");
+}
+
+@("benchmark.cliAcceptsBackendOption")
+unittest {
+    run(["bench", "--backend=ctfe", "--help"]);
+}
 
 @("benchmark.preParseReportsMissingFixture")
 unittest {

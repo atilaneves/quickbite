@@ -13,10 +13,17 @@ public class Ctfe: imported!"quickbite.backend".Backend {
 
     public override void runTests(in string moduleSource) {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         auto parsed = parseModuleWithCheckActionContext(moduleSource);
-        foreachUnitTestDeclaration(parsed.module_, (unitTest) {
+        runParsedTests(parsed.module_);
+    }
+
+    public override void runParsedTests(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        foreachUnitTestDeclaration(module_, (unitTest) {
             if (const failure = ctfeFailureMessage(callExpression(unitTest)))
                 throw new Exception(failure);
         });
