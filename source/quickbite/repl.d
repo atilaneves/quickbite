@@ -85,6 +85,9 @@ private struct SyntheticNameReplacement {
 
 private SyntheticNameReplacement syntheticNameReplacement(in string input)
 @safe pure nothrow {
+    import std.algorithm.searching: startsWith;
+    import std.ascii: isDigit;
+
     if (!input.startsWith("snippet_"))
         return SyntheticNameReplacement.init;
 
@@ -105,12 +108,4 @@ private SyntheticNameReplacement syntheticNameReplacement(in string input)
         return SyntheticNameReplacement(index + 1, "");
 
     return SyntheticNameReplacement.init;
-}
-
-private bool startsWith(in string value, in string prefix) @safe pure nothrow {
-    return value.length >= prefix.length && value[0 .. prefix.length] == prefix;
-}
-
-private bool isDigit(in char value) @safe pure nothrow {
-    return value >= '0' && value <= '9';
 }

@@ -99,18 +99,14 @@ static foreach (backend; backends) {
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
-        import std.algorithm.searching: canFind;
 
         auto repl = Repl(newBackend!backend);
 
         repl.submit("int twice(int i) { return i; }");
-        bool thrown;
-        try {
+        void duplicateDeclaration() {
             repl.submit("int twice(int i) { return i; }");
-        } catch (Exception exception) {
-            thrown = true;
-            exception.msg.canFind("snippet_").should == false;
         }
-        thrown.should == true;
+        duplicateDeclaration.shouldThrow.msg.should ==
+            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
     }
 }
