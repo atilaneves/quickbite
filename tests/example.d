@@ -456,3 +456,33 @@ unittest {
     assert(((values[0] != 0) || (++observed == 2)) == true);
     assert(observed == 2);
 }
+
+unittest {
+    uint[] values = [0x00f0u, 0x0f0fu, 0xff00u];
+
+    uint masked = values[0] & values[1];
+    assert(masked == 0u);
+
+    uint combined = values[0] | values[1];
+    assert(combined == 0x0fffu);
+
+    uint toggled = combined ^ values[2];
+    assert(toggled == 0xf0ffu);
+
+    uint shifted = (toggled << 4) >> 8;
+    assert(shifted == 0x0f0fu);
+
+    ushort narrowedWord = cast(ushort) toggled;
+    assert(narrowedWord == 0xf0ffu);
+
+    ubyte narrowedByte = cast(ubyte) shifted;
+    assert(narrowedByte == 0x0fu);
+
+    byte signedByte = cast(byte) narrowedWord;
+    assert(signedByte == cast(byte) -1);
+
+    short signedWord = cast(short) narrowedWord;
+    assert(signedWord == cast(short) -3841);
+
+    assert(cast(ubyte) ~narrowedByte == 0xf0u);
+}
