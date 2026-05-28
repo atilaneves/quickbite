@@ -125,7 +125,7 @@ Keep this section updated as files are tried.
 | `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
 | `compile_time.d` | Passed | Added backend file fixture. |
 | `decode.d` | Blocked | Added bool decode test and exhaustion `@ShouldFail`. |
-| `encode.d` | Blocked | Added int encode test and float encode `@ShouldFail`. |
+| `encode.d` | Blocked | Added int and float encode tests. |
 | `encode_decode.d` | Blocked | Added bool round-trip and exhaustion `@ShouldFail`. |
 | `enums.d` | Blocked | Added enum round-trip and exhaustion `@ShouldFail`. |
 
@@ -137,8 +137,8 @@ time.
 past the end of cerealed's byte slice; DMD CTFE reports that as an uncaught
 bounds error instead of a catchable `RangeError`.
 
-`encode.d` is blocked as a full fixture because cerealed's float encoding
-reinterprets `float*` as `uint*`, which DMD CTFE does not support.
+`encode.d` is blocked as a full fixture because cerealed's full test module
+still depends on dependency internals outside the extracted backend cases.
 
 `encode_decode.d` is blocked as a full fixture because its generic round-trip
 helper also checks for catchable exhaustion after consuming all bytes, which

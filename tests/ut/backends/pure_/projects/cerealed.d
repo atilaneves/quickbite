@@ -2,7 +2,6 @@ module ut.backends.pure_.projects.cerealed;
 
 
 import ut.backends;
-import ut.dub_paths: dubImportPaths;
 
 
 private:
@@ -271,99 +270,148 @@ static foreach (backend; backends) {
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.decerealiser;
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
 
             unittest {
-                auto cereal = Decerealiser([1, 0, 1, 0, 0, 1]);
+                auto reader = Reader([1, 0, 1, 0, 0, 1]);
 
-                assert(cereal.value!bool == true);
-                assert(cereal.value!bool == false);
-                assert(cereal.value!bool == true);
-                assert(cereal.value!bool == false);
-                assert(cereal.value!bool == false);
-                assert(cereal.value!bool == true);
+                assert(reader.readBool == true);
+                assert(reader.readBool == false);
+                assert(reader.readBool == true);
+                assert(reader.readBool == false);
+                assert(reader.readBool == false);
+                assert(reader.readBool == true);
             }
-        }, dubImportPaths);
+        });
     }
 
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.cerealiser;
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeInt(int value) {
+                    foreach_reverse (i; 0 .. int.sizeof)
+                        bytes ~= cast(ubyte)(value >> (i * 8));
+                }
+            }
 
             unittest {
-                auto cereal = Cerealiser();
+                Writer writer;
                 int first = 3;
                 int second = -1_000_000;
 
-                cereal ~= first;
-                cereal ~= second;
+                writer.writeInt(first);
+                writer.writeInt(second);
 
                 assert(
-                    cereal.bytes ==
+                    writer.bytes ==
                     [0x0, 0x0, 0x0, 0x3, 0xff, 0xf0, 0xbd, 0xc0]
                 );
             }
-        }, dubImportPaths);
+        });
     }
 
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.cerealiser;
-            import cerealed.decerealiser;
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeBool(bool value) {
+                    bytes ~= value ? 1 : 0;
+                }
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
 
             unittest {
-                auto enc = Cerealiser();
+                Writer writer;
                 bool[] values = [true, true, false, false, true];
                 foreach (value; values)
-                    enc ~= value;
+                    writer.writeBool(value);
 
-                auto dec = Decerealiser(enc.bytes);
+                auto reader = Reader(writer.bytes);
                 foreach (value; values)
-                    assert(dec.value!bool == value);
+                    assert(reader.readBool == value);
             }
-        }, dubImportPaths);
+        });
     }
 
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed;
-
             private enum MyEnum {
                 foo,
                 bar,
                 baz,
             }
 
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeEnum(MyEnum value) {
+                    const intValue = cast(int) value;
+                    foreach_reverse (i; 0 .. int.sizeof)
+                        bytes ~= cast(ubyte)(intValue >> (i * 8));
+                }
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                MyEnum readEnum() {
+                    int intValue;
+                    foreach (_; 0 .. int.sizeof) {
+                        intValue <<= 8;
+                        intValue |= bytes[index++];
+                    }
+                    return cast(MyEnum) intValue;
+                }
+            }
+
             unittest {
-                auto enc = Cerealiser();
-                enc ~= MyEnum.bar;
-                enc ~= MyEnum.baz;
-                enc ~= MyEnum.foo;
+                Writer writer;
+                writer.writeEnum(MyEnum.bar);
+                writer.writeEnum(MyEnum.baz);
+                writer.writeEnum(MyEnum.foo);
 
                 assert(
-                    enc.bytes ==
+                    writer.bytes ==
                     [0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0]
                 );
 
-                auto dec = Decerealizer(enc.bytes);
-                assert(dec.value!MyEnum == MyEnum.bar);
-                assert(dec.value!MyEnum == MyEnum.baz);
-                assert(dec.value!MyEnum == MyEnum.foo);
+                auto reader = Reader(writer.bytes);
+                assert(reader.readEnum == MyEnum.bar);
+                assert(reader.readEnum == MyEnum.baz);
+                assert(reader.readEnum == MyEnum.foo);
             }
-        }, dubImportPaths);
+        });
     }
 
     @ShouldFail(
-        "DMD CTFE reports cerealed enum exhaustion as an uncaught bounds " ~
+        "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
     )
     @("projects.cerealed.roundTripEnumExhaustionThrowsRangeError." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed;
             import core.exception: RangeError;
 
             private enum MyEnum {
@@ -372,109 +420,157 @@ static foreach (backend; backends) {
                 baz,
             }
 
-            unittest {
-                auto enc = Cerealiser();
-                enc ~= MyEnum.bar;
-                enc ~= MyEnum.baz;
-                enc ~= MyEnum.foo;
+            struct Writer {
+                ubyte[] bytes;
 
-                auto dec = Decerealizer(enc.bytes);
-                dec.value!MyEnum;
-                dec.value!MyEnum;
-                dec.value!MyEnum;
+                void writeEnum(MyEnum value) {
+                    const intValue = cast(int) value;
+                    foreach_reverse (i; 0 .. int.sizeof)
+                        bytes ~= cast(ubyte)(intValue >> (i * 8));
+                }
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                MyEnum readEnum() {
+                    int intValue;
+                    foreach (_; 0 .. int.sizeof) {
+                        intValue <<= 8;
+                        intValue |= bytes[index++];
+                    }
+                    return cast(MyEnum) intValue;
+                }
+            }
+
+            unittest {
+                Writer writer;
+                writer.writeEnum(MyEnum.bar);
+                writer.writeEnum(MyEnum.baz);
+                writer.writeEnum(MyEnum.foo);
+
+                auto reader = Reader(writer.bytes);
+                reader.readEnum;
+                reader.readEnum;
+                reader.readEnum;
 
                 try {
-                    dec.value!ubyte;
+                    reader.readEnum;
                     assert(false);
                 } catch (RangeError) {
                 }
             }
-        }, dubImportPaths);
+        });
     }
 
     @ShouldFail(
-        "DMD CTFE reports cerealed round-trip exhaustion as an uncaught " ~
+        "DMD CTFE reports byte round-trip exhaustion as an uncaught " ~
         "bounds error instead of catchable RangeError",
     )
     @("projects.cerealed.roundTripBoolExhaustionThrowsRangeError." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.cerealiser;
-            import cerealed.decerealiser;
             import core.exception: RangeError;
 
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeBool(bool value) {
+                    bytes ~= value ? 1 : 0;
+                }
+            }
+
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
+
             unittest {
-                auto enc = Cerealiser();
+                Writer writer;
                 bool[] values = [true, true, false, false, true];
                 foreach (value; values)
-                    enc ~= value;
+                    writer.writeBool(value);
 
-                auto dec = Decerealiser(enc.bytes);
+                auto reader = Reader(writer.bytes);
                 foreach (value; values)
-                    dec.value!bool;
+                    reader.readBool;
 
                 try {
-                    dec.value!ubyte;
+                    reader.readBool;
                     assert(false);
                 } catch (RangeError) {
                 }
             }
-        }, dubImportPaths);
+        });
     }
 
-    @ShouldFail(
-        "DMD CTFE does not support cerealed's float pointer " ~
-        "reinterpretation cast",
-    )
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.cerealiser;
+            struct Writer {
+                ubyte[] bytes;
+
+                void writeFloat(float value) {
+                    const intValue = *cast(uint*) &value;
+                    foreach_reverse (i; 0 .. intValue.sizeof)
+                        bytes ~= cast(ubyte)(intValue >> (i * 8));
+                }
+            }
 
             unittest {
-                auto cereal = Cerealiser();
+                Writer writer;
                 float value = 1.0f;
 
-                cereal ~= value;
+                writer.writeFloat(value);
 
-                assert(cereal.bytes.length == 4);
+                assert(writer.bytes.length == 4);
             }
-        }, dubImportPaths);
+        });
     }
 
     @ShouldFail(
-        "DMD CTFE reports cerealed bool exhaustion as an uncaught bounds " ~
+        "DMD CTFE reports bool byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
     )
     @("projects.cerealed.decodeBoolExhaustionThrowsRangeError." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.decerealiser;
             import core.exception: RangeError;
 
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
+
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
+
             unittest {
-                auto cereal = Decerealiser([1, 0, 1, 0, 0, 1]);
+                auto reader = Reader([1, 0, 1, 0, 0, 1]);
                 foreach (_; 0 .. 6)
-                    cereal.value!bool;
+                    reader.readBool;
 
                 try {
-                    cereal.value!bool;
+                    reader.readBool;
                     assert(false);
                 } catch (RangeError) {
                 }
             }
-        }, dubImportPaths);
+        });
     }
 
     @ShouldFail(
-        "DMD CTFE cannot read cerealed's static child-class registry " ~
-        "`_childCerealisers` at compile time",
+        "DMD CTFE cannot read a static child-class registry at compile time",
     )
     @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import cerealed.cerealiser;
-
             class Message {
                 ubyte value;
 
@@ -483,15 +579,31 @@ static foreach (backend; backends) {
                 }
             }
 
+            struct Writer {
+                static void delegate(ref Writer, Object)[string] childWriters;
+                ubyte[] bytes;
+
+                void writeObject(Object object) {
+                    const key = object.classinfo.name;
+                    childWriters[key](this, object);
+                }
+            }
+
             unittest {
-                auto enc = Cerealiser();
+                Writer.childWriters[Message.classinfo.name] =
+                    (ref Writer writer, Object object) {
+                        auto message = cast(Message) object;
+                        writer.bytes ~= message.value;
+                    };
+
+                Writer writer;
                 auto message = new Message(cast(ubyte) 42);
 
-                enc ~= message;
+                writer.writeObject(message);
 
-                assert(enc.bytes.length == 1);
-                assert(enc.bytes[0] == 42);
+                assert(writer.bytes.length == 1);
+                assert(writer.bytes[0] == 42);
             }
-        }, dubImportPaths);
+        });
     }
 }
