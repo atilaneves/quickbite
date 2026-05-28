@@ -188,6 +188,7 @@ that shim.
 | `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
 | `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
+| `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 
 Coverage workflow details:
 
@@ -286,6 +287,46 @@ Method-level change in the fresh focused audit:
   covered. The focused run leaves 17 uncovered executable lines, including
   resume-target handling, `with(Enum)` or `with(Type)` body execution, and
   exceptional-expression paths.
+
+### 2026-05-28 Worker 3 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+statement visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.control_flow.foreachExpressionTupleBreakAndContinue.Ctfe
+```
+
+- The test covers valid non-static `foreach` over an expression tuple built
+  from mutable locals via `AliasSeq`, with local `continue` and `break`
+  handling in the unrolled loop body.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.control_flow.foreachExpressionTupleBreakAndContinue.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
+  to partially covered. The focused run leaves 8 uncovered executable lines,
+  including resume-target handling, exceptional-expression paths, and the
+  return/thrown-expression forwarding path.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `2 != 3` diagnostic, then the
+  focused tests passed again after reverting the poke.
+- `dub test` still has an unrelated order-sensitive failure in
+  `ut.executors.deps.cerealed.cerealed.decode.d.ir`; that test passes when run
+  alone.
 
 ## Acceptance Criteria
 
