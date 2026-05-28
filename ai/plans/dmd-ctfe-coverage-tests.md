@@ -120,6 +120,34 @@ Suggested columns:
 Update the table as tests are approved and added. Do not leave uncovered
 reachable methods as undocumented backlog.
 
+### 2026-05-28 Workflow Slice
+
+The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
+`dmd.dinterpret` coverage without editing files under `~/.dub/packages`.
+Run it from any directory in the checkout, passing optional unit-threaded test
+names as script arguments, for example:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.intAddition.Ctfe
+```
+
+The script forces the `unittest-cov` build so dependency coverage is rebuilt,
+runs the selected CTFE backend tests, copies the newest non-empty
+`dmd.dinterpret` `.lst` file to `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`,
+and writes an initial uncovered visitor report to
+`tmp/dmd-ctfe-coverage/dmd-dinterpret-audit.md`.
+
+The previous `dmd.cpreprocess`/`dmd.link` linker failure was caused by
+`dmd:frontend` compiling `dmd.cpreprocess` while excluding `dmd.link`.  The
+`unittest-cov` configuration now includes a coverage-only Quickbite-owned
+`dmd.link` shim under `tests/coverage`; ordinary `dub test` does not compile
+that shim.
+
+| DMD CTFE area | Coverage status | Test or reason | Notes |
+| --- | --- | --- | --- |
+| Coverage workflow | Covered | `scripts/dmd-ctfe-coverage.sh ut.backends.pure_.lang.expressions.intAddition.Ctfe` | Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to `tmp/dmd-ctfe-coverage`. |
+
 ## Acceptance Criteria
 
 - Fresh coverage for `dmd.dinterpret` can be generated from this repository.
