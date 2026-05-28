@@ -77,16 +77,21 @@ where Quickbite benefits from inspecting the representation.
 
 ## TDD Plan
 
-Stop for approval before adding or modifying each test.
+Autonomous run in `value-structs`: the user explicitly approved proceeding
+without pausing for each test.
 
-1. Add one red struct test in `ut.lang`: two equal `Point` values compare equal,
+1. [done] Add one red struct test in `ut.lang`: two equal `Point` values
+   compare equal,
    and a different `Point` compares unequal.
-2. Implement the minimal `Struct` arm and `Value(T)` construction for structs.
-3. Add a second approved struct test proving two distinct struct types with the
-   same fields compare unequal.
-4. Add approved tests one category at a time for `AssocArray`, `Union`,
+2. [done] Implement the minimal `Struct` arm and `Value(T)` construction for
+   structs.
+3. [done] Add a second struct test proving two distinct struct types with the
+   same name and fields compare unequal.
+4. [done] Add a struct `text` test proving `Value(Point(...)).text` matches
+   D's compiler-generated `Point(...).text` representation.
+5. Add approved tests one category at a time for `AssocArray`, `Union`,
    `ClassRef`, `InterfaceRef`, `Pointer`, `Delegate`, and `FunctionRef`.
-5. After each green step, run the focused `ut.lang` test. After the edit
+6. After each green step, run the focused `ut.lang` test. After the edit
    session, run `dub test -- --random`.
 
 ## Assumptions

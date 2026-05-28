@@ -2,6 +2,7 @@ module ut.lang;
 
 
 import unit_threaded; // replace with `ut` later when we can due to `Value`
+import std.conv: text;
 import quickbite.lang;
 
 
@@ -77,6 +78,40 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value([2.2, 3.3]).should.not == Value([1.1, 2.2]);
 }
 
+@("value.struct.sameTypeFields")
+@safe pure unittest {
+    static struct Point {
+        int x;
+        int y;
+    }
+
+    Value(Point(1, 2)).should == Value(Point(1, 2));
+    Value(Point(2, 3)).should.not == Value(Point(1, 2));
+}
+
+@("value.struct.distinctTypes")
+@safe pure unittest {
+    Value firstPoint() @safe pure {
+        static struct Point {
+            int x;
+            int y;
+        }
+
+        return Value(Point(1, 2));
+    }
+
+    Value secondPoint() @safe pure {
+        static struct Point {
+            int x;
+            int y;
+        }
+
+        return Value(Point(1, 2));
+    }
+
+    firstPoint.should.not == secondPoint;
+}
+
 @("value.mixed.bool.int")
 @safe pure unittest {
     Value(false).should.not == Value(0);
@@ -91,6 +126,16 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
 @safe pure unittest {
     Value(3).toString.should == "3: int";
     Value(3u).toString.should == "3: uint";
+}
+
+@("value.text.struct")
+@safe pure unittest {
+    static struct Point {
+        int x;
+        uint y;
+    }
+
+    Value(Point(1, 2)).text.should == Point(1, 2).text;
 }
 
 @("value.string")

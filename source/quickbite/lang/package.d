@@ -28,18 +28,29 @@ public struct Value {
         real,
 
         Array,
+        Struct,
     );
 
-    private Data data;
+    private Data data = Data(Void.init);
 
     public static Value void_() @safe pure {
         return Value(Void.init);
     }
 
+    private this(in Void value) @safe pure {
+        data = Data(value);
+    }
+
     public this(T)(in T value) @safe pure
-    if (!is(T == E[], E))
+    if (!is(T == E[], E) && !is(T == struct))
     {
         data = Data(value);
+    }
+
+    public this(T)(in T value) @safe pure
+    if (is(T == struct) && !is(T == Void))
+    {
+        data = Data(Struct(value));
     }
 
     public this(T)(in T[] values) @safe pure {
@@ -52,6 +63,22 @@ public struct Value {
 
     public bool opEquals(in Value other) const @safe pure {
         return data == other.data;
+    }
+
+    private string dText() const @safe pure {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+                static if (is(T == const(Struct))) {
+                    return value.toString;
+                } else {
+                    return text(value);
+                }
+            },
+        );
     }
 
     public string toString() const @safe pure {
@@ -77,6 +104,8 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
+                } else static if (is(T == const(Struct))) {
+                    return value.toString;
                 } else {
                     return data.toString;
                 }
@@ -91,6 +120,46 @@ private struct Array {
 
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
+    }
+}
+
+
+private struct Struct {
+    public string typeName;
+    public string typeIdentity;
+    public Field[] fields;
+
+    public this(T)(in T value) @safe pure
+    if (is(T == struct))
+    {
+        typeName = T.stringof;
+        typeIdentity = T.mangleof;
+
+        static foreach (member; __traits(allMembers, T)) {
+            fields ~= Field(member, Value(__traits(getMember, value, member)));
+        }
+    }
+
+    public string toString() const @safe pure {
+        string ret = typeName ~ "(";
+
+        foreach (i, field; fields) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= field.toString;
+        }
+
+        return ret ~ ")";
+    }
+}
+
+
+private struct Field {
+    public string name;
+    public Value value;
+
+    public string toString() const @safe pure {
+        return value.dText;
     }
 }
 
