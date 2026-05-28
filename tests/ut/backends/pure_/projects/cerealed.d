@@ -1003,15 +1003,9 @@ static foreach (backend; backends) {
         });
     }
 
-    @ShouldFail(
-        "DMD CTFE reports bool byte exhaustion as an uncaught bounds " ~
-        "error instead of catchable RangeError",
-    )
-    @("projects.cerealed.decodeBoolExhaustionThrowsRangeError." ~ backend.stringof)
+    @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import core.exception: RangeError;
-
             struct Reader {
                 ubyte[] bytes;
                 size_t index;
@@ -1026,13 +1020,9 @@ static foreach (backend; backends) {
                 foreach (_; 0 .. 6)
                     reader.readBool;
 
-                try {
-                    reader.readBool;
-                    assert(false);
-                } catch (RangeError) {
-                }
+                reader.readBool;
             }
-        });
+        }).shouldThrowWithMessage("array index 6 is out of bounds `[0..6]`");
     }
 
     @ShouldFail(
