@@ -231,4 +231,58 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+
+    @("logicalAndCallShortCircuit." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert(!(isReady && failIfCalled));
+            }
+        });
+    }
+
+    @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert((isReady && failIfCalled) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool isReady() {
+                return true;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert(!(isReady && failIfCalled));
+            }
+        }).shouldThrowWithMessage("`assert(0)` failed");
+    }
 }
