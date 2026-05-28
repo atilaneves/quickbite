@@ -55,6 +55,18 @@ static foreach (backend; backends) {
         output.should == ["1: int"];
     }
 
+    @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["int twice(int i) { return i * 2; }", "twice(21)", ":q"],
+        );
+
+        output.should == ["42: int"];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

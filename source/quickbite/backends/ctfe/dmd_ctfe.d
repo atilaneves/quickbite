@@ -24,7 +24,7 @@ public class Ctfe: imported!"quickbite.backend".Backend {
                     throw new Exception(failure);
                 return Value.void_;
             case expression:
-                return eval(cell.source);
+                return evalReplSource(cell.source);
         }
     }
 
@@ -80,6 +80,10 @@ private imported!"dmd.expression".CallExp evalCall(in string str) {
     return callExpression(functionDeclaration(parsed.module_, "f"));
 }
 
+private imported!"quickbite.lang".Value evalReplSource(in string source) {
+    return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
+}
+
 private string evalSource(in string str) {
     import std.string: lastIndexOf;
 
@@ -92,7 +96,7 @@ private string evalSource(in string str) {
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
     import quickbite.frontend.compiler: parseModule;
 
-    auto parsed = parseModule("auto f() { " ~ source ~ " }");
+    auto parsed = parseModule(source);
     return functionDeclaration(parsed.module_, "f");
 }
 

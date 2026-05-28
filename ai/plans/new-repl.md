@@ -23,13 +23,13 @@ Completed in this PR:
 - Moved `repl/main.d` to instantiate CTFE directly.
 - Added library-level CLI option parser tests for default CTFE,
   `--backend ctfe`, `-b ctfe`, and unknown backends.
+- Supported function declarations without requiring semicolons after function
+  bodies. For example, `int twice(int i) { return i * 2; }` is accepted as a
+  no-display cell and `twice(21)` displays `42: int`.
 
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
-- Support function declarations without requiring semicolons after function
-  bodies. For example, `int twice(int i) { return i * 2; }` should be accepted
-  as a no-display cell and `twice(21)` should display `42: int`.
 - Add incomplete-input buffering if desired.
 
 ## Key Changes
