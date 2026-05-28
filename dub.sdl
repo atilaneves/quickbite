@@ -20,7 +20,6 @@ configuration "unittest" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests" "benchmarks"
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d"
-    excludedSourceFiles "tests/ut/executors/repl.d"
     includePaths "tests" "benchmarks"
     versions "unitUnthreaded"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
@@ -40,7 +39,6 @@ configuration "unittest-cov" {
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests" "tests/coverage"
-    excludedSourceFiles "tests/ut/executors/repl.d"
     includePaths "tests"
     versions "unitUnthreaded"
 

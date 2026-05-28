@@ -42,10 +42,18 @@ Completed in this PR:
   matching to include callable signatures, including overload candidates.
 - Supported import declarations as no-display REPL cells. For example,
   `import std.algorithm;` persists and a later expression can call `min`.
+- Removed dead executor REPL APIs after the backend REPL path replaced them.
 
 Remaining follow-up:
 
-- Remove or migrate dead executor REPL APIs after callers no longer need them.
+- Fix REPL display for valid CTFE results that are not currently converted to a
+  user-facing value. For example, after `import std.algorithm;`,
+  `[1, 2, 3].map!(x => x * 2)` currently reports
+  `Unsupported CTFE eval result.`. That diagnostic is wrong: real CTFE supports
+  the same operation when materialized, such as
+  `static assert(func([1, 2, 3]) == [2, 4, 6]);` with a function that returns
+  `ints.map!(x => x * 2).array`. Treat this as a REPL conversion/rendering bug,
+  not an unsupported CTFE evaluation.
 
 ## Key Changes
 
@@ -131,8 +139,8 @@ Verification after implementation:
 ## Assumptions
 
 - Follow-up slices happen in a task-specific worktree and branch.
-- This slice does not remove executor classes or unrelated executor APIs.
-- Existing executor REPL methods may remain as dead code if nothing uses them.
+- This slice does not remove executor classes or unrelated executor APIs beyond
+  the dead executor REPL entrypoint.
 - The REPL remains CTFE-only for now, but the API must avoid CTFE-specific
   duplication so later backends can implement `evalRepl(ReplCell)`.
 - The current generated expression-history strategy is preserved unless the new

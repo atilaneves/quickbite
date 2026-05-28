@@ -76,20 +76,6 @@ public struct ReplSession {
     }
 }
 
-public imported!"quickbite.executor".Repl.CellResult evalReplCell(
-    imported!"quickbite.executor".Executor executor,
-    in string transcript,
-    in string input,
-) {
-    import quickbite.executor: Repl;
-
-    if (isExpressionCell(input))
-        return Repl.CellResult.value_(executor.eval(transcript ~ input));
-
-    executor.runVoidReplCell(transcript, input);
-    return Repl.CellResult.void_;
-}
-
 private bool isExpressionCell(in string input) {
     if (isDeclarationCell(input))
         return false;

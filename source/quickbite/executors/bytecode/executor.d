@@ -41,13 +41,6 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override imported!"quickbite.executor".Value eval(in string input) {
         throw new Exception("eval not yet implemented for bytecode");
     }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        throw new Exception("eval not yet implemented for bytecode");
-    }
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(

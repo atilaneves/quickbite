@@ -303,13 +303,6 @@ public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor 
     public override imported!"quickbite.executor".Value eval(in string input) {
         throw new Exception("eval not yet implemented for dmdCodegen");
     }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        throw new Exception("eval not yet implemented for dmdCodegen");
-    }
 }
 
 public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
@@ -393,13 +386,6 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
-        throw new Exception("eval not yet implemented for dmdCodegen");
-    }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
         throw new Exception("eval not yet implemented for dmdCodegen");
     }
 }
