@@ -45,4 +45,34 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+
+    @("logicalNot." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady);
+            }
+        });
+    }
+
+    @("logicalNotFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalNotFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool isReady = true;
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
