@@ -485,6 +485,36 @@ Poke result: changing the behavior test assertion from `10` to `11` failed the
 focused CTFE test with `10 != 11`; the temporary poke was reverted and the
 focused tests were rerun green.
 
+### 2026-05-28 Worker 8 CTFE Slice
+
+Explorer recommendation 1 targeted `visit(TypeidExp)` in `dmd.dinterpret`,
+specifically the class-reference path that interprets the operand and rebuilds
+`typeid` from the dynamic class.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClass.Ctfe
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClassFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClassFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.typeidClassReferenceUsesDynamicClass.Ctfe
+```
+
+Coverage effect: focused coverage moved `visit(TypeidExp)` from whole-method
+uncovered to partially covered, with the dynamic class-reference path hit once.
+The focused audit reports 8 uncovered executable lines remaining for null,
+internal-error, exception, and fallback paths.
+
+Poke result: changing the behavior test assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
 ### 2026-05-28 Final PR Broad Coverage Summary
 
 Broad coverage command:
