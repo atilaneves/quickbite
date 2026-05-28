@@ -7,28 +7,56 @@ small source-order slices. The executor tests are source material only: copy the
 D fixture shape and expected language behaviour, but do not import, call, or
 exercise executor code from backend tests or backend implementation.
 
-Use branch/worktree `ctfe-pure-backend-tests` at
-`worktrees/ctfe-pure-backend-tests`. Use one shared slice worktree for the main
-agent and subagents. Land one coherent migrated source-order slice per PR.
+Start each migration PR from a fresh worktree under `worktrees/`, named after
+the branch for that PR. Do not reuse a stale completed migration branch unless
+the user explicitly asks for it.
+
+Pick one unmigrated source-order module per PR, such as `logic.d`, and migrate
+that module test by test. Keep going until the module is complete or until a
+true red backend gap needs a focused implementation. If the whole module
+migrates without a true red, create the PR with the migrated tests and handoff
+plan update.
 
 ## Key Changes
 
 - Treat existing backend `eval.d` coverage as complete.
 - Add unittest-style Ctfe backend tests under `tests/ut/backends/pure_`, using
   valid D source that contains `unittest` blocks.
-- When asking for test approval, show the exact proposed test bodies in a
-  language-tagged code block. A raw unified diff alone is not a readable
-  approval artifact.
+- This migration plan intentionally does not use a per-test approval gate.
+  These tests are migrations of previously approved executor tests, not new
+  language-surface coverage. Apply migrated backend tests directly, then verify
+  them with the probe/focused-test/audit-poke loop below.
+- When subagents are available for a migration, each source-order executor test
+  must be migrated by its own subagent. The main agent orchestrates the queue,
+  assigns one test at a time, reviews and integrates the returned patch, runs
+  verification, commits, and then assigns the next test. The main agent should
+  not perform the per-test migration work itself. Use `gpt-5.5` with low
+  reasoning for these per-test migration worker subagents.
 - Do not convert unittest fixtures into REPL-only snippets that are not valid D.
-- Each migrated positive test needs a matching negative assertion probe. Passing
-  unittests do not print or throw, so the negative probe proves the unittest ran
-  and exposes the observed value through the failure diagnostic.
+- Each migrated positive test needs at least two matching negative assertion
+  probes when practical. Passing unittests do not print or throw, so the
+  negative probes prove the unittest ran, expose the observed value through the
+  failure diagnostic, and make naive canned implementations harder to satisfy.
+- The negative probes should fail in different ways. For example, if the
+  positive test proves `answer == 42`, add one probe expecting `43` and another
+  fixture shape whose observed value is different, such as `7`, expecting `8`.
+  If a second negative probe would be meaningless or would broaden the fixture
+  beyond the migrated language behaviour, document why one probe is enough in
+  the handoff.
 - All negative assertion probes must check `-checkaction=context`-style failure
   messages. Always verify the actual CTFE engine output for the failing
   assertion before encoding the expected diagnostic. "Actual CTFE engine
   output" means a real DMD command such as
   `dmd -o- -checkaction=context fixture.d`, not only the current
   dmd-as-a-library wrapper output.
+- DMD CLI diagnostic probes must stay inside the active migration worktree.
+  Delegate these probes to a subagent whenever subagents are available for the
+  migration. The main agent should integrate the reported diagnostics instead
+  of running ad hoc probes itself. The probing subagent should prefer
+  temporarily editing the backend test fixture under migration, then restore it
+  before reporting. If a separate fixture file is truly needed, create it only
+  inside the active worktree, delete it before reporting, and mention why the
+  backend test file itself was not enough.
 - If DMD CLI output and dmd-as-a-library output disagree, first check whether
   Quickbite's DMD global state matches the CLI switches used by the oracle. For
   assertion diagnostics, `global.params.checkAction` must be
@@ -40,8 +68,8 @@ agent and subagents. Land one coherent migrated source-order slice per PR.
   executor plumbing:
   - Keep `unittest` blocks and assertions in the backend source.
   - Copy only the fixture shape needed to express the language behaviour.
-  - For `assert(x == expected)`, keep the positive assertion and add a negative
-    probe that makes the same observable value fail.
+  - For `assert(x == expected)`, keep the positive assertion and add negative
+    probes that make the same observable value fail in different ways.
   - Mutation/control-flow tests assert the final observable value.
   - Struct tests assert a field or derived scalar/array value.
   - Exception tests assert the catch result or message string when that is the D
@@ -49,8 +77,8 @@ agent and subagents. Land one coherent migrated source-order slice per PR.
   - Diagnostic/unittest-failure tests keep only the underlying D feature
     behavior unless the diagnostic itself is the behavior under migration.
 - If a migrated positive test passes immediately, keep it as already-supported
-  behavior only after the negative probe has failed with the verified CTFE
-  diagnostic.
+  behavior only after the negative probes have failed with verified CTFE
+  diagnostics.
 
 ## Architecture Constraints
 
@@ -78,10 +106,9 @@ agent and subagents. Land one coherent migrated source-order slice per PR.
 
 ## Review Gates
 
-Before adding a converted backend test, use judgment on whether a conversion
-reviewer is useful. Source-preserving migrations that keep the same valid-D
-fixture and add only the required negative diagnostic probe do not need a
-separate conversion reviewer.
+Use judgment on whether a conversion reviewer is useful. Source-preserving
+migrations that keep the same valid-D fixture and add only the required
+negative diagnostic probes do not need a separate conversion reviewer.
 
 When used, the conversion reviewer must check that:
 
@@ -89,7 +116,7 @@ When used, the conversion reviewer must check that:
 - No important behavior was lost while moving to Ctfe backend coverage.
 - The source remains valid D.
 - The positive unittest has a clear observable assertion.
-- The negative probe verifies the same observable value with a
+- The negative probes verify the same observable value with a
   `-checkaction=context`-style diagnostic checked against real CTFE output.
 - Runtime-shaped fixtures still avoid accidental constant folding.
 - The conversion does not introduce unrelated backend API expansion.
@@ -97,45 +124,59 @@ When used, the conversion reviewer must check that:
 - The implementation contains no fallback path or broad support not forced by
   the focused migrated test.
 
-After implementation, spawn or reuse a reviewer subagent to review the
-production change before committing.
+Use subagents for every per-test migration when subagents are available. Do not
+require an additional conversion reviewer subagent for straightforward
+source-preserving test migration where the worker subagent keeps the same
+valid-D fixture shape and only adds the required negative probes.
+
+After implementation, spawn or reuse a reviewer subagent to review production
+changes before committing.
 
 If a task handoff contradicts this plan, `AGENTS.md`, or `ai/mistakes.md`,
 stop and ask. Do not treat the handoff as an exception unless the user
 explicitly approves the exact exception after seeing the conflicting rule.
 
-## Subagent Workflow Per Migrated Slice
+## Migration Workflow Per Module
 
-1. The coordinator picks the next unmigrated executor pure test or coherent
-   source-order group in source order and assigns exactly one migration
-   subagent when useful.
-2. The migration subagent mechanically copies the executor test shape into the
-   backend test module:
-   - Preserve the D fixture body as literally as possible.
-   - Change only the harness from executor API calls to backend API calls.
-   - Add the matching negative assertion probe for the same observable value.
-   - Do not edit production code.
-   - Stop with the proposed test diff for user approval before the coordinator
-     applies or asks for edits to the test.
-3. After test approval, the coordinator applies the test and assigns a separate
-   verifier subagent.
-4. The verifier subagent runs the focused backend test and verifies the
-   negative probe against real CTFE output:
-   - First run a real DMD CLI probe with `-checkaction=context` for the fixture
-     shape whose diagnostic will be encoded.
-   - If in-process CTFE disagrees with the CLI probe, inspect the DMD global
-     parameters before changing tests or adding backend diagnostic code.
-   - If the focused test is green, report that no production code is currently
-     justified.
-   - If the focused test is red, report the exact failing test, observed
-     diagnostic, expected diagnostic, and why the failure is the intended
-     language gap.
-   - The verifier does not edit tests or production code.
-5. For a verifier-confirmed red Ctfe gap, the coordinator assigns exactly one
-   implementer subagent with bounded ownership of the production files needed
-   for that single red test.
-6. The implementer subagent writes the smallest production change that makes
-   only that focused test pass:
+1. Create a fresh branch and worktree for the PR.
+2. Pick the next unmigrated executor pure module from the migration order.
+3. Migrate tests from that module one by one, in source order. Assign each
+   source-order executor test to a dedicated subagent worker; the main agent
+   must not do the per-test conversion itself when subagents are available.
+   Spawn each per-test migration worker as `gpt-5.5` with low reasoning.
+4. For each executor test:
+   - The worker subagent copies the valid-D fixture shape into the matching
+     backend module.
+   - The worker subagent changes only the harness from executor API calls to
+     backend API calls.
+   - The worker subagent adds at least two matching negative assertion probes
+     when practical.
+   - The worker subagent verifies each negative diagnostic against real DMD CLI
+     output with
+     `dmd -o- -checkaction=context` before encoding or adjusting the expected
+     message. Run this from the active worktree and keep probe edits in the
+     backend test file being migrated whenever possible; do not create probe
+     files outside the worktree. The worker reports the verified message
+     fragments and any temporary probe method used.
+   - The main agent reviews and integrates the worker patch, preserving
+     source-order placement and rejecting unrelated edits.
+   - Run the focused backend test including `ut.backends.architecture`.
+   - If the positive test is green, run an audit poke before committing:
+     temporarily change the positive assertion's expected value so the positive
+     test fails, run the focused test, confirm the failure reports the intended
+     observed value or behavior, then restore the source to pristine condition.
+     Do not commit the poke.
+   - If the positive test and probes are green, commit that migrated test.
+   - If the test is red, investigate whether this is a true backend gap.
+   - If the red is caused by DMD CTFE floating-point assertion formatter
+     placeholders such as `<float not supported>`, treat it as fake red: mark
+     the affected test with `@ShouldFail(...)`, document the formatter reason,
+     verify, commit, and continue.
+   - If it is a true red, stop normal migration, implement the smallest backend
+     change for that behaviour, verify, commit, and then continue the module
+     only if the PR remains coherent.
+5. For a true red Ctfe gap, keep implementation bounded to the production files
+   needed for that single red test:
    - Do not add general diagnostic filtering, assertion walking, fallback
      behaviour, executor integration, or support for a future fixture shape.
    - For a single migrated assertion-diagnostic test, production changes should
@@ -145,38 +186,35 @@ explicitly approves the exact exception after seeing the conflicting rule.
    - Reuse existing backend/eval machinery instead of duplicating CTFE
      evaluation paths.
    - Stop once the focused test is green.
-7. The coordinator reviews the implementer diff. If the implementation is
-   broader than the focused test requires, delete or delegate deletion until the
-   focused test is the reason every remaining line exists.
-   Before committing, compare the production diff against the single failing
-   test. If any helper exists only to support future shapes, broad
-   reconstruction, or diagnostic cleanup, remove it before verification.
-8. Run the focused backend test including `ut.backends.architecture`. Run
-   `dub test` before committing unless the session owner explicitly narrows
-   verification to focused tests.
-9. For every migrated positive test that is green, run an audit poke before
-   committing: temporarily change the positive assertion's expected value so
-   the positive test fails, run that focused test, confirm the failure reports
-   the intended observed value or behavior, then restore the source to pristine
-   condition. Do not commit the poke.
-10. Spawn or reuse a reviewer subagent only after the focused implementation is
+6. Review the implementation diff. If the implementation is broader than the
+   focused test requires, delete or delegate deletion until the focused test is
+   the reason every remaining line exists. Before committing, compare the
+   production diff against the single failing test. If any helper exists only to
+   support future shapes, broad reconstruction, or diagnostic cleanup, remove
+   it before verification.
+7. Spawn or reuse a reviewer subagent only after the focused implementation is
    minimal and green.
-11. Present implementation-review findings one by one; apply only approved
-    fixes.
-12. Commit the completed migrated test and implementation as one commit.
-13. Stop after that migrated slice and create a PR. Do not start the next
-    slice in the same PR.
+8. Present implementation-review findings one by one; apply only approved
+   fixes.
+9. Run `dub test` before creating the PR unless the session owner explicitly
+   narrows verification to focused tests.
+10. Stop after the chosen module is migrated, or after the agreed coherent
+    module subset is complete. Create a PR before starting the next module.
 
 ## PR Boundary
 
-The orchestrator must stop after one migrated source-order slice and create a
-PR. A slice may contain a coherent group such as the integer binary operations
-in `expressions.d`; do not mix unrelated language areas in one PR.
+The orchestrator must stop after one migrated source-order module, or one
+agreed coherent module subset, and create a PR. Do not mix unrelated language
+areas in one PR.
 
 At that point:
 
 - Run `dub test`.
 - Ensure all review comments are resolved.
+- Update this plan's handoff section with the migrated module, the last
+  committed test or module boundary, any fake reds marked `@ShouldFail`, any
+  true backend gaps fixed, exact verification commands run, and the next
+  module/test a following agent should start from.
 - Push the branch.
 - Create a PR.
 - Open the PR in the browser, following repo instructions.
@@ -201,8 +239,13 @@ At that point:
 - Include `ut.backends.architecture` in focused backend verification.
 - Verify every negative assertion diagnostic against the actual CTFE engine
   output before encoding the expected message. Use a real DMD CLI probe with
-  `-checkaction=context`; do not treat current wrapper output as canonical when
-  it disagrees with the CLI.
+  `-checkaction=context` from inside the active worktree; do not treat current
+  wrapper output as canonical when it disagrees with the CLI. The per-test
+  worker subagent owns this verification and reports the exact message
+  fragments to encode.
+- Add at least two negative assertion probes for each migrated positive test
+  when practical, with different observed values or failure shapes to catch
+  naive implementations.
 - Run `dub test` after every implementation/review cycle and before each
   commit, unless the session owner explicitly narrows verification to focused
   tests.
@@ -216,8 +259,9 @@ At that point:
 - Scope includes all current `tests/ut/executors/pure_` tests, including
   minicereal and cerealed project-inspired tests.
 - Existing backend `eval.d` migration is accepted as complete.
-- One commit per migrated slice.
-- Shared slice worktree for main agent, implementer, and reviewer subagents.
+- Commit each successfully migrated test before continuing to the next test.
+- Use a fresh migration worktree per PR unless the user explicitly asks to
+  reuse an existing worktree.
 
 ## Handoff Status
 
@@ -230,6 +274,9 @@ Completed migrations:
   `intBitwiseAnd`, and `intBitwiseXor`.
 - PR 46 migrated the remaining source-order `expressions.d` slice through
   `ubyteLocalTruncatesOnStore`, after the earlier expression PRs.
+- Current `ctfe-pure-logic` branch migrated all source-order `logic.d`
+  fixtures, including the final dmd-codegen-only comparison-operands fixture
+  as `logicalAndComparisonOperands`.
 
 Implemented so far:
 
@@ -242,6 +289,8 @@ Implemented so far:
   default compiler API state.
 - Removed post-failure unittest body walking for assertion diagnostics. Ctfe
   backend unittest failures now surface DMD diagnostics from CTFE execution.
+- Added `tests/ut/backends/pure_/lang/logic.d`.
+- Wired the backend logic module into `tests/main.d`.
 - Removed the rejected PR 46 Ctfe backend fallback for DMD CTFE floating-point
   assertion diagnostics that contain placeholders such as
   `<double not supported>`. Do not restore or refine that fallback.
@@ -274,6 +323,13 @@ Verification completed:
   reported `43 test(s) run, 0 failed, 1/1 failing as expected`.
 - After adding the expected-failure marker, full verification passed:
   `dub test` reported `873 test(s) run, 0 failed, 1/1 failing as expected`.
+- Current `ctfe-pure-logic` branch focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.logic`.
+- Current `ctfe-pure-logic` branch full verification passed:
+  `dub test` reported
+  `947 test(s) run, 0 failed, 9/9 failing as expected`.
+- No true Ctfe backend gaps were found while migrating `logic.d`.
+- No new `@ShouldFail` fake reds were needed while migrating `logic.d`.
 
 Review feedback learned:
 
@@ -316,19 +372,21 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next MR should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/logic.d`.
+`tests/ut/executors/pure_/lang/control_flow.d`.
 
-Start by adding the Ctfe backend logic test module under
-`tests/ut/backends/pure_/lang/logic.d` and wiring it into `tests/main.d` if it
-does not already exist. Then migrate source-order logic fixtures one test at a
-time, using the same positive unittest, negative assertion probe, DMD oracle,
+Start by adding the Ctfe backend control-flow test module under
+`tests/ut/backends/pure_/lang/control_flow.d` and wiring it into
+`tests/main.d` if it does not already exist. Then migrate source-order
+control-flow fixtures one test at a time, using per-test `gpt-5.5` low
+subagents, the same positive unittest, negative assertion probes, DMD oracle,
 audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
 `dub test`, and per-migration commit rules.
 
 ## Handoff After PR 46 Cleanup
 
-- Branch/worktree: `ctfe-pure-backend-tests` at
-  `worktrees/ctfe-pure-backend-tests`.
+- Historical branch/worktree: PR 46 used `ctfe-pure-backend-tests` at
+  `worktrees/ctfe-pure-backend-tests`. Do not reuse it for the next PR unless
+  the user explicitly asks for it.
 - Current implementation includes the PR 46 floating-point tests, removal of
   the rejected fallback, and the expected-failure marker for DMD CTFE's
   floating-point assert-message formatting limitation.
@@ -343,7 +401,7 @@ audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
   repair this after failure, shadow druntime modules, or create an unofficial
   hook.
 - Next agent should start the next MR from
-  `tests/ut/executors/pure_/lang/logic.d`. Continue migrations one logic test
-  at a time until a true red is found. If no true red is found in `logic.d`,
-  create the PR for that module. Floating assertion formatter placeholders
-  remain expected-fail migration cases, not true reds.
+  `tests/ut/executors/pure_/lang/control_flow.d`. Continue migrations one
+  control-flow test at a time until a true red is found. If no true red is
+  found in `control_flow.d`, create the PR for that module. Floating assertion
+  formatter placeholders remain expected-fail migration cases, not true reds.
