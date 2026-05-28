@@ -149,7 +149,7 @@ private bool isModuleDeclarationCell(in string input) {
         result = !parsed.diagnostics.hasErrors &&
             parsed.module_.members !is null &&
             parsed.module_.members.length != 0 &&
-            allFunctionDeclarations(parsed.module_.members) &&
+            allReplModuleDeclarations(parsed.module_.members) &&
             global.errors == 0;
     });
 
@@ -187,6 +187,20 @@ private bool isIncompleteCell(in string input) {
     });
 
     return result;
+}
+
+private bool allReplModuleDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {
+    foreach (declaration; *declarations) {
+        if (!isReplModuleDeclaration(declaration))
+            return false;
+    }
+
+    return true;
+}
+
+private bool isReplModuleDeclaration(imported!"dmd.dsymbol".Dsymbol declaration) {
+    return declaration.isFuncDeclaration !is null ||
+        declaration.isImport !is null;
 }
 
 private bool allFunctionDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {

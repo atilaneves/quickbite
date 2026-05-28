@@ -85,6 +85,18 @@ static foreach (backend; backends) {
         output.should == ["42: int"];
     }
 
+    @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["import std.algorithm;", "min(3, 1)", ":q"],
+        );
+
+        output.should == ["1: int"];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
