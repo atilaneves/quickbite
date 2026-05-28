@@ -350,4 +350,15 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalOrOops." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                bool right = false;
+                assert(left || right);
+            }
+        }).shouldThrowWithMessage("`assert(left || right)` failed");
+    }
 }
