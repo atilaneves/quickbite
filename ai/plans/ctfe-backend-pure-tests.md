@@ -396,15 +396,8 @@ Review feedback learned:
   variants are the same formatter limitation, not separate true reds. Do not
   leave a bare `@ShouldFail`.
 
-Next migration step should move to the next module in the migration order:
-`tests/ut/executors/pure_/projects/cerealed.d`.
-
-Start by adding the matching Ctfe backend test module and wiring it into
-`tests/main.d` if it does not already exist. Then migrate the whole source
-module at once, keeping tests in their original order and using the same
-positive unittest, negative assertion probes, DMD oracle, broad audit-poke,
-`@ShouldFail` formatter-placeholder, focused verification, full `dub test`,
-and per-module commit rules.
+All modules in the current Ctfe backend pure migration order have been
+migrated. No next migration module remains.
 
 ## Handoff After Structs Migration
 
