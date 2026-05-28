@@ -30,7 +30,10 @@ Completed in this PR:
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
-- Add incomplete-input buffering if desired.
+- Add incomplete-input buffering. Multiline declarations such as
+  `int thrice(int i) {` currently parse as a complete cell and produce
+  diagnostics instead of prompting for the function body before evaluating the
+  whole declaration.
 
 ## Key Changes
 
