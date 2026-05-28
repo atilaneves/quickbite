@@ -187,6 +187,7 @@ that shim.
 | `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
+| `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
 
 Coverage workflow details:
 
@@ -254,6 +255,37 @@ Unsupported target:
   both reach DMD CTFE's ``cannot be interpreted at compile time`` diagnostic.
   No passing behavior test was kept for the array-of-arrays operand-wrapping
   branch.
+
+### 2026-05-28 Worker 2 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for a whole uncovered
+statement visitor in `dmd.dinterpret`:
+
+- Test:
+
+```text
+ut.backends.pure_.lang.structs.withStructInstanceUsesRuntimeShapedFields.Ctfe
+```
+
+- The test covers valid `with (structInstance)` behavior with mutable struct
+  fields and a mutable local value so the field updates are interpreted at
+  CTFE.
+- The paired failure-message tests cover the same behavior through the local
+  assertion diagnostic pattern.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.structs.withStructInstanceUsesRuntimeShapedFields.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitWith(WithStatement)` moved from whole method uncovered to partially
+  covered. The focused run leaves 17 uncovered executable lines, including
+  resume-target handling, `with(Enum)` or `with(Type)` body execution, and
+  exceptional-expression paths.
 
 ## Acceptance Criteria
 
