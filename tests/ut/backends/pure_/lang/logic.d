@@ -317,4 +317,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalOr." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert(left || right);
+            }
+        });
+    }
+
+    @("logicalOrFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert((left || right) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalOrFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                bool right = false;
+                assert((left || right) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
