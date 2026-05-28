@@ -78,6 +78,12 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value([2.2, 3.3]).should.not == Value([1.1, 2.2]);
 }
 
+@("value.assocArray.intInt")
+@safe pure unittest {
+    Value([1: 10, 2: 20]).should == Value([1: 10, 2: 20]);
+    Value([1: 10, 2: 30]).should.not == Value([1: 10, 2: 20]);
+}
+
 @("value.struct.sameTypeFields")
 @safe pure unittest {
     static struct Point {

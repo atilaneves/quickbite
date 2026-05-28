@@ -28,6 +28,7 @@ public struct Value {
         real,
 
         Array,
+        AssocArray,
         Struct,
     );
 
@@ -42,7 +43,11 @@ public struct Value {
     }
 
     public this(T)(in T value) @safe pure
-    if (!is(T == E[], E) && !is(T == struct))
+    if (
+        !is(T == E[], E) &&
+        !is(T == V[K], V, K) &&
+        !is(T == struct)
+    )
     {
         data = Data(value);
     }
@@ -59,6 +64,10 @@ public struct Value {
             elements ~= Value(value);
 
         data = Data(Array(elements));
+    }
+
+    public this(K, V)(in V[K] values) @safe pure {
+        data = Data(AssocArray(values));
     }
 
     public bool opEquals(in Value other) const @safe pure {
@@ -121,6 +130,22 @@ private struct Array {
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
     }
+}
+
+
+private struct AssocArray {
+    public Entry[] entries;
+
+    public this(K, V)(in V[K] values) @safe pure {
+        foreach (key, value; values)
+            entries ~= Entry(Value(key), Value(value));
+    }
+}
+
+
+private struct Entry {
+    public Value key;
+    public Value value;
 }
 
 
