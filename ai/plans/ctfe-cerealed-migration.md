@@ -120,4 +120,11 @@ Keep this section updated as files are tried.
 
 | Cerealed file | Status | Notes |
 | --- | --- | --- |
-| `compile_time.d` | Passed | Added backend file fixture using DUB import paths. |
+| `bugs.d` | Passed | Added backend file fixture. |
+| `cerealiser_impl.d` | Passed | Added backend file fixture. |
+| `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
+| `compile_time.d` | Passed | Added backend file fixture. |
+
+`classes.d` is blocked as a full fixture because it reads cerealed's static
+child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
+time.
