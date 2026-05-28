@@ -389,3 +389,14 @@ unittest {
     assert(cereal.get!long(pos) == -0x0102030405060708L);
     assert(pos == cereal.bytes.length);
 }
+
+unittest {
+    Minicereal cereal;
+    cereal.bytes = [2u, 4u, 6u, 8u];
+
+    uint weightedSum;
+    foreach (i, value; cereal.bytes)
+        weightedSum += cast(uint)(i + 1) * value;
+
+    assert(weightedSum == 60);
+}
