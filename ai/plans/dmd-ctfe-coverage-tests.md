@@ -835,6 +835,64 @@ Poke result: changing the expected diagnostic substring from array index `3`
 to `2` failed the focused test with the expected diagnostic mismatch; the
 temporary poke was reverted and the focused test was rerun green.
 
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Final Summary
+
+Branch `dmd-ctfe-coverage-tests-6` started from:
+
+```text
+e030826e6c945a439782e005071b453c3c8556ef
+```
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Starting commit broad baseline | 2126 | 3764 | 56.48% |
+| Final branch broad coverage | 2134 | 3764 | 56.70% |
+
+Delta: +0.21 percentage points.
+
+Method-level changes from the kept test slices:
+
+- `visit(NewExp)` struct allocation branch covered by
+  `newStructAllocatesMutableInstance.Ctfe`.
+- `visit(CondExp)` pointer-condition normalization covered by
+  `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`.
+- `visitTryCatch(TryCatchStatement)` non-matching catch skip covered by
+  `catchSkipsNonMatchingSiblingException.Ctfe`.
+- `visitDtorExp(DtorExpStatement)` moved from whole-method uncovered to
+  covered by `scopeDestructorRunsAtCtfe.Ctfe`.
+- `visitDefault(DefaultStatement)` moved from whole-method uncovered to
+  covered by `switchFallsThroughToDefault.Ctfe`.
+- `recursivelyCreateArrayLiteral` char dynamic-array branch covered by
+  `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`.
+- `resolveIndexing(IndexExp)` direct dynamic-array out-of-bounds diagnostic
+  covered by `dynamicArrayIndexPastLengthDiagnostic.Ctfe`.
+
+Rejected or not-kept targets:
+
+- `visit(ArrayLiteralExp)` omitted-element copy is not reachable through the
+  indexed initializer spelling because semantic lowering densifies the
+  initializer before CTFE.
+- A valid `try`/`finally` throwing-finally fixture was poke-checked but did not
+  hit `visitTryFinally`; the temporary tests were reverted.
+
+Verification notes:
+
+- Each kept additive behavior or diagnostic test was poke-checked and restored
+  before commit.
+- `dub test -- --random` passed after the final additive diagnostic slice with
+  1601 tests run, 0 failed, and 28/28 failing as expected. Seed:
+  `1659556447`.
+- Final broad coverage passed with 766 tests run, 0 failed, and 28/28 failing
+  as expected.
+
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 
 Branch `dmd-ctfe-coverage-tests-4` added additive CTFE coverage tests in eight
