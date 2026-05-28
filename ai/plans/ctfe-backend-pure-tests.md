@@ -272,6 +272,8 @@ Completed migrations:
   `logicalAndComparisonOperands`.
 - Current `ctfe-pure-control-flow` branch migrated all `control_flow.d`
   fixtures in one module-sized slice.
+- Current `ctfe-backend-pure-tests` branch migrated all `arrays.d` fixtures in
+  one module-sized slice.
 
 Implemented so far:
 
@@ -288,6 +290,8 @@ Implemented so far:
 - Wired the backend logic module into `tests/main.d`.
 - Added `tests/ut/backends/pure_/lang/control_flow.d`.
 - Wired the backend control-flow module into `tests/main.d`.
+- Added `tests/ut/backends/pure_/lang/arrays.d`.
+- Wired the backend arrays module into `tests/main.d`.
 - Removed the rejected PR 46 Ctfe backend fallback for DMD CTFE floating-point
   assertion diagnostics that contain placeholders such as
   `<double not supported>`. Do not restore or refine that fallback.
@@ -338,6 +342,19 @@ Verification completed:
   `1053 test(s) run, 0 failed, 9/9 failing as expected`.
 - No true Ctfe backend gaps were found while migrating `control_flow.d`.
 - No new `@ShouldFail` fake reds were needed while migrating `control_flow.d`.
+- Current `ctfe-backend-pure-tests` branch focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.arrays`.
+- Current `ctfe-backend-pure-tests` branch audit poke passed: temporarily
+  changing all 20 positive arrays backend tests to expect a sentinel throw made
+  the focused command go red with 20 unit-threaded failures; the file was
+  restored and focused verification passed again.
+- Current `ctfe-backend-pure-tests` branch full verification passed:
+  `dub test` reported
+  `1116 test(s) run, 0 failed, 9/9 failing as expected`.
+- Current `ctfe-backend-pure-tests` branch benchmark smoke passed:
+  `benchmarks/run.sh`.
+- No true Ctfe backend gaps were found while migrating `arrays.d`.
+- No new `@ShouldFail` fake reds were needed while migrating `arrays.d`.
 
 Review feedback learned:
 
@@ -380,7 +397,7 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next MR should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/arrays.d`.
+`tests/ut/executors/pure_/lang/structs.d`.
 
 Start by adding the matching Ctfe backend test module and wiring it into
 `tests/main.d` if it does not already exist. Then migrate the whole source
@@ -388,6 +405,26 @@ module at once, keeping tests in their original order and using the same
 positive unittest, negative assertion probes, DMD oracle, broad audit-poke,
 `@ShouldFail` formatter-placeholder, focused verification, full `dub test`,
 and per-module commit rules.
+
+## Handoff After Arrays Migration
+
+- Branch/worktree: `ctfe-backend-pure-tests` at
+  `worktrees/ctfe-backend-pure-tests`.
+- Migrated all current `tests/ut/executors/pure_/lang/arrays.d` fixtures to
+  `tests/ut/backends/pure_/lang/arrays.d`.
+- Added negative assertion probes for observable passing tests where
+  practical.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.arrays`.
+- Audit poke passed: all 20 positive migrated arrays tests were temporarily
+  changed to expect a sentinel throw, and unit-threaded reported all 20
+  failures in one focused run. The poke was restored.
+- Full verification passed: `dub test` reported
+  `1116 test(s) run, 0 failed, 9/9 failing as expected`.
+- Benchmark smoke passed: `benchmarks/run.sh`.
+- Next agent should start the next MR from
+  `tests/ut/executors/pure_/lang/structs.d`.
 
 ## Handoff After Control Flow Migration
 
