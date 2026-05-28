@@ -52,7 +52,7 @@ public void run(string[] args) {
     }
 
     if (fixtures.length == 0 && dubFixtures.length == 0)
-        fixtures = ["tests/minicereal.d"];
+        fixtures = ["tests/example.d"];
 
     if (!isOptimisedBuild) {
         throw new Exception(

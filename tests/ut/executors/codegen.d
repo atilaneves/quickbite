@@ -181,7 +181,7 @@ unittest {
         // codegen symbols such as `__bzeroBytes` from the first object into
         // the second; the linker then rejects the generated objects before
         // the test runs.
-        auto module_ = parseModule(readText("tests/minicereal.d")).module_;
+        auto module_ = parseModule(readText("tests/example.d")).module_;
         auto executorName = new DmdCodegen;
 
         executorName.runParsedTests(module_);

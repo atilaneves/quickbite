@@ -918,5 +918,5 @@ static foreach (backend; backends) {
 }
 
 private string minicerealSource(in string suffix = "") {
-    return readText("tests/minicereal.d") ~ suffix;
+    return readText("tests/example.d") ~ suffix;
 }

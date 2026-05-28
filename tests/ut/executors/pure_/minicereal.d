@@ -10,7 +10,7 @@ static foreach (executorName; matureExecutorNames) {
     unittest {
         import std.file: readText;
 
-        readText("tests/minicereal.d").runTests(executorName);
+        readText("tests/example.d").runTests(executorName);
     }
 
     @("minicerealEncodeUbyte." ~ executorName.text)
@@ -18,7 +18,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     ubyte[] output;
                     encode!ubyte(0x2au, output);
@@ -34,7 +34,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     ubyte[] buf = [0x2au];
                     size_t pos = 0;
@@ -50,7 +50,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     ubyte[] input = [0x99u, 0x2au];
                     size_t pos = 1;
@@ -66,7 +66,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     ubyte[] input = [0xffu, 0xffu, 0xffu, 0xffu];
                     size_t pos = 0;
@@ -82,7 +82,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     const value = -42;
                     ubyte[] buf;
@@ -99,7 +99,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     ubyte[] buf;
                     encode(0x8070605040302010UL, buf);
@@ -124,7 +124,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     assert(cereal.bytes.length == 0);
@@ -138,7 +138,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.bytes ~= 0x2au;
@@ -154,7 +154,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.bytes ~= cast(ubyte) 42;
@@ -171,7 +171,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.bytes = [0];
@@ -188,7 +188,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x2au);
@@ -204,7 +204,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x2au);
@@ -220,7 +220,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x2au);
@@ -237,7 +237,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put(0x01020304);
@@ -253,7 +253,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x99u);
@@ -270,7 +270,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.bytes = [1, 2, 3, 4];
@@ -286,7 +286,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x99u);
@@ -303,7 +303,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x2au);
@@ -320,7 +320,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put(42);
@@ -337,7 +337,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.bytes = [4u, 3u, 2u, 1u];
@@ -354,7 +354,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     const value = 0x8070605040302010UL;
                     Minicereal cereal;
@@ -374,7 +374,7 @@ static foreach (executorName; matureExecutorNames) {
         import std.file: readText;
 
         (
-            readText("tests/minicereal.d") ~ q{
+            readText("tests/example.d") ~ q{
                 unittest {
                     Minicereal cereal;
                     cereal.put!ubyte(0x2au);
