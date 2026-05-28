@@ -67,6 +67,24 @@ static foreach (backend; backends) {
         output.should == ["42: int"];
     }
 
+    @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int thrice(int i) {",
+                "return i * 3;",
+                "}",
+                "thrice(14)",
+                ":q",
+            ],
+        );
+
+        output.should == ["42: int"];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

@@ -3,6 +3,7 @@ module quickbite.frontend.repl;
 private:
 
 public enum ReplCellKind {
+    incomplete,
     noDisplay,
     expression,
 }
@@ -26,6 +27,9 @@ public struct ReplSession {
 
     public ReplCell submit(in string input) {
         import std.conv: text;
+
+        if (isIncompleteCell(input))
+            return ReplCell(ReplCellKind.incomplete);
 
         if (isModuleDeclarationCell(input))
             return ReplCell(
@@ -86,7 +90,7 @@ public imported!"quickbite.executor".Repl.CellResult evalReplCell(
     return Repl.CellResult.void_;
 }
 
-bool isExpressionCell(in string input) {
+private bool isExpressionCell(in string input) {
     if (isDeclarationCell(input))
         return false;
 
@@ -123,7 +127,7 @@ bool isExpressionCell(in string input) {
     return result;
 }
 
-bool isModuleDeclarationCell(in string input) {
+private bool isModuleDeclarationCell(in string input) {
     import dmd.errors: diagnostics;
     import dmd.frontend: parseModule;
     import dmd.globals: global;
@@ -152,11 +156,40 @@ bool isModuleDeclarationCell(in string input) {
     return result;
 }
 
-bool isDeclarationCell(in string input) {
+private bool isDeclarationCell(in string input) {
     return isModuleDeclarationCell(input);
 }
 
-bool allFunctionDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {
+private bool isIncompleteCell(in string input) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: parseModule;
+    import dmd.globals: global;
+    import std.conv: text;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        import core.atomic: atomicFetchAdd;
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        auto parsed = parseModule(
+            text("repl_cell_", atomicFetchAdd(_replModuleCounter, 1u), ".d"),
+            input,
+        );
+        result = parsed.diagnostics.hasErrors &&
+            parsed.module_.members !is null &&
+            parsed.module_.members.length != 0 &&
+            allFunctionDeclarations(parsed.module_.members) &&
+            hasDiagnosticAtEnd(input);
+    });
+
+    return result;
+}
+
+private bool allFunctionDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {
     foreach (declaration; *declarations) {
         if (declaration.isFuncDeclaration is null)
             return false;
@@ -165,7 +198,19 @@ bool allFunctionDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {
     return true;
 }
 
-string replSource(in string moduleTranscript, in string localTranscript) {
+private bool hasDiagnosticAtEnd(in string input) {
+    import dmd.errors: diagnostics, ErrorKind;
+
+    foreach (diagnostic; diagnostics) {
+        if (diagnostic.kind == ErrorKind.error &&
+            diagnostic.loc.fileOffset == input.length)
+            return true;
+    }
+
+    return false;
+}
+
+private string replSource(in string moduleTranscript, in string localTranscript) {
     return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
 }
 
