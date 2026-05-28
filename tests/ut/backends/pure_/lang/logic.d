@@ -285,4 +285,36 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+
+    @("logicalOrBoolResult." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                assert((2 || false) == true);
+            }
+        });
+    }
+
+    @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                assert((2 || false) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            bool zero() {
+                return false;
+            }
+
+            unittest {
+                bool left = zero;
+                assert((left || false) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
