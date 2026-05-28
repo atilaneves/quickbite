@@ -924,15 +924,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("array index 12 is out of bounds `[0..12]`");
     }
 
-    @ShouldFail(
-        "DMD CTFE reports byte round-trip exhaustion as an uncaught " ~
-        "bounds error instead of catchable RangeError",
-    )
-    @("projects.cerealed.roundTripBoolExhaustionThrowsRangeError." ~ backend.stringof)
+    @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import core.exception: RangeError;
-
             struct Writer {
                 ubyte[] bytes;
 
@@ -960,13 +954,9 @@ static foreach (backend; backends) {
                 foreach (value; values)
                     reader.readBool;
 
-                try {
-                    reader.readBool;
-                    assert(false);
-                } catch (RangeError) {
-                }
+                reader.readBool;
             }
-        });
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..5]`");
     }
 
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
