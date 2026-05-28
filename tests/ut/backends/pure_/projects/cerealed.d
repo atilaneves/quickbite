@@ -438,6 +438,53 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeLength(ref ubyte[] bytes, size_t length) {
+                const narrowed = cast(ushort) length;
+                foreach_reverse (i; 0 .. ushort.sizeof)
+                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
+            }
+
+            void writeInt(ref ubyte[] bytes, int value) {
+                foreach_reverse (i; 0 .. int.sizeof)
+                    bytes ~= cast(ubyte)(value >> (i * 8));
+            }
+
+            ubyte[] encode(int[][] values) {
+                ubyte[] bytes;
+                writeLength(bytes, values.length);
+                foreach (row; values) {
+                    writeLength(bytes, row.length);
+                    foreach (value; row)
+                        writeInt(bytes, value);
+                }
+                return bytes;
+            }
+
+            unittest {
+                int[][] values = [
+                    [3, 5, 6],
+                    [-3, 6, int.max, int.min],
+                ];
+
+                assert(values.encode == [
+                    0, 2,
+                        0, 3,
+                            0, 0, 0, 3,
+                            0, 0, 0, 5,
+                            0, 0, 0, 6,
+                        0, 4,
+                            255, 255, 255, 253,
+                              0,   0,   0,   6,
+                            127, 255, 255, 255,
+                            128,   0,   0,   0,
+                ]);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",

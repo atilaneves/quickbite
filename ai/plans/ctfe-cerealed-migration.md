@@ -129,6 +129,7 @@ Keep this section updated as files are tried.
 | `encode_decode.d` | Blocked | Added bool round-trip and exhaustion `@ShouldFail`. |
 | `enums.d` | Blocked | Added enum round-trip and exhaustion `@ShouldFail`. |
 | `example.d` | Passed | Added dependency-free `Foo` round-trip example. |
+| `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
