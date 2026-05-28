@@ -134,6 +134,13 @@ Keep this section updated as files are tried.
 | `pointers.d` | Passed | Added dependency-free pointer-to-int byte layout. |
 | `property.d` | Passed | Added dependency-free `ubyte` length array round-trip. |
 | `protocol_unit.d` | Passed | Added dependency-free length-field packet round-trip. |
+| `range.d` | Blocked | Added dependency-free input range byte layout. |
+| `reset.d` | Blocked | Added dependency-free reader reset slice test. |
+| `static_array.d` | Blocked | Added dependency-free static array no-length round-trip. |
+| `structs.d` | Blocked | Added dependency-free bit-packed struct header round-trip. |
+| `utils.d` | Passed | Added backend file fixture. |
+
+Every cerealed file listed in this migration plan has now been tried.
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
@@ -153,3 +160,17 @@ DMD CTFE reports as an uncaught bounds error.
 `enums.d` is blocked as a full fixture because it also checks for catchable
 exhaustion after consuming all enum bytes, which DMD CTFE reports as an
 uncaught bounds error.
+
+`range.d` is blocked as a full fixture because it reads the module-scope
+`gOutputBytes` buffer at compile time while testing output ranges.
+
+`reset.d` is blocked as a full fixture because its empty decerealiser test
+indexes a null byte array at compile time, which DMD CTFE reports as an
+uncaught bounds error instead of a catchable `RangeError`.
+
+`static_array.d` is blocked as a full fixture because DMD CTFE reports
+`[void, void][0]` as used before initialized while running the module.
+
+`structs.d` is blocked as a full fixture because cerealed reinterprets a
+`double*` as a `ulong*` while running the module, and DMD CTFE does not support
+that cast.

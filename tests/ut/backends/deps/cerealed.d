@@ -32,4 +32,12 @@ static foreach (backend; backends) {
             dubImportPaths,
         );
     }
+
+    @("cerealed.utils.d." ~ backend.stringof)
+    unittest {
+        runBackendFileFixtureTests!backend(
+            buildPath(cerealTestsDir, "utils.d"),
+            dubImportPaths,
+        );
+    }
 }

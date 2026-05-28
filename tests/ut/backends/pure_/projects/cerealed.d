@@ -673,6 +673,208 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct ProtoHeader {
+                ubyte bits3;
+                ubyte bits1;
+                uint bits4;
+                ubyte bits8;
+            }
+
+            ubyte[] encode(ProtoHeader header) {
+                return [
+                    cast(ubyte)(
+                        ((header.bits3 & 0x7) << 5) |
+                        ((header.bits1 & 0x1) << 4) |
+                        (header.bits4 & 0xf)
+                    ),
+                    header.bits8,
+                ];
+            }
+
+            ProtoHeader decode(const(ubyte)[] bytes) {
+                return ProtoHeader(
+                    cast(ubyte)((bytes[0] >> 5) & 0x7),
+                    cast(ubyte)((bytes[0] >> 4) & 0x1),
+                    cast(uint)(bytes[0] & 0xf),
+                    bytes[1],
+                );
+            }
+
+            unittest {
+                ubyte base = 5;
+                ++base;
+                const header = ProtoHeader(
+                    base,
+                    cast(ubyte)(base - 5),
+                    cast(uint)(base - 3),
+                    cast(ubyte)(base + 248),
+                );
+
+                const encoded = header.encode;
+
+                assert(encoded == [0xd3, 254]);
+                assert(encoded.decode == header);
+            }
+        });
+    }
+
+    @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct CounterRange {
+                ubyte current;
+                ubyte stop;
+
+                @property bool empty() {
+                    return current == stop;
+                }
+
+                @property ubyte front() {
+                    return current;
+                }
+
+                void popFront() {
+                    ++current;
+                }
+
+                @property ulong length() {
+                    return stop - current;
+                }
+            }
+
+            void writeLength(ref ubyte[] bytes, ulong length) {
+                const narrowed = cast(ushort) length;
+                foreach_reverse (i; 0 .. ushort.sizeof)
+                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
+            }
+
+            ubyte[] encode(CounterRange range) {
+                ubyte[] bytes;
+                writeLength(bytes, range.length);
+                while (!range.empty) {
+                    bytes ~= range.front;
+                    range.popFront;
+                }
+                return bytes;
+            }
+
+            unittest {
+                auto range = CounterRange(cast(ubyte) 0, cast(ubyte) 5);
+
+                assert(range.encode == [0, 5, 0, 1, 2, 3, 4]);
+            }
+        });
+    }
+
+    @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                ubyte[] originalBytes;
+                ubyte[] bytes;
+
+                int readInt() {
+                    int value;
+                    foreach (_; 0 .. int.sizeof) {
+                        value <<= 8;
+                        value |= bytes[0];
+                        bytes = bytes[1 .. $];
+                    }
+                    return value;
+                }
+
+                short readShort() {
+                    short value;
+                    foreach (_; 0 .. short.sizeof) {
+                        value <<= 8;
+                        value |= bytes[0];
+                        bytes = bytes[1 .. $];
+                    }
+                    return value;
+                }
+
+                void reset() {
+                    bytes = originalBytes;
+                }
+
+                void reset(ubyte[] newBytes) {
+                    originalBytes = newBytes;
+                    bytes = newBytes;
+                }
+            }
+
+            unittest {
+                ubyte[] bytes1 = [1, 2, 3, 5, 8, 13];
+                auto reader = Reader(bytes1, bytes1);
+
+                assert(reader.readInt == 0x01020305);
+                assert(reader.bytes == [8, 13]);
+
+                assert(reader.readShort == 0x080d);
+                assert(reader.bytes.length == 0);
+
+                reader.reset;
+                assert(reader.bytes == bytes1);
+
+                ubyte[] bytes2 = [3, 6, 9, 12];
+                reader.reset(bytes2);
+                assert(reader.bytes == bytes2);
+            }
+        });
+    }
+
+    @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void writeInt(ref ubyte[] bytes, int value) {
+                foreach_reverse (i; 0 .. int.sizeof)
+                    bytes ~= cast(ubyte)(value >> (i * 8));
+            }
+
+            int readInt(ubyte[] bytes, ref size_t index) {
+                int value;
+                foreach (_; 0 .. int.sizeof) {
+                    value <<= 8;
+                    value |= bytes[index++];
+                }
+                return value;
+            }
+
+            ubyte[] encode(int[2] values) {
+                ubyte[] bytes;
+                foreach (value; values)
+                    writeInt(bytes, value);
+                return bytes;
+            }
+
+            int[2] decode(ubyte[] bytes) {
+                int[2] values;
+                size_t index;
+                foreach (ref value; values)
+                    value = readInt(bytes, index);
+                return values;
+            }
+
+            unittest {
+                int[2] original;
+                original[0] = 34;
+                original[1] = 45;
+
+                ubyte[] bytes = original.encode;
+
+                assert(bytes == [
+                    0, 0, 0, 34,
+                    0, 0, 0, 45,
+                ]);
+                assert(bytes.length == original.length * int.sizeof);
+                assert(bytes.decode == original);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
