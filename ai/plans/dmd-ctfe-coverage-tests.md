@@ -247,6 +247,7 @@ that shim.
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
+| `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 
 Coverage workflow details:
 
@@ -627,6 +628,24 @@ and address creation for the allocated CTFE value.
 Poke result: changing the behavior assertion from `seed * 4 + 3` to
 `seed * 4 + 4` failed the focused CTFE test with `83 != 84`; the temporary
 poke was reverted and the focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 2
+
+Explorer recommendation 2 targeted the omitted-element copy branch in
+`visit(ArrayLiteralExp)`.
+
+No test was kept. The candidate indexed initializer:
+
+```d
+int[4] values = [1: seed, 3: seed + 2];
+```
+
+is valid D, but DMD lowers it through `ArrayInitializer::toExpression` and
+fills omitted entries with `defaultInit` before CTFE sees the
+`ArrayLiteralExp`. The focused coverage run still left
+`ex = copyLiteral(basis).copy();` uncovered. The apparent range-basis spelling
+`[0 .. 4: 0, 1: seed, 3: seed + 2]` is rejected by DMD 2.112, so this target
+is recorded as not reachable through normal D syntax.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 
