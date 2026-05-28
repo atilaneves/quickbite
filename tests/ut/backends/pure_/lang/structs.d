@@ -1292,6 +1292,117 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 40");
     }
 
+    @("newStructPointerInitializesFields." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            unittest {
+                int seed = 20;
+                auto p = new Pair(seed, seed + 1);
+
+                assert(p.a + p.b == seed + seed + 1);
+            }
+        });
+    }
+
+    @("newStructPointerInitializesFieldsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            unittest {
+                int seed = 20;
+                auto p = new Pair(seed, seed + 1);
+
+                assert(p.a + p.b == seed + seed + 2);
+            }
+        }).shouldThrowWithMessage("41 != 42");
+    }
+
+    @("newStructPointerInitializesFieldsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            unittest {
+                int seed = 7;
+                auto p = new Pair(seed, seed + 1);
+
+                assert(p.a + p.b == seed);
+            }
+        }).shouldThrowWithMessage("15 != 7");
+    }
+
+    @("newStructPointerRunsConstructor." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+
+                this(int seed) {
+                    value = seed + 2;
+                }
+            }
+
+            unittest {
+                int seed = 40;
+                auto p = new Box(seed);
+
+                assert(p.value == seed + 2);
+            }
+        });
+    }
+
+    @("newStructPointerRunsConstructorFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+
+                this(int seed) {
+                    value = seed + 2;
+                }
+            }
+
+            unittest {
+                int seed = 40;
+                auto p = new Box(seed);
+
+                assert(p.value == seed + 3);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("newStructPointerRunsConstructorFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+
+                this(int seed) {
+                    value = seed + 2;
+                }
+            }
+
+            unittest {
+                int seed = 7;
+                auto p = new Box(seed);
+
+                assert(p.value == seed);
+            }
+        }).shouldThrowWithMessage("9 != 7");
+    }
+
     @("dynamicArrayStructFieldReturnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
