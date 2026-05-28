@@ -2,6 +2,7 @@ module ut.lang;
 
 
 import unit_threaded; // replace with `ut` later when we can due to `Value`
+import std.conv: text;
 import quickbite.lang;
 
 
@@ -125,6 +126,16 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
 @safe pure unittest {
     Value(3).toString.should == "3: int";
     Value(3u).toString.should == "3: uint";
+}
+
+@("value.text.struct")
+@safe pure unittest {
+    static struct Point {
+        int x;
+        uint y;
+    }
+
+    Value(Point(1, 2)).text.should == Point(1, 2).text;
 }
 
 @("value.string")

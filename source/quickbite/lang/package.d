@@ -65,6 +65,22 @@ public struct Value {
         return data == other.data;
     }
 
+    private string dText() const @safe pure {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+                static if (is(T == const(Struct))) {
+                    return value.toString;
+                } else {
+                    return text(value);
+                }
+            },
+        );
+    }
+
     public string toString() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
@@ -88,6 +104,8 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
+                } else static if (is(T == const(Struct))) {
+                    return value.toString;
                 } else {
                     return data.toString;
                 }
@@ -121,12 +139,28 @@ private struct Struct {
             fields ~= Field(member, Value(__traits(getMember, value, member)));
         }
     }
+
+    public string toString() const @safe pure {
+        string ret = typeName ~ "(";
+
+        foreach (i, field; fields) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= field.toString;
+        }
+
+        return ret ~ ")";
+    }
 }
 
 
 private struct Field {
     public string name;
     public Value value;
+
+    public string toString() const @safe pure {
+        return value.dText;
+    }
 }
 
 
