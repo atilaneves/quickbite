@@ -220,6 +220,7 @@ that shim.
 | `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 | `visit(DelegatePtrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.ptr` CTFE rejection. |
 | `visit(DelegateFuncptrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.funcptr` CTFE rejection. |
+| `visitWith(WithStatement)` local goto restart | Covered | dmd-ctfe-coverage-tests-5 Worker 4 | `with` body `goto` restart. |
 
 Coverage workflow details:
 
@@ -667,6 +668,35 @@ splat path, `interpretVectorToArray`, and the `VectorArrayExp` return path hit.
 
 Poke result: changing the behavior test assertion from `7` to `8` failed the
 focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 4 Slice
+
+Added focused pure-backend CTFE tests for `with` body local-goto restart:
+
+```text
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBody.Ctfe
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBodyFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBodyFailureMessage.1.Ctfe
+```
+
+The behavior test uses a mutable local struct field initialized from a function
+argument, enters `with (point)`, and jumps to a label inside the same body. The
+fixture proves CTFE resumes inside the `with` body and skips the statement
+between `goto` and the target label.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBody.Ctfe
+```
+
+Coverage effect: focused coverage hit the `visitWith(WithStatement)` local-goto
+restart loop around the `CTFEExp.isGotoExp(e)` branch.
+
+Poke result: changing the behavior test assertion from `42` to `43` failed the
+focused CTFE test with `42 != 43`; the temporary poke was reverted and the
 focused tests were rerun green.
 
 ## Acceptance Criteria

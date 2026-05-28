@@ -591,6 +591,81 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("13 != 12");
     }
 
+    @("withStructLocalGotoRestartsInsideBody." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+            }
+
+            int jumpInsideWith(int seed) {
+                Point point;
+                point.x = seed;
+                with (point) {
+                    goto target;
+                    x += 100;
+                target:
+                    x += 1;
+                }
+                return point.x;
+            }
+
+            unittest {
+                assert(jumpInsideWith(41) == 42);
+            }
+        });
+    }
+
+    @("withStructLocalGotoRestartsInsideBodyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+            }
+
+            int jumpInsideWith(int seed) {
+                Point point;
+                point.x = seed;
+                with (point) {
+                    goto target;
+                    x += 100;
+                target:
+                    x += 1;
+                }
+                return point.x;
+            }
+
+            unittest {
+                assert(jumpInsideWith(41) == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("withStructLocalGotoRestartsInsideBodyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+            }
+
+            int jumpInsideWith(int seed) {
+                Point point;
+                point.x = seed;
+                with (point) {
+                    goto target;
+                    x += 100;
+                target:
+                    x += 1;
+                }
+                return point.x;
+            }
+
+            unittest {
+                assert(jumpInsideWith(7) == 108);
+            }
+        }).shouldThrowWithMessage("8 != 108");
+    }
+
     @("withEnumExecutesBody." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
