@@ -232,10 +232,10 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
-| Pre-slice broad baseline | 1519 | 7621 | 19.93% |
-| Worker 1 slice | 1637 | 7621 | 21.48% |
+| Pre-slice broad baseline | 1519 | 3764 | 40.36% |
+| Worker 1 slice | 1637 | 3764 | 43.49% |
 
-Delta: +1.55 percentage points.
+Delta: +3.13 percentage points.
 
 Method-level changes in the fresh audit:
 
