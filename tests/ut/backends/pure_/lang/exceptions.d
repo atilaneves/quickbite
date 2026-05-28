@@ -518,6 +518,127 @@ static foreach (backend; backends) {
         );
     }
 
+    @("tryFinallyRunsFinalbody." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 2;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 13);
+            }
+        });
+    }
+
+    @("tryFinallyRunsFinalbodyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 2;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 14);
+            }
+        }).shouldThrowWithMessage("13 != 14");
+    }
+
+    @("tryFinallyRunsFinalbodyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int step = value + 3;
+                try {
+                    value = step + 3;
+                } finally {
+                    value += step * 4;
+                }
+
+                assert(value == 13);
+            }
+        }).shouldThrowWithMessage("18 != 13");
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatch." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 8);
+                assert(value == 13);
+            }
+        });
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(length == 9);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                int length;
+                int step = value + 2;
+                try {
+                    try {
+                        value = step + 3;
+                        throw new Exception("expected");
+                    } finally {
+                        value += step * 4;
+                    }
+                } catch (Exception caught) {
+                    length = cast(int) caught.msg.length;
+                }
+
+                assert(value == 14);
+            }
+        }).shouldThrowWithMessage("13 != 14");
+    }
+
     @("finallyRunsAfterReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
