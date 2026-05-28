@@ -382,16 +382,18 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
 | Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
-| Final branch broad coverage | 1675 | 3764 | 44.50% |
+| Final branch broad coverage | 1687 | 3764 | 44.82% |
 
-Delta: +1.01 percentage points.
+Delta: +1.33 percentage points.
 
 Method-level changes from the three new test slices:
 
 - `visitWith(WithStatement)` moved from whole method uncovered to partially
-  covered.
+  covered with 17 uncovered executable lines remaining in the final broad
+  audit.
 - `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
-  to partially covered.
+  to partially covered with 8 uncovered executable lines remaining in the final
+  broad audit.
 - `visit(CommaExp)` has additional coverage and is partially covered with 15
   uncovered executable lines remaining in the final broad audit.
 
@@ -400,11 +402,10 @@ Verification notes:
 - Focused tests passed for the added behavior tests and paired failure-message
   tests.
 - Assertion poke checks failed with the expected diagnostics.
-- Workers attempted full `dub test`, but it still has the unrelated
-  order-sensitive failure in
-  `ut.executors.deps.cerealed.cerealed.decode.d.ir`, reporting
-  `No function body to execute: gc_inFinalizer`. Workers confirmed that test
-  passes in isolation.
+- After rebase, `dub test` passed with 1433 tests run, 0 failed, and 31/31
+  failing as expected.
+- After rebase, `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with
+  602 tests run, 0 failed, and 31/31 failing as expected.
 
 ## Acceptance Criteria
 
