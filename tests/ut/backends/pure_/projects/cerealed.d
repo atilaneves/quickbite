@@ -268,6 +268,48 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("1 != 2");
     }
 
+    @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.decerealiser;
+
+            unittest {
+                auto cereal = Decerealiser([1, 0, 1, 0, 0, 1]);
+
+                assert(cereal.value!bool == true);
+                assert(cereal.value!bool == false);
+                assert(cereal.value!bool == true);
+                assert(cereal.value!bool == false);
+                assert(cereal.value!bool == false);
+                assert(cereal.value!bool == true);
+            }
+        }, dubImportPaths);
+    }
+
+    @ShouldFail(
+        "DMD CTFE reports cerealed bool exhaustion as an uncaught bounds " ~
+        "error instead of catchable RangeError",
+    )
+    @("projects.cerealed.decodeBoolExhaustionThrowsRangeError." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.decerealiser;
+            import core.exception: RangeError;
+
+            unittest {
+                auto cereal = Decerealiser([1, 0, 1, 0, 0, 1]);
+                foreach (_; 0 .. 6)
+                    cereal.value!bool;
+
+                try {
+                    cereal.value!bool;
+                    assert(false);
+                } catch (RangeError) {
+                }
+            }
+        }, dubImportPaths);
+    }
+
     @ShouldFail(
         "DMD CTFE cannot read cerealed's static child-class registry " ~
         "`_childCerealisers` at compile time",

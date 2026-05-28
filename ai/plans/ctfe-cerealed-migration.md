@@ -124,7 +124,12 @@ Keep this section updated as files are tried.
 | `cerealiser_impl.d` | Passed | Added backend file fixture. |
 | `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
 | `compile_time.d` | Passed | Added backend file fixture. |
+| `decode.d` | Blocked | Added bool decode test and exhaustion `@ShouldFail`. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
 time.
+
+`decode.d` is blocked as a full fixture because exhausting a bool decoder reads
+past the end of cerealed's byte slice; DMD CTFE reports that as an uncaught
+bounds error instead of a catchable `RangeError`.
