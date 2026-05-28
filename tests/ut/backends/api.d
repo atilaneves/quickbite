@@ -2,6 +2,8 @@ module ut.backends.api;
 
 
 import ut.backends;
+import std.file: mkdirRecurse, write;
+import std.path: buildPath;
 
 
 private:
@@ -9,9 +11,6 @@ private:
 static foreach (backend; backends) {
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
-        import std.file: mkdirRecurse, write;
-        import std.path: buildPath;
-
         const importPath = tempModuleDir("backend-source-import-paths");
         mkdirRecurse(importPath);
         write(
@@ -35,9 +34,6 @@ static foreach (backend; backends) {
 
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
-        import std.file: mkdirRecurse, write;
-        import std.path: buildPath;
-
         const importPath = tempModuleDir("backend-file-import-paths");
         mkdirRecurse(importPath);
         write(
