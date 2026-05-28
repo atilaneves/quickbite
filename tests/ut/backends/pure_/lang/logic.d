@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 2;
             }
@@ -22,7 +22,7 @@ static foreach (backend; backends) {
 
     @("assertNonzeroIntConditionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 2;
             }
@@ -35,7 +35,7 @@ static foreach (backend; backends) {
 
     @("assertNonzeroIntConditionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int mask() {
                 return 1;
             }
@@ -48,7 +48,7 @@ static foreach (backend; backends) {
 
     @("logicalNot." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool isReady = false;
                 assert(!isReady);
@@ -58,7 +58,7 @@ static foreach (backend; backends) {
 
     @("logicalNotFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool isReady = false;
                 assert(!isReady == false);
@@ -68,7 +68,7 @@ static foreach (backend; backends) {
 
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool isReady = true;
                 assert(!isReady == true);
@@ -78,7 +78,7 @@ static foreach (backend; backends) {
 
     @("logicalNotCall." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return false;
             }
@@ -91,7 +91,7 @@ static foreach (backend; backends) {
 
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return false;
             }
@@ -104,7 +104,7 @@ static foreach (backend; backends) {
 
     @("logicalNotCallFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return true;
             }
@@ -117,7 +117,7 @@ static foreach (backend; backends) {
 
     @("logicalAnd." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 bool right = true;
@@ -128,7 +128,7 @@ static foreach (backend; backends) {
 
     @("logicalAndFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 bool right = true;
@@ -139,7 +139,7 @@ static foreach (backend; backends) {
 
     @("logicalAndFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 bool right = false;
@@ -150,7 +150,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCall." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool left() {
                 return true;
             }
@@ -167,7 +167,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool left() {
                 return true;
             }
@@ -184,7 +184,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool left() {
                 return true;
             }
@@ -201,7 +201,7 @@ static foreach (backend; backends) {
 
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 int zero = 0;
@@ -212,7 +212,7 @@ static foreach (backend; backends) {
 
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 int zero = 0;
@@ -223,7 +223,7 @@ static foreach (backend; backends) {
 
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 int zero = 0;
@@ -234,7 +234,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return false;
             }
@@ -252,7 +252,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return false;
             }
@@ -270,7 +270,7 @@ static foreach (backend; backends) {
 
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool isReady() {
                 return true;
             }
@@ -288,7 +288,7 @@ static foreach (backend; backends) {
 
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 assert((2 || false) == true);
             }
@@ -297,7 +297,7 @@ static foreach (backend; backends) {
 
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 assert((2 || false) == false);
             }
@@ -306,7 +306,7 @@ static foreach (backend; backends) {
 
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             bool zero() {
                 return false;
             }
@@ -320,7 +320,7 @@ static foreach (backend; backends) {
 
     @("logicalOr." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 bool right = true;
@@ -331,7 +331,7 @@ static foreach (backend; backends) {
 
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 bool right = true;
@@ -342,7 +342,7 @@ static foreach (backend; backends) {
 
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 bool right = false;
@@ -353,7 +353,7 @@ static foreach (backend; backends) {
 
     @("logicalOrOops." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = false;
                 bool right = false;
@@ -364,7 +364,7 @@ static foreach (backend; backends) {
 
     @("logicalOrShortCircuit." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 int zero = 0;
@@ -375,7 +375,7 @@ static foreach (backend; backends) {
 
     @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 int zero = 0;
@@ -386,7 +386,7 @@ static foreach (backend; backends) {
 
     @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             unittest {
                 bool left = true;
                 int zero = 0;
@@ -397,7 +397,7 @@ static foreach (backend; backends) {
 
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 42;
             }
@@ -410,7 +410,7 @@ static foreach (backend; backends) {
 
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 42;
             }
@@ -423,7 +423,7 @@ static foreach (backend; backends) {
 
     @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             int input() {
                 return 41;
             }

@@ -18,8 +18,9 @@ configuration "unittest" {
     targetPath "bin"
 
     mainSourceFile "tests/main.d"
-    sourcePaths "tests"
-    includePaths "tests"
+    sourcePaths "tests" "benchmarks"
+    sourceFiles "benchmarks/cli.d" "benchmarks/harness.d"
+    includePaths "tests" "benchmarks"
     versions "unitUnthreaded"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.

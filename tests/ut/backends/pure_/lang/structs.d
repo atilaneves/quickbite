@@ -9,7 +9,7 @@ private:
 static foreach (backend; backends) {
     @("structMethodPostIncrementsSizeTField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t pos;
 
@@ -28,7 +28,7 @@ static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t pos;
 
@@ -46,7 +46,7 @@ static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t pos;
 
@@ -65,7 +65,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t pos;
@@ -86,7 +86,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t pos;
@@ -106,7 +106,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t pos;
@@ -127,7 +127,7 @@ static foreach (backend; backends) {
 
     @("structPassedToFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -148,7 +148,7 @@ static foreach (backend; backends) {
 
     @("structPassedToFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -169,7 +169,7 @@ static foreach (backend; backends) {
 
     @("structPassedToFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -190,7 +190,7 @@ static foreach (backend; backends) {
 
     @("scalarStructPassedToFunction." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -209,7 +209,7 @@ static foreach (backend; backends) {
 
     @("scalarStructPassedToFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -228,7 +228,7 @@ static foreach (backend; backends) {
 
     @("scalarStructPassedToFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -247,7 +247,7 @@ static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeak." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point { int x; }
             void mutate(Point p) { p.x = 99; }
             unittest {
@@ -261,7 +261,7 @@ static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeakFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point { int x; }
             void mutate(Point p) { p.x = 99; }
             unittest {
@@ -275,7 +275,7 @@ static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeakFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point { int x; }
             void mutate(Point p) { p.x = 99; }
             unittest {
@@ -289,7 +289,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeak." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -308,7 +308,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeakFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -327,7 +327,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeakFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -347,7 +347,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaks." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -367,7 +367,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaksFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -387,7 +387,7 @@ static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaksFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -407,7 +407,7 @@ static foreach (backend; backends) {
 
     @("scalarStructField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -422,7 +422,7 @@ static foreach (backend; backends) {
 
     @("scalarStructFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -437,7 +437,7 @@ static foreach (backend; backends) {
 
     @("scalarStructFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Value {
                 int value;
             }
@@ -452,7 +452,7 @@ static foreach (backend; backends) {
 
     @("struct_." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -473,7 +473,7 @@ static foreach (backend; backends) {
 
     @("struct_FailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -494,7 +494,7 @@ static foreach (backend; backends) {
 
     @("struct_FailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -515,7 +515,7 @@ static foreach (backend; backends) {
 
     @("structFieldDefaultsToZero." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -535,7 +535,7 @@ static foreach (backend; backends) {
 
     @("structFieldDefaultsToZeroFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -555,7 +555,7 @@ static foreach (backend; backends) {
 
     @("structFieldDefaultsToZeroFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Point {
                 int x;
                 int y;
@@ -575,7 +575,7 @@ static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmpty." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -589,7 +589,7 @@ static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmptyFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -603,7 +603,7 @@ static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmptyFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -618,7 +618,7 @@ static foreach (backend; backends) {
 
     @("refStructArrayFieldParameter." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -638,7 +638,7 @@ static foreach (backend; backends) {
 
     @("refStructArrayFieldParameterFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -657,7 +657,7 @@ static foreach (backend; backends) {
 
     @("refStructArrayFieldParameterFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
             }
@@ -676,7 +676,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int value;
 
@@ -695,7 +695,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int value;
 
@@ -714,7 +714,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int value;
 
@@ -733,7 +733,7 @@ static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRef." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append42(ref ubyte[] output) {
                 output ~= cast(ubyte) 42;
             }
@@ -757,7 +757,7 @@ static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRefFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append42(ref ubyte[] output) {
                 output ~= cast(ubyte) 42;
             }
@@ -780,7 +780,7 @@ static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRefFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void append42(ref ubyte[] output) {
                 output ~= cast(ubyte) 42;
             }
@@ -803,7 +803,7 @@ static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRef." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendValue(T)(T value, ref ubyte[] output) {
                 output ~= cast(ubyte) value;
             }
@@ -827,7 +827,7 @@ static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRefFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendValue(T)(T value, ref ubyte[] output) {
                 output ~= cast(ubyte) value;
             }
@@ -850,7 +850,7 @@ static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRefFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             void appendValue(T)(T value, ref ubyte[] output) {
                 output ~= cast(ubyte) value;
             }
@@ -873,7 +873,7 @@ static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
 
@@ -893,7 +893,7 @@ static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
 
@@ -913,7 +913,7 @@ static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Buffer {
                 ubyte[] bytes;
 
@@ -933,7 +933,7 @@ static foreach (backend; backends) {
 
     @("structMethodAppendsArrayField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -953,7 +953,7 @@ static foreach (backend; backends) {
 
     @("structMethodAppendsArrayFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -972,7 +972,7 @@ static foreach (backend; backends) {
 
     @("structMethodAppendsArrayFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -991,7 +991,7 @@ static foreach (backend; backends) {
 
     @("structMethodCallsStructMethod." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -1016,7 +1016,7 @@ static foreach (backend; backends) {
 
     @("structMethodCallsStructMethodFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -1040,7 +1040,7 @@ static foreach (backend; backends) {
 
     @("structMethodCallsStructMethodFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Writer {
                 ubyte[] bytes;
 
@@ -1064,7 +1064,7 @@ static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameter." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int[] values;
 
@@ -1093,7 +1093,7 @@ static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameterFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int[] values;
 
@@ -1120,7 +1120,7 @@ static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameterFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 int[] values;
 
@@ -1147,7 +1147,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1177,7 +1177,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1205,7 +1205,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1233,7 +1233,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructField." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -1268,7 +1268,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructFieldFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -1301,7 +1301,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructFieldFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             ubyte[] identity(ubyte[] values) {
                 return values;
             }
@@ -1334,7 +1334,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResult." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1360,7 +1360,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResultFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1386,7 +1386,7 @@ static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResultFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Box {
                 ubyte[] values;
 
@@ -1412,7 +1412,7 @@ static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t position;
 
@@ -1434,7 +1434,7 @@ static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t position;
 
@@ -1455,7 +1455,7 @@ static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Cursor {
                 size_t position;
 
@@ -1477,7 +1477,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValue." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t position;
@@ -1504,7 +1504,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValueFailureMessage.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t position;
@@ -1530,7 +1530,7 @@ static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValueFailureMessage.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.runTests(q{
+        runBackendSourceFixtureTests!backend(q{
             struct Reader {
                 ubyte[] bytes;
                 size_t position;
