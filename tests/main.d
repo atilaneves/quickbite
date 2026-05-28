@@ -13,6 +13,7 @@ int main(string[] args) {
         "ut.backends.pure_.lang.logic",
         "ut.backends.pure_.lang.math",
         "ut.backends.pure_.lang.structs",
+        "ut.backends.pure_.minicereal",
         "ut.value",
         "ut.compiler",
         "ut.benchmarks",

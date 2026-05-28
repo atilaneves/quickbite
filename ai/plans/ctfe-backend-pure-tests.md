@@ -397,7 +397,7 @@ Review feedback learned:
   leave a bare `@ShouldFail`.
 
 Next migration step should move to the next module in the migration order:
-`tests/ut/executors/pure_/minicereal.d`.
+`tests/ut/executors/pure_/projects/cerealed.d`.
 
 Start by adding the matching Ctfe backend test module and wiring it into
 `tests/main.d` if it does not already exist. Then migrate the whole source
@@ -502,6 +502,32 @@ and per-module commit rules.
   `1286 test(s) run, 0 failed, 27/27 failing as expected`.
 - Next migration step should start from
   `tests/ut/executors/pure_/minicereal.d`.
+
+## Handoff After Minicereal Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/minicereal.d` fixtures to
+  `tests/ut/backends/pure_/minicereal.d`.
+- Kept `tests/minicereal.d` as source material through a local backend test
+  helper and did not import, call, or exercise executor APIs.
+- Added two negative assertion probes for each of the 23 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -verrors=0 -J. -o- -checkaction=context` probes in this worktree.
+  Temporary probe source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.minicereal`.
+- Audit poke passed: a temporary failing unittest appended by
+  `minicerealSource` made all 23 positive minicereal backend tests fail, while
+  the negative probes still passed. The poke was restored and focused
+  verification passed again.
+- Full verification passed: `dub test` reported
+  `1355 test(s) run, 0 failed, 27/27 failing as expected`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/projects/cerealed.d`.
 
 ## Handoff After Arrays Migration
 
