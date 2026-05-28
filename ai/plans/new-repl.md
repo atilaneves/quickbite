@@ -31,6 +31,8 @@ Completed in this PR:
   declaration is complete, and `thrice(14)` displays `42: int`.
 - Hid synthetic module names such as `snippet_1.` from user-visible REPL
   diagnostics.
+- Added GNU readline-backed terminal input to the REPL binary, including
+  up-arrow traversal of past commands.
 
 Remaining follow-up:
 
@@ -39,8 +41,6 @@ Remaining follow-up:
   signatures. For example, after declaring `int twice(int i)`, calling
   `twice("foo")` currently only reports that `twice` is not callable with
   `(string)` and does not tell the user that `twice` expects an `int`.
-- Add interactive command-history navigation, including up-arrow traversal of
-  past commands.
 
 ## Key Changes
 
@@ -77,6 +77,8 @@ Remaining follow-up:
   - Support both `--backend ctfe` and `-b ctfe`.
   - Unknown backend names print a concise diagnostic and exit with status `1`.
   - Do not use executor factories or executor names in the REPL binary.
+  - Use a line-editing library for terminal input so interactive sessions get
+    command-history navigation.
 - Tests:
   - Replace `ut.executors.repl` with `ut.backends.repl`.
   - Remove `ut.executors.repl` from `tests/main.d`.

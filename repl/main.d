@@ -4,7 +4,6 @@ private:
 
 public int main(string[] args) {
     import quickbite.backends.ctfe: Ctfe;
-    import quickbite.lang: Value;
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
     import std.stdio: stderr, stdin, writeln;
@@ -23,31 +22,67 @@ public int main(string[] args) {
     }
 
     writeln("Quickbite REPL");
-    writePrompt;
+    if (stdinIsTerminal)
+        return runInteractiveRepl(repl);
 
     foreach (line; stdin.byLineCopy) {
         if (line == ":q" || line == ":quit")
             break;
 
-        try {
-            const value = repl.submit(line);
-            if (value != Value.void_)
-                writeln(value.toString);
-        } catch (Exception e) {
-            writeln(e.msg);
-        } catch (Error e) {
-            writeln(e.msg);
+        if (!submit(repl, line))
             return 1;
-        }
-        writePrompt;
     }
 
     return 0;
 }
 
-private void writePrompt() {
-    import std.stdio: stdout, write;
+private bool stdinIsTerminal() {
+    import core.sys.posix.unistd: isatty;
+    import std.stdio: stdin;
 
-    write("> ");
-    stdout.flush;
+    return stdin.isOpen && isatty(stdin.fileno) != 0;
+}
+
+private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
+    import gnu.readline: readline, rl_free;
+    import std.string: fromStringz;
+
+    while (true) {
+        char* rawLine = readline("> ");
+        if (rawLine is null)
+            return 0;
+
+        scope (exit)
+            rl_free(rawLine);
+
+        const line = rawLine.fromStringz.idup;
+        if (line == ":q" || line == ":quit")
+            return 0;
+
+        if (line.length != 0)
+            add_history(rawLine);
+
+        if (!submit(repl, line))
+            return 1;
+    }
+}
+
+extern (C) private void add_history(const(char)* line);
+
+private bool submit(ref imported!"quickbite.repl".Repl repl, in string line) {
+    import quickbite.lang: Value;
+    import std.stdio: writeln;
+
+    try {
+        const value = repl.submit(line);
+        if (value != Value.void_)
+            writeln(value.toString);
+    } catch (Exception e) {
+        writeln(e.msg);
+    } catch (Error e) {
+        writeln(e.msg);
+        return false;
+    }
+
+    return true;
 }
