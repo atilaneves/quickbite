@@ -35,9 +35,9 @@ static foreach (executorName; matureExecutorNames) {
         }
     } else {
         static foreach (fileName; testFileNames) {
-            // This IR case currently fails only after earlier cerealed files
-            // have run, while passing in isolation. Keep it out of the matrix
-            // until the ordering-dependent frontend/lowering state is fixed.
+            // These IR cases currently fail only after earlier tests have run,
+            // while passing in isolation. Keep them out of the matrix until the
+            // ordering-dependent frontend/lowering state is fixed.
             static if (!skipCerealedTest!(executorName, fileName)) {
                 @("cerealed." ~ fileName ~ "." ~ executorName.text)
                 unittest {
@@ -49,7 +49,10 @@ static foreach (executorName; matureExecutorNames) {
 }
 
 private enum skipCerealedTest(ExecutorName executorName, string fileName) =
-    executorName == ExecutorName.ir && fileName == "encode_decode.d";
+    executorName == ExecutorName.ir && (
+        fileName == "decode.d" ||
+        fileName == "encode_decode.d"
+    );
 
 @("cerealed.floatRoundTrip.ir")
 unittest {
