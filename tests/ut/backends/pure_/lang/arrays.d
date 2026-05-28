@@ -958,6 +958,52 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("1 != 0");
     }
 
+    @("newDynamicArrayUsesRuntimeLength." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values.length == len);
+                assert(values[1] == 42);
+            }
+        });
+    }
+
+    @("newDynamicArrayUsesRuntimeLengthFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("newDynamicArrayUsesRuntimeLengthFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t len = 1;
+                ++len;
+
+                auto values = new int[](len);
+                values[1] = 42;
+
+                assert(values[1] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1057,6 +1103,64 @@ static foreach (backend; backends) {
                 assert(tail.length == 1);
             }
         }).shouldThrowWithMessage("2 != 1");
+    }
+
+    @("sliceAssignmentFromStringUpdatesArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text.length == 4);
+                assert(text[0] == 'a');
+                assert(text[1] == 'x');
+                assert(text[2] == 'y');
+                assert(text[3] == 'd');
+
+                int[] values = [10, 11, 12, 13];
+                values[start .. stop] = [21, 22];
+
+                assert(values.length == 4);
+                assert(values[0] == 10);
+                assert(values[1] == 21);
+                assert(values[2] == 22);
+                assert(values[3] == 13);
+            }
+        });
+    }
+
+    @("sliceAssignmentFromStringUpdatesArrayFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text.length == 5);
+            }
+        }).shouldThrowWithMessage("4 != 5");
+    }
+
+    @("sliceAssignmentFromStringUpdatesArrayFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] text = ['a', 'b', 'c', 'd'];
+                size_t start = 1;
+                size_t stop = start + 2;
+
+                text[start .. stop] = "xy";
+
+                assert(text[2] == 'z');
+            }
+        }).shouldThrowWithMessage("'y' != 'z'");
     }
 
     @("pointerArithmeticOverDynamicArray." ~ backend.stringof)
