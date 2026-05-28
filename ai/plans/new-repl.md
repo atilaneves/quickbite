@@ -40,13 +40,12 @@ Completed in this PR:
   REPL smoke test before PRs.
 - Improved function-call mismatch diagnostics so they use DMD AST/semantic
   matching to include callable signatures, including overload candidates.
+- Supported import declarations as no-display REPL cells. For example,
+  `import std.algorithm;` persists and a later expression can call `min`.
 
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
-- Support import declarations as no-display REPL cells. For example,
-  `import std.algorithm;` currently fails with parser diagnostics such as
-  `found 'std' when expecting '(' following 'import'`.
 
 ## Key Changes
 
@@ -108,6 +107,8 @@ Test scenarios to cover in `ut.backends.repl`:
   called by later expression cells.
 - Multiline function declarations buffer until complete, then persist and can
   be called by later expression cells.
+- Import declaration cells persist without display, and imported symbols are
+  available to later expression cells.
 - `Repl.submit` returns `Value.void_` for no-display cells.
 - CLI backend option parsing accepts default CTFE, `--backend ctfe`, and
   `-b ctfe`.
