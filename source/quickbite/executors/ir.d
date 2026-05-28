@@ -87,20 +87,6 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
 
         return result;
     }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        import quickbite.frontend.compiler: lowerModule, parseModule;
-
-        const source =
-            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
-
-        auto parsed = parseModule(source);
-        const loweredModule = lowerModule(parsed.module_);
-        executeUnitTests(loweredModule);
-    }
 }
 
 private void executeUnitTests(in imported!"quickbite.ir.module_".Module module_) @safe pure {

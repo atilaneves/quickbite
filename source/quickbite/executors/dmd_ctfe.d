@@ -80,18 +80,6 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 
         return Value(cast(int) result);
     }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        import quickbite.frontend.compiler: parseModule;
-
-        const source =
-            "unittest { auto f() { " ~ transcript ~ input ~ " } f(); }";
-
-        runParsedTests(parseModule(source).module_);
-    }
 }
 
 private imported!"quickbite.executor".TestSummary testSummary(

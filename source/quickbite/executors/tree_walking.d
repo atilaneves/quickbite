@@ -1047,33 +1047,6 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
         return Value(0);
     }
-
-    public override void runVoidReplCell(
-        in string transcript,
-        in string input,
-    ) {
-        import dmd.func: FuncDeclaration;
-        import quickbite.frontend.compiler: parseModule;
-
-        const source = "void f() { " ~ transcript ~ input ~ " }";
-        auto parsed = parseModule(source);
-        auto module_ = parsed.module_;
-
-        FuncDeclaration f;
-        if (module_.members !is null) {
-            foreach (member; *module_.members) {
-                auto fd = member.isFuncDeclaration;
-                if (fd !is null && fd.ident.toString == "f") {
-                    f = fd;
-                    break;
-                }
-            }
-        }
-
-        resetState;
-        runStatement(f.fbody);
-    }
-
     private void resetState() {
         locals = null;
         structScalars = null;

@@ -276,34 +276,12 @@ public struct TestSummary {
     public size_t failed;
 }
 
-public struct Repl {
-    public enum CellStatus {
-        incomplete,
-        void_,
-        value,
-    }
-
-    public struct CellResult {
-        public CellStatus status;
-        public Value value;
-
-        public static CellResult void_() {
-            return CellResult(CellStatus.void_, Value(0));
-        }
-
-        public static CellResult value_(in Value payload) {
-            return CellResult(CellStatus.value, payload);
-        }
-    }
-}
-
 public interface Executor {
     public void runTests(in string source);
     public void runTests(in string source, in string[] importPaths);
     public TestSummary runTestSummary(in string source);
     public void runParsedTests(imported!"dmd.dmodule".Module module_);
     public Value eval(in string input);
-    public void runVoidReplCell(in string transcript, in string input);
 }
 
 public void runModulesTests(

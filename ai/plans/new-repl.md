@@ -42,10 +42,15 @@ Completed in this PR:
   matching to include callable signatures, including overload candidates.
 - Supported import declarations as no-display REPL cells. For example,
   `import std.algorithm;` persists and a later expression can call `min`.
+- Removed dead executor REPL APIs after the backend REPL path replaced them.
 
 Remaining follow-up:
 
-- Remove or migrate dead executor REPL APIs after callers no longer need them.
+- Support REPL display for CTFE expression results that are not currently
+  representable as `quickbite.lang.Value`. For example, after
+  `import std.algorithm;`, `[1, 2, 3].map!(x => x * 2)` currently reports
+  `Unsupported CTFE eval result.` instead of displaying the evaluated range or
+  a useful representation.
 
 ## Key Changes
 
@@ -131,8 +136,8 @@ Verification after implementation:
 ## Assumptions
 
 - Follow-up slices happen in a task-specific worktree and branch.
-- This slice does not remove executor classes or unrelated executor APIs.
-- Existing executor REPL methods may remain as dead code if nothing uses them.
+- This slice does not remove executor classes or unrelated executor APIs beyond
+  the dead executor REPL entrypoint.
 - The REPL remains CTFE-only for now, but the API must avoid CTFE-specific
   duplication so later backends can implement `evalRepl(ReplCell)`.
 - The current generated expression-history strategy is preserved unless the new
