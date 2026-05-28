@@ -2,6 +2,51 @@ module quickbite.frontend.repl;
 
 private:
 
+public enum ReplCellKind {
+    noDisplay,
+    expression,
+}
+
+public struct ReplCell {
+    public ReplCellKind kind;
+    public string source;
+    private string history;
+}
+
+public struct ReplSession {
+    private string transcript;
+    private uint valueCellCount;
+
+    public ReplCell submit(in string input) {
+        import std.conv: text;
+
+        if (!isExpressionCell(input))
+            return ReplCell(
+                ReplCellKind.noDisplay,
+                transcript ~ input,
+                input ~ "\n",
+            );
+
+        return ReplCell(
+            ReplCellKind.expression,
+            transcript ~ input,
+            text(
+                "auto __quickbite_repl_value_",
+                valueCellCount,
+                " = ",
+                input,
+                ";\n",
+            ),
+        );
+    }
+
+    public void accept(in ReplCell cell) {
+        transcript ~= cell.history;
+        if (cell.kind == ReplCellKind.expression)
+            ++valueCellCount;
+    }
+}
+
 public imported!"quickbite.executor".Repl.CellResult evalReplCell(
     imported!"quickbite.executor".Executor executor,
     in string transcript,
@@ -20,7 +65,8 @@ bool isExpressionCell(in string input) {
     import dmd.astcodegen: ASTCodegen;
     import dmd.errors: diagnostics;
     import dmd.globals: global;
-    import dmd.parse: ParseStatementFlags, Parser;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
     import quickbite.frontend.compiler: withCompilerLock;
 
     bool result;
@@ -39,26 +85,12 @@ bool isExpressionCell(in string input) {
         );
 
         parser.nextToken;
-        const expression = statementExpression(
-            parser.parseStatement(ParseStatementFlags.semiOk),
-        );
+        const expression = parser.parseExpression;
         result = expression !is null &&
             expression.isDeclarationExp is null &&
+            parser.token.value != TOK.semicolon &&
             global.errors == 0;
     });
 
     return result;
-}
-
-private imported!"dmd.expression".Expression statementExpression(
-    imported!"dmd.statement".Statement statement,
-) {
-    if (statement is null)
-        return null;
-
-    auto expressionStatement = statement.isExpStatement;
-    if (expressionStatement is null)
-        return null;
-
-    return expressionStatement.exp;
 }

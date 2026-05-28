@@ -9,6 +9,29 @@ The REPL must stop using executors at runtime and in REPL tests. It should use
 the CTFE backend through a simple backend REPL API, while leaving unrelated
 executor implementation code in place for later cleanup.
 
+## Progress
+
+Completed in this PR:
+
+- Added `Backend.evalRepl(ReplCell) -> quickbite.lang.Value`.
+- Added frontend-owned `ReplSession` and `ReplCell` state.
+- Moved `quickbite.repl.runReplLoop` onto `Repl.submit`.
+- Implemented CTFE `evalRepl` for expression and no-display cells.
+- Replaced normal REPL tests with `ut.backends.repl`.
+- Excluded old subprocess-heavy executor REPL tests from normal unittest
+  builds without deleting the source file.
+- Moved `repl/main.d` to instantiate CTFE directly.
+- Added library-level CLI option parser tests for default CTFE,
+  `--backend ctfe`, `-b ctfe`, and unknown backends.
+
+Remaining follow-up:
+
+- Remove or migrate dead executor REPL APIs after callers no longer need them.
+- Support function declarations without requiring semicolons after function
+  bodies. For example, `int twice(int i) { return i * 2; }` should be accepted
+  as a no-display cell and `twice(21)` should display `42: int`.
+- Add incomplete-input buffering if desired.
+
 ## Key Changes
 
 - Add a backend REPL entrypoint:
@@ -57,6 +80,8 @@ Test scenarios to cover in `ut.backends.repl`:
 - Declaration cells persist without display.
 - Expression side effects persist.
 - Statement/declaration cells execute immediately through CTFE.
+- Function declaration cells without trailing semicolons persist and can be
+  called by later expression cells.
 - `Repl.submit` returns `Value.void_` for no-display cells.
 - CLI backend option parsing accepts default CTFE, `--backend ctfe`, and
   `-b ctfe`.
@@ -68,7 +93,10 @@ Verification after implementation:
 - Run focused tests for the new backend REPL module.
 - Run `dub test`.
 - Build the REPL configuration with `dub build -c repl`.
-- Do not run benchmarks unless preparing a PR.
+- Actually try the REPL binary after building it. At minimum, pipe `1`,
+  `int x;`, `++x;`, `x`, and `:q` into `bin/repl` and verify expression output
+  appears while no-display cells stay quiet.
+- Run `bin/bench.sh` before preparing a PR.
 
 ## Assumptions
 

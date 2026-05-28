@@ -3,49 +3,36 @@ module repl.main;
 private:
 
 public int main(string[] args) {
-    import quickbite: ExecutorName, executor;
-    import quickbite.frontend.repl: evalReplCell;
-    import quickbite.executor: Repl;
-    import std.conv: text;
-    import std.stdio: stdin, writeln;
+    import quickbite.backends.ctfe: Ctfe;
+    import quickbite.lang: Value;
+    import quickbite.repl: Repl;
+    import quickbite.repl_cli: parseReplArgs;
+    import std.stdio: stderr, stdin, writeln;
 
-    auto active = executor(ExecutorName.ir);
+    const options = parseReplArgs(args);
+    if (options.status != 0) {
+        stderr.writeln(options.diagnostic);
+        return options.status;
+    }
 
-    if (args.length == 3 && args[1] == "-c") {
-        evalReplCell(active, "", args[2]);
+    auto repl = Repl(new Ctfe);
+
+    if (options.options.hasCommand) {
+        repl.submit(options.options.command);
         return 0;
     }
 
     writeln("Quickbite REPL");
     writePrompt;
 
-    string transcript;
-    uint valueCellCount;
     foreach (line; stdin.byLineCopy) {
         if (line == ":q" || line == ":quit")
             break;
 
         try {
-            const result = evalReplCell(active, transcript, line);
-            with (Repl.CellStatus) {
-                final switch (result.status) {
-                    case incomplete:
-                        break;
-                    case void_:
-                        transcript ~= line ~ "\n";
-                        break;
-                    case value:
-                        transcript ~= text(
-                            "auto __quickbite_repl_value_",
-                            valueCellCount++,
-                            " = ",
-                            line,
-                            ";\n",
-                        );
-                        writeln(result.value.toString);
-                        break;
-                }
-            }
+            const value = repl.submit(line);
+            if (value != Value.void_)
+                writeln(value.toString);
         } catch (Exception e) {
             writeln(e.msg);
         } catch (Error e) {
