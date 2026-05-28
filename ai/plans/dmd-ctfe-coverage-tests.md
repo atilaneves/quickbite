@@ -153,6 +153,18 @@ Suggested columns:
 Update the table as tests are approved and added. Do not leave uncovered
 reachable methods as undocumented backlog.
 
+## Subagent Workflow
+
+For future PR slices on this plan, the main agent should orchestrate only:
+
+1. Ask an explorer subagent to inspect the fresh coverage audit, DMD CTFE
+   source, and nearby tests, then recommend the next reachable additive test
+   target.
+2. Spawn a worker subagent for the chosen commit-sized test slice.
+3. Review the worker diff, verify, update this plan if needed, and commit.
+
+Do not choose the next CTFE target locally before the explorer has reported.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -371,6 +383,44 @@ Verification notes:
   reporting `No function body to execute: gc_inFinalizer`; the final branch
   verification below passed after restoring DMD 2.112.0 while keeping
   unit-threaded 2.2.4.
+
+### 2026-05-28 Worker 5 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for direct `goto` to a label:
+
+- Tests:
+
+```text
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabel.Ctfe
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabelFailureMessage.0.Ctfe
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabelFailureMessage.1.Ctfe
+```
+
+- The behavior test uses a helper and mutable local values so DMD CTFE executes
+  a direct `GotoStatement` and the target `LabelStatement` body instead of
+  relying on all-literal folding.
+- Intended DMD CTFE methods: `visitGoto(GotoStatement)` and
+  `visitLabel(LabelStatement)`.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+ut.backends.pure_.lang.control_flow.supportsDirectGotoLabel.Ctfe
+```
+
+Method-level change in the fresh focused audit:
+
+- `visitGoto(GotoStatement)` moved from whole method uncovered to partially
+  covered, with only the resume-target branch left uncovered.
+- `visitLabel(LabelStatement)` no longer appears in the uncovered audit table;
+  the focused `.lst` shows all executable lines in that method covered.
+
+Verification notes:
+
+- Focused tests passed for the behavior test and both failure-message tests.
+- The assertion poke failed with the expected `8 != 9` diagnostic, then the
+  focused tests passed again after reverting the poke.
 
 ### 2026-05-28 Final PR Broad Coverage Summary
 
