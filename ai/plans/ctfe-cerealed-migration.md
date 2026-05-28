@@ -124,7 +124,32 @@ Keep this section updated as files are tried.
 | `cerealiser_impl.d` | Passed | Added backend file fixture. |
 | `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
 | `compile_time.d` | Passed | Added backend file fixture. |
+| `decode.d` | Blocked | Added bool decode test and exhaustion `@ShouldFail`. |
+| `encode.d` | Blocked | Added int and float encode tests. |
+| `encode_decode.d` | Blocked | Added bool round-trip and exhaustion `@ShouldFail`. |
+| `enums.d` | Blocked | Added enum round-trip and exhaustion `@ShouldFail`. |
+| `example.d` | Passed | Added dependency-free `Foo` round-trip example. |
+| `multidimensional_array.d` | Passed | Added dependency-free nested array byte layout. |
+| `nested.d` | Passed | Added dependency-free recursive nested AA byte layout. |
+| `pointers.d` | Passed | Added dependency-free pointer-to-int byte layout. |
+| `property.d` | Passed | Added dependency-free `ubyte` length array round-trip. |
+| `protocol_unit.d` | Passed | Added dependency-free length-field packet round-trip. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
 time.
+
+`decode.d` is blocked as a full fixture because exhausting a bool decoder reads
+past the end of cerealed's byte slice; DMD CTFE reports that as an uncaught
+bounds error instead of a catchable `RangeError`.
+
+`encode.d` is blocked as a full fixture because cerealed's full test module
+still depends on dependency internals outside the extracted backend cases.
+
+`encode_decode.d` is blocked as a full fixture because its generic round-trip
+helper also checks for catchable exhaustion after consuming all bytes, which
+DMD CTFE reports as an uncaught bounds error.
+
+`enums.d` is blocked as a full fixture because it also checks for catchable
+exhaustion after consuming all enum bytes, which DMD CTFE reports as an
+uncaught bounds error.
