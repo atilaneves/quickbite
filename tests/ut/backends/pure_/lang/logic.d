@@ -198,4 +198,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalAndShortCircuit." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0));
+            }
+        });
+    }
+
+    @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert((left && 42 / zero == 0) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
 }
