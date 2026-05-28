@@ -485,6 +485,53 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Nested {
+                Nested[int] aa;
+            }
+
+            void writeLength(ref ubyte[] bytes, size_t length) {
+                const narrowed = cast(ushort) length;
+                foreach_reverse (i; 0 .. ushort.sizeof)
+                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
+            }
+
+            void writeInt(ref ubyte[] bytes, int value) {
+                foreach_reverse (i; 0 .. int.sizeof)
+                    bytes ~= cast(ubyte)(value >> (i * 8));
+            }
+
+            void writeNested(ref ubyte[] bytes, Nested nested) {
+                writeLength(bytes, nested.aa.length);
+                foreach (key, value; nested.aa) {
+                    writeInt(bytes, key);
+                    writeNested(bytes, value);
+                }
+            }
+
+            ubyte[] encode(Nested[] nesteds) {
+                ubyte[] bytes;
+                writeLength(bytes, nesteds.length);
+                foreach (nested; nesteds)
+                    writeNested(bytes, nested);
+                return bytes;
+            }
+
+            unittest {
+                auto nesteds = [Nested([7: Nested()])];
+
+                assert(nesteds.encode == [
+                    0, 1,
+                        0, 1,
+                            0, 0, 0, 7,
+                            0, 0,
+                ]);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
