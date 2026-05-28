@@ -1,4 +1,4 @@
-module quickbite.backends.ctfe;
+module quickbite.backends.ctfe.dmd_ctfe;
 
 
 private:
