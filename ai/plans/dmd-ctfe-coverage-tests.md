@@ -252,6 +252,7 @@ that shim.
 | `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
 | `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
 | `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
+| `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
 
 Coverage workflow details:
 
@@ -745,6 +746,34 @@ state.
 
 Poke result: changing the behavior assertion from `7` to `8` failed the
 focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 7
+
+Explorer recommendation 7 targeted the wholly uncovered
+`visitDefault(DefaultStatement)` visitor through normal switch default
+execution.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefault.Ctfe
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefaultFailureMessage.0.Ctfe
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefaultFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.control_flow.switchFallsThroughToDefault.Ctfe
+```
+
+Coverage effect: focused coverage marked `visitDefault(DefaultStatement)` as
+hit through a non-matching `switch` case falling through to `default`.
+
+Poke result: changing the behavior assertion from `12` to `13` failed the
+focused CTFE test with `12 != 13`; the temporary poke was reverted and the
 focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
