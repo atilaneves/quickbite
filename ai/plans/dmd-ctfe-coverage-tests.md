@@ -109,24 +109,30 @@ those gaps with the exact line or method and a short reason.
 When creating a PR from this plan, report the `dmd.dinterpret` coverage
 percentage delta in the PR.
 
-Use the same broad coverage target on `master` and on the PR branch. For the
-current plan, the broad target is:
+Use the same broad coverage target at the branch's starting commit and at the
+final PR branch commit. For the current plan, the broad target is:
 
 ```sh
 scripts/dmd-ctfe-coverage.sh ut.backends.pure_
 ```
 
+Create the worktree, record the starting commit SHA, and calculate the baseline
+coverage before making the first work commit. Do not calculate the baseline
+from moving `master` after work has started. Use the starting-commit baseline
+for the whole PR, even if `master` changes or merges happen while the branch is
+in progress.
+
 Calculate the percentage from executable entries in
-`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` in each checkout. Do not use the
-final DMD footer line; it rounds to a whole percentage and can hide small PR
-deltas.
+`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` for the starting commit and final PR
+commit. Do not use the final DMD footer line; it rounds to a whole percentage
+and can hide small PR deltas.
 
 Executable entries are `.lst` lines whose seven-character counter prefix is
 either a run count or `0000000`. Count `0000000` as uncovered, and count any
 positive run count as covered. Report:
 
-- the `master` percentage;
-- the PR branch percentage;
+- the starting commit SHA and baseline percentage;
+- the final PR branch commit SHA and percentage;
 - the percentage-point delta;
 - all percentages and deltas with two digits after the decimal point;
 - the method-level coverage change that motivated the test, such as a visitor
@@ -615,11 +621,13 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 | Recorded master baseline | 1715 | 3764 | 45.56% |
 | Final branch broad coverage | 1950 | 3764 | 51.81% |
 
-Delta against the recorded baseline: +6.25 percentage points. A comparable
-`master` coverage run on the current checkout failed twice with linker error
-`SHT_SYMTAB_SHNDX has 0 entries, but the symbol table associated has 80532`, so
-PR reporting should use the last recorded master baseline above. This delta is
-larger than the prior PR delta, but still short of the requested 10-point aim.
+Delta against the recorded baseline: +6.25 percentage points. A pre-merge
+attempt to rerun `master` coverage failed twice with linker error
+`SHT_SYMTAB_SHNDX has 0 entries, but the symbol table associated has 80532`.
+After PR #70 was merged, a fresh `master` coverage run completed cleanly with
+677 tests run, 0 failed, 28/28 failing as expected, and
+1950/3764 = 51.81% executable-entry coverage. The delta is larger than the
+prior PR delta, but still short of the requested 10-point aim.
 
 ## Acceptance Criteria
 
@@ -631,5 +639,6 @@ larger than the prior PR delta, but still short of the requested 10-point aim.
   defensive, unsupported, or pending.
 - Final verification includes focused tests for each added fixture and a full
   `dub test`.
-- PR reporting includes the `master` and PR branch `dmd.dinterpret` coverage
-  percentages from the same broad coverage target.
+- PR reporting includes the starting commit SHA, final PR branch commit SHA,
+  and `dmd.dinterpret` coverage percentages from the same broad coverage
+  target.
