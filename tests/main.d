@@ -11,6 +11,7 @@ int main(string[] args) {
         "ut.backends.pure_.lang.diagnostics",
         "ut.backends.pure_.lang.exceptions",
         "ut.backends.pure_.lang.logic",
+        "ut.backends.pure_.lang.integral_types",
         "ut.backends.pure_.lang.math",
         "ut.backends.pure_.lang.structs",
         "ut.backends.pure_.minicereal",
