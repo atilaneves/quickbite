@@ -6,6 +6,7 @@ int main(string[] args) {
         "ut.backends.architecture",
         "ut.backends.pure_.lang.eval",
         "ut.backends.pure_.lang.expressions",
+        "ut.backends.pure_.lang.control_flow",
         "ut.backends.pure_.lang.logic",
         "ut.value",
         "ut.compiler",
