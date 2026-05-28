@@ -116,12 +116,19 @@ current plan, the broad target is:
 scripts/dmd-ctfe-coverage.sh ut.backends.pure_
 ```
 
-Read the final line of `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` in each
-checkout. Report:
+Calculate the percentage from executable entries in
+`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` in each checkout. Do not use the
+final DMD footer line; it rounds to a whole percentage and can hide small PR
+deltas.
+
+Executable entries are `.lst` lines whose seven-character counter prefix is
+either a run count or `0000000`. Count `0000000` as uncovered, and count any
+positive run count as covered. Report:
 
 - the `master` percentage;
 - the PR branch percentage;
 - the percentage-point delta;
+- all percentages and deltas with two digits after the decimal point;
 - the method-level coverage change that motivated the test, such as a visitor
   moving from wholly uncovered to partially covered.
 
