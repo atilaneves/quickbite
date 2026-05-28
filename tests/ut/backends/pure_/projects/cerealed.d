@@ -721,6 +721,63 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                ubyte[] originalBytes;
+                ubyte[] bytes;
+
+                int readInt() {
+                    int value;
+                    foreach (_; 0 .. int.sizeof) {
+                        value <<= 8;
+                        value |= bytes[0];
+                        bytes = bytes[1 .. $];
+                    }
+                    return value;
+                }
+
+                short readShort() {
+                    short value;
+                    foreach (_; 0 .. short.sizeof) {
+                        value <<= 8;
+                        value |= bytes[0];
+                        bytes = bytes[1 .. $];
+                    }
+                    return value;
+                }
+
+                void reset() {
+                    bytes = originalBytes;
+                }
+
+                void reset(ubyte[] newBytes) {
+                    originalBytes = newBytes;
+                    bytes = newBytes;
+                }
+            }
+
+            unittest {
+                ubyte[] bytes1 = [1, 2, 3, 5, 8, 13];
+                auto reader = Reader(bytes1, bytes1);
+
+                assert(reader.readInt == 0x01020305);
+                assert(reader.bytes == [8, 13]);
+
+                assert(reader.readShort == 0x080d);
+                assert(reader.bytes.length == 0);
+
+                reader.reset;
+                assert(reader.bytes == bytes1);
+
+                ubyte[] bytes2 = [3, 6, 9, 12];
+                reader.reset(bytes2);
+                assert(reader.bytes == bytes2);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
