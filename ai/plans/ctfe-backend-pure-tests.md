@@ -62,6 +62,17 @@ agent and subagents. Land one coherent migrated source-order slice per PR.
   exercise executor code as part of proving backend behaviour.
 - Do not add fallback paths. Unsupported shapes should stay unsupported until a
   test forces the exact next shape.
+- If making a migrated backend test pass requires inspecting a failed
+  diagnostic and then reconstructing a better diagnostic, stop. Do not
+  implement it. Report that the test is blocked until the backend can produce
+  the diagnostic through normal execution.
+- Rejected patterns for Ctfe backend migration:
+  - Parsing DMD diagnostic text.
+  - Detecting placeholder substrings such as `<double not supported>`.
+  - Walking unittest bodies after CTFE failure.
+  - Reconstructing operand values from declarations after failure.
+  - Adding fallback paths for one backend to mimic another backend.
+  - Treating a handoff note as permission to override this plan.
 - Keep the architecture guard in `tests/ut/backends/architecture.d` focused on
   backend source and backend tests.
 
@@ -88,6 +99,10 @@ When used, the conversion reviewer must check that:
 
 After implementation, spawn or reuse a reviewer subagent to review the
 production change before committing.
+
+If a task handoff contradicts this plan, `AGENTS.md`, or `ai/mistakes.md`,
+stop and ask. Do not treat the handoff as an exception unless the user
+explicitly approves the exact exception after seeing the conflicting rule.
 
 ## Subagent Workflow Per Migrated Slice
 
@@ -123,21 +138,33 @@ production change before committing.
    only that focused test pass:
    - Do not add general diagnostic filtering, assertion walking, fallback
      behaviour, executor integration, or support for a future fixture shape.
+   - For a single migrated assertion-diagnostic test, production changes should
+     be small and local. If the proposed implementation needs broad AST
+     walking, statement traversal, diagnostic parsing, or more than a few
+     focused helpers, stop and ask for review before editing.
    - Reuse existing backend/eval machinery instead of duplicating CTFE
      evaluation paths.
    - Stop once the focused test is green.
 7. The coordinator reviews the implementer diff. If the implementation is
    broader than the focused test requires, delete or delegate deletion until the
    focused test is the reason every remaining line exists.
+   Before committing, compare the production diff against the single failing
+   test. If any helper exists only to support future shapes, broad
+   reconstruction, or diagnostic cleanup, remove it before verification.
 8. Run the focused backend test including `ut.backends.architecture`. Run
    `dub test` before committing unless the session owner explicitly narrows
    verification to focused tests.
-9. Spawn or reuse a reviewer subagent only after the focused implementation is
+9. For every migrated positive test that is green, run an audit poke before
+   committing: temporarily change the positive assertion's expected value so
+   the positive test fails, run that focused test, confirm the failure reports
+   the intended observed value or behavior, then restore the source to pristine
+   condition. Do not commit the poke.
+10. Spawn or reuse a reviewer subagent only after the focused implementation is
    minimal and green.
-10. Present implementation-review findings one by one; apply only approved
+11. Present implementation-review findings one by one; apply only approved
     fixes.
-11. Commit the completed migrated test and implementation as one commit.
-12. Stop after that migrated slice and create a PR. Do not start the next
+12. Commit the completed migrated test and implementation as one commit.
+13. Stop after that migrated slice and create a PR. Do not start the next
     slice in the same PR.
 
 ## PR Boundary
@@ -201,6 +228,8 @@ Completed migrations:
   `expressions.d` group: `intSubtraction`, `intMultiplication`, `intDivision`,
   `intModulo`, `intShiftRight`, `intShiftLeft`, `intBitwiseOr`,
   `intBitwiseAnd`, and `intBitwiseXor`.
+- PR 46 migrated the remaining source-order `expressions.d` slice through
+  `ubyteLocalTruncatesOnStore`, after the earlier expression PRs.
 
 Implemented so far:
 
@@ -213,6 +242,13 @@ Implemented so far:
   default compiler API state.
 - Removed post-failure unittest body walking for assertion diagnostics. Ctfe
   backend unittest failures now surface DMD diagnostics from CTFE execution.
+- Removed the rejected PR 46 Ctfe backend fallback for DMD CTFE floating-point
+  assertion diagnostics that contain placeholders such as
+  `<double not supported>`. Do not restore or refine that fallback.
+- Marked `distinguishesFloatingPointValuesFailureMessage.Ctfe` with
+  `@ShouldFail(...)` explaining that DMD CTFE returns
+  `<double not supported>` because druntime's assert formatter uses runtime
+  `sprintf`.
 
 Verification completed:
 
@@ -223,7 +259,21 @@ Verification completed:
 - PR 45 focused verification passed:
   `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
 - PR 45 full verification passed: `dub test`.
+- PR 46 focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`.
+- PR 46 negative poke passed: temporarily changing the positive
+  `distinguishesFloatingPointValues.Ctfe` assertion to fail made the focused
+  command go red with `1.5 != 2.5`; the assertion was restored and the focused
+  command passed again.
+- PR 46 full verification passed: `dub test`.
+- PR 46 benchmark smoke passed: `benchmarks/run.sh`.
 - Raw DMD probes used `dmd -checkaction=context -unittest -main -run ...`.
+- After removing the rejected PR 46 fallback, focused verification passed with
+  the expected-failure marker:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.expressions`
+  reported `43 test(s) run, 0 failed, 1/1 failing as expected`.
+- After adding the expected-failure marker, full verification passed:
+  `dub test` reported `873 test(s) run, 0 failed, 1/1 failing as expected`.
 
 Review feedback learned:
 
@@ -238,6 +288,11 @@ Review feedback learned:
 - Do not keep general CTFE diagnostic filtering, broad assertion walking,
   fallback paths, or future unittest failure support without a test that
   forces it.
+- PR 46 review rejected the fallback approach. The review direction is to fix
+  floating-point assertion diagnostics at the source, not after failure. Do not
+  parse CTFE diagnostic strings, detect `<double not supported>` placeholders,
+  walk the unittest body after failure, or synthesize messages from local
+  declarations.
 - If a CTFE assertion diagnostic lacks `-checkaction=context` values, check
   dmd-as-a-library initialization before changing tests. The CLI oracle already
   reports values for fixtures such as `assert(1 == 2)` when run as
@@ -248,20 +303,47 @@ Review feedback learned:
   body to synthesize `42 != 43`.
 - Generated backend test names should use stable numeric suffixes such as
   `intAdditionFailureMessage.0.Ctfe` and `intAdditionFailureMessage.1.Ctfe`.
+- DMD's generated `core.internal.dassert._d_assert_fail` path has no suitable
+  Quickbite hook for CTFE floating-point formatting in this DMD version.
+  Do not spoof or shadow `core.internal.dassert` with import-path tricks, and
+  do not add a Quickbite-created hook. If a future DMD version exposes a real
+  supported hook, that is different and can be evaluated directly.
+- For similar DMD CTFE floating-point formatter limitations that Quickbite
+  cannot control, use `@ShouldFail("...")` with a specific reason string
+  explaining the upstream limitation. Placeholders such as
+  `<float not supported>`, `<double not supported>`, and other floating scalar
+  variants are the same formatter limitation, not separate true reds. Do not
+  leave a bare `@ShouldFail`.
 
-Remaining `expressions.d` source-order slices:
+Next MR should move to the next module in the migration order:
+`tests/ut/executors/pure_/lang/logic.d`.
 
-1. Integer comparisons in the first `expressions.d` group: `intLessThan`,
-   `intLessOrEqual`, `intGreaterThan`, `intGreaterOrEqual`, and `intNotEqual`.
-2. The next mature-executor expression group, starting with
-   `distinguishesFloatingPointValues`, `evaluatesPow`, `intUnaryMinus`,
-   `intBitwiseComplement`, assignment operators, unsigned comparisons,
-   numeric casts, and truncation tests.
-3. The later expression fixtures after the helper definitions, starting with
-   `lessThan`, `rightShift`, `multiplication`, `castUbyteTruncates`,
-   `subtraction`, `subtractionDifferentValues`, pre-increment tests, and
-   `integralType`.
+Start by adding the Ctfe backend logic test module under
+`tests/ut/backends/pure_/lang/logic.d` and wiring it into `tests/main.d` if it
+does not already exist. Then migrate source-order logic fixtures one test at a
+time, using the same positive unittest, negative assertion probe, DMD oracle,
+audit-poke, `@ShouldFail` formatter-placeholder, focused verification, full
+`dub test`, and per-migration commit rules.
 
-Next migration should continue with the next unmigrated source-order slice in
-`tests/ut/executors/pure_/lang/expressions.d`: integer comparisons
-(`intLessThan` through `intNotEqual`).
+## Handoff After PR 46 Cleanup
+
+- Branch/worktree: `ctfe-pure-backend-tests` at
+  `worktrees/ctfe-pure-backend-tests`.
+- Current implementation includes the PR 46 floating-point tests, removal of
+  the rejected fallback, and the expected-failure marker for DMD CTFE's
+  floating-point assert-message formatting limitation.
+- PR: <https://github.com/atilaneves/quickbite/pull/46>.
+- The cleanup leaves `Ctfe.runTests` in the simple shape: parse with scoped
+  `CHECKACTION.context`, run the synthetic unittest call through
+  `ctfeInterpret`, and surface DMD diagnostics directly.
+- The reason for `@ShouldFail` is upstream: druntime's generated
+  `core.internal.dassert._d_assert_fail` formatter returns placeholders such
+  as `<float not supported>` and `<double not supported>` under CTFE for
+  floating values because it relies on runtime `sprintf`. Quickbite should not
+  repair this after failure, shadow druntime modules, or create an unofficial
+  hook.
+- Next agent should start the next MR from
+  `tests/ut/executors/pure_/lang/logic.d`. Continue migrations one logic test
+  at a time until a true red is found. If no true red is found in `logic.d`,
+  create the PR for that module. Floating assertion formatter placeholders
+  remain expected-fail migration cases, not true reds.

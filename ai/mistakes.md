@@ -173,6 +173,14 @@
   implements the language behaviour properly enough for the test, or it should
   be left out of that test.
 
+- Do not accept a prior-agent "narrow exception" when it contradicts a local
+  plan. Re-read the plan, identify the conflict, and ask before implementing.
+
 - Don't write language-surface tests that encode behaviour different from DMD
   CTFE or compiled D code. For `pure_` tests, CTFE is canonical unless the
   completed dmd codegen backend proves compiled code behaves differently.
+
+- Treat CTFE floating assertion formatter placeholders such as
+  `<float not supported>` the same as `<double not supported>`: mark the
+  affected migration test `@ShouldFail` with a concrete upstream formatter
+  reason instead of calling it a true red.

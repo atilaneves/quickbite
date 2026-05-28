@@ -574,4 +574,675 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+
+    @("intLessThan." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(41 < bound);
+            }
+        });
+    }
+
+    @("intLessThanFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 < bound);
+            }
+        }).shouldThrowWithMessage("42 >= 42");
+    }
+
+    @("intLessOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 <= bound);
+            }
+        });
+    }
+
+    @("intLessOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 <= bound);
+            }
+        }).shouldThrowWithMessage("43 > 42");
+    }
+
+    @("intGreaterThan." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 > bound);
+            }
+        });
+    }
+
+    @("intGreaterThanFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 > bound);
+            }
+        }).shouldThrowWithMessage("42 <= 42");
+    }
+
+    @("intGreaterOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 >= bound);
+            }
+        });
+    }
+
+    @("intGreaterOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(41 >= bound);
+            }
+        }).shouldThrowWithMessage("41 < 42");
+    }
+
+    @("intNotEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(43 != bound);
+            }
+        });
+    }
+
+    @("intNotEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int bound() {
+                return 42;
+            }
+
+            unittest {
+                // Keep one operand runtime-shaped so DMD does not constant-fold
+                // the comparison before the backend sees it.
+                assert(42 != bound);
+            }
+        }).shouldThrowWithMessage("42 == 42");
+    }
+}
+
+static foreach (backend; backends) {
+    @("distinguishesFloatingPointValues." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left != right);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("distinguishesFloatingPointValuesFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double left = 1.5;
+                double right = 2.5;
+                assert(left == right);
+            }
+        }).shouldThrowWithMessage("1.5 != 2.5");
+    }
+
+    @("evaluatesPow." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 8.0);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("evaluatesPowFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            import std.math: pow;
+
+            unittest {
+                assert(pow(2.0, 3.0) == 9.0);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
+    @("intUnaryMinus." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            int answer() {
+                return -input;
+            }
+
+            unittest {
+                assert(answer == -42);
+            }
+        });
+    }
+
+    @("intUnaryMinusFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            int input() {
+                return 42;
+            }
+
+            int answer() {
+                return -input;
+            }
+
+            unittest {
+                assert(answer == -43);
+            }
+        }).shouldThrowWithMessage("-42 != -43");
+    }
+
+    @("intBitwiseComplement." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x2a;
+                assert(~value == -0x2b);
+            }
+        });
+    }
+
+    @("intBitwiseComplementFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x2a;
+                assert(~value == -0x2c);
+            }
+        }).shouldThrowWithMessage("-43 != -44");
+    }
+
+    @("intOrAssign." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x28u;
+                value |= 0x02u;
+                assert(value == 0x2au);
+            }
+        });
+    }
+
+    @("intOrAssignFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x28u;
+                value |= 0x02u;
+                assert(value == 0x2bu);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("intSubtractAssign." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 44;
+                value -= 2;
+                assert(value == 42);
+            }
+        });
+    }
+
+    @("intSubtractAssignFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 44;
+                value -= 2;
+                assert(value == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("intAddAssign." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 40;
+                value += 2;
+                assert(value == 42);
+            }
+        });
+    }
+
+    @("intAddAssignFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 40;
+                value += 2;
+                assert(value == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 0);
+            }
+        });
+    }
+
+    @("ubyteAddAssignWrapsOnStoreFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ubyte value = 255;
+                value += 1;
+                assert(value == 1);
+            }
+        }).shouldThrowWithMessage("0 != 1");
+    }
+
+    @("ulongHighBitLessThan." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL < value);
+            }
+        });
+    }
+
+    @("ulongHighBitLessThanFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL >= value);
+            }
+        }).shouldThrowWithMessage("0 < 9255003132036915216");
+    }
+
+    @("longLiteral." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            long answer() {
+                return 2_147_483_648L;
+            }
+
+            unittest {
+                assert(answer > 0L);
+            }
+        });
+    }
+
+    @("longLiteralFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            long answer() {
+                return 2_147_483_648L;
+            }
+
+            unittest {
+                assert(answer <= 0L);
+            }
+        }).shouldThrowWithMessage("2147483648 > 0");
+    }
+
+    @("ulongHighBitLessOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL <= value);
+            }
+        });
+    }
+
+    @("ulongHighBitLessOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(0UL > value);
+            }
+        }).shouldThrowWithMessage("0 <= 9255003132036915216");
+    }
+
+    @("ulongHighBitGreaterOrEqual." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value >= 0UL);
+            }
+        });
+    }
+
+    @("ulongHighBitGreaterOrEqualFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value < 0UL);
+            }
+        }).shouldThrowWithMessage("9255003132036915216 >= 0");
+    }
+
+    @("ulongHighBitGreaterThan." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value > 0UL);
+            }
+        });
+    }
+
+    @("ulongHighBitGreaterThanFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                auto value = 0x8070605040302010UL;
+                assert(value <= 0UL);
+            }
+        }).shouldThrowWithMessage("9255003132036915216 > 0");
+    }
+
+    @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong integer = 0x8000_0000_0000_0000UL;
+                double floating = 9_223_372_036_854_775_808.0;
+
+                assert(integer == floating);
+                assert(integer <= floating);
+                assert(integer >= floating);
+                assert(!(integer < floating));
+                assert(!(integer > floating));
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongDoubleComparisonUsesNumericUnsignedValueFailureMessage." ~
+        backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong integer = 0x8000_0000_0000_0000UL;
+                double floating = 9_223_372_036_854_775_808.0;
+
+                assert(integer != floating);
+            }
+        }).shouldThrowWithMessage("9223372036854775808 == 9.22337e+18");
+    }
+
+    @("castsFloatingValueNumerically." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double input = 7.75;
+                assert(cast(int) input == 7);
+            }
+        });
+    }
+
+    @("castsFloatingValueNumericallyFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                double input = 7.75;
+                assert(cast(int) input == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <float not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("intToFloatCastUsesFloatPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int input = 16_777_217;
+                float converted = cast(float) input;
+
+                assert(converted == 16_777_216.0f);
+                assert(converted != 16_777_217.0);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <float not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("intToFloatCastUsesFloatPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int input = 16_777_217;
+                float converted = cast(float) input;
+
+                assert(converted != 16_777_216.0);
+            }
+        }).shouldThrowWithMessage("1.67772e+07 == 1.67772e+07");
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongToRealCastPreservesRealPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong input = ulong.max;
+                real converted = cast(real) input;
+
+                assert(converted == 18_446_744_073_709_551_615.0L);
+                assert(converted != cast(real) cast(double) input);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("ulongToRealCastPreservesRealPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                ulong input = ulong.max;
+                real converted = cast(real) input;
+
+                assert(converted != 18_446_744_073_709_551_615.0L);
+            }
+        }).shouldThrowWithMessage(
+            "18446744073709551615 == 18446744073709551615",
+        );
+    }
+
+    @("integerFloatEqualityIsNumeric." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                long integer = 0x3ff0_0000_0000_0000L;
+                double floating = 1.0;
+
+                assert(integer != floating);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <double not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("integerFloatEqualityIsNumericFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                long integer = 0x3ff0_0000_0000_0000L;
+                double floating = 1.0;
+
+                assert(integer == floating);
+            }
+        }).shouldThrowWithMessage("4607182418800017408 != 1");
+    }
+
+    @("realComparisonPreservesRealPrecision." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                real left = real.max;
+                real right = real.infinity;
+
+                assert(left < right);
+            }
+        });
+    }
+
+    @ShouldFail(
+        "DMD CTFE returns <real not supported> because druntime's " ~
+        "assert formatter uses sprintf",
+    )
+    @("realComparisonPreservesRealPrecisionFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                real left = real.max;
+                real right = real.infinity;
+
+                assert(left >= right);
+            }
+        }).shouldThrowWithMessage("1.18973e+4932 < inf");
+    }
+
+    @("castUbyteRuntimeValueTruncates." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int value = 258;
+                assert(cast(ubyte) value == 2);
+            }
+        });
+    }
+
+    @("castUbyteRuntimeValueTruncatesFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int value = 258;
+                assert(cast(ubyte) value == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int source = 258;
+                ubyte value = cast(ubyte) source;
+                assert(value == 2);
+            }
+        });
+    }
+
+    @("ubyteLocalTruncatesOnStoreFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int source = 258;
+                ubyte value = cast(ubyte) source;
+                assert(value == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
 }
