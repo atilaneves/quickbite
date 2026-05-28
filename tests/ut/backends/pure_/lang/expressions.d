@@ -1019,6 +1019,134 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("8 != 7");
     }
 
+    @("classVirtualCallUsesDynamicClass." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(5) == 12);
+            }
+        });
+    }
+
+    @("classVirtualCallUsesDynamicClassFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(5) == 13);
+            }
+        }).shouldThrowWithMessage("12 != 13");
+    }
+
+    @("classVirtualCallUsesDynamicClassFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(2) == 12);
+            }
+        }).shouldThrowWithMessage("9 != 12");
+    }
+
+    @("typeidTypeNameReturnsIdentifier." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            string typeName(int seed) {
+                string name = typeid(Widget).name;
+                return seed == name.length ? "" : name;
+            }
+
+            unittest {
+                assert(typeName(0) == "Widget");
+            }
+        });
+    }
+
+    @("typeidTypeNameReturnsIdentifierFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            string typeName(int seed) {
+                string name = typeid(Widget).name;
+                return seed == name.length ? "" : name;
+            }
+
+            unittest {
+                assert(typeName(0) == "onlineapp.Widget");
+            }
+        }).shouldThrowWithMessage(`"Widget" != "onlineapp.Widget"`);
+    }
+
     @("nestedDelegateCallUsesCapturedValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

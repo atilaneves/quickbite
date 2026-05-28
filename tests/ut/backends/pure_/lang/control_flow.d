@@ -361,6 +361,77 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("labeledContinueSkipsToOuterForIncrement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 6);
+            }
+        });
+    }
+
+    @("labeledContinueSkipsToOuterForIncrementFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+
+    @("labeledContinueSkipsToOuterForIncrementFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(2); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 6);
+            }
+        }).shouldThrowWithMessage("3 != 6");
+    }
+
     @("functionPointerHashCollisionDetected." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -218,6 +218,12 @@ that shim.
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 | `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 | `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| `visitContinue` labeled continue | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `labeledContinueSkipsToOuterForIncrement.Ctfe`; hits outer continue propagation through `visitFor`. |
+| `visit(NewExp)` class allocation and `visit(CallExp)` virtual call | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `classVirtualCallUsesDynamicClass.Ctfe`; dynamic override dispatch uses constructor-derived field. |
+| `visit(TypeidExp)` type form and `DotVarExp.name` | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `typeidTypeNameReturnsIdentifier.Ctfe`; DMD CTFE name is `Widget`. |
+| `visit(CallExp)` null class method call | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `nullClassMethodCallReportsDiagnostic.Ctfe`; exact diagnostic includes `` `null` ``. |
+| `visit(DotVarExp)` null class field read | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `nullClassFieldReadReportsDiagnostic.Ctfe`; exact diagnostic includes `` `null` ``. |
+| `DeclarationExp` void init and `getVarExp` uninitialized read | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `voidInitializedScalarReadReportsUninitialized.Ctfe`; generated snippet counter is order-dependent, so the test checks stable DMD diagnostic parts. |
 | `visit(StructLiteralExp)` static array fill | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Scalar struct literal field fill. |
 | `recursivelyCreateArrayLiteral` nested arrays | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime multidimensional `new`. |
 | `visit(NewExp)` scalar allocation | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime scalar pointer value. |
