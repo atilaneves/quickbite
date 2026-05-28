@@ -1004,6 +1004,66 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("newCharArrayUsesRuntimeLengthAndDefaultFill." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeLength(int seed) {
+                return cast(size_t)(seed - 1);
+            }
+
+            unittest {
+                int seed = 4;
+                const len = runtimeLength(seed);
+
+                auto text = new char[](len);
+
+                assert(text.length == 3);
+                assert(text[0] == char.init);
+                text[1] = cast(char)('a' + seed);
+                assert(text[1] == 'e');
+            }
+        });
+    }
+
+    @("newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeLength(int seed) {
+                return cast(size_t)(seed - 1);
+            }
+
+            unittest {
+                int seed = 4;
+                const len = runtimeLength(seed);
+
+                auto text = new char[](len);
+
+                assert(text.length == 4);
+            }
+        }).shouldThrowWithMessage("3 != 4");
+    }
+
+    @("newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeLength(int seed) {
+                return cast(size_t)(seed - 1);
+            }
+
+            unittest {
+                int seed = 4;
+                const len = runtimeLength(seed);
+
+                auto text = new char[](len);
+                text[1] = cast(char)('a' + seed);
+
+                assert(text[1] == 'f');
+            }
+        }).shouldThrowWithMessage("'e' != 'f'");
+    }
+
     @("newMultidimensionalDynamicArrayUsesRuntimeLengths." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

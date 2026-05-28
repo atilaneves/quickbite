@@ -253,6 +253,7 @@ that shim.
 | `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
 | `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
 | `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
+| `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
 
 Coverage workflow details:
 
@@ -774,6 +775,36 @@ hit through a non-matching `switch` case falling through to `default`.
 
 Poke result: changing the behavior assertion from `12` to `13` failed the
 focused CTFE test with `12 != 13`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 8
+
+Explorer recommendation 8 targeted the char-element branch in
+`recursivelyCreateArrayLiteral` through runtime-length dynamic array
+allocation.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.0.Ctfe
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe
+```
+
+Coverage effect: focused coverage marked the `elemType.ty.isSomeChar` branch
+and `createBlockDuplicatedStringLiteral` return as hit for `new char[](len)`.
+The test uses `char.init` for the default element value to match DMD CTFE and
+compiled D behavior.
+
+Poke result: changing the behavior assertion from `'e'` to `'f'` failed the
+focused CTFE test with `'e' != 'f'`; the temporary poke was reverted and the
 focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
