@@ -114,4 +114,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+
+    @("logicalAnd." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert(left && right);
+            }
+        });
+    }
+
+    @("logicalAndFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert((left && right) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalAndFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                bool right = false;
+                assert((left && right) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
 }
