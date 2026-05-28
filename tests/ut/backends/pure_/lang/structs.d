@@ -1478,6 +1478,64 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("9 != 7");
     }
 
+    @("structLiteralFillsStaticArrayFieldFromScalar." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] values;
+            }
+
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto s = S(seed);
+
+                assert(s.values[0] == seed);
+                assert(s.values[1] == seed);
+                assert(s.values[2] == seed);
+            }
+        });
+    }
+
+    @("structLiteralFillsStaticArrayFieldFromScalarFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] values;
+            }
+
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto s = S(seed);
+
+                assert(s.values[1] == seed + 1);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("structLiteralFillsStaticArrayFieldFromScalarFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] values;
+            }
+
+            unittest {
+                int seed = 7;
+                seed += 1;
+
+                auto s = S(seed);
+
+                assert(s.values[2] == seed + 1);
+            }
+        }).shouldThrowWithMessage("8 != 9");
+    }
+
     @("dynamicArrayStructFieldReturnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

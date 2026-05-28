@@ -949,6 +949,78 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("labeledBreakExitsOuterForLoop." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 2;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 1)
+                            break outer;
+                    }
+                }
+
+                assert(count == 2);
+            }
+        });
+    }
+
+    @("labeledBreakExitsOuterForLoopFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 2;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 1)
+                            break outer;
+                    }
+                }
+
+                assert(count == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("labeledBreakExitsOuterForLoopFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 1;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 0)
+                            break outer;
+                    }
+                }
+
+                assert(count == 2);
+            }
+        }).shouldThrowWithMessage("1 != 2");
+    }
+
     @("voidFunctionExplicitReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

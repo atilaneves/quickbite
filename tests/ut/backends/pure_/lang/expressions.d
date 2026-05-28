@@ -1631,6 +1631,53 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
+    @("newScalarPointerDereferencesRuntimeValue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed + 1);
+            }
+        });
+    }
+
+    @("newScalarPointerDereferencesRuntimeValueFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed);
+            }
+        }).shouldThrowWithMessage("43 != 42");
+    }
+
+    @("newScalarPointerDereferencesRuntimeValueFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 7;
+                seed += 1;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed);
+            }
+        }).shouldThrowWithMessage("9 != 8");
+    }
+
     @("vectorScalarCastSplatsToStaticArray." ~ backend.stringof)
     unittest {
         runSse2BackendSourceFixtureTests!backend(q{

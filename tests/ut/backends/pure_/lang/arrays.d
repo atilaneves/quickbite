@@ -1004,6 +1004,61 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengths." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values.length == rows);
+                assert(values[0].length == cols);
+                assert(values[1][2] == 42);
+            }
+        });
+    }
+
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengthsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values.length == rows + 1);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengthsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values[1][2] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

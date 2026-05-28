@@ -218,6 +218,10 @@ that shim.
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 | `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
 | `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| `visit(StructLiteralExp)` static array fill | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Scalar struct literal field fill. |
+| `recursivelyCreateArrayLiteral` nested arrays | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime multidimensional `new`. |
+| `visit(NewExp)` scalar allocation | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime scalar pointer value. |
+| `visitFor` labeled outer break | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Break bubbles out of inner loop. |
 | `visit(SliceExp)` null zero-length slice | Covered | Worker 5 slice | See below. |
 | `resolveIndexing(IndexExp)` slice OOB diagnostic | Covered | Worker 5 slice | See below. |
 | `visit(DelegatePtrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.ptr` CTFE rejection. |
