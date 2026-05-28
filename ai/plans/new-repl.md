@@ -46,6 +46,9 @@ Remaining follow-up:
   signatures. For example, after declaring `int twice(int i)`, calling
   `twice("foo")` currently only reports that `twice` is not callable with
   `(string)` and does not tell the user that `twice` expects an `int`.
+- Support import declarations as no-display REPL cells. For example,
+  `import std.algorithm;` currently fails with parser diagnostics such as
+  `found 'std' when expecting '(' following 'import'`.
 
 ## Key Changes
 
