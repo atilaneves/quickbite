@@ -84,21 +84,79 @@ clear reason to exist.
 
 ## CtfePlus Follow-Up
 
-`CtfePlus` is future work for runtime features that DMD CTFE cannot execute,
-such as `malloc`.
+The next implementation slice is `CtfePlus`, a backend for runtime features
+that DMD CTFE cannot execute, such as mutable static registries and `malloc`.
 
 After every cerealed module has been tried, review the remaining
 `@ShouldFail` tests and promote the first concrete unsupported runtime feature
 into the initial `CtfePlus` slice.
 
+The first promoted test is
+`projects.cerealed.classSerialisationReadsStaticChildRegistry`. Plain `Ctfe`
+must keep this test as an expected failure because DMD CTFE cannot read the
+static child-class registry at compile time. `CtfePlus` must run the same
+behaviour as a normal passing test.
+
+Add a non-virtual capability query to plain CTFE:
+
+```d
+public bool canHandle(imported!"dmd.dmodule".Module module_);
+```
+
+`canHandle` is a semantic AST support scan, not a test-result predictor. It
+must return `false` for modules containing language or runtime features that
+DMD CTFE cannot execute, starting with reads of mutable static/dataseg state
+such as cerealed's child-class registry. It must still return `true` for
+modules whose tests fail through normal assertion failures, bounds diagnostics,
+or user-thrown exceptions that DMD CTFE can interpret.
+
+Do not classify DMD CTFE support by matching rendered diagnostic strings. Use
+DMD AST nodes, symbols, and semantic helpers as the protocol. For the static
+registry slice, the relevant DMD condition is a read of a variable that is in
+the data segment and is not CTFE-owned; DMD reports this from `dinterpret.d`
+when it cannot find an interpreter value for that variable.
+
 `CtfePlus` should:
 
 - Implement `quickbite.backend.Backend`.
-- Let plain CTFE handle everything it can.
+- Compose a private `Ctfe` instance.
+- In `runParsedTests(Module)`, delegate the whole module to plain CTFE when
+  `_ctfe.canHandle(module_)` returns `true`.
+- Run its own fallback only when `_ctfe.canHandle(module_)` returns `false`.
 - Add only the minimal missing support proven by an extracted expected-failing
   test.
-- Join the normal `ut.backends.backends` matrix only once it passes the
-  existing backend suite plus the first promoted expected-failure test.
+- Add `runtimeBackends` to `tests/ut/backends/package.d` as the alias sequence
+  for backends that can handle runtime-only features beyond plain CTFE.
+- Include `CtfePlus` in `runtimeBackends`.
+- Include `CtfePlus` in `backends` so it runs the normal backend matrix
+  alongside `Ctfe`.
+
+Implement the slice in small TDD steps:
+
+1. Add `runtimeBackends` and include `CtfePlus` in `backends` before defining
+   `CtfePlus`; this should fail to compile.
+2. Add and export an empty `CtfePlus` class; this should still fail because
+   the `Backend` methods are not implemented.
+3. Stub the required `Backend` methods; this should compile and fail at
+   runtime because `runParsedTests` does nothing.
+4. Make `CtfePlus` delegate every method to a private `Ctfe`; the existing
+   backend matrix should pass.
+5. Move the static child-registry test to `runtimeBackends` and remove its
+   `@ShouldFail`; it should fail because `CtfePlus` still delegates to `Ctfe`.
+6. Add `public bool canHandle(imported!"dmd.dmodule".Module module_)` to
+   `Ctfe`, initially returning `true`, and route `CtfePlus.runParsedTests`
+   through it.
+7. Implement the static dataseg-read detection directly in the body of
+   `Ctfe.canHandle`; do not introduce a `readsUnsupportedStaticDataseg` helper
+   or equivalent abstraction before duplication or complexity justifies it.
+   The focused `CtfePlus` test should then reach the fallback path instead of
+   DMD CTFE's static-variable diagnostic.
+8. Implement the smallest fallback that makes the static child-registry test
+   pass for `CtfePlus`.
+
+The PR for this slice may be created only when `CtfePlus` passes every backend
+test that `Ctfe` passes, plus
+`projects.cerealed.classSerialisationReadsStaticChildRegistry`.
 
 Plain CTFE remains the correctness oracle for supported `pure_` behaviour.
 `CtfePlus` exists to run more cerealed-derived runtime behaviour, not to replace
