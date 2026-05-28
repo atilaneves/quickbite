@@ -361,6 +361,77 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("labeledContinueSkipsToOuterForIncrement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 6);
+            }
+        });
+    }
+
+    @("labeledContinueSkipsToOuterForIncrementFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+
+    @("labeledContinueSkipsToOuterForIncrementFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int count;
+            outer:
+                for (int i = 0; i < limit(2); ++i) {
+                    for (int j = 0; j < limit(4); ++j) {
+                        if (j == i + 1)
+                            continue outer;
+                        ++count;
+                    }
+                    count += limit(10);
+                }
+                assert(count == 6);
+            }
+        }).shouldThrowWithMessage("3 != 6");
+    }
+
     @("functionPointerHashCollisionDetected." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -947,6 +1018,162 @@ static foreach (backend; backends) {
                 assert(answer == 8);
             }
         }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @("labeledBreakExitsOuterForLoop." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 2;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 1)
+                            break outer;
+                    }
+                }
+
+                assert(count == 2);
+            }
+        });
+    }
+
+    @("labeledBreakExitsOuterForLoopFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 2;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 1)
+                            break outer;
+                    }
+                }
+
+                assert(count == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("labeledBreakExitsOuterForLoopFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int outerLimit = 1;
+                ++outerLimit;
+                int innerLimit = 1;
+                ++innerLimit;
+                int count;
+
+            outer:
+                for (int i = 0; i < outerLimit; ++i) {
+                    for (int j = 0; j < innerLimit; ++j) {
+                        ++count;
+                        if (i == 0 && j == 0)
+                            break outer;
+                    }
+                }
+
+                assert(count == 2);
+            }
+        }).shouldThrowWithMessage("1 != 2");
+    }
+
+    @("switchBreaksOuterLoop." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 1:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 14);
+            }
+        });
+    }
+
+    @("switchBreaksOuterLoopFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(3); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 1:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 15);
+            }
+        }).shouldThrowWithMessage("14 != 15");
+    }
+
+    @("switchBreaksOuterLoopFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int limit(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+
+            outer:
+                for (int i = 0; i < limit(2); ++i) {
+                    total += limit(1);
+                    switch (i) {
+                        case 0:
+                            total += limit(10);
+                            break outer;
+                        default:
+                            total += limit(2);
+                            break;
+                    }
+                }
+
+                assert(total == 14);
+            }
+        }).shouldThrowWithMessage("11 != 14");
     }
 
     @("voidFunctionExplicitReturn." ~ backend.stringof)

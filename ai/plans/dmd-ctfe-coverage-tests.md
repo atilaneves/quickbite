@@ -170,6 +170,12 @@ For future PR slices on this plan, the main agent should orchestrate only:
 3. Review the worker diff, verify, update this plan if needed, and commit.
 
 Do not choose the next CTFE target locally before the explorer has reported.
+Use medium reasoning for routine explorer and worker subagents unless a slice
+has a specific complexity that justifies a higher setting.
+For this PR, use the single PR worktree for sequential workers instead of
+creating one worktree per worker.
+Create the PR once coverage improvement starts moving only incrementally
+despite valid additive slices; do not grind indefinitely chasing a large delta.
 
 ### 2026-05-28 Workflow Slice
 
@@ -209,7 +215,33 @@ that shim.
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
 | `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
+| `visitTryCatch` handler local goto | Covered | Worker 1 slice | Restart path covered. |
+| `visitTryFinally` body local goto | Covered | Worker 1 slice | Finalbody runs once. |
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
+| `visit(VectorExp)` scalar splat | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| `visit(VectorArrayExp)` vector to array | Covered | dmd-ctfe-coverage-tests-5 Worker 2 | See below. |
+| Non-array control/exception/delegate/typeid branches | Covered | dmd-ctfe-coverage-tests-5 Worker 10 | See below. |
+| `visitContinue` labeled continue | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `labeledContinueSkipsToOuterForIncrement.Ctfe`; hits outer continue propagation through `visitFor`. |
+| `visit(NewExp)` class allocation and `visit(CallExp)` virtual call | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `classVirtualCallUsesDynamicClass.Ctfe`; dynamic override dispatch uses constructor-derived field. |
+| `visit(TypeidExp)` type form and `DotVarExp.name` | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `typeidTypeNameReturnsIdentifier.Ctfe`; DMD CTFE name is `Widget`. |
+| `visit(CallExp)` null class method call | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `nullClassMethodCallReportsDiagnostic.Ctfe`; exact diagnostic includes `` `null` ``. |
+| `visit(DotVarExp)` null class field read | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `nullClassFieldReadReportsDiagnostic.Ctfe`; exact diagnostic includes `` `null` ``. |
+| `DeclarationExp` void init and `getVarExp` uninitialized read | Covered | dmd-ctfe-coverage-tests-5 Worker 9 | `voidInitializedScalarReadReportsUninitialized.Ctfe`; generated snippet counter is order-dependent, so the test checks stable DMD diagnostic parts. |
+| `visit(StructLiteralExp)` static array fill | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Scalar struct literal field fill. |
+| `recursivelyCreateArrayLiteral` nested arrays | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime multidimensional `new`. |
+| `visit(NewExp)` scalar allocation | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Runtime scalar pointer value. |
+| `visitFor` labeled outer break | Covered | dmd-ctfe-coverage-tests-5 Worker 7 | Break bubbles out of inner loop. |
+| `visit(SliceExp)` null zero-length slice | Covered | Worker 5 slice | See below. |
+| `resolveIndexing(IndexExp)` slice OOB diagnostic | Covered | Worker 5 slice | See below. |
+| `visit(DelegatePtrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.ptr` CTFE rejection. |
+| `visit(DelegateFuncptrExp)` diagnostic | Covered | dmd-ctfe-coverage-tests-5 Worker 3 | `dg.funcptr` CTFE rejection. |
+| `visitWith(WithStatement)` local goto restart | Covered | dmd-ctfe-coverage-tests-5 Worker 4 | `with` body `goto` restart. |
+| `visit(DeleteExp)` | Unsupported | dmd-ctfe-coverage-tests-5 Worker 6 | `delete` rejected by DMD 2.112 semantic analysis. |
+| Pointer relation across unrelated arrays | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Four-pointer false relation. |
+| Dynamic array length assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Grow, preserve, zero-fill, shrink. |
+| Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
+| Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
+| Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
 
 Coverage workflow details:
 
@@ -628,6 +660,272 @@ After PR #70 was merged, a fresh `master` coverage run completed cleanly with
 677 tests run, 0 failed, 28/28 failing as expected, and
 1950/3764 = 51.81% executable-entry coverage. The delta is larger than the
 prior PR delta, but still short of the requested 10-point aim.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 2 Slice
+
+Added focused pure-backend CTFE tests for vector expressions:
+
+```text
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArray.Ctfe
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArrayFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArrayFailureMessage.1.Ctfe
+```
+
+The behavior test uses a mutable scalar from a helper call, casts it to
+`__vector(int[4])`, then reads the vector's `.array` property and verifies all
+lanes. This targets DMD CTFE's scalar `visit(VectorExp)` path and the
+`visit(VectorArrayExp)` vector-to-array conversion path.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.vectorScalarCastSplatsToStaticArray.Ctfe
+```
+
+Coverage effect: focused coverage moved `visit(VectorExp)` and
+`visit(VectorArrayExp)` to partially covered. The `.lst` showed the scalar
+splat path, `interpretVectorToArray`, and the `VectorArrayExp` return path hit.
+
+Poke result: changing the behavior test assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 4 Slice
+
+Added focused pure-backend CTFE tests for `with` body local-goto restart:
+
+```text
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBody.Ctfe
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBodyFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBodyFailureMessage.1.Ctfe
+```
+
+The behavior test uses a mutable local struct field initialized from a function
+argument, enters `with (point)`, and jumps to a label inside the same body. The
+fixture proves CTFE resumes inside the `with` body and skips the statement
+between `goto` and the target label.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.withStructLocalGotoRestartsInsideBody.Ctfe
+```
+
+Coverage effect: focused coverage hit the `visitWith(WithStatement)` local-goto
+restart loop around the `CTFEExp.isGotoExp(e)` branch.
+
+Poke result: changing the behavior test assertion from `42` to `43` failed the
+focused CTFE test with `42 != 43`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 5 Slice
+
+Added focused pure-backend CTFE tests for dynamic-array slice/index gaps:
+
+```text
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSlice.Ctfe
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSliceFailureMessage.0.Ctfe
+ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSliceFailureMessage.1.Ctfe
+ut.backends.pure_.lang.arrays.sliceIndexPastLengthDiagnostic.Ctfe
+```
+
+The zero-length slice fixture slices an uninitialized dynamic array with
+runtime-shaped equal bounds from `values.length`. The diagnostic fixture builds
+a runtime-shaped slice from a small array, then indexes past the slice length
+and verifies DMD CTFE's `index 3 exceeds array length 2` diagnostic.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.nullDynamicArrayZeroLengthSlice.Ctfe \
+    ut.backends.pure_.lang.arrays.sliceIndexPastLengthDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage hit the `visit(SliceExp)` `e1.op ==
+EXP.null_` zero-length return branch and the `resolveIndexing(IndexExp)`
+slice-index diagnostic branch.
+
+Poke result: changing the zero-length behavior assertion from `0` to `1`
+failed the focused CTFE test with `0 != 1`; changing the diagnostic expected
+substring to `index 2 exceeds array length 2` failed with the actual message
+`index 3 exceeds array length 2`. Both temporary pokes were reverted and the
+focused tests were rerun green.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 6 Slice
+
+Explorer recommendation targeted the whole uncovered
+`Interpreter.visit(DeleteExp)` method in `dmd.dinterpret`.
+
+No test was kept. DMD 2.112 rejects the proposed surface-language fixture before
+CTFE or semantic interpretation can reach `DeleteExp`:
+
+```text
+/tmp/quickbite_delete_ctfe.d(14): Error: undefined identifier `delete`
+/tmp/quickbite_delete_ctfe.d(14): Error: declaration
+`quickbite_delete_ctfe.bumpViaDelete.box` is already defined
+```
+
+Rejected fixture shape:
+
+```d
+class Box {
+    int[] sink;
+
+    ~this() {
+        sink[0] += 1;
+    }
+}
+
+int bumpViaDelete(int seed) {
+    int[] values = [seed];
+    auto box = new Box;
+    box.sink = values;
+    delete box;
+    return values[0];
+}
+```
+
+Because DMD rejects `delete` during ordinary compilation, the uncovered CTFE
+visitor is not reachable from valid D source in this compiler version.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 8 Array/Cast Slice
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.arrays.fourPointerRelationAcrossUnrelatedArraysReturnsFalse.Ctfe
+ut.backends.pure_.lang.arrays.dynamicArrayLengthAssignmentResizesArray.Ctfe
+ut.backends.pure_.lang.arrays.multidimensionalStaticArraySliceBlockAssignRepeatsRow.Ctfe
+ut.backends.pure_.lang.arrays.overlappingSliceAssignmentIsRejectedAtCtfe.Ctfe
+ut.backends.pure_.lang.arrays.pointerSlicePastAllocatedBlockDiagnostic.Ctfe
+ut.backends.pure_.lang.expressions.hexStringCastToUshortArrayUsesBigEndianWords.Ctfe
+```
+
+The array fixtures use runtime-shaped seeds and bounds. The hex-string fixture
+uses a literal because the literal cast is the behavior under test.
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.fourPointerRelationAcrossUnrelatedArraysReturnsFalse.Ctfe \
+    ut.backends.pure_.lang.arrays.dynamicArrayLengthAssignmentResizesArray.Ctfe \
+    ut.backends.pure_.lang.arrays.multidimensionalStaticArraySliceBlockAssignRepeatsRow.Ctfe \
+    ut.backends.pure_.lang.arrays.overlappingSliceAssignmentIsRejectedAtCtfe.Ctfe \
+    ut.backends.pure_.lang.arrays.pointerSlicePastAllocatedBlockDiagnostic.Ctfe \
+    ut.backends.pure_.lang.expressions.hexStringCastToUshortArrayUsesBigEndianWords.Ctfe
+```
+
+Coverage effect: focused coverage hit `interpretFourPointerRelation`, the
+dynamic-array length assignment branch in `interpretAssignCommon`, the
+recursive static-array block assignment path in `interpretAssignToSlice`, the
+array-overlap diagnostic, and the pointer-slice allocated-block diagnostic.
+The hex-string behavior test passes, but DMD 2.112 semantic cast handling
+normalizes this fixture before `dinterpret` reaches the hex-string array-cast
+branch, so those `visit(CastExp)` lines remained uncovered in this run.
+
+Poke results:
+
+- Changing the unrelated-array relation expectation failed with
+  `false != true`.
+- Changing the dynamic-array length expectation failed with `4 != 3`.
+- Changing the repeated-row expectation failed with `11 != 10`.
+- Changing the overlap diagnostic substring reported the actual
+  `overlapping slice assignment \`[1..3] = [0..2]\`` diagnostic.
+- Changing the pointer-slice diagnostic substring reported the actual
+  `pointer slice \`[1..3]\` exceeds allocated memory block \`[0..2]\``
+  diagnostic.
+- Changing the hex-string word expectation failed with `4660 != 13330`.
+
+Verification notes:
+
+- Focused behavior and paired failure-message tests passed.
+- `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
+- `dub test -- --random` passed with 1552 tests run, 0 failed, and 28/28
+  failing as expected. Seed: `1355646905`.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Worker 10 Non-Array Slice
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.tryFinallyGotoOutOfBodyRunsFinally.Ctfe
+ut.backends.pure_.lang.exceptions.catchHandlerGotoLeavesHandler.Ctfe
+ut.backends.pure_.lang.exceptions.finallyThrowChainsBodyException.Ctfe
+ut.backends.pure_.lang.control_flow.switchBreaksOuterLoop.Ctfe
+ut.backends.pure_.lang.expressions.structMemberDelegateCallUsesReceiver.Ctfe
+ut.backends.pure_.lang.diagnostics.typeidNullClassReferenceReportsDiagnostic.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.tryFinallyGotoOutOfBodyRunsFinally.Ctfe \
+    ut.backends.pure_.lang.exceptions.catchHandlerGotoLeavesHandler.Ctfe \
+    ut.backends.pure_.lang.exceptions.finallyThrowChainsBodyException.Ctfe \
+    ut.backends.pure_.lang.control_flow.switchBreaksOuterLoop.Ctfe \
+    ut.backends.pure_.lang.expressions.structMemberDelegateCallUsesReceiver.Ctfe \
+    ut.backends.pure_.lang.diagnostics.typeidNullClassReferenceReportsDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage hit the catch-handler goto target-outside
+branch, try/finally body goto target-outside branch, finalbody exception
+chaining, switch break propagation above the switch, delegate receiver
+interpretation and `DelegateExp` reconstruction, and the null class-reference
+`typeid` diagnostic. Local DMD CTFE chains a finally-thrown exception behind
+the body exception, so the encoded assertion is `47`.
+
+Poke results:
+
+- Changing the try/finally external-goto expectation failed with `14 != 15`.
+- Changing the catch-handler external-goto expectation failed with `9 != 10`.
+- Changing the finally/body exception-chain expectation failed with `47 != 48`.
+- Changing the switch outer-break expectation failed with `14 != 15`.
+- Changing the struct member delegate expectation failed with `10 != 11`.
+- Changing the null `typeid` diagnostic substring reported the actual
+  `null pointer dereference evaluating typeid. \`thing\` is \`null\``
+  diagnostic.
+
+Verification notes:
+
+- Focused behavior and paired failure-message tests passed.
+- `scripts/dmd-ctfe-coverage.sh` passed for the focused primary tests.
+
+### 2026-05-28 dmd-ctfe-coverage-tests-5 Final Summary
+
+Branch `dmd-ctfe-coverage-tests-5` added additive CTFE coverage tests across
+arrays, control flow, exceptions, diagnostics, structs, class dispatch,
+delegates, vectors, and typeid behavior. Every kept behavior or diagnostic
+test was poked to prove it failed for the expected reason, then reverted and
+rerun green. The `DeleteExp` target was documented as unreachable because DMD
+2.112 rejects the surface-language `delete` fixture before CTFE.
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Recorded branch baseline | 1950 | 3764 | 51.81% |
+| Final branch broad coverage | 2126 | 3764 | 56.48% |
+
+Delta against the recorded baseline: +4.67 percentage points. The branch did
+not reach the 10-point aim; after multiple valid additive slices the broad
+coverage gains were moving incrementally, so this slice should be sent as a PR
+instead of grinding indefinitely.
+
+Final broad coverage verification:
+
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 747 tests run,
+  0 failed, and 28/28 failing as expected.
 
 ## Acceptance Criteria
 

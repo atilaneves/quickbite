@@ -2,6 +2,8 @@ module ut.backends.pure_.lang.diagnostics;
 
 
 import ut.backends;
+import std.algorithm.searching: canFind;
+import std.exception: collectExceptionMsg;
 
 
 private:
@@ -310,5 +312,68 @@ static foreach (backend; backends) {
                 assert(false, msg);
             }
         }).shouldThrowWithMessage("oops");
+    }
+
+    @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {
+                int value() {
+                    return 42;
+                }
+            }
+
+            unittest {
+                Thing thing;
+                assert(thing.value == 42);
+            }
+        }).shouldThrowWithMessage(
+            "function call through null class reference `null`");
+    }
+
+    @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {
+                int value;
+            }
+
+            unittest {
+                Thing thing;
+                assert(thing.value == 42);
+            }
+        }).shouldThrowWithMessage(
+            "class `thing` is `null` and cannot be dereferenced");
+    }
+
+    @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                Thing thing;
+                assert(typeid(thing) is typeid(Thing));
+            }
+        }).shouldThrowWithMessage(
+            "null pointer dereference evaluating typeid. `thing` is `null`");
+    }
+
+    @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
+    unittest {
+        const message = collectExceptionMsg!Exception(
+            runBackendSourceFixtureTests!backend(q{
+                int answer() {
+                    int value = void;
+                    return value;
+                }
+
+                unittest {
+                    assert(answer == 42);
+                }
+            }));
+
+        message.canFind("cannot read uninitialized variable `").should == true;
+        message.canFind(".answer.value` in ctfe").should == true;
     }
 }

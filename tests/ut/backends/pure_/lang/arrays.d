@@ -1004,6 +1004,61 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengths." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values.length == rows);
+                assert(values[0].length == cols);
+                assert(values[1][2] == 42);
+            }
+        });
+    }
+
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengthsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values.length == rows + 1);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("newMultidimensionalDynamicArrayUsesRuntimeLengthsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+                size_t cols = 2;
+                ++cols;
+
+                auto values = new int[][](rows, cols);
+                values[1][2] = 42;
+
+                assert(values[1][2] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1103,6 +1158,161 @@ static foreach (backend; backends) {
                 assert(tail.length == 1);
             }
         }).shouldThrowWithMessage("2 != 1");
+    }
+
+    @("nullDynamicArrayZeroLengthSlice." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 0);
+            }
+        });
+    }
+
+    @("nullDynamicArrayZeroLengthSliceFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 1);
+            }
+        }).shouldThrowWithMessage("0 != 1");
+    }
+
+    @("nullDynamicArrayZeroLengthSliceFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] values;
+                size_t start = values.length;
+                size_t stop = start + values.length;
+
+                auto slice = values[start .. stop];
+
+                assert(slice.length == 2);
+            }
+        }).shouldThrowWithMessage("0 != 2");
+    }
+
+    @("dynamicArrayLengthAssignmentResizesArray." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[] values = [first, first + 1];
+
+                values.length = 4;
+
+                assert(values.length == 4);
+                assert(values[0] == first);
+                assert(values[1] == first + 1);
+                assert(values[2] == 0);
+                assert(values[3] == 0);
+
+                values.length = 1;
+
+                assert(values.length == 1);
+                assert(values[0] == first);
+            }
+        });
+    }
+
+    @("dynamicArrayLengthAssignmentResizesArrayFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[] values = [first, first + 1];
+
+                values.length = 4;
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("4 != 3");
+    }
+
+    @("dynamicArrayLengthAssignmentResizesArrayFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[] values = [first, first + 1];
+
+                values.length = 4;
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage("11 != 10");
+    }
+
+    @("sliceIndexPastLengthDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t start = cast(size_t) value(1);
+                size_t stop = cast(size_t) value(3);
+                auto slice = values[start .. stop];
+                size_t index = cast(size_t) value(3);
+
+                assert(slice[index] == first);
+            }
+        }).shouldThrowWithMessage("index 3 exceeds array length 2");
+    }
+
+    @("overlappingSliceAssignmentIsRejectedAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[] values = [first, first + 1, first + 2];
+                size_t targetStart = cast(size_t) seed(1);
+                size_t targetStop = cast(size_t) seed(3);
+                size_t sourceStart = cast(size_t) seed(0);
+                size_t sourceStop = cast(size_t) seed(2);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage(
+            "overlapping slice assignment `[1..3] = [0..2]`",
+        );
     }
 
     @("sliceAssignmentFromStringUpdatesArray." ~ backend.stringof)
@@ -1406,6 +1616,54 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
+    @("fourPointerRelationAcrossUnrelatedArraysReturnsFalse." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(20);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t offset = cast(size_t) value(1);
+                int* leftStart = left.ptr;
+                int* rightStart = right.ptr;
+                int* rightEnd = rightStart + offset;
+
+                bool inside = rightStart <= leftStart && leftStart < rightEnd;
+
+                assert(inside == false);
+            }
+        });
+    }
+
+    @("fourPointerRelationAcrossUnrelatedArraysReturnsFalseFailureMessage." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(20);
+                int[] left = [first, first + 1];
+                int[] right = [first + 2, first + 3];
+                size_t offset = cast(size_t) value(1);
+                int* leftStart = left.ptr;
+                int* rightStart = right.ptr;
+                int* rightEnd = rightStart + offset;
+
+                bool inside = rightStart <= leftStart && leftStart < rightEnd;
+
+                assert(inside == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("pointerSliceFromDynamicArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1468,6 +1726,89 @@ static foreach (backend; backends) {
                 assert(slice[1] == values[1]);
             }
         }).shouldThrowWithMessage("12 != 11");
+    }
+
+    @("pointerSlicePastAllocatedBlockDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[] values = [first, first + 1];
+                int* p = &values[0];
+                size_t start = cast(size_t) seed(1);
+                size_t stop = cast(size_t) seed(3);
+
+                auto tail = p[start .. stop];
+
+                assert(tail.length == 2);
+            }
+        }).shouldThrowWithMessage(
+            "pointer slice `[1..3]` exceeds allocated memory block `[0..2]`",
+        );
+    }
+
+    @("multidimensionalStaticArraySliceBlockAssignRepeatsRow." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[2][2] matrix;
+
+                matrix[] = [first, first + 1];
+
+                assert(matrix[0][0] == first);
+                assert(matrix[0][1] == first + 1);
+                assert(matrix[1][0] == first);
+                assert(matrix[1][1] == first + 1);
+            }
+        });
+    }
+
+    @("multidimensionalStaticArraySliceBlockAssignRepeatsRowFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[2][2] matrix;
+
+                matrix[] = [first, first + 1];
+
+                assert(matrix[1][1] == first);
+            }
+        }).shouldThrowWithMessage("11 != 10");
+    }
+
+    @("multidimensionalStaticArraySliceBlockAssignRepeatsRowFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(7);
+                int[2][2] matrix;
+
+                matrix[] = [first, first + 1];
+
+                assert(matrix[1][0] == first + 1);
+            }
+        }).shouldThrowWithMessage("7 != 8");
     }
 
     @("dynamicArrayReturnValue." ~ backend.stringof)

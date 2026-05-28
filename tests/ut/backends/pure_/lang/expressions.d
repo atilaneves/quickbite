@@ -2,6 +2,16 @@ module ut.backends.pure_.lang.expressions;
 
 
 import ut.backends;
+import dmd.target: CPU, target;
+
+
+private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
+    const originalCpu = target.cpu;
+    target.cpu = CPU.sse2;
+    scope(exit) target.cpu = originalCpu;
+
+    runBackendSourceFixtureTests!T(moduleSource);
+}
 
 
 static foreach (backend; backends) {
@@ -1009,6 +1019,134 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("8 != 7");
     }
 
+    @("classVirtualCallUsesDynamicClass." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(5) == 12);
+            }
+        });
+    }
+
+    @("classVirtualCallUsesDynamicClassFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(5) == 13);
+            }
+        }).shouldThrowWithMessage("12 != 13");
+    }
+
+    @("classVirtualCallUsesDynamicClassFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int score() {
+                    return 0;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                override int score() {
+                    return field + 3;
+                }
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed + 4);
+                return value.score;
+            }
+
+            unittest {
+                assert(classify(2) == 12);
+            }
+        }).shouldThrowWithMessage("9 != 12");
+    }
+
+    @("typeidTypeNameReturnsIdentifier." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            string typeName(int seed) {
+                string name = typeid(Widget).name;
+                return seed == name.length ? "" : name;
+            }
+
+            unittest {
+                assert(typeName(0) == "Widget");
+            }
+        });
+    }
+
+    @("typeidTypeNameReturnsIdentifierFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Widget {}
+
+            string typeName(int seed) {
+                string name = typeid(Widget).name;
+                return seed == name.length ? "" : name;
+            }
+
+            unittest {
+                assert(typeName(0) == "onlineapp.Widget");
+            }
+        }).shouldThrowWithMessage(`"Widget" != "onlineapp.Widget"`);
+    }
+
     @("nestedDelegateCallUsesCapturedValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1072,6 +1210,131 @@ static foreach (backend; backends) {
                 assert(apply(4) == 21);
             }
         }).shouldThrowWithMessage("23 != 21");
+    }
+
+    @("structMemberDelegateCallUsesReceiver." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(3) == 10);
+            }
+        });
+    }
+
+    @("structMemberDelegateCallUsesReceiverFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(3) == 11);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
+    @("structMemberDelegateCallUsesReceiverFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int apply(int seed) {
+                Counter counter = Counter(seed + 2);
+                int delegate(int) dg = &counter.value;
+                return dg(5);
+            }
+
+            unittest {
+                assert(apply(4) == 10);
+            }
+        }).shouldThrowWithMessage("11 != 10");
+    }
+
+    @("delegatePtrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeSeed(int seed) {
+                return seed + 1;
+            }
+
+            void* delegateContext(int seed) {
+                int captured = runtimeSeed(seed);
+
+                int nested() {
+                    captured += 2;
+                    return captured;
+                }
+
+                int delegate() dg = &nested;
+                return dg.ptr;
+            }
+
+            unittest {
+                auto context = delegateContext(3);
+                assert(context is null);
+            }
+        }).shouldThrowWithMessage(
+            "`dg.ptr` cannot be evaluated at compile time");
+    }
+
+    @("delegateFuncptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeSeed(int seed) {
+                return seed + 1;
+            }
+
+            int function() delegateFunction(int seed) {
+                int captured = runtimeSeed(seed);
+
+                int nested() {
+                    captured += 2;
+                    return captured;
+                }
+
+                int delegate() dg = &nested;
+                return dg.funcptr;
+            }
+
+            unittest {
+                auto funcptr = delegateFunction(3);
+                assert(funcptr !is null);
+            }
+        }).shouldThrowWithMessage(
+            "`dg.funcptr` cannot be evaluated at compile time");
     }
 
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
@@ -1399,6 +1662,43 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
+    @("hexStringCastToUshortArrayUsesBigEndianWords." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words.length == 2);
+                assert(words[0] == 0x1234);
+                assert(words[1] == 0x5678);
+            }
+        });
+    }
+
+    @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words[0] == 0x3412);
+            }
+        }).shouldThrowWithMessage("4660 != 13330");
+    }
+
+    @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ushort[] words = cast(ushort[]) x"12345678";
+
+                assert(words[1] == 0x7856);
+            }
+        }).shouldThrowWithMessage("22136 != 30806");
+    }
+
     @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1565,5 +1865,126 @@ static foreach (backend; backends) {
                 assert(cast(bool) missing == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+
+    @("newScalarPointerDereferencesRuntimeValue." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed + 1);
+            }
+        });
+    }
+
+    @("newScalarPointerDereferencesRuntimeValueFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed);
+            }
+        }).shouldThrowWithMessage("43 != 42");
+    }
+
+    @("newScalarPointerDereferencesRuntimeValueFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 7;
+                seed += 1;
+
+                auto p = new int(seed);
+                ++(*p);
+
+                assert(*p == seed);
+            }
+        }).shouldThrowWithMessage("9 != 8");
+    }
+
+    @("vectorScalarCastSplatsToStaticArray." ~ backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(7);
+
+                assert(values[0] == 7);
+                assert(values[1] == 7);
+                assert(values[2] == 7);
+                assert(values[3] == 7);
+            }
+        });
+    }
+
+    @("vectorScalarCastSplatsToStaticArrayFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(7);
+
+                assert(values[2] == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @("vectorScalarCastSplatsToStaticArrayFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runSse2BackendSourceFixtureTests!backend(q{
+            alias Int4 = __vector(int[4]);
+
+            int seed(int value) {
+                return value;
+            }
+
+            int[4] splat(int input) {
+                int scalar = seed(input);
+                Int4 vector = cast(Int4) scalar;
+                return vector.array;
+            }
+
+            unittest {
+                int[4] values = splat(3);
+
+                assert(values[0] == 7);
+            }
+        }).shouldThrowWithMessage("3 != 7");
     }
 }
