@@ -405,6 +405,81 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 99");
     }
 
+    @("scopeDestructorRunsAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[] sink;
+
+                ~this() {
+                    sink[0] += 3;
+                }
+            }
+
+            int result(int seed) {
+                int[] sink = [seed];
+                {
+                    S s = S(sink);
+                }
+                return sink[0];
+            }
+
+            unittest {
+                assert(result(4) == 7);
+            }
+        });
+    }
+
+    @("scopeDestructorRunsAtCtfeFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[] sink;
+
+                ~this() {
+                    sink[0] += 3;
+                }
+            }
+
+            int result(int seed) {
+                int[] sink = [seed];
+                {
+                    S s = S(sink);
+                }
+                return sink[0];
+            }
+
+            unittest {
+                assert(result(4) == 8);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+
+    @("scopeDestructorRunsAtCtfeFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[] sink;
+
+                ~this() {
+                    sink[0] += 3;
+                }
+            }
+
+            int result(int seed) {
+                int[] sink = [seed];
+                {
+                    S s = S(sink);
+                }
+                return sink[0];
+            }
+
+            unittest {
+                assert(result(7) == 11);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
     @("scalarStructField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

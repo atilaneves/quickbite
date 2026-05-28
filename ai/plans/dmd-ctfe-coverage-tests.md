@@ -251,6 +251,7 @@ that shim.
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
 | `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
 | `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
+| `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
 
 Coverage workflow details:
 
@@ -717,6 +718,34 @@ However, focused coverage for the candidate left `visitTryFinally` whole-method
 uncovered, including `Expression ey = interpretStatement(s.finalbody, istate);`
 and the `ey.isThrownExceptionExp()` branch. The temporary additive tests were
 reverted.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 6
+
+Explorer recommendation 6 targeted the wholly uncovered
+`visitDtorExp(DtorExpStatement)` visitor.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfe.Ctfe
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfeFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfeFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfe.Ctfe
+```
+
+Coverage effect: focused coverage marked `visitDtorExp(DtorExpStatement)` as
+hit once through a scope-exit struct destructor that mutates dynamic array
+state.
+
+Poke result: changing the behavior assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 
