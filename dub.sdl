@@ -38,7 +38,7 @@ configuration "unittest-cov" {
     targetPath "bin"
 
     mainSourceFile "tests/main.d"
-    sourcePaths "tests"
+    sourcePaths "tests" "tests/coverage"
     includePaths "tests"
     versions "unitUnthreaded"
 
