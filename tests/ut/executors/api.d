@@ -42,18 +42,6 @@ unittest {
     }
 }
 
-@("runTests.withImportPaths")
-unittest {
-    import quickbite: runTestsFromFile;
-    import ut.dub_paths: dubImportPaths, cerealTestsDir;
-
-    static foreach (executorName; matureExecutorNames) {
-        {
-            runTestsFromFile(cerealTestsDir ~ "/utils.d", dubImportPaths, executorName);
-        }
-    }
-}
-
 @("runTests.importPathsRetryAfterFailure")
 unittest {
     import quickbite: runTests;

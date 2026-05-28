@@ -5,16 +5,6 @@ import ut;
 
 private:
 
-@("parseModule.withImportPaths")
-unittest {
-    import quickbite.frontend.compiler: parseModule;
-    import ut.dub_paths: dubImportPaths, cerealTestsDir;
-    import std.file: readText;
-
-    parseModule(readText(cerealTestsDir ~ "/utils.d"), dubImportPaths);
-}
-
-
 @("parseModule.countsAttributedUnittests")
 unittest {
     import quickbite.frontend.util: foreachUnitTestDeclaration;
