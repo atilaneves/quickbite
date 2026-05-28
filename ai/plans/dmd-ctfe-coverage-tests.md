@@ -382,9 +382,9 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
 | Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
-| Final branch broad coverage | 1687 | 3764 | 44.82% |
+| Final branch broad coverage | 1675 | 3764 | 44.50% |
 
-Delta: +1.33 percentage points.
+Delta: +1.01 percentage points.
 
 Method-level changes from the three new test slices:
 
@@ -402,10 +402,10 @@ Verification notes:
 - Focused tests passed for the added behavior tests and paired failure-message
   tests.
 - Assertion poke checks failed with the expected diagnostics.
-- After rebase, `dub test` passed with 1433 tests run, 0 failed, and 31/31
-  failing as expected.
-- After rebase, `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with
-  602 tests run, 0 failed, and 31/31 failing as expected.
+- An earlier full `dub test` on DMD 2.112.0 had the unrelated order-sensitive
+  `ut.executors.deps.cerealed.cerealed.decode.d.ir` failure noted by workers.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
+  audit.
 
 ## Acceptance Criteria
 
