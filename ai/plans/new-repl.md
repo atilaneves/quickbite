@@ -9,6 +9,26 @@ The REPL must stop using executors at runtime and in REPL tests. It should use
 the CTFE backend through a simple backend REPL API, while leaving unrelated
 executor implementation code in place for later cleanup.
 
+## Progress
+
+Completed in this PR:
+
+- Added `Backend.evalRepl(ReplCell) -> quickbite.lang.Value`.
+- Added frontend-owned `ReplSession` and `ReplCell` state.
+- Moved `quickbite.repl.runReplLoop` onto `Repl.submit`.
+- Implemented CTFE `evalRepl` for expression and no-display cells.
+- Replaced normal REPL tests with `ut.backends.repl`.
+- Excluded old subprocess-heavy executor REPL tests from normal unittest
+  builds without deleting the source file.
+- Moved `repl/main.d` to instantiate CTFE directly.
+- Added library-level CLI option parser tests for default CTFE,
+  `--backend ctfe`, `-b ctfe`, and unknown backends.
+
+Remaining follow-up:
+
+- Remove or migrate dead executor REPL APIs after callers no longer need them.
+- Add incomplete-input buffering if desired.
+
 ## Key Changes
 
 - Add a backend REPL entrypoint:
