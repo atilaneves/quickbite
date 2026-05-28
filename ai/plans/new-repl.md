@@ -38,14 +38,12 @@ Completed in this PR:
   verifies the recalled command executes again.
 - Added `ci.sh` to run randomized unit tests, benchmarks, and the standalone
   REPL smoke test before PRs.
+- Improved function-call mismatch diagnostics so they include callable
+  signatures, including overload candidates.
 
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
-- Improve function-call mismatch diagnostics so they include callable
-  signatures. For example, after declaring `int twice(int i)`, calling
-  `twice("foo")` currently only reports that `twice` is not callable with
-  `(string)` and does not tell the user that `twice` expects an `int`.
 - Support import declarations as no-display REPL cells. For example,
   `import std.algorithm;` currently fails with parser diagnostics such as
   `found 'std' when expecting '(' following 'import'`.
