@@ -126,6 +126,7 @@ Keep this section updated as files are tried.
 | `compile_time.d` | Passed | Added backend file fixture. |
 | `decode.d` | Blocked | Added bool decode test and exhaustion `@ShouldFail`. |
 | `encode.d` | Blocked | Added int encode test and float encode `@ShouldFail`. |
+| `encode_decode.d` | Blocked | Added bool round-trip and exhaustion `@ShouldFail`. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
@@ -137,3 +138,7 @@ bounds error instead of a catchable `RangeError`.
 
 `encode.d` is blocked as a full fixture because cerealed's float encoding
 reinterprets `float*` as `uint*`, which DMD CTFE does not support.
+
+`encode_decode.d` is blocked as a full fixture because its generic round-trip
+helper also checks for catchable exhaustion after consuming all bytes, which
+DMD CTFE reports as an uncaught bounds error.

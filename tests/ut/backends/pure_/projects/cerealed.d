@@ -307,6 +307,55 @@ static foreach (backend; backends) {
         }, dubImportPaths);
     }
 
+    @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.cerealiser;
+            import cerealed.decerealiser;
+
+            unittest {
+                auto enc = Cerealiser();
+                bool[] values = [true, true, false, false, true];
+                foreach (value; values)
+                    enc ~= value;
+
+                auto dec = Decerealiser(enc.bytes);
+                foreach (value; values)
+                    assert(dec.value!bool == value);
+            }
+        }, dubImportPaths);
+    }
+
+    @ShouldFail(
+        "DMD CTFE reports cerealed round-trip exhaustion as an uncaught " ~
+        "bounds error instead of catchable RangeError",
+    )
+    @("projects.cerealed.roundTripBoolExhaustionThrowsRangeError." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import cerealed.cerealiser;
+            import cerealed.decerealiser;
+            import core.exception: RangeError;
+
+            unittest {
+                auto enc = Cerealiser();
+                bool[] values = [true, true, false, false, true];
+                foreach (value; values)
+                    enc ~= value;
+
+                auto dec = Decerealiser(enc.bytes);
+                foreach (value; values)
+                    dec.value!bool;
+
+                try {
+                    dec.value!ubyte;
+                    assert(false);
+                } catch (RangeError) {
+                }
+            }
+        }, dubImportPaths);
+    }
+
     @ShouldFail(
         "DMD CTFE does not support cerealed's float pointer " ~
         "reinterpretation cast",
