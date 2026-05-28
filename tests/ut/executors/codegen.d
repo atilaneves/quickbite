@@ -169,19 +169,26 @@ unittest {
     }
 }
 
-@("minicerealFileCanRunTwice.dmdCodegen")
+@("parsedModuleCanRunTwice.dmdCodegen")
 unittest {
     if (experimentalExecutorTestsEnabled) {
         import quickbite.executors.dmd_codegen: DmdCodegen;
         import quickbite.frontend.compiler: parseModule;
-        import std.file: readText;
 
         // Reusing a parsed module catches stale DMD codegen object state
         // between in-process codegen runs. Without the reset, DMD can carry
         // codegen symbols such as `__bzeroBytes` from the first object into
         // the second; the linker then rejects the generated objects before
         // the test runs.
-        auto module_ = parseModule(readText("tests/example.d")).module_;
+        auto module_ = parseModule(q{
+            int value() {
+                return 42;
+            }
+
+            unittest {
+                assert(value == 42);
+            }
+        }).module_;
         auto executorName = new DmdCodegen;
 
         executorName.runParsedTests(module_);
