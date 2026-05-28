@@ -209,6 +209,8 @@ that shim.
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
 | `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
+| `visitTryCatch` handler local goto | Covered | Worker 1 slice | Restart path covered. |
+| `visitTryFinally` body local goto | Covered | Worker 1 slice | Finalbody runs once. |
 | `visitWith(WithStatement)` enum body | Covered | Worker 7 slice | See below. |
 
 Coverage workflow details:

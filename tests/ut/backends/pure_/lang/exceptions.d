@@ -639,6 +639,78 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("13 != 14");
     }
 
+    @("tryFinallyGotoWithinBodyRunsFinallyOnce." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(1);
+                try {
+                    total += bump(2);
+                    goto resumed;
+                    total += bump(99);
+                resumed:
+                    total += bump(3);
+                } finally {
+                    total += bump(4);
+                }
+
+                assert(total == 14);
+            }
+        });
+    }
+
+    @("tryFinallyGotoWithinBodyRunsFinallyOnceFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(1);
+                try {
+                    total += bump(2);
+                    goto resumed;
+                    total += bump(99);
+                resumed:
+                    total += bump(3);
+                } finally {
+                    total += bump(4);
+                }
+
+                assert(total == 15);
+            }
+        }).shouldThrowWithMessage("14 != 15");
+    }
+
+    @("tryFinallyGotoWithinBodyRunsFinallyOnceFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(2);
+                try {
+                    total += bump(2);
+                    goto resumed;
+                    total += bump(99);
+                resumed:
+                    total += bump(3);
+                } finally {
+                    total += bump(4);
+                }
+
+                assert(total == 14);
+            }
+        }).shouldThrowWithMessage("15 != 14");
+    }
+
     @("finallyRunsAfterReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -817,6 +889,78 @@ static foreach (backend; backends) {
                 assert(readBranchThenMutate(value, false) == 24);
             }
         }).shouldThrowWithMessage("23 != 24");
+    }
+
+    @("catchHandlerGotoResumesInsideHandler." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    total += bump(1);
+                    goto handled;
+                    total += bump(99);
+                handled:
+                    total += bump(3);
+                }
+
+                assert(total == 6);
+            }
+        });
+    }
+
+    @("catchHandlerGotoResumesInsideHandlerFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    total += bump(1);
+                    goto handled;
+                    total += bump(99);
+                handled:
+                    total += bump(3);
+                }
+
+                assert(total == 7);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+
+    @("catchHandlerGotoResumesInsideHandlerFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    total += bump(2);
+                    goto handled;
+                    total += bump(99);
+                handled:
+                    total += bump(3);
+                }
+
+                assert(total == 6);
+            }
+        }).shouldThrowWithMessage("7 != 6");
     }
 
     @("catchHandlerRuns." ~ backend.stringof)
