@@ -2,6 +2,7 @@ module ut.backends;
 
 
 public import ut;
+public import quickbite.backend: runParsedModulesTests;
 public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 
@@ -33,6 +34,23 @@ public void runBackendSourceFixtureTests(T)(
     auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
     backend.runParsedTests(parsed.module_);
+}
+
+public imported!"quickbite.backend".TestSummary runBackendSourceFixtureTestSummary(T)(
+    in string moduleSource,
+) {
+    return runBackendSourceFixtureTestSummary!T(moduleSource, []);
+}
+
+public imported!"quickbite.backend".TestSummary runBackendSourceFixtureTestSummary(T)(
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+
+    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto backend = newBackend!T;
+    return backend.runParsedTestSummary(parsed.module_);
 }
 
 public void runBackendFileFixtureTests(T)(
