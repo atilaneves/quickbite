@@ -46,30 +46,41 @@ code.
 
 ## Style
 
-- OTBS. For functions with many attributes, `{` on its own line is acceptable.
+### General
+
+- One True Brace Style. For functions with many attributes, `{` on its
+  own line is acceptable.
 - Use UFCS liberally.
-- Local imports inside functions/types. `imported!"module"` only for
-  parameter and return types. Exception: unit test modules may use
-  module-scope imports to avoid repeating the same import in every
-  test block. Unit test modules should not use `imported`.
 - Always re-read files before editing; another agent or person may have
   changed them in the meantime.
 - Trailing commas.
-- `private:` at top of every module; still annotate each declaration explicitly
-  with `public`/`private`.
-- Maximise attributes: `@safe @nogc nothrow pure const scope`. Do not abuse
-  `@trusted` to make functions `@safe`.
-- Private functions directly below their first use.
+- Maximise attributes: `@safe @nogc nothrow pure const scope`. Do not
+  abuse `@trusted` to make functions `@safe`.
+- Private functions below their first use, as close as possible.
 - Prefer `std.conv.text`; use `text(x)` not `x.to!string`.
 - Make parameters `in` if possible.
-- Prefer `const`; use `auto` with a comment if `const` fails; explicit LHS type
-  only if `auto` fails (comment why). Explicit types are fine for uninitialised
-  declarations.
+- Prefer `const`; use `auto` with a comment if `const` fails; explicit
+  LHS type only if `auto` fails (comment why). Explicit types are fine
+  for uninitialised declarations.
 - No `synchronized`.
 - Omit empty parens: `doStuff;` not `doStuff();`.
-- Functions below first use; variables close to use.
-- Do not use exceptions for control flow.
+- Variables as close to their usage as possible.
 - Use `with` in `switch`/`final switch` with enums for more readability.
+
+### Production code
+
+- Local imports inside functions/types. `imported!"module"` only for
+  parameter and return types.
+- `private:` at top of every module; still annotate each declaration
+  explicitly with `public`/`private`.
+- Do not use exceptions for control flow.
+
+### Test modules
+
+- Use module-scope imports to avoid repeating the same import in every
+  test block. Unit test modules should not use `imported`.
+- Use package modules liberally to avoid imports in test modules - see
+  `import ut;` for a good example.
 
 ## Code organisation
 
@@ -83,16 +94,16 @@ Run `dub test` after every editing session.
 Run `benchmarks/run.sh` before creating a PR to make sure the
 benchmarks still work.
 
-No per-test process spawning, network access, or repeated dependency resolution
-unless explicitly approved.
+No per-test process spawning, network access, or repeated dependency
+resolution unless explicitly approved.
 
 Never delete test code to make tests pass.
 
 # Do nots
 
 - Add new mistakes to `ai/mistakes.md`. New ones only — no duplicates.
-- No classes unless the goal is OOP (virtual dispatch, inheritance). A class
-  with no base, no children, and no virtual methods is a struct.
+- No classes unless the goal is OOP (virtual dispatch, inheritance). A
+  class with no base, no children, and no virtual methods is a struct.
 
 # Do
 
@@ -126,9 +137,11 @@ applies to reviewing code or plans.
 
 # CLAUDE.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with
+project-specific instructions as needed.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+**Tradeoff:** These guidelines bias toward caution over speed. For
+trivial tasks, use judgment.
 
 ## 1. Think Before Coding
 
@@ -136,7 +149,8 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 Before implementing:
 - State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
+- If multiple interpretations exist, present them - don't pick
+  silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
@@ -150,7 +164,8 @@ Before implementing:
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+Ask yourself: "Would a senior engineer say this is overcomplicated?"
+If yes, simplify.
 
 ## 3. Surgical Changes
 
@@ -166,14 +181,16 @@ When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
 
-The test: Every changed line should trace directly to the user's request.
+The test: Every changed line should trace directly to the user's
+request.
 
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
 Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Add validation" → "Write tests for invalid inputs, then make them
+  pass"
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 - "Refactor X" → "Ensure tests pass before and after"
 
@@ -184,8 +201,11 @@ For multi-step tasks, state a brief plan:
 3. [Step] → verify: [check]
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+Strong success criteria let you loop independently. Weak criteria
+("make it work") require constant clarification.
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+**These guidelines are working if:** fewer unnecessary changes in
+diffs, fewer rewrites due to overcomplication, and clarifying
+questions come before implementation rather than after mistakes.
