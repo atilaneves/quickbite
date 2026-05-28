@@ -134,6 +134,7 @@ Keep this section updated as files are tried.
 | `pointers.d` | Passed | Added dependency-free pointer-to-int byte layout. |
 | `property.d` | Passed | Added dependency-free `ubyte` length array round-trip. |
 | `protocol_unit.d` | Passed | Added dependency-free length-field packet round-trip. |
+| `range.d` | Blocked | Added dependency-free input range byte layout. |
 
 `classes.d` is blocked as a full fixture because it reads cerealed's static
 child-class registry `_childCerealisers`, which DMD CTFE cannot read at compile
@@ -153,3 +154,6 @@ DMD CTFE reports as an uncaught bounds error.
 `enums.d` is blocked as a full fixture because it also checks for catchable
 exhaustion after consuming all enum bytes, which DMD CTFE reports as an
 uncaught bounds error.
+
+`range.d` is blocked as a full fixture because it reads the module-scope
+`gOutputBytes` buffer at compile time while testing output ranges.

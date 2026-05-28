@@ -673,6 +673,54 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct CounterRange {
+                ubyte current;
+                ubyte stop;
+
+                @property bool empty() {
+                    return current == stop;
+                }
+
+                @property ubyte front() {
+                    return current;
+                }
+
+                void popFront() {
+                    ++current;
+                }
+
+                @property ulong length() {
+                    return stop - current;
+                }
+            }
+
+            void writeLength(ref ubyte[] bytes, ulong length) {
+                const narrowed = cast(ushort) length;
+                foreach_reverse (i; 0 .. ushort.sizeof)
+                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
+            }
+
+            ubyte[] encode(CounterRange range) {
+                ubyte[] bytes;
+                writeLength(bytes, range.length);
+                while (!range.empty) {
+                    bytes ~= range.front;
+                    range.popFront;
+                }
+                return bytes;
+            }
+
+            unittest {
+                auto range = CounterRange(cast(ubyte) 0, cast(ubyte) 5);
+
+                assert(range.encode == [0, 5, 0, 1, 2, 3, 4]);
+            }
+        });
+    }
+
     @ShouldFail(
         "DMD CTFE reports enum byte exhaustion as an uncaught bounds " ~
         "error instead of catchable RangeError",
