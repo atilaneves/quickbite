@@ -147,6 +147,7 @@ that shim.
 | DMD CTFE area | Coverage status | Test or reason | Notes |
 | --- | --- | --- | --- |
 | Coverage workflow | Covered | `scripts/dmd-ctfe-coverage.sh ut.backends.pure_.lang.expressions.intAddition.Ctfe` | Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to `tmp/dmd-ctfe-coverage`. |
+| `visit(CatExp)` | Covered | `ut.backends.pure_.lang.arrays.dynamicArrayConcatenation.Ctfe` | Binary dynamic-array concatenation covers the previously wholly uncovered visitor. The remaining uncovered lines in the method are branch-specific error, copy, and `elem ~ array` paths. |
 
 ## Acceptance Criteria
 

@@ -492,6 +492,56 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("20 != 21");
     }
 
+    @("dynamicArrayConcatenation." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined.length == 2);
+                assert(combined[0] == first);
+                assert(combined[1] == second);
+            }
+        });
+    }
+
+    @("dynamicArrayConcatenationFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("dynamicArrayConcatenationFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte first = cast(ubyte) 10;
+                ubyte second = cast(ubyte)(first + 32);
+                ubyte[] left = [first];
+                ubyte[] right = [second];
+
+                const combined = left ~ right;
+
+                assert(combined[1] == first);
+            }
+        }).shouldThrowWithMessage("42 != 10");
+    }
+
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
