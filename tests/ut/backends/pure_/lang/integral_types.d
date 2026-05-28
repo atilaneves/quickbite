@@ -8,18 +8,18 @@ import ut.backends;
 
 private:
 
-static foreach (backend; backends) {
-    alias IntegralTypes = AliasSeq!(
-        byte,
-        ubyte,
-        short,
-        ushort,
-        int,
-        uint,
-        long,
-        ulong,
-    );
+alias IntegralTypes = AliasSeq!(
+    byte,
+    ubyte,
+    short,
+    ushort,
+    int,
+    uint,
+    long,
+    ulong,
+);
 
+static foreach (backend; backends) {
     static foreach (T; IntegralTypes) {
         @("integralType." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {

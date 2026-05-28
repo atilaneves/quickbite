@@ -6,8 +6,13 @@ public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 
 
+alias runtimeBackends = imported!"std.meta".AliasSeq!(
+    CtfePlus,
+);
+
 alias backends = imported!"std.meta".AliasSeq!(
     Ctfe,
+    CtfePlus,
 );
 
 alias backendsWith(Extra...) = imported!"std.meta".AliasSeq!(

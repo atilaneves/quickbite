@@ -40,6 +40,51 @@ public class Ctfe: imported!"quickbite.backend".Backend {
                 throw new Exception(failure);
         });
     }
+
+    public bool canHandle(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        import dmd.expression: AssignExp, VarExp;
+        import dmd.visitor: SemanticTimeTransitiveVisitor;
+
+        extern (C++) final class SupportVisitor : SemanticTimeTransitiveVisitor {
+            alias visit = typeof(super).visit;
+
+            private bool _reads = true;
+            bool supported = true;
+
+            override void visit(AssignExp expression) {
+                const wasReading = _reads;
+
+                _reads = false;
+                if (expression.e1 !is null)
+                    expression.e1.accept(this);
+
+                _reads = true;
+                if (expression.e2 !is null)
+                    expression.e2.accept(this);
+
+                _reads = wasReading;
+            }
+
+            override void visit(VarExp expression) {
+                if (!_reads)
+                    return;
+
+                auto variable = expression.var.isVarDeclaration;
+                if (variable is null)
+                    return;
+
+                if (variable.isDataseg && !variable.isCTFE &&
+                    !variable.isConst && !variable.isImmutable)
+                    supported = false;
+            }
+        }
+
+        scope visitor = new SupportVisitor;
+        module_.accept(visitor);
+        return visitor.supported;
+    }
 }
 
 private string ctfeFailureMessage(

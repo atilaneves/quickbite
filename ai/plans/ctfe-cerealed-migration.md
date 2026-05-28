@@ -82,81 +82,83 @@ Do not add a broad opt-in probe harness or a full always-on cerealed matrix.
 The workflow is deliberately one module at a time so each committed test has a
 clear reason to exist.
 
-## CtfePlus Follow-Up
+## Implemented CtfePlus Slice
 
-The next implementation slice is `CtfePlus`, a backend for runtime features
-that DMD CTFE cannot execute, such as mutable static registries and `malloc`.
+`CtfePlus` is the runtime-backend entry point for features that DMD CTFE cannot
+execute, such as mutable static registries and `malloc`. This PR implements
+the first narrow slice: cerealed class serialisation reading the static
+child-class registry.
 
-After every cerealed module has been tried, review the remaining
-`@ShouldFail` tests and promote the first concrete unsupported runtime feature
-into the initial `CtfePlus` slice.
+The promoted test is
+`projects.cerealed.classSerialisationReadsStaticChildRegistry`. It now runs
+only through `runtimeBackends`; plain `Ctfe` no longer carries a duplicate
+`@ShouldFail` copy.
 
-The first promoted test is
-`projects.cerealed.classSerialisationReadsStaticChildRegistry`. Plain `Ctfe`
-must keep this test as an expected failure because DMD CTFE cannot read the
-static child-class registry at compile time. `CtfePlus` must run the same
-behaviour as a normal passing test.
-
-Add a non-virtual capability query to plain CTFE:
+Plain CTFE has a non-virtual capability query:
 
 ```d
 public bool canHandle(imported!"dmd.dmodule".Module module_);
 ```
 
 `canHandle` is a semantic AST support scan, not a test-result predictor. It
-must return `false` for modules containing language or runtime features that
+returns `false` for modules containing language or runtime features that
 DMD CTFE cannot execute, starting with reads of mutable static/dataseg state
-such as cerealed's child-class registry. It must still return `true` for
+such as cerealed's child-class registry. It still returns `true` for
 modules whose tests fail through normal assertion failures, bounds diagnostics,
 or user-thrown exceptions that DMD CTFE can interpret.
 
-Do not classify DMD CTFE support by matching rendered diagnostic strings. Use
-DMD AST nodes, symbols, and semantic helpers as the protocol. For the static
-registry slice, the relevant DMD condition is a read of a variable that is in
-the data segment and is not CTFE-owned; DMD reports this from `dinterpret.d`
-when it cannot find an interpreter value for that variable.
+The support check does not classify DMD CTFE support by matching rendered
+diagnostic strings. It uses DMD AST nodes, symbols, and semantic helpers as the
+protocol. For the static registry slice, the relevant DMD condition is a read
+of a variable that is in the data segment and is not CTFE-owned; DMD reports
+this from `dinterpret.d` when it cannot find an interpreter value for that
+variable.
 
-`CtfePlus` should:
+`CtfePlus` now:
 
-- Implement `quickbite.backend.Backend`.
-- Compose a private `Ctfe` instance.
-- In `runParsedTests(Module)`, delegate the whole module to plain CTFE when
+- Implements `quickbite.backend.Backend`.
+- Composes a private `Ctfe` instance.
+- Delegates the whole module to plain CTFE in `runParsedTests(Module)` when
   `_ctfe.canHandle(module_)` returns `true`.
-- Run its own fallback only when `_ctfe.canHandle(module_)` returns `false`.
-- Add only the minimal missing support proven by an extracted expected-failing
-  test.
-- Add `runtimeBackends` to `tests/ut/backends/package.d` as the alias sequence
-  for backends that can handle runtime-only features beyond plain CTFE.
-- Include `CtfePlus` in `runtimeBackends`.
-- Include `CtfePlus` in `backends` so it runs the normal backend matrix
-  alongside `Ctfe`.
+- Runs its own fallback only when `_ctfe.canHandle(module_)` returns `false`.
+- Handles the static-AA assignment, lookup, delegate call, and field mutation
+  path needed by the promoted cerealed registry test.
 
-Implement the slice in small TDD steps:
+`tests/ut/backends/package.d` now defines `runtimeBackends` for backends that
+can handle runtime-only features beyond plain CTFE. `CtfePlus` is included in
+both `runtimeBackends` and `backends`, so it runs the normal backend matrix
+alongside `Ctfe`.
 
-1. Add `runtimeBackends` and include `CtfePlus` in `backends` before defining
-   `CtfePlus`; this should fail to compile.
-2. Add and export an empty `CtfePlus` class; this should still fail because
-   the `Backend` methods are not implemented.
-3. Stub the required `Backend` methods; this should compile and fail at
-   runtime because `runParsedTests` does nothing.
-4. Make `CtfePlus` delegate every method to a private `Ctfe`; the existing
-   backend matrix should pass.
-5. Move the static child-registry test to `runtimeBackends` and remove its
-   `@ShouldFail`; it should fail because `CtfePlus` still delegates to `Ctfe`.
-6. Add `public bool canHandle(imported!"dmd.dmodule".Module module_)` to
-   `Ctfe`, initially returning `true`, and route `CtfePlus.runParsedTests`
-   through it.
-7. Implement the static dataseg-read detection directly in the body of
-   `Ctfe.canHandle`; do not introduce a `readsUnsupportedStaticDataseg` helper
-   or equivalent abstraction before duplication or complexity justifies it.
-   The focused `CtfePlus` test should then reach the fallback path instead of
-   DMD CTFE's static-variable diagnostic.
-8. Implement the smallest fallback that makes the static child-registry test
-   pass for `CtfePlus`.
+Design constraints for this slice:
 
-The PR for this slice may be created only when `CtfePlus` passes every backend
-test that `Ctfe` passes, plus
-`projects.cerealed.classSerialisationReadsStaticChildRegistry`.
+- Plain `Ctfe` must not run the promoted static child-registry test anymore.
+- `CtfePlus` must not import `dmd.dinterpret`. If `dinterpret` appears in
+  `source/quickbite/backends/ctfe/ctfe_plus.d`, the implementation is wrong.
+- Do not try to subclass DMD CTFE. DMD's CTFE interpreter is a private final
+  class inside `dmd.dinterpret`.
+- The fallback must not call into DMD CTFE. It should be a narrow AST override
+  layer/tree walker using DMD AST nodes directly.
+- The relevant DMD failure point is a mutable static registry read reached via
+  the `CallExp`/`IndexExp`/`VarExp` path for `childWriters[key](...)`, but the
+  useful CtfePlus override boundary is the static-AA assignment/lookup/delegate
+  call path, not a bare `VarExp` handler.
+
+Current `CtfePlus` fallback scope:
+
+- `source/quickbite/backends/ctfe/ctfe_plus.d` contains
+  `MutableStaticRegistryRunner`.
+- `MutableStaticRegistryRunner` handles enough AST to reach the final asserts:
+  statement sequencing, declarations, assignment, lowered `_d_aaGetY` static-AA
+  slot setup, lowered `typeid(...).name` / class-info names, object allocation,
+  member calls, registry delegate calls, `CatElemAssignExp`, array length,
+  equality, and asserts.
+- The focused `CtfePlus` static child-registry test passes.
+
+## Future CtfePlus Work
+
+Future slices should review the remaining unsupported runtime gaps and promote
+one concrete behaviour at a time into `runtimeBackends`. Add only the minimal
+missing support proven by the promoted test.
 
 Plain CTFE remains the correctness oracle for supported `pure_` behaviour.
 `CtfePlus` exists to run more cerealed-derived runtime behaviour, not to replace
@@ -183,7 +185,7 @@ Keep this section updated as files are tried.
 | --- | --- | --- |
 | `bugs.d` | Passed | Added backend file fixture. |
 | `cerealiser_impl.d` | Passed | Added backend file fixture. |
-| `classes.d` | Blocked | Added extracted class-serialisation `@ShouldFail`. |
+| `classes.d` | Blocked | Added extracted class-serialisation runtime-backend case. |
 | `compile_time.d` | Passed | Added backend file fixture. |
 | `decode.d` | Blocked | Added bool decode test; exhaustion diagnostic asserted. |
 | `encode.d` | Blocked | Added int and float encode tests. |

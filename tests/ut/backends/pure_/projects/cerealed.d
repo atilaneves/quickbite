@@ -1005,9 +1005,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("array index 6 is out of bounds `[0..6]`");
     }
 
-    @ShouldFail(
-        "DMD CTFE cannot read a static child-class registry at compile time",
-    )
+}
+
+static foreach (backend; runtimeBackends) {
     @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
