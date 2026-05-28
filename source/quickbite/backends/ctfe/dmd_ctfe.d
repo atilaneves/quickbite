@@ -11,6 +11,23 @@ public class Ctfe: imported!"quickbite.backend".Backend {
         return ctfeValue(interpretCtfe(evalCall(str)));
     }
 
+    public override Value evalRepl(
+        in imported!"quickbite.frontend.repl".ReplCell cell,
+    ) {
+        import quickbite.frontend.repl: ReplCellKind;
+
+        final switch (cell.kind) with (ReplCellKind) {
+            case noDisplay:
+                if (const failure = ctfeFailureMessage(
+                    callExpression(replFunction(cell.source)),
+                ))
+                    throw new Exception(failure);
+                return Value.void_;
+            case expression:
+                return eval(cell.source);
+        }
+    }
+
     public override void runParsedTests(
         imported!"dmd.dmodule".Module module_,
     ) {
@@ -70,6 +87,13 @@ private string evalSource(in string str) {
     const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
     const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
     return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
+}
+
+private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
+    import quickbite.frontend.compiler: parseModule;
+
+    auto parsed = parseModule("auto f() { " ~ source ~ " }");
+    return functionDeclaration(parsed.module_, "f");
 }
 
 private imported!"dmd.func".FuncDeclaration functionDeclaration(

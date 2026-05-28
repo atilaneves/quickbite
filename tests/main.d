@@ -16,6 +16,7 @@ int main(string[] args) {
         "ut.backends.pure_.lang.structs",
         "ut.backends.pure_.minicereal",
         "ut.backends.pure_.projects.cerealed",
+        "ut.backends.repl",
         "ut.value",
         "ut.compiler",
         "ut.benchmarks",
@@ -33,7 +34,6 @@ int main(string[] args) {
         "ut.executors.pure_.projects.cerealed",
         "ut.executors.api",
         "ut.executors.codegen",
-        "ut.executors.repl",
         "ut.executors.deps.unit_threaded",
         "ut.executors.deps.cerealed",
     );
