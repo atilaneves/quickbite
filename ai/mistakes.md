@@ -90,6 +90,9 @@
 - Pass review text containing Markdown backticks via a body file or
   single-quoted input, not double quotes.
 
+- Pass multiline PR bodies through a file or another mechanism that preserves
+  actual newlines; shell double-quoted `\n` becomes literal backslash-n text.
+
 - Don't run the local test suite during PR review just to confirm CI; use the
   diff and CI signal.
 
@@ -142,6 +145,9 @@
 - Do not make the REPL loop parse or classify D code with string heuristics
   such as suffix checks, delimiter counting, keyword checks, or regexes. Ask
   the frontend/eval API for structured cell status instead.
+
+- Do not classify DMD diagnostics by searching the rendered diagnostic text.
+  Use DMD AST nodes, symbols, and semantic helpers as the protocol.
 
 - Do not use failed REPL evaluation as control flow to distinguish
   expressions from statements/declarations or incomplete input. Exceptions are

@@ -83,7 +83,10 @@ private imported!"dmd.expression".CallExp evalCall(in string str) {
 }
 
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
-    return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
+    try
+        return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
+    catch (Exception exception)
+        throw new Exception(withCandidateSignatures(source, exception.msg));
 }
 
 private string evalSource(in string str) {
@@ -115,6 +118,219 @@ private imported!"dmd.func".FuncDeclaration functionDeclaration(
     }
 
     throw new Exception("Missing CTFE function.");
+}
+
+private string withCandidateSignatures(
+    in string source,
+    in string diagnostic,
+) {
+    import std.array: join;
+    import std.conv: text;
+
+    const signatures = candidateSignatures(source);
+    if (signatures.length == 0)
+        return diagnostic;
+
+    if (signatures.length == 1)
+        return text(diagnostic, "\nCandidate: ", signatures[0]);
+
+    return text(diagnostic, "\nCandidates:\n- ", signatures.join("\n- "));
+}
+
+private string[] candidateSignatures(in string source) {
+    import core.atomic: atomicFetchAdd;
+    import dmd.errors: diagnostics;
+    import dmd.frontend: dmdParseModule = parseModule;
+    import dmd.globals: global;
+    import quickbite.frontend.compiler: withCompilerLock;
+    import std.conv: text;
+
+    string[] result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        auto parsed = dmdParseModule(
+            text(
+                "repl_diagnostic_",
+                atomicFetchAdd(_diagnosticModuleCounter, 1u),
+                ".d",
+            ),
+            source,
+        );
+        if (parsed.diagnostics.hasErrors)
+            return;
+
+        auto call = replReturnCall(parsed.module_);
+        if (call is null)
+            return;
+
+        auto callee = call.e1.isIdentifierExp;
+        if (callee is null)
+            return;
+
+        auto candidates = candidateFunctions(parsed.module_, callee.ident);
+        if (candidates.length == 0)
+            return;
+
+        completeSemanticForDiagnostics(parsed.module_);
+        if (!callArgumentsHaveTypes(call) || hasMatchingCandidate(call, candidates))
+            return;
+
+        result = candidateSignatures(candidates);
+    });
+
+    return result;
+}
+
+private imported!"dmd.func".FuncDeclaration[] candidateFunctions(
+    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.identifier".Identifier identifier,
+) {
+    imported!"dmd.func".FuncDeclaration[] result;
+    if (module_.members is null)
+        return result;
+
+    foreach (member; *module_.members) {
+        auto function_ = member.isFuncDeclaration;
+        if (function_ !is null && function_.ident is identifier)
+            appendOverloads(result, function_);
+    }
+
+    return result;
+}
+
+private void appendOverloads(
+    ref imported!"dmd.func".FuncDeclaration[] functions,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    auto current = function_;
+    while (current !is null) {
+        functions ~= current;
+        auto next = current.overnext;
+        current = next is null ? null : next.isFuncDeclaration;
+    }
+}
+
+private void completeSemanticForDiagnostics(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: fullSemantic;
+    import dmd.globals: global;
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+
+    const oldGagged = global.startGagging;
+    module_.fullSemantic;
+    global.endGagging(oldGagged);
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+}
+
+private bool callArgumentsHaveTypes(
+    imported!"dmd.expression".CallExp call,
+) {
+    if (call.arguments is null)
+        return true;
+
+    foreach (argument; *call.arguments) {
+        if (argument is null || argument.type is null)
+            return false;
+    }
+
+    return true;
+}
+
+private bool hasMatchingCandidate(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    import dmd.astenums: MATCH;
+    import dmd.typesem: callMatch;
+
+    foreach (candidate; candidates) {
+        auto type = candidate.type is null ? null : candidate.type.isTypeFunction;
+        if (type is null)
+            continue;
+
+        if (callMatch(
+            candidate,
+            type,
+            null,
+            call.argumentList,
+            0,
+            null,
+            candidate._scope,
+        ) > MATCH.nomatch)
+            return true;
+    }
+
+    return false;
+}
+
+private string[] candidateSignatures(
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    string[] result;
+    foreach (candidate; candidates)
+        result ~= fullSignature(candidate);
+
+    return result;
+}
+
+private imported!"dmd.expression".CallExp replReturnCall(
+    imported!"dmd.dmodule".Module module_,
+) {
+    auto function_ = findFunctionDeclaration(module_, "f");
+    if (function_ is null || function_.fbody is null)
+        return null;
+
+    if (auto return_ = function_.fbody.isReturnStatement)
+        return return_.exp is null ? null : return_.exp.isCallExp;
+
+    auto compound = function_.fbody.isCompoundStatement;
+    if (compound is null || compound.statements is null)
+        return null;
+
+    for (size_t index = compound.statements.length; index > 0; --index) {
+        auto statement = (*compound.statements)[index - 1];
+        if (statement is null)
+            continue;
+
+        if (auto return_ = statement.isReturnStatement)
+            return return_.exp is null ? null : return_.exp.isCallExp;
+    }
+
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration findFunctionDeclaration(
+    imported!"dmd.dmodule".Module module_,
+    in string name,
+) {
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null && function_.ident.toString == name)
+                return function_;
+        }
+    }
+
+    return null;
+}
+
+private string fullSignature(
+    imported!"dmd.func".FuncDeclaration function_,
+) @trusted {
+    import std.string: fromStringz;
+
+    return fromStringz(function_.toFullSignature).idup;
 }
 
 private imported!"dmd.expression".CallExp callExpression(
@@ -246,3 +462,5 @@ private imported!"quickbite.lang".Value arrayValue(
 
     return Value(values);
 }
+
+private __gshared uint _diagnosticModuleCounter;

@@ -109,4 +109,37 @@ static foreach (backend; backends) {
         duplicateDeclaration.shouldThrow.msg.should ==
             "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
     }
+
+    @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int twice(int i) { return i * 2; }");
+        void mismatch() {
+            repl.submit(`twice("foo")`);
+        }
+        mismatch.shouldThrow.msg.should ==
+            "function `twice` is not callable using argument types `(string)`\n" ~
+            "Candidate: int twice(int i)";
+    }
+
+    @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int twice(int i) { return i * 2; }");
+        repl.submit("string twice(string value) { return value ~ value; }");
+        void mismatch() {
+            repl.submit("twice(1.5)");
+        }
+        mismatch.shouldThrow.msg.should ==
+            "none of the overloads of `twice` are callable using argument types `(double)`\n" ~
+            "Candidates:\n" ~
+            "- int twice(int i)\n" ~
+            "- string twice(string value)";
+    }
 }
