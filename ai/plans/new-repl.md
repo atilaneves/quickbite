@@ -36,14 +36,17 @@ Completed in this PR:
 
 Remaining follow-up:
 
+- Next PR: add a very limited binary-level REPL test suite that runs
+  `bin/repl` under a pseudo-TTY instead of testing the binary through unit
+  tests. Keep it small and separate from normal `dub test` so subprocess
+  startup does not affect unittest latency. The first test should capture the
+  user-visible reason for the line-editing library: enter an expression, press
+  up-arrow, press Enter, and verify the recalled command executes again.
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
 - Improve function-call mismatch diagnostics so they include callable
   signatures. For example, after declaring `int twice(int i)`, calling
   `twice("foo")` currently only reports that `twice` is not callable with
   `(string)` and does not tell the user that `twice` expects an `int`.
-- Add a very limited binary-level REPL test suite that runs `bin/repl` instead
-  of testing the binary through unit tests. Keep it small and separate from
-  normal `dub test` so subprocess startup does not affect unittest latency.
 
 ## Key Changes
 
