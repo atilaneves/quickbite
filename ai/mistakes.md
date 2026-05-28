@@ -90,6 +90,9 @@
 - Pass review text containing Markdown backticks via a body file or
   single-quoted input, not double quotes.
 
+- Pass multiline PR bodies through a file or another mechanism that preserves
+  actual newlines; shell double-quoted `\n` becomes literal backslash-n text.
+
 - Don't run the local test suite during PR review just to confirm CI; use the
   diff and CI signal.
 
