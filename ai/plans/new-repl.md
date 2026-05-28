@@ -88,7 +88,10 @@ Verification after implementation:
 - Run focused tests for the new backend REPL module.
 - Run `dub test`.
 - Build the REPL configuration with `dub build -c repl`.
-- Do not run benchmarks unless preparing a PR.
+- Actually try the REPL binary after building it. At minimum, pipe `1`,
+  `int x;`, `++x;`, `x`, and `:q` into `bin/repl` and verify expression output
+  appears while no-display cells stay quiet.
+- Run `bin/bench.sh` before preparing a PR.
 
 ## Assumptions
 

@@ -88,7 +88,7 @@ bool isExpressionCell(in string input) {
         const expression = parser.parseExpression;
         result = expression !is null &&
             expression.isDeclarationExp is null &&
-            parser.token.value == TOK.endOfFile &&
+            parser.token.value != TOK.semicolon &&
             global.errors == 0;
     });
 
