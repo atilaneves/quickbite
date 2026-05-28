@@ -104,6 +104,32 @@ Do not add tests for internal assertions, compiler consistency checks, frontend
 states that semantic analysis rewrites away, or impossible AST shapes. Record
 those gaps with the exact line or method and a short reason.
 
+## PR Coverage Report
+
+When creating a PR from this plan, report the `dmd.dinterpret` coverage
+percentage delta in the PR.
+
+Use the same broad coverage target on `master` and on the PR branch. For the
+current plan, the broad target is:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Read the final line of `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` in each
+checkout. Report:
+
+- the `master` percentage;
+- the PR branch percentage;
+- the percentage-point delta;
+- the method-level coverage change that motivated the test, such as a visitor
+  moving from wholly uncovered to partially covered.
+
+Do not compare a focused single-test coverage run against the broad baseline.
+Focused runs are useful for proving that a specific fixture hits the intended
+lines, but their percentages are not comparable to the full `ut.backends.pure_`
+coverage percentage.
+
 ## Audit Log
 
 Keep an audit table in this plan or in a sibling coverage audit file. Each row
@@ -146,8 +172,25 @@ that shim.
 
 | DMD CTFE area | Coverage status | Test or reason | Notes |
 | --- | --- | --- | --- |
-| Coverage workflow | Covered | `scripts/dmd-ctfe-coverage.sh ut.backends.pure_.lang.expressions.intAddition.Ctfe` | Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to `tmp/dmd-ctfe-coverage`. |
-| `visit(CatExp)` | Covered | `ut.backends.pure_.lang.arrays.dynamicArrayConcatenation.Ctfe` | Binary dynamic-array concatenation covers the previously wholly uncovered visitor. The remaining uncovered lines in the method are branch-specific error, copy, and `elem ~ array` paths. |
+| Coverage workflow | Covered | Script smoke test | Fresh coverage works. |
+| `visit(CatExp)` | Covered | Array concatenation test | Was whole method. |
+
+Coverage workflow details:
+
+- Test command:
+  `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.intAddition.Ctfe`
+- Fresh non-empty `dmd.dinterpret` coverage can be generated and copied to
+  `tmp/dmd-ctfe-coverage`.
+
+`visit(CatExp)` details:
+
+- Test:
+  `ut.backends.pure_.lang.arrays.dynamicArrayConcatenation.Ctfe`
+- Binary dynamic-array concatenation covers the previously wholly uncovered
+  visitor.
+- Remaining uncovered lines in the method are branch-specific error, copy, and
+  `elem ~ array` paths.
 
 ## Acceptance Criteria
 
@@ -159,3 +202,5 @@ that shim.
   defensive, unsupported, or pending.
 - Final verification includes focused tests for each added fixture and a full
   `dub test`.
+- PR reporting includes the `master` and PR branch `dmd.dinterpret` coverage
+  percentages from the same broad coverage target.
