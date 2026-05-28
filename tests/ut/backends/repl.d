@@ -95,4 +95,22 @@ static foreach (backend; backends) {
         repl.submit("++x;").should == Value.void_;
         repl.submit("x").should == Value(1);
     }
+
+    @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+        import std.algorithm.searching: canFind;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int twice(int i) { return i; }");
+        bool thrown;
+        try {
+            repl.submit("int twice(int i) { return i; }");
+        } catch (Exception exception) {
+            thrown = true;
+            exception.msg.canFind("snippet_").should == false;
+        }
+        thrown.should == true;
+    }
 }
