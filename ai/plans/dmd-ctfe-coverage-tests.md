@@ -177,6 +177,10 @@ creating one worktree per worker.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
+For the 2026-05-29 continuation branch, keep all explorer and worker subagents
+in the single PR worktree `worktrees/dmd-ctfe-coverage-tests-6`. Do not create
+one worktree per subagent.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -242,6 +246,15 @@ that shim.
 | Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
+| `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
+| `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
+| `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
+| `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
+| `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
+| `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
+| `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
+| `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
+| `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 
 Coverage workflow details:
 
@@ -594,6 +607,291 @@ Verification notes:
   failing as expected. Seed: `669684322`.
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
   audit with 614 tests run, 0 failed, and 31/31 failing as expected.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 1
+
+Explorer recommendation 1 targeted `visit(NewExp)` in `dmd.dinterpret`,
+specifically the non-constructor struct allocation path for `new Struct(args)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstance.Ctfe
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstanceFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstanceFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.newStructAllocatesMutableInstance.Ctfe
+```
+
+Coverage effect: focused coverage marked the `visit(NewExp)` struct allocation
+branch as hit, including argument interpretation, struct literal construction,
+and address creation for the allocated CTFE value.
+
+Poke result: changing the behavior assertion from `seed * 4 + 3` to
+`seed * 4 + 4` failed the focused CTFE test with `83 != 84`; the temporary
+poke was reverted and the focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 2
+
+Explorer recommendation 2 targeted the omitted-element copy branch in
+`visit(ArrayLiteralExp)`.
+
+No test was kept. The candidate indexed initializer:
+
+```d
+int[4] values = [1: seed, 3: seed + 2];
+```
+
+is valid D, but DMD lowers it through `ArrayInitializer::toExpression` and
+fills omitted entries with `defaultInit` before CTFE sees the
+`ArrayLiteralExp`. The focused coverage run still left
+`ex = copyLiteral(basis).copy();` uncovered. The apparent range-basis spelling
+`[0 .. 4: 0, 1: seed, 3: seed + 2]` is rejected by DMD 2.112, so this target
+is recorded as not reachable through normal D syntax.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 3
+
+Explorer recommendation 3 targeted the pointer-condition normalization path in
+`visit(CondExp)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.0.Ctfe
+ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.expressions.conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe
+```
+
+Coverage effect: focused coverage marked the pointer branch in
+`visit(CondExp)` as hit, including `isPointer(e.econd.type)`,
+`econd.op != EXP.null_`, and `IntegerExp.createBool(true)`.
+
+Poke result: changing the behavior assertion from `42` to `43` failed the
+focused CTFE test with `42 != 43`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 4
+
+Explorer recommendation 4 targeted `visitTryCatch(TryCatchStatement)`,
+specifically skipping a non-matching sibling catch before binding a base
+`Exception` catch variable.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingException.Ctfe
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingExceptionFailureMessage.0.Ctfe
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingExceptionFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingException.Ctfe
+```
+
+Coverage effect: focused coverage marked the non-matching catch `continue`
+branch as hit, then covered catch-variable stack binding for the base handler.
+
+Poke result: changing the behavior assertion from `9` to `10` failed the
+focused CTFE test with `9 != 10`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 5
+
+Explorer recommendation 5 targeted `visitTryFinally(TryFinallyStatement)`,
+specifically a normal body followed by a throwing `finally` block.
+
+No test was kept. The candidate behavior was valid D and was poke-checked:
+changing the expected assertion from `10` to `11` failed with `10 != 11`.
+However, focused coverage for the candidate left `visitTryFinally` whole-method
+uncovered, including `Expression ey = interpretStatement(s.finalbody, istate);`
+and the `ey.isThrownExceptionExp()` branch. The temporary additive tests were
+reverted.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 6
+
+Explorer recommendation 6 targeted the wholly uncovered
+`visitDtorExp(DtorExpStatement)` visitor.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfe.Ctfe
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfeFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfeFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.scopeDestructorRunsAtCtfe.Ctfe
+```
+
+Coverage effect: focused coverage marked `visitDtorExp(DtorExpStatement)` as
+hit once through a scope-exit struct destructor that mutates dynamic array
+state.
+
+Poke result: changing the behavior assertion from `7` to `8` failed the
+focused CTFE test with `7 != 8`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 7
+
+Explorer recommendation 7 targeted the wholly uncovered
+`visitDefault(DefaultStatement)` visitor through normal switch default
+execution.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefault.Ctfe
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefaultFailureMessage.0.Ctfe
+ut.backends.pure_.lang.control_flow.switchFallsThroughToDefaultFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.control_flow.switchFallsThroughToDefault.Ctfe
+```
+
+Coverage effect: focused coverage marked `visitDefault(DefaultStatement)` as
+hit through a non-matching `switch` case falling through to `default`.
+
+Poke result: changing the behavior assertion from `12` to `13` failed the
+focused CTFE test with `12 != 13`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 8
+
+Explorer recommendation 8 targeted the char-element branch in
+`recursivelyCreateArrayLiteral` through runtime-length dynamic array
+allocation.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.0.Ctfe
+ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFillFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe
+```
+
+Coverage effect: focused coverage marked the `elemType.ty.isSomeChar` branch
+and `createBlockDuplicatedStringLiteral` return as hit for `new char[](len)`.
+The test uses `char.init` for the default element value to match DMD CTFE and
+compiled D behavior.
+
+Poke result: changing the behavior assertion from `'e'` to `'f'` failed the
+focused CTFE test with `'e' != 'f'`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 9
+
+Explorer recommendation 9 targeted the direct dynamic-array out-of-bounds
+diagnostic in `resolveIndexing(IndexExp)`.
+
+Added a focused pure-backend CTFE diagnostic test:
+
+```text
+ut.backends.pure_.lang.arrays.dynamicArrayIndexPastLengthDiagnostic.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.arrays.dynamicArrayIndexPastLengthDiagnostic.Ctfe
+```
+
+Coverage effect: focused coverage marked the non-slice indexing path and
+direct array out-of-bounds diagnostic as hit. The slice-index out-of-bounds
+branch remained untouched, confirming this test is distinct from the existing
+slice diagnostic.
+
+Poke result: changing the expected diagnostic substring from array index `3`
+to `2` failed the focused test with the expected diagnostic mismatch; the
+temporary poke was reverted and the focused test was rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Final Summary
+
+Branch `dmd-ctfe-coverage-tests-6` started from:
+
+```text
+e030826e6c945a439782e005071b453c3c8556ef
+```
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Starting commit broad baseline | 2126 | 3764 | 56.48% |
+| Final branch broad coverage | 2134 | 3764 | 56.70% |
+
+Delta: +0.21 percentage points.
+
+Method-level changes from the kept test slices:
+
+- `visit(NewExp)` struct allocation branch covered by
+  `newStructAllocatesMutableInstance.Ctfe`.
+- `visit(CondExp)` pointer-condition normalization covered by
+  `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`.
+- `visitTryCatch(TryCatchStatement)` non-matching catch skip covered by
+  `catchSkipsNonMatchingSiblingException.Ctfe`.
+- `visitDtorExp(DtorExpStatement)` moved from whole-method uncovered to
+  covered by `scopeDestructorRunsAtCtfe.Ctfe`.
+- `visitDefault(DefaultStatement)` moved from whole-method uncovered to
+  covered by `switchFallsThroughToDefault.Ctfe`.
+- `recursivelyCreateArrayLiteral` char dynamic-array branch covered by
+  `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`.
+- `resolveIndexing(IndexExp)` direct dynamic-array out-of-bounds diagnostic
+  covered by `dynamicArrayIndexPastLengthDiagnostic.Ctfe`.
+
+Rejected or not-kept targets:
+
+- `visit(ArrayLiteralExp)` omitted-element copy is not reachable through the
+  indexed initializer spelling because semantic lowering densifies the
+  initializer before CTFE.
+- A valid `try`/`finally` throwing-finally fixture was poke-checked but did not
+  hit `visitTryFinally`; the temporary tests were reverted.
+
+Verification notes:
+
+- Each kept additive behavior or diagnostic test was poke-checked and restored
+  before commit.
+- `dub test -- --random` passed after the final additive diagnostic slice with
+  1601 tests run, 0 failed, and 28/28 failing as expected. Seed:
+  `1659556447`.
+- Final broad coverage passed with 766 tests run, 0 failed, and 28/28 failing
+  as expected.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 

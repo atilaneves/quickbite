@@ -118,6 +118,72 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("30 != 31");
     }
 
+    @("switchFallsThroughToDefault." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 7;
+                int value;
+                switch (seed) {
+                    case 1:
+                        value = 10;
+                        break;
+                    case 2:
+                        value = 20;
+                        break;
+                    default:
+                        value = seed + 5;
+                        break;
+                }
+                assert(value == 12);
+            }
+        });
+    }
+
+    @("switchFallsThroughToDefaultFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 7;
+                int value;
+                switch (seed) {
+                    case 1:
+                        value = 10;
+                        break;
+                    case 2:
+                        value = 20;
+                        break;
+                    default:
+                        value = seed + 5;
+                        break;
+                }
+                assert(value == 13);
+            }
+        }).shouldThrowWithMessage("12 != 13");
+    }
+
+    @("switchFallsThroughToDefaultFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 3;
+                int value;
+                switch (seed) {
+                    case 1:
+                        value = 10;
+                        break;
+                    case 2:
+                        value = 20;
+                        break;
+                    default:
+                        value = seed + 5;
+                        break;
+                }
+                assert(value == 7);
+            }
+        }).shouldThrowWithMessage("8 != 7");
+    }
+
     @("supportsGotoCase." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
