@@ -1223,4 +1223,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+
+    @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int source = 258;
+                ubyte value = cast(ubyte) source;
+                assert(value == 2);
+            }
+        });
+    }
+
+    @("ubyteLocalTruncatesOnStoreFailureMessage." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                int source = 258;
+                ubyte value = cast(ubyte) source;
+                assert(value == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
 }
