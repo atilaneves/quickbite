@@ -46,14 +46,25 @@ Completed in this PR:
 
 Remaining follow-up:
 
-- Fix REPL display for valid CTFE results that are not currently converted to a
-  user-facing value. For example, after `import std.algorithm;`,
-  `[1, 2, 3].map!(x => x * 2)` currently reports
-  `Unsupported CTFE eval result.`. That diagnostic is wrong: real CTFE supports
-  the same operation when materialized, such as
-  `static assert(func([1, 2, 3]) == [2, 4, 6]);` with a function that returns
-  `ints.map!(x => x * 2).array`. Treat this as a REPL conversion/rendering bug,
-  not an unsupported CTFE evaluation.
+- Add proper range support to `Value` so REPL results can represent ranges
+  directly instead of forcing them into arrays.
+- Fix REPL display for valid finite range results. For example, after
+  `import std.algorithm;`, `[1, 2, 3].map!(x => x * 2)` currently reports
+  `Unsupported CTFE eval result.`. Until `Value` has range support, finite
+  ranges may be materialized into arrays so they fit the current
+  representation. This is a temporary `Value` representation workaround, not a
+  CTFE-backend-specific concept. Do not implement this by rewriting REPL input
+  source, appending `.array` to user expressions, or adding a display-only
+  wrapper source path. Never try to materialize infinite ranges.
+- Keep failed REPL import/eval cells from poisoning the session. For example,
+  `import std;` currently reports DMD/CTFE diagnostics from `core.atomic`:
+  `function
+  core.internal.atomic.atomicFetchAdd!(MemoryOrder.seq, true, uint)`
+  `.atomicFetchAdd has no return statement, but is expected to return a value
+  of type uint`, followed by template-instantiation errors. The worse behavior
+  is that none of `std` is available afterward. A failed no-display cell must
+  not be accepted into REPL history, and later valid cells should still see the
+  last known-good session state.
 
 ## Key Changes
 
