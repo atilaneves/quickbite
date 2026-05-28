@@ -428,6 +428,30 @@ and per-module commit rules.
 - Next migration step should start from
   `tests/ut/executors/pure_/lang/exceptions.d`.
 
+## Handoff After Exceptions Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/exceptions.d` fixtures
+  to `tests/ut/backends/pure_/lang/exceptions.d`.
+- Added two negative assertion probes for each migrated positive observable
+  assertion where practical.
+- Preserved thrown-exception behavior directly with expected CTFE exception
+  diagnostics instead of inventing unrelated assertion probes.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.exceptions`.
+- Audit poke passed: all 12 positive migrated exceptions tests were
+  temporarily changed to fail, and unit-threaded reported all 12 failures in
+  one focused run. The poke was restored.
+- Full verification passed: `dub test`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/diagnostics.d`.
+
 ## Handoff After Arrays Migration
 
 - Branch/worktree: `ctfe-backend-pure-tests` at
