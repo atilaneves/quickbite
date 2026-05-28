@@ -369,6 +369,43 @@ Verification notes:
   `ut.executors.deps.cerealed.cerealed.decode.d.ir`, reporting
   `No function body to execute: gc_inFinalizer`.
 
+### 2026-05-28 Final PR Broad Coverage Summary
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
+| Final branch broad coverage | 1675 | 3764 | 44.50% |
+
+Delta: +1.01 percentage points.
+
+Method-level changes from the three new test slices:
+
+- `visitWith(WithStatement)` moved from whole method uncovered to partially
+  covered.
+- `visitUnrolledLoop(UnrolledLoopStatement)` moved from whole method uncovered
+  to partially covered.
+- `visit(CommaExp)` has additional coverage and is partially covered with 15
+  uncovered executable lines remaining in the final broad audit.
+
+Verification notes:
+
+- Focused tests passed for the added behavior tests and paired failure-message
+  tests.
+- Assertion poke checks failed with the expected diagnostics.
+- Workers attempted full `dub test`, but it still has the unrelated
+  order-sensitive failure in
+  `ut.executors.deps.cerealed.cerealed.decode.d.ir`, reporting
+  `No function body to execute: gc_inFinalizer`. Workers confirmed that test
+  passes in isolation.
+
 ## Acceptance Criteria
 
 - Fresh coverage for `dmd.dinterpret` can be generated from this repository.
