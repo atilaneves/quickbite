@@ -177,6 +177,10 @@ creating one worktree per worker.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
+For the 2026-05-29 continuation branch, keep all explorer and worker subagents
+in the single PR worktree `worktrees/dmd-ctfe-coverage-tests-6`. Do not create
+one worktree per subagent.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -242,6 +246,7 @@ that shim.
 | Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
+| `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 
 Coverage workflow details:
 
@@ -594,6 +599,34 @@ Verification notes:
   failing as expected. Seed: `669684322`.
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
   audit with 614 tests run, 0 failed, and 31/31 failing as expected.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 1
+
+Explorer recommendation 1 targeted `visit(NewExp)` in `dmd.dinterpret`,
+specifically the non-constructor struct allocation path for `new Struct(args)`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstance.Ctfe
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstanceFailureMessage.0.Ctfe
+ut.backends.pure_.lang.structs.newStructAllocatesMutableInstanceFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.structs.newStructAllocatesMutableInstance.Ctfe
+```
+
+Coverage effect: focused coverage marked the `visit(NewExp)` struct allocation
+branch as hit, including argument interpretation, struct literal construction,
+and address creation for the allocated CTFE value.
+
+Poke result: changing the behavior assertion from `seed * 4 + 3` to
+`seed * 4 + 4` failed the focused CTFE test with `83 != 84`; the temporary
+poke was reverted and the focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary
 

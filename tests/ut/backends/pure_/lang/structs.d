@@ -1418,6 +1418,78 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("15 != 7");
     }
 
+    @("newStructAllocatesMutableInstance." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int next(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int seed = 20;
+                auto p = new Pair(seed, next(seed));
+
+                p.a += p.b;
+                p.b = next(p.a);
+
+                assert(p.a + p.b == seed * 4 + 3);
+            }
+        });
+    }
+
+    @("newStructAllocatesMutableInstanceFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int next(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int seed = 20;
+                auto p = new Pair(seed, next(seed));
+
+                p.a += p.b;
+                p.b = next(p.a);
+
+                assert(p.a + p.b == seed * 4 + 4);
+            }
+        }).shouldThrowWithMessage("83 != 84");
+    }
+
+    @("newStructAllocatesMutableInstanceFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int next(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int seed = 7;
+                auto p = new Pair(seed, next(seed));
+
+                p.a += p.b;
+                p.b = next(p.a);
+
+                assert(p.a + p.b == seed * 4);
+            }
+        }).shouldThrowWithMessage("31 != 28");
+    }
+
     @("newStructPointerRunsConstructor." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
