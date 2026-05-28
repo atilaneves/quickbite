@@ -325,9 +325,10 @@ Verification notes:
 - Focused tests passed for the behavior test and both failure-message tests.
 - The assertion poke failed with the expected `2 != 3` diagnostic, then the
   focused tests passed again after reverting the poke.
-- `dub test` still has an unrelated order-sensitive failure in
-  `ut.executors.deps.cerealed.cerealed.decode.d.ir`; that test passes when run
-  alone.
+- At the time of this focused slice, `dub test` had an unrelated
+  order-sensitive failure in `ut.executors.deps.cerealed.cerealed.decode.d.ir`;
+  the final branch verification below passed after restoring DMD 2.112.0 while
+  keeping unit-threaded 2.2.4.
 
 ### 2026-05-28 Worker 4 CTFE Slice
 
@@ -365,9 +366,11 @@ Verification notes:
 - Focused tests passed for the behavior test and both failure-message tests.
 - The assertion poke failed with the expected `6 != 7` diagnostic, then the
   focused tests passed again after reverting the poke.
-- `dub test` still has an unrelated order-sensitive failure in
-  `ut.executors.deps.cerealed.cerealed.decode.d.ir`, reporting
-  `No function body to execute: gc_inFinalizer`.
+- At the time of this focused slice, `dub test` had an unrelated
+  order-sensitive failure in `ut.executors.deps.cerealed.cerealed.decode.d.ir`,
+  reporting `No function body to execute: gc_inFinalizer`; the final branch
+  verification below passed after restoring DMD 2.112.0 while keeping
+  unit-threaded 2.2.4.
 
 ### 2026-05-28 Final PR Broad Coverage Summary
 
@@ -382,9 +385,9 @@ Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
 | Checkout | Covered | Total | Coverage |
 | --- | ---: | ---: | ---: |
 | Pre-PR-slice broad baseline | 1637 | 3764 | 43.49% |
-| Final branch broad coverage | 1675 | 3764 | 44.50% |
+| Final branch broad coverage | 1687 | 3764 | 44.82% |
 
-Delta: +1.01 percentage points.
+Delta: +1.33 percentage points.
 
 Method-level changes from the three new test slices:
 
@@ -402,10 +405,11 @@ Verification notes:
 - Focused tests passed for the added behavior tests and paired failure-message
   tests.
 - Assertion poke checks failed with the expected diagnostics.
-- An earlier full `dub test` on DMD 2.112.0 had the unrelated order-sensitive
-  `ut.executors.deps.cerealed.cerealed.decode.d.ir` failure noted by workers.
+- Final selections used `dmd` 2.112.0 and `unit-threaded` 2.2.4.
+- `dub test` passed with 1433 tests run, 0 failed, and 31/31 failing as
+  expected.
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed for the final broad
-  audit.
+  audit with 602 tests run, 0 failed, and 31/31 failing as expected.
 
 ## Acceptance Criteria
 
