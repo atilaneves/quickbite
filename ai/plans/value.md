@@ -89,9 +89,20 @@ without pausing for each test.
    same name and fields compare unequal.
 4. [done] Add a struct `text` test proving `Value(Point(...)).text` matches
    D's compiler-generated `Point(...).text` representation.
-5. Add approved tests one category at a time for `AssocArray`, `Union`,
+
+Autonomous run in `value-assoc-array`: the user explicitly approved proceeding
+without pausing for each test.
+
+1. [done] Add one red associative-array test in `ut.lang`: two equal `int[int]`
+   values compare equal, and a different value compares unequal.
+2. [done] Implement the minimal `AssocArray` arm and `Value(T)` construction
+   for associative arrays.
+3. [done] Add an associative-array `text` test proving
+   `Value([1: 10, 2: 20]).text` matches D's compiler-generated
+   `[1: 10, 2: 20].text` representation.
+4. Add approved tests one category at a time for `Union`,
    `ClassRef`, `InterfaceRef`, `Pointer`, `Delegate`, and `FunctionRef`.
-6. After each green step, run the focused `ut.lang` test. After the edit
+5. After each green step, run the focused `ut.lang` test. After the edit
    session, run `dub test -- --random`.
 
 ## Assumptions

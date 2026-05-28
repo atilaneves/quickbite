@@ -81,7 +81,9 @@ public struct Value {
         return data.match!(
             (value) {
                 alias T = typeof(value);
-                static if (is(T == const(Struct))) {
+                static if (is(T == const(AssocArray))) {
+                    return value.toString;
+                } else static if (is(T == const(Struct))) {
                     return value.toString;
                 } else {
                     return text(value);
@@ -113,6 +115,8 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
+                } else static if (is(T == const(AssocArray))) {
+                    return value.toString;
                 } else static if (is(T == const(Struct))) {
                     return value.toString;
                 } else {
@@ -140,12 +144,28 @@ private struct AssocArray {
         foreach (key, value; values)
             entries ~= Entry(Value(key), Value(value));
     }
+
+    public string toString() const @safe pure {
+        string ret = "[";
+
+        foreach (i, entry; entries) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= entry.toString;
+        }
+
+        return ret ~ "]";
+    }
 }
 
 
 private struct Entry {
     public Value key;
     public Value value;
+
+    public string toString() const @safe pure {
+        return key.dText ~ ":" ~ value.dText;
+    }
 }
 
 
