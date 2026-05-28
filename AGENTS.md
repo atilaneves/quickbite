@@ -69,8 +69,9 @@ code.
 
 ### Production code (in `source`)
 
-- Local imports inside functions/types. `imported!"module"` only for
-  parameter and return types.
+- Use `imported!"module"` for parameter and return types at
+  module-scope.  Do not use `imported!"module"` in non-module scopes
+  such as inside a function, struct, or class.
 - `private:` at top of every module; still annotate each declaration
   explicitly with `public`/`private`.
 - Do not use exceptions for control flow.
