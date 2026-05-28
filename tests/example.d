@@ -439,3 +439,20 @@ unittest {
     assert(matched == 30);
     assert(fellThrough == 3);
 }
+
+unittest {
+    uint[] values = [0u, 1u];
+    uint observed;
+
+    assert(((values[0] != 0) && (++observed == 1)) == false);
+    assert(observed == 0);
+
+    assert(((values[1] != 0) && (++observed == 1)) == true);
+    assert(observed == 1);
+
+    assert(((values[1] != 0) || (++observed == 2)) == true);
+    assert(observed == 1);
+
+    assert(((values[0] != 0) || (++observed == 2)) == true);
+    assert(observed == 2);
+}
