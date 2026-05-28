@@ -26,6 +26,11 @@ plan update.
   These tests are migrations of previously approved executor tests, not new
   language-surface coverage. Apply migrated backend tests directly, then verify
   them with the probe/focused-test/audit-poke loop below.
+- When subagents are available for a migration, each source-order executor test
+  must be migrated by its own subagent. The main agent orchestrates the queue,
+  assigns one test at a time, reviews and integrates the returned patch, runs
+  verification, commits, and then assigns the next test. The main agent should
+  not perform the per-test migration work itself.
 - Do not convert unittest fixtures into REPL-only snippets that are not valid D.
 - Each migrated positive test needs at least two matching negative assertion
   probes when practical. Passing unittests do not print or throw, so the
@@ -43,6 +48,14 @@ plan update.
   output" means a real DMD command such as
   `dmd -o- -checkaction=context fixture.d`, not only the current
   dmd-as-a-library wrapper output.
+- DMD CLI diagnostic probes must stay inside the active migration worktree.
+  Delegate these probes to a subagent whenever subagents are available for the
+  migration. The main agent should integrate the reported diagnostics instead
+  of running ad hoc probes itself. The probing subagent should prefer
+  temporarily editing the backend test fixture under migration, then restore it
+  before reporting. If a separate fixture file is truly needed, create it only
+  inside the active worktree, delete it before reporting, and mention why the
+  backend test file itself was not enough.
 - If DMD CLI output and dmd-as-a-library output disagree, first check whether
   Quickbite's DMD global state matches the CLI switches used by the oracle. For
   assertion diagnostics, `global.params.checkAction` must be
@@ -110,10 +123,10 @@ When used, the conversion reviewer must check that:
 - The implementation contains no fallback path or broad support not forced by
   the focused migrated test.
 
-Use subagents when a conversion review or bounded implementation review is
-useful. Do not require a subagent for straightforward source-preserving test
-migration where the backend test keeps the valid-D fixture shape and only adds
-the required negative probes.
+Use subagents for every per-test migration when subagents are available. Do not
+require an additional conversion reviewer subagent for straightforward
+source-preserving test migration where the worker subagent keeps the same
+valid-D fixture shape and only adds the required negative probes.
 
 After implementation, spawn or reuse a reviewer subagent to review production
 changes before committing.
@@ -126,14 +139,25 @@ explicitly approves the exact exception after seeing the conflicting rule.
 
 1. Create a fresh branch and worktree for the PR.
 2. Pick the next unmigrated executor pure module from the migration order.
-3. Migrate tests from that module one by one, in source order.
+3. Migrate tests from that module one by one, in source order. Assign each
+   source-order executor test to a dedicated subagent worker; the main agent
+   must not do the per-test conversion itself when subagents are available.
 4. For each executor test:
-   - Copy the valid-D fixture shape into the matching backend module.
-   - Change only the harness from executor API calls to backend API calls.
-   - Add at least two matching negative assertion probes when practical.
-   - Verify each negative diagnostic against real DMD CLI output with
+   - The worker subagent copies the valid-D fixture shape into the matching
+     backend module.
+   - The worker subagent changes only the harness from executor API calls to
+     backend API calls.
+   - The worker subagent adds at least two matching negative assertion probes
+     when practical.
+   - The worker subagent verifies each negative diagnostic against real DMD CLI
+     output with
      `dmd -o- -checkaction=context` before encoding or adjusting the expected
-     message.
+     message. Run this from the active worktree and keep probe edits in the
+     backend test file being migrated whenever possible; do not create probe
+     files outside the worktree. The worker reports the verified message
+     fragments and any temporary probe method used.
+   - The main agent reviews and integrates the worker patch, preserving
+     source-order placement and rejecting unrelated edits.
    - Run the focused backend test including `ut.backends.architecture`.
    - If the positive test is green, run an audit poke before committing:
      temporarily change the positive assertion's expected value so the positive
@@ -213,8 +237,10 @@ At that point:
 - Include `ut.backends.architecture` in focused backend verification.
 - Verify every negative assertion diagnostic against the actual CTFE engine
   output before encoding the expected message. Use a real DMD CLI probe with
-  `-checkaction=context`; do not treat current wrapper output as canonical when
-  it disagrees with the CLI.
+  `-checkaction=context` from inside the active worktree; do not treat current
+  wrapper output as canonical when it disagrees with the CLI. The per-test
+  worker subagent owns this verification and reports the exact message
+  fragments to encode.
 - Add at least two negative assertion probes for each migrated positive test
   when practical, with different observed values or failure shapes to catch
   naive implementations.
