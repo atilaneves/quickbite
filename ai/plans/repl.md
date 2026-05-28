@@ -4,15 +4,6 @@
 
 Pick these items up before any other REPL follow-up.
 
-- Keep failed REPL import/eval cells from poisoning the session. For example,
-  `import std;` currently reports DMD/CTFE diagnostics from `core.atomic`:
-  `function
-  core.internal.atomic.atomicFetchAdd!(MemoryOrder.seq, true, uint)`
-  `.atomicFetchAdd has no return statement, but is expected to return a value
-  of type uint`, followed by template-instantiation errors. The worse behavior
-  is that none of `std` is available afterward. A failed no-display cell must
-  not be accepted into REPL history, and later valid cells should still see the
-  last known-good session state.
 - Support C pointer values and pointer-to-integer casts in REPL cells without
   corrupting the session parser state. This currently fails after importing
   `core.stdc.stdlib`, allocating with `malloc`, casting the pointer to `int`,
@@ -25,17 +16,6 @@ Pick these items up before any other REPL follow-up.
   > i
   found `}` when expecting `;` following expression
   matching `}` expected following compound statement, not `End of File`
-  >
-  ```
-- Support type-introspection cells such as `typeof(i)` without treating the
-  type node as a normal expression result. The REPL currently reports this as
-  a frontend error after a variable declaration:
-
-  ```text
-  Quickbite REPL
-  > int i;
-  > typeof(i)
-  type `int` is not an expression
   >
   ```
 - Support runtime side-effect cells such as `std.stdio.File` writes. The REPL
@@ -101,6 +81,10 @@ Completed:
 - Supported import declarations as no-display REPL cells. For example,
   `import std.algorithm;` persists and a later expression can call `min`.
 - Removed dead executor REPL APIs after the backend REPL path replaced them.
+- Added a regression test that failed no-display cells are not accepted into
+  REPL history, so later cells continue from the last known-good state.
+- Supported type-introspection cells such as `typeof(i)` by classifying type
+  expressions separately from value expressions and displaying `int: type`.
 
 Remaining follow-up:
 
@@ -120,6 +104,7 @@ Remaining follow-up:
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL
   entrypoint.
 - Expression cells return their evaluated `Value`.
+- Type-expression cells return their resolved type as a `Value`.
 - No-display cells return `Value.void_`.
 - CTFE executes non-value cells immediately, not lazily on the next expression.
 - `ReplSession` owns DMD frontend state across submitted cells.

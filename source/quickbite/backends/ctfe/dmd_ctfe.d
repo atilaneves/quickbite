@@ -27,6 +27,8 @@ public class Ctfe: imported!"quickbite.backend".Backend {
                 return Value.void_;
             case expression:
                 return evalReplSource(cell.source);
+            case typeExpression:
+                return evalReplType(cell.source);
         }
     }
 
@@ -87,6 +89,77 @@ private imported!"quickbite.lang".Value evalReplSource(in string source) {
         return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
     catch (Exception exception)
         throw new Exception(withCandidateSignatures(source, exception.msg));
+}
+
+private imported!"quickbite.lang".Value evalReplType(in string source) {
+    import quickbite.lang: Value;
+
+    return Value.type_(replTypeName(source));
+}
+
+private string replTypeName(in string source) {
+    const alias_ = replTypeAlias(source);
+    if (alias_.type is null)
+        throw new Exception("Missing REPL type expression.");
+
+    return typeText(alias_.type);
+}
+
+private imported!"dmd.declaration".AliasDeclaration replTypeAlias(in string source) {
+    import dmd.declaration: AliasDeclaration;
+
+    AliasDeclaration result;
+    foreachReplFunctionStatement(replFunction(source), (statement) {
+        if (result !is null)
+            return;
+
+        auto expressionStatement = statement.isExpStatement;
+        if (expressionStatement is null)
+            return;
+
+        auto declarationExpression = expressionStatement.exp.isDeclarationExp;
+        if (declarationExpression is null)
+            return;
+
+        auto alias_ = declarationExpression.declaration.isAliasDeclaration;
+        if (alias_ !is null && alias_.ident.toString == "__quickbite_repl_type")
+            result = alias_;
+    });
+
+    if (result is null)
+        throw new Exception("Missing REPL type expression.");
+
+    return result;
+}
+
+private void foreachReplFunctionStatement(
+    imported!"dmd.func".FuncDeclaration function_,
+    scope void delegate(imported!"dmd.statement".Statement) visit,
+) {
+    foreachStatement(function_.fbody, visit);
+}
+
+private void foreachStatement(
+    imported!"dmd.statement".Statement statement,
+    scope void delegate(imported!"dmd.statement".Statement) visit,
+) {
+    if (statement is null)
+        return;
+
+    visit(statement);
+
+    auto compound = statement.isCompoundStatement;
+    if (compound is null || compound.statements is null)
+        return;
+
+    foreach (child; *compound.statements)
+        foreachStatement(child, visit);
+}
+
+private string typeText(const imported!"dmd.mtype".Type type) {
+    import std.string: fromStringz;
+
+    return type.toChars.fromStringz.idup;
 }
 
 private string evalSource(in string str) {

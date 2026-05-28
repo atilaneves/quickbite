@@ -97,6 +97,31 @@ static foreach (backend; backends) {
         output.should == ["1: int"];
     }
 
+    @("repl.backend.failedNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int x = 41;");
+        void failCell() {
+            repl.submit("import std;");
+        }
+        failCell.shouldThrow;
+        repl.submit("++x;").should == Value.void_;
+        repl.submit("x").should == Value(42);
+    }
+
+    @("repl.backend.typeofCellsDisplayType." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int value;");
+        repl.submit("typeof(value)").toString.should == "int: type";
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

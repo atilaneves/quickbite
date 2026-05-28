@@ -29,6 +29,7 @@ public struct Value {
 
         Array,
         Struct,
+        TypeName,
     );
 
     private Data data = Data(Void.init);
@@ -37,7 +38,15 @@ public struct Value {
         return Value(Void.init);
     }
 
+    public static Value type_(in string name) @safe pure {
+        return Value(TypeName(name));
+    }
+
     private this(in Void value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(in TypeName value) @safe pure {
         data = Data(value);
     }
 
@@ -106,6 +115,8 @@ public struct Value {
                     return text(value, ": ulong");
                 } else static if (is(T == const(Struct))) {
                     return value.toString;
+                } else static if (is(T == const(TypeName))) {
+                    return value.toString;
                 } else {
                     return data.toString;
                 }
@@ -160,6 +171,15 @@ private struct Field {
 
     public string toString() const @safe pure {
         return value.dText;
+    }
+}
+
+
+private struct TypeName {
+    public string name;
+
+    public string toString() const @safe pure {
+        return name ~ ": type";
     }
 }
 

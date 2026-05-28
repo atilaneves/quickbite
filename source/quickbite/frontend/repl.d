@@ -6,6 +6,7 @@ public enum ReplCellKind {
     incomplete,
     noDisplay,
     expression,
+    typeExpression,
 }
 
 public struct ReplCell {
@@ -16,6 +17,7 @@ public struct ReplCell {
 }
 
 private enum ReplHistoryTarget {
+    none,
     local,
     module_,
 }
@@ -37,6 +39,14 @@ public struct ReplSession {
                 replSource(moduleTranscript ~ input ~ "\n", localTranscript),
                 ReplHistoryTarget.module_,
                 input ~ "\n",
+            );
+
+        if (isTypeExpressionCell(moduleTranscript, localTranscript, input))
+            return ReplCell(
+                ReplCellKind.typeExpression,
+                typeReplSource(moduleTranscript, localTranscript, input),
+                ReplHistoryTarget.none,
+                null,
             );
 
         if (!isExpressionCell(input))
@@ -63,6 +73,8 @@ public struct ReplSession {
 
     public void accept(in ReplCell cell) {
         final switch (cell.historyTarget) with (ReplHistoryTarget) {
+            case none:
+                break;
             case local:
                 localTranscript ~= cell.history;
                 break;
@@ -74,6 +86,86 @@ public struct ReplSession {
         if (cell.kind == ReplCellKind.expression)
             ++valueCellCount;
     }
+}
+
+private bool isTypeExpressionCell(
+    in string moduleTranscript,
+    in string localTranscript,
+    in string input,
+) {
+    import quickbite.frontend.compiler: parseModule;
+
+    try {
+        auto parsed = parseModule(typeReplSource(
+            moduleTranscript,
+            localTranscript,
+            input,
+        ));
+        const alias_ = replTypeAlias(parsed.module_);
+        return alias_ !is null && alias_.type !is null;
+    } catch (Exception) {
+        return false;
+    }
+}
+
+private imported!"dmd.declaration".AliasDeclaration replTypeAlias(
+    imported!"dmd.dmodule".Module module_,
+) {
+    auto function_ = replFunction(module_);
+    if (function_ is null)
+        return null;
+
+    imported!"dmd.declaration".AliasDeclaration result;
+    foreachStatement(function_.fbody, (statement) {
+        if (result !is null)
+            return;
+
+        auto expressionStatement = statement.isExpStatement;
+        if (expressionStatement is null)
+            return;
+
+        auto declarationExpression = expressionStatement.exp.isDeclarationExp;
+        if (declarationExpression is null)
+            return;
+
+        auto alias_ = declarationExpression.declaration.isAliasDeclaration;
+        if (alias_ !is null && alias_.ident.toString == "__quickbite_repl_type")
+            result = alias_;
+    });
+
+    return result;
+}
+
+private imported!"dmd.func".FuncDeclaration replFunction(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members is null)
+        return null;
+
+    foreach (member; *module_.members) {
+        auto function_ = member.isFuncDeclaration;
+        if (function_ !is null && function_.ident.toString == "f")
+            return function_;
+    }
+
+    return null;
+}
+
+private void foreachStatement(
+    imported!"dmd.statement".Statement statement,
+    scope void delegate(imported!"dmd.statement".Statement) visit,
+) {
+    if (statement is null)
+        return;
+
+    visit(statement);
+
+    auto compound = statement.isCompoundStatement;
+    if (compound is null || compound.statements is null)
+        return;
+
+    foreach (child; *compound.statements)
+        foreachStatement(child, visit);
 }
 
 private bool isExpressionCell(in string input) {
@@ -212,6 +304,17 @@ private bool hasDiagnosticAtEnd(in string input) {
 
 private string replSource(in string moduleTranscript, in string localTranscript) {
     return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
+}
+
+private string typeReplSource(
+    in string moduleTranscript,
+    in string localTranscript,
+    in string input,
+) {
+    return replSource(
+        moduleTranscript,
+        localTranscript ~ "alias __quickbite_repl_type = " ~ input ~ ";",
+    );
 }
 
 private __gshared uint _replModuleCounter;
