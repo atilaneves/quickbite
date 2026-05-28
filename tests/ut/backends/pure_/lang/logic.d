@@ -361,4 +361,37 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(left || right)` failed");
     }
+
+    @("logicalOrShortCircuit." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                int zero = 0;
+                assert(left || 42 / zero == 0);
+            }
+        });
+    }
+
+    @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                int zero = 0;
+                assert((left || 42 / zero == 0) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
+    unittest {
+        newBackend!backend.runTests(q{
+            unittest {
+                bool left = true;
+                int zero = 0;
+                assert(!(left || 42 / zero == 0));
+            }
+        }).shouldThrowWithMessage("true == true");
+    }
 }
