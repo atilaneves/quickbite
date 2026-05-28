@@ -181,6 +181,12 @@ that shim.
 | --- | --- | --- | --- |
 | Coverage workflow | Covered | Script smoke test | Fresh coverage works. |
 | `visit(CatExp)` | Covered | Array concatenation test | Was whole method. |
+| `visit(CatExp)` elem paths | Covered | Worker 1 slice | See details below. |
+| `visit(CatExp)` array wrap | Unsupported | Worker 1 | See below. |
+| `visit(AssocArrayLiteralExp)` | Covered | Worker 1 slice | Now partial. |
+| `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
+| `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
+| `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
 
 Coverage workflow details:
 
@@ -198,6 +204,56 @@ Coverage workflow details:
   visitor.
 - Remaining uncovered lines in the method are branch-specific error, copy, and
   `elem ~ array` paths.
+
+### 2026-05-28 Worker 1 CTFE Slice
+
+Added a focused pure-backend CTFE coverage slice for branch gaps in
+`dmd.dinterpret`:
+
+- `ut.backends.pure_.lang.arrays.arrayElementConcatenatesWithDynamicArray.Ctfe`
+  covers scalar `elem ~ array` and `array ~ elem` `CatExp` paths with
+  runtime-shaped operands.
+- The associative-array literal test covers `visit(AssocArrayLiteralExp)` with
+  mutable keys and values.
+- `ut.backends.pure_.lang.control_flow.supportsGotoCase.Ctfe` covers
+  `visit(GotoCaseStatement)`.
+- `ut.backends.pure_.lang.control_flow.supportsGotoDefault.Ctfe` covers
+  `visit(GotoDefaultStatement)`.
+- `ut.backends.pure_.lang.control_flow.supportsDoWhileBreakAndContinue.Ctfe`
+  covers `visitDo(DoStatement)` break and continue paths.
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Pre-slice broad baseline | 1519 | 3764 | 40.36% |
+| Worker 1 slice | 1637 | 3764 | 43.49% |
+
+Delta: +3.13 percentage points.
+
+Method-level changes in the fresh audit:
+
+- `visit(AssocArrayLiteralExp)` moved from whole method uncovered to partially
+  covered with 17 uncovered executable lines remaining.
+- `visit(GotoCaseStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch uncovered.
+- `visit(GotoDefaultStatement)` moved from whole method uncovered to partially
+  covered with only the resume-target branch uncovered.
+- `visitDo(DoStatement)` dropped from 16 to 10 uncovered executable lines.
+- `visit(CatExp)` dropped from 9 to 8 uncovered executable lines.
+
+Unsupported target:
+
+- `int[] row; int[][] rows; row ~ rows` and the equivalent static-row variant
+  both reach DMD CTFE's ``cannot be interpreted at compile time`` diagnostic.
+  No passing behavior test was kept for the array-of-arrays operand-wrapping
+  branch.
 
 ## Acceptance Criteria
 
