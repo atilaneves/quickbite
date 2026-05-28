@@ -673,6 +673,54 @@ static foreach (backend; backends) {
         });
     }
 
+    @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct ProtoHeader {
+                ubyte bits3;
+                ubyte bits1;
+                uint bits4;
+                ubyte bits8;
+            }
+
+            ubyte[] encode(ProtoHeader header) {
+                return [
+                    cast(ubyte)(
+                        ((header.bits3 & 0x7) << 5) |
+                        ((header.bits1 & 0x1) << 4) |
+                        (header.bits4 & 0xf)
+                    ),
+                    header.bits8,
+                ];
+            }
+
+            ProtoHeader decode(const(ubyte)[] bytes) {
+                return ProtoHeader(
+                    cast(ubyte)((bytes[0] >> 5) & 0x7),
+                    cast(ubyte)((bytes[0] >> 4) & 0x1),
+                    cast(uint)(bytes[0] & 0xf),
+                    bytes[1],
+                );
+            }
+
+            unittest {
+                ubyte base = 5;
+                ++base;
+                const header = ProtoHeader(
+                    base,
+                    cast(ubyte)(base - 5),
+                    cast(uint)(base - 3),
+                    cast(ubyte)(base + 248),
+                );
+
+                const encoded = header.encode;
+
+                assert(encoded == [0xd3, 254]);
+                assert(encoded.decode == header);
+            }
+        });
+    }
+
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
