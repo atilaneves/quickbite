@@ -2,6 +2,7 @@ module ut.backends.api;
 
 
 import ut.backends;
+import std.algorithm.searching: canFind;
 import std.file: mkdirRecurse, write;
 import std.path: buildPath;
 
@@ -9,6 +10,133 @@ import std.path: buildPath;
 private:
 
 static foreach (backend; backends) {
+    @("runParsedTests.runsAttributedUnittests." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            @("quickbite regression")
+            unittest {
+                assert(1 == 2);
+            }
+        }).shouldThrow;
+    }
+
+    @("runParsedTests.runsAttributedThrowingUnittests." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            @("quickbite regression")
+            unittest {
+                throw new Exception("quickbite regression");
+            }
+        }).shouldThrow.msg.canFind("quickbite regression").should == true;
+    }
+
+    @("runParsedTests.importPathsRetryAfterFailure." ~ backend.stringof)
+    unittest {
+        import quickbite.frontend.compiler: parseModule;
+
+        const importPath = tempModuleDir("backend-retry");
+        mkdirRecurse(importPath);
+        write(
+            buildPath(importPath, "quickbite_backend_retry_import.d"),
+            q{
+                module quickbite_backend_retry_import;
+                enum quickbiteRetryAnswer = 42;
+            },
+        );
+        const source = q{
+            import quickbite_backend_retry_import;
+            unittest {
+                assert(quickbiteRetryAnswer == 42);
+            }
+        };
+
+        parseModule(source, []).shouldThrowWithMessage(
+            "unable to read module `quickbite_backend_retry_import`\n" ~
+            "unable to read module `quickbite_backend_retry_import`\n" ~
+            "undefined identifier `quickbiteRetryAnswer`",
+        );
+
+        runBackendSourceFixtureTests!backend(source, [importPath]);
+    }
+
+    @("runParsedTestSummary.countsAttributedPassingAndFailingUnittests." ~
+        backend.stringof)
+    unittest {
+        const summary = runBackendSourceFixtureTestSummary!backend(q{
+            @("passes")
+            unittest {
+                assert(1 == 1);
+            }
+
+            @("fails")
+            unittest {
+                assert(1 == 2);
+            }
+
+            unittest {
+                assert(2 == 2);
+            }
+        });
+
+        summary.total.should == 3;
+        summary.passed.should == 2;
+        summary.failed.should == 1;
+    }
+
+    @("runParsedTestSummary.countsAllPassingUnittests." ~ backend.stringof)
+    unittest {
+        const summary = runBackendSourceFixtureTestSummary!backend(q{
+            unittest {
+                assert(1 == 1);
+            }
+
+            @("also passes")
+            unittest {
+                assert(2 == 2);
+            }
+        });
+
+        summary.total.should == 2;
+        summary.passed.should == 2;
+        summary.failed.should == 0;
+    }
+
+    @("runParsedTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
+    unittest {
+        const summary = runBackendSourceFixtureTestSummary!backend(q{
+            import core.exception: AssertError;
+
+            unittest {
+                throw new AssertError("expected");
+            }
+        });
+
+        summary.total.should == 1;
+        summary.passed.should == 0;
+        summary.failed.should == 1;
+    }
+
+    @("runParsedModulesTests.runsBothModules." ~ backend.stringof)
+    unittest {
+        import quickbite.frontend.compiler: parseModule;
+
+        auto module1 = parseModule(q{
+            unittest {
+                assert(1 == 1);
+            }
+        }).module_;
+
+        auto module2 = parseModule(q{
+            unittest {
+                throw new Exception("second module ran");
+            }
+        }).module_;
+
+        auto backend_ = newBackend!backend;
+        runParsedModulesTests(backend_, [module1, module2,]).shouldThrow.msg
+            .canFind("second module ran").should == true;
+    }
+
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         const importPath = tempModuleDir("backend-source-import-paths");

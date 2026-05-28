@@ -5,6 +5,7 @@ private:
 
 
 public class Ctfe: imported!"quickbite.backend".Backend {
+    import quickbite.backend: TestSummary;
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
@@ -39,6 +40,22 @@ public class Ctfe: imported!"quickbite.backend".Backend {
             if (const failure = ctfeFailureMessage(callExpression(unitTest)))
                 throw new Exception(failure);
         });
+    }
+
+    public override TestSummary runParsedTestSummary(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestSummary summary;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++summary.total;
+            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
+                ++summary.failed;
+            else
+                ++summary.passed;
+        });
+        return summary;
     }
 }
 
