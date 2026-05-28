@@ -202,6 +202,7 @@ that shim.
 | `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
+| `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
 
 Coverage workflow details:
 
@@ -421,6 +422,37 @@ Verification notes:
 - Focused tests passed for the behavior test and both failure-message tests.
 - The assertion poke failed with the expected `8 != 9` diagnostic, then the
   focused tests passed again after reverting the poke.
+
+### 2026-05-28 Worker 6 CTFE Slice
+
+Explorer recommendation 1 targeted `visitTryCatch(TryCatchStatement)` in
+`dmd.dinterpret`, specifically the catch-variable binding branch:
+`ctfeGlobals.stack.push(ca.var); setValue(ca.var, ex.thrown);`.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObject.Ctfe
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObjectFailureMessage.0.Ctfe
+ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObjectFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.catchExceptionBindsCaughtObject.Ctfe
+```
+
+Coverage effect: focused coverage marked both target executable lines as hit
+once:
+
+- `ctfeGlobals.stack.push(ca.var);`
+- `setValue(ca.var, ex.thrown);`
+
+Poke result: changing the behavior test assertion from `8` to `9` failed the
+focused CTFE test with `8 != 9`; the temporary poke was reverted and the
+focused tests were rerun green.
 
 ### 2026-05-28 Final PR Broad Coverage Summary
 
