@@ -27,6 +27,9 @@ Completed in this PR:
 Remaining follow-up:
 
 - Remove or migrate dead executor REPL APIs after callers no longer need them.
+- Support function declarations without requiring semicolons after function
+  bodies. For example, `int twice(int i) { return i * 2; }` should be accepted
+  as a no-display cell and `twice(21)` should display `42: int`.
 - Add incomplete-input buffering if desired.
 
 ## Key Changes
@@ -77,6 +80,8 @@ Test scenarios to cover in `ut.backends.repl`:
 - Declaration cells persist without display.
 - Expression side effects persist.
 - Statement/declaration cells execute immediately through CTFE.
+- Function declaration cells without trailing semicolons persist and can be
+  called by later expression cells.
 - `Repl.submit` returns `Value.void_` for no-display cells.
 - CLI backend option parsing accepts default CTFE, `--backend ctfe`, and
   `-b ctfe`.
