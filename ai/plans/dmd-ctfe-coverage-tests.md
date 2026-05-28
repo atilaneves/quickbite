@@ -249,6 +249,7 @@ that shim.
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
+| `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
 
 Coverage workflow details:
 
@@ -674,6 +675,34 @@ Coverage effect: focused coverage marked the pointer branch in
 
 Poke result: changing the behavior assertion from `42` to `43` failed the
 focused CTFE test with `42 != 43`; the temporary poke was reverted and the
+focused tests were rerun green.
+
+### 2026-05-29 dmd-ctfe-coverage-tests-6 Worker 4
+
+Explorer recommendation 4 targeted `visitTryCatch(TryCatchStatement)`,
+specifically skipping a non-matching sibling catch before binding a base
+`Exception` catch variable.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingException.Ctfe
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingExceptionFailureMessage.0.Ctfe
+ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingExceptionFailureMessage.1.Ctfe
+```
+
+Focused coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh \
+    ut.backends.pure_.lang.exceptions.catchSkipsNonMatchingSiblingException.Ctfe
+```
+
+Coverage effect: focused coverage marked the non-matching catch `continue`
+branch as hit, then covered catch-variable stack binding for the base handler.
+
+Poke result: changing the behavior assertion from `9` to `10` failed the
+focused CTFE test with `9 != 10`; the temporary poke was reverted and the
 focused tests were rerun green.
 
 ### 2026-05-28 dmd-ctfe-coverage-tests-4 Summary

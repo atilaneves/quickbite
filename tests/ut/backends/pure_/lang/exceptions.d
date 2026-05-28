@@ -118,6 +118,93 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("5 != 8");
     }
 
+    @("catchSkipsNonMatchingSiblingException." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Expected : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            class Other : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            unittest {
+                int value = 1;
+                try {
+                    throw new Expected("expected");
+                } catch (Other) {
+                    value = 100;
+                } catch (Exception caught) {
+                    value += cast(int) caught.msg.length;
+                }
+                assert(value == 9);
+            }
+        });
+    }
+
+    @("catchSkipsNonMatchingSiblingExceptionFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Expected : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            class Other : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            unittest {
+                int value = 1;
+                try {
+                    throw new Expected("expected");
+                } catch (Other) {
+                    value = 100;
+                } catch (Exception caught) {
+                    value += cast(int) caught.msg.length;
+                }
+                assert(value == 10);
+            }
+        }).shouldThrowWithMessage("9 != 10");
+    }
+
+    @("catchSkipsNonMatchingSiblingExceptionFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Expected : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            class Other : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            unittest {
+                int value = 1;
+                try {
+                    throw new Expected("other");
+                } catch (Other) {
+                    value = 100;
+                } catch (Exception caught) {
+                    value += cast(int) caught.msg.length;
+                }
+                assert(value == 9);
+            }
+        }).shouldThrowWithMessage("6 != 9");
+    }
+
     @("throwExpressionInConditionalIsCaught." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
