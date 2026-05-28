@@ -30,7 +30,8 @@ plan update.
   must be migrated by its own subagent. The main agent orchestrates the queue,
   assigns one test at a time, reviews and integrates the returned patch, runs
   verification, commits, and then assigns the next test. The main agent should
-  not perform the per-test migration work itself.
+  not perform the per-test migration work itself. Use `gpt-5.5` with low
+  reasoning for these per-test migration worker subagents.
 - Do not convert unittest fixtures into REPL-only snippets that are not valid D.
 - Each migrated positive test needs at least two matching negative assertion
   probes when practical. Passing unittests do not print or throw, so the
@@ -142,6 +143,7 @@ explicitly approves the exact exception after seeing the conflicting rule.
 3. Migrate tests from that module one by one, in source order. Assign each
    source-order executor test to a dedicated subagent worker; the main agent
    must not do the per-test conversion itself when subagents are available.
+   Spawn each per-test migration worker as `gpt-5.5` with low reasoning.
 4. For each executor test:
    - The worker subagent copies the valid-D fixture shape into the matching
      backend module.
