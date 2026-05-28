@@ -1084,6 +1084,60 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("23 != 21");
     }
 
+    @("delegatePtrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeSeed(int seed) {
+                return seed + 1;
+            }
+
+            void* delegateContext(int seed) {
+                int captured = runtimeSeed(seed);
+
+                int nested() {
+                    captured += 2;
+                    return captured;
+                }
+
+                int delegate() dg = &nested;
+                return dg.ptr;
+            }
+
+            unittest {
+                auto context = delegateContext(3);
+                assert(context is null);
+            }
+        }).shouldThrowWithMessage(
+            "`dg.ptr` cannot be evaluated at compile time");
+    }
+
+    @("delegateFuncptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeSeed(int seed) {
+                return seed + 1;
+            }
+
+            int function() delegateFunction(int seed) {
+                int captured = runtimeSeed(seed);
+
+                int nested() {
+                    captured += 2;
+                    return captured;
+                }
+
+                int delegate() dg = &nested;
+                return dg.funcptr;
+            }
+
+            unittest {
+                auto funcptr = delegateFunction(3);
+                assert(funcptr !is null);
+            }
+        }).shouldThrowWithMessage(
+            "`dg.funcptr` cannot be evaluated at compile time");
+    }
+
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
