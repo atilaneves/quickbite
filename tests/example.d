@@ -400,3 +400,20 @@ unittest {
 
     assert(weightedSum == 60);
 }
+
+unittest {
+    uint sum;
+    uint skipped;
+
+    for (uint value = 0; value < 6; ++value) {
+        if (value % 2 == 0) {
+            ++skipped;
+            continue;
+        }
+
+        sum += value;
+    }
+
+    assert(sum == 9);
+    assert(skipped == 3);
+}
