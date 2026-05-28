@@ -658,6 +658,276 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("41 != 42");
     }
 
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKey." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values.length == 2);
+                assert(values[duplicate] == 20);
+                assert(values[other] == 30);
+            }
+        });
+    }
+
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKeyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("assocArrayLiteralKeepsLastDuplicateRuntimeKeyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int duplicate = key(10);
+                int other = key(11);
+                int[int] values = [duplicate: 10, duplicate: 20, other: 30];
+
+                assert(values[duplicate] == 10);
+            }
+        }).shouldThrowWithMessage("20 != 10");
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteral." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int keySum;
+                int valueSum;
+
+                foreach (key; values.keys) {
+                    keySum += key;
+                }
+
+                foreach (entry; values.values) {
+                    valueSum += entry;
+                }
+
+                assert(keySum == 21);
+                assert(valueSum == 81);
+            }
+        });
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteralFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int keySum;
+
+                foreach (key; values.keys) {
+                    keySum += key;
+                }
+
+                assert(keySum == 22);
+            }
+        }).shouldThrowWithMessage("21 != 22");
+    }
+
+    @("assocArrayKeysAndValuesUseRuntimeLiteralFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(5);
+                int second = value(first + 2);
+                int third = value(second + 2);
+                int[int] values = [
+                    first: first + 18,
+                    second: second + 20,
+                    third: third + 22,
+                ];
+                int valueSum;
+
+                foreach (entry; values.values) {
+                    valueSum += entry;
+                }
+
+                assert(valueSum == 82);
+            }
+        }).shouldThrowWithMessage("81 != 82");
+    }
+
+    @("assocArrayRemoveRuntimeKey." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                assert(values.remove(removeKey) == true);
+                assert(values.remove(removeKey) == false);
+                assert(values.length == 1);
+                assert(values[remainingKey] == 41);
+            }
+        });
+    }
+
+    @("assocArrayRemoveRuntimeKeyFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                assert(values.remove(removeKey) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("assocArrayRemoveRuntimeKeyFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int removeKey = key(10);
+                int remainingKey = key(removeKey + 1);
+                int[int] values = [
+                    removeKey: removeKey + 30,
+                    remainingKey: remainingKey + 30,
+                ];
+
+                values.remove(removeKey);
+
+                assert(values.length == 2);
+            }
+        }).shouldThrowWithMessage("1 != 2");
+    }
+
+    @("arrayOperationAddsRuntimeElements." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums.length == 2);
+                assert(sums[0] == 50);
+                assert(sums[1] == 62);
+            }
+        });
+    }
+
+    @("arrayOperationAddsRuntimeElementsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("arrayOperationAddsRuntimeElementsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int second = value(first + 1);
+                int[] left = [first, second];
+                int[] right = [first + 30, second + 40];
+                int[] sums = [0, 0];
+
+                sums[] = left[] + right[];
+
+                assert(sums[1] == 63);
+            }
+        }).shouldThrowWithMessage("62 != 63");
+    }
+
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
