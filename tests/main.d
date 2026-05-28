@@ -9,6 +9,7 @@ int main(string[] args) {
         "ut.backends.pure_.lang.arrays",
         "ut.backends.pure_.lang.control_flow",
         "ut.backends.pure_.lang.logic",
+        "ut.backends.pure_.lang.structs",
         "ut.value",
         "ut.compiler",
         "ut.benchmarks",

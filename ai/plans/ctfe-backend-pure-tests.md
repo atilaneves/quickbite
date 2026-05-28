@@ -396,8 +396,8 @@ Review feedback learned:
   variants are the same formatter limitation, not separate true reds. Do not
   leave a bare `@ShouldFail`.
 
-Next MR should move to the next module in the migration order:
-`tests/ut/executors/pure_/lang/structs.d`.
+Next migration step should move to the next module in the migration order:
+`tests/ut/executors/pure_/lang/exceptions.d`.
 
 Start by adding the matching Ctfe backend test module and wiring it into
 `tests/main.d` if it does not already exist. Then migrate the whole source
@@ -405,6 +405,28 @@ module at once, keeping tests in their original order and using the same
 positive unittest, negative assertion probes, DMD oracle, broad audit-poke,
 `@ShouldFail` formatter-placeholder, focused verification, full `dub test`,
 and per-module commit rules.
+
+## Handoff After Structs Migration
+
+- Branch/worktree: `ctfe-backend-pure-structs` at
+  `worktrees/ctfe-backend-pure-structs`.
+- Migrated all current `tests/ut/executors/pure_/lang/structs.d` fixtures to
+  `tests/ut/backends/pure_/lang/structs.d`.
+- Added two negative assertion probes for each of the 24 migrated positive
+  tests.
+- Verified all unique negative diagnostic strings against real DMD CLI output
+  with `dmd -o- -checkaction=context` probes in this worktree. Temporary probe
+  source was removed.
+- No `@ShouldFail` tests were needed.
+- No production code changes were needed.
+- Focused verification passed:
+  `dub test -- ut.backends.architecture ut.backends.pure_.lang.structs`.
+- Audit poke passed: all 24 positive migrated structs tests were temporarily
+  changed to fail with `assert(false)`, and unit-threaded reported all 24
+  failures in one focused run. The poke was restored.
+- Full verification passed: `dub test`.
+- Next migration step should start from
+  `tests/ut/executors/pure_/lang/exceptions.d`.
 
 ## Handoff After Arrays Migration
 
