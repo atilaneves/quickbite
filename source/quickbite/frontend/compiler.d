@@ -69,6 +69,10 @@ public imported!"quickbite.ir.module_".Module lowerModule(
     return quickbite.frontend.lowering.lowerModule(module_);
 }
 
+public imported!"dmd.expression".Expression parseExpression(in string source) {
+    return compiler.parseExpression(source);
+}
+
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
@@ -219,6 +223,50 @@ final class Compiler {
         scope(exit) global.params.checkAction = originalCheckAction;
 
         return parseModuleLocked(source, importPaths, "checkaction=context", true);
+    }
+
+
+    private imported!"dmd.expression".Expression parseExpression(in string source) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        return parseExpressionLocked(source);
+    }
+
+    private imported!"dmd.expression".Expression parseExpressionLocked(in string source) {
+        import dmd.astcodegen: ASTCodegen;
+        import dmd.errors: diagnostics;
+        import dmd.errorsink: ErrorSinkNull;
+        import dmd.expression: Expression;
+        import dmd.globals: global;
+        import dmd.parse: Parser;
+        import dmd.tokens: TOK;
+
+        resetErrors;
+        auto errorSink = new ErrorSinkNull;
+
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source ~ '\0',
+            false,
+            errorSink,
+            &global.compileEnv,
+            global.params.useUnitTests,
+        );
+
+        parser.nextToken;
+        auto root = parser.parseAssignExp();
+
+        if (global.errors != 0)
+            throw new Exception(diagnosticMessage);
+
+        if (parser.token.value != TOK.endOfFile)
+            throw new Exception("trailing tokens after expression");
+
+        auto expression = cast(Expression) root;
+        if (expression is null)
+            throw new Exception("not an expression");
+
+        return expression;
     }
 
     private ParsedModule parseModuleLocked(

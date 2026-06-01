@@ -8,6 +8,14 @@ private:
 
 import std.typecons: tuple;
 
+static foreach (backend; backendsWith!Bytecode) {
+    @("literal." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("0").should == Value(0);
+        newBackend!backend.eval("7").should == Value(7);
+    }
+}
+
 static foreach (backend; backends) {
     @("add0." ~ backend.stringof)
     unittest {

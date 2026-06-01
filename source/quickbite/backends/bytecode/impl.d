@@ -9,12 +9,13 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        assert(0);
+        import quickbite.backends.bytecode.compiler: compileExpression;
+        import quickbite.backends.bytecode.vm: eval;
+
+        return eval(compileExpression(expr));
     }
 
-    public override Value evalRepl(in ReplCell cell,
-    )
-    {
+    public override Value evalRepl(in ReplCell cell) {
         assert(0);
     }
 
@@ -25,5 +26,4 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     public override TestSummary runParsedTestSummary(Module module_) {
         assert(0);
     }
-
 }
