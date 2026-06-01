@@ -592,6 +592,44 @@ Verification notes:
 - Focused behavior and paired failure-message tests passed with seed
   `2814057392`.
 
+### 2026-06-01 dmd-ctfe-coverage-next Worker 3
+
+Targeted `visit(CommaExp)` declaration-temporary branch around coverage lines
+`4890..4915`.
+
+Probe fixture:
+
+```text
+ut.backends.pure_.lang.expressions.commaDeclarationReturnsTemporary.Ctfe
+```
+
+Attempted behavior probe in `tests/ut/backends/pure_/lang/expressions.d`:
+`int value = seed(), value`-style comma-declaration flow. Syntax variants were
+tested, then the fixture was discarded because no target-branch coverage was
+hit.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.commaDeclarationReturnsTemporary.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.commaDeclarationReturnsTemporary.Ctfe`
+  passed with sandbox escalation because coverage writes under `~/.dub`.
+- Coverage in `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` showed
+  `visit(CommaExp)` partially executed, but the declaration-temporary gate
+  stayed uncovered:
+  - line `4892`
+    (`e.e1.isDeclarationExp().declaration == e.e2.isVarExp().var`) remained
+    `0000000`;
+  - line `4893`
+    (`e.e2.isVarExp().var.storage_class & STC.ctfe`) remained `0000000`;
+  - inner branch body lines remained `0000000`.
+- Probe fixture was reverted/discarded.
+- No paired failure-message tests were added.
+
+Coverage moved: **No**.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
