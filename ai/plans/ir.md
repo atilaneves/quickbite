@@ -12,6 +12,24 @@ red for the IR backend, implement the smallest IR change that makes it green,
 then move on. Do not invent a separate test suite unless a behavior is not yet
 covered anywhere in the current CTFE-backed language tests.
 
+## Minimum Implementation Rule
+- Minimum means deletion-minimum, not architecture-minimum. After the promoted
+  test passes, audit every added line with this question: if this line is
+  deleted, does the promoted test still pass? If yes, delete it.
+- Keep the first green slice deliberately embarrassing. Do not add support for
+  a language construct, diagnostic path, summary path, helper abstraction, id
+  table, error message, or invariant until the single promoted test fails
+  without it.
+- The required shape is still three backend-local modules: pure IR, compiler,
+  and executor. Their contents must be only what the promoted test forces.
+  Empty or nearly empty modules are acceptable if the test does not force more.
+- Do not generalize from the chosen fixture. If the fixture only needs one
+  unittest, one function, one literal, or one operation, encode only that much
+  real IR and let the next promoted test force the next case.
+- Prefer changing the chosen promoted test, with approval, over writing a
+  broader first implementation. If the smallest existing CTFE-passing test still
+  forces too much machinery, pick an even smaller already-passing CTFE test.
+
 ## IR Shape
 - Make the IR typed and explicit. Scalar values should use SSA-style names;
   memory effects, mutable places, and call-by-reference behavior should be
@@ -26,6 +44,15 @@ covered anywhere in the current CTFE-backed language tests.
 - Keep the compiler/IR boundary hard. DMD AST and semantic lookup belong in the
   frontend or lowering layer; the IR executor should consume only IR-native
   structures.
+- Build the backend IR pipeline from scratch. Existing modules such as
+  `quickbite.ir`, `quickbite.frontend.lowering`, and `quickbite.executors.ir`
+  may be read for context, but the new backend must not route through them or
+  reuse them as its implementation.
+- Keep the first backend modules under `quickbite.backends.ir`: a pure IR data
+  module, a compiler module that lowers DMD AST to that IR, and an executor
+  module that runs only that IR. Prefer `compiler` for the lowering module name
+  because the module's public job is compiling parsed D into backend IR; use
+  small private helpers inside it rather than exposing a generic lowering API.
 
 ## Slice Plan
 - Start with the narrowest behavior already covered by CTFE parity tests:

@@ -2,18 +2,21 @@ module ut.backends.pure_.lang.eval;
 
 
 import ut.backends;
+import quickbite.backends.ir;
 
 
 private:
 
 import std.typecons: tuple;
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!IR) {
     @("add0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
+}
 
+static foreach (backend; backends) {
     @("add1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
