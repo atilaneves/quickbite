@@ -46,10 +46,9 @@ public struct Value {
 
     public static Value structValue(
         in string typeName,
-        in string typeIdentity,
         in Value[] fields,
     ) @safe pure {
-        return Value(Struct(typeName, typeIdentity, fields));
+        return Value(Struct(typeName, fields));
     }
 
     public static Value typeName(in string name) @safe pure {
@@ -238,16 +237,13 @@ private struct Entry {
 
 private struct Struct {
     public string typeName;
-    public string typeIdentity;
     public Field[] fields;
 
     public this(
         in string typeName,
-        in string typeIdentity,
         in Value[] fields,
     ) @safe pure {
         this.typeName = typeName;
-        this.typeIdentity = typeIdentity;
 
         foreach (field; fields)
             this.fields ~= Field("", field);
@@ -257,7 +253,6 @@ private struct Struct {
     if (is(T == struct))
     {
         typeName = T.stringof;
-        typeIdentity = T.mangleof;
 
         static foreach (member; __traits(allMembers, T)) {
             fields ~= Field(member, Value(__traits(getMember, value, member)));
