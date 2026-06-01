@@ -102,19 +102,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 == 42");
     }
 
-    @("ok." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int answer() {
-                return 42;
-            }
-
-            unittest {
-                assert(answer == 42);
-            }
-        });
-    }
-
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -262,6 +249,21 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("oops");
     }
 
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("ok." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int answer() {
+                return 42;
+            }
+
+            unittest {
+                assert(answer == 42);
+            }
+        });
+    }
 }
 
 static foreach (backend; backendsWith!TreeWalker) {

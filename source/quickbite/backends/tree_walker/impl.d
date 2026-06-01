@@ -32,15 +32,30 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
 }
 
 private struct Interpreter {
+    private long[const(void)*] locals;
+    private long returnValue;
+    private bool hasReturn;
+
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
     }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (auto compound = statement.isCompoundStatement) {
-            if (compound.statements !is null)
-                foreach (child; *compound.statements)
+            if (compound.statements !is null) {
+                foreach (child; *compound.statements) {
                     runStatement(child);
+                    if (hasReturn)
+                        return;
+                }
+            }
+            return;
+        }
+
+        if (auto return_ = statement.isReturnStatement) {
+            if (return_.exp !is null)
+                returnValue = runExpression(return_.exp);
+            hasReturn = true;
             return;
         }
 
@@ -52,16 +67,69 @@ private struct Interpreter {
         assert(0);
     }
 
-    private bool runExpression(imported!"dmd.expression".Expression expression) {
+    private long runExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp)
-            return integer.getInteger != 0;
+            return integer.getInteger;
 
         if (auto assert_ = expression.isAssertExp) {
             if (!runExpression(assert_.e1))
                 throw new Exception("`assert(false)` failed");
-            return true;
+            return 1;
+        }
+
+        if (auto call = expression.isCallExp) {
+            if (call.f !is null)
+                return runFunction(call.f);
+            assert(0);
+        }
+
+        if (auto var = expression.isVarExp) {
+            if (auto varDecl = var.var.isVarDeclaration)
+                if (auto value = declarationKey(varDecl) in locals)
+                    return *value;
+            if (auto function_ = var.var.isFuncDeclaration)
+                return runFunction(function_);
+        }
+
+        if (auto comma = expression.isCommaExp) {
+            runExpression(comma.e1);
+            return runExpression(comma.e2);
+        }
+
+        if (auto declaration = expression.isDeclarationExp) {
+            if (auto varDecl = declaration.declaration.isVarDeclaration)
+                if (varDecl._init !is null)
+                    if (auto initializer = varDecl._init.isExpInitializer) {
+                        locals[declarationKey(varDecl)] =
+                            runExpression(initializer.exp);
+                        return 0;
+                    }
+            return 0;
+        }
+
+        if (auto construct = expression.isConstructExp)
+            return runExpression(construct.e2);
+
+        if (auto equal = expression.isEqualExp) {
+            import dmd.tokens: EXP;
+
+            const left = runExpression(equal.e1);
+            const right = runExpression(equal.e2);
+            if (equal.op == EXP.notEqual)
+                return left != right;
+            return left == right;
         }
 
         assert(0);
+    }
+
+    private long runFunction(imported!"dmd.func".FuncDeclaration function_) {
+        Interpreter callee;
+        callee.runStatement(function_.fbody);
+        return callee.returnValue;
+    }
+
+    private const(void)* declarationKey(T)(T declaration) {
+        return cast(const(void)*) declaration;
     }
 }
