@@ -239,8 +239,11 @@ For future PR slices on this plan, the main agent should orchestrate only:
 Do not choose the next CTFE target locally before the explorer has reported.
 Use medium reasoning for routine explorer and worker subagents unless a slice
 has a specific complexity that justifies a higher setting.
-Use a single PR worktree for sequential workers instead of creating one
-worktree per worker.
+Create one git worktree at the start of the orchestration session and keep it
+for the entire session. All workers operate inside that same worktree. Do not
+create a new worktree per worker or per target. The worktree is created once
+(step 1 of the PR Coverage Report section), all commits land on that branch,
+and the PR is opened from it at the end.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
