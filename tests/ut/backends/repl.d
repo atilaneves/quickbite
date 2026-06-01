@@ -142,6 +142,18 @@ static foreach (backend; backends) {
         output.should == ["int"];
     }
 
+    @("repl.backend.displaysStringValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`"hello"`, ":q"],
+        );
+
+        output.should == [`"hello"`];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

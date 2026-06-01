@@ -84,13 +84,12 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
 extern (C) private void add_history(const(char)* line);
 
 private bool submit(ref imported!"quickbite.repl".Repl repl, in string line) {
-    import quickbite.lang: Value;
     import std.stdio: writeln;
 
     try {
-        const value = repl.submit(line);
-        if (value != Value.void_)
-            writeln(value.toString);
+        const display = repl.submitDisplay(line);
+        if (display !is null)
+            writeln(display);
     } catch (Exception e) {
         writeln(e.msg);
     } catch (Error e) {

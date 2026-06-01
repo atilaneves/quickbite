@@ -59,9 +59,13 @@ public struct ReplSession {
                 "",
             );
 
+        const source = replSource(
+            moduleTranscript,
+            localTranscript ~ "return " ~ input ~ ";",
+        );
         return ReplCell(
             ReplCellKind.expression,
-            replSource(moduleTranscript, localTranscript ~ "return " ~ input ~ ";"),
+            source,
             ReplHistoryTarget.local,
             text(
                 "auto __quickbite_repl_value_",

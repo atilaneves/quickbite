@@ -87,6 +87,14 @@ public struct Value {
         data = Data(Struct(value));
     }
 
+    public this(in string value) @safe pure {
+        Value[] elements;
+        foreach (char_; value)
+            elements ~= Value(char_);
+
+        data = Data(Array(elements));
+    }
+
     public this(T)(in T[] values) @safe pure {
         Value[] elements;
         foreach (value; values)
@@ -101,6 +109,35 @@ public struct Value {
 
     public bool opEquals(in Value other) const @safe pure {
         return data == other.data;
+    }
+
+    public string asCharArrayString() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) {
+                string result;
+                foreach (element; array.elements)
+                    result ~= element.asChar;
+                return result;
+            },
+            (_) {
+                throw new Exception("Expected char array.");
+                return null;
+            },
+        );
+    }
+
+    private char asChar() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => value,
+            (_) {
+                throw new Exception("Expected char.");
+                return char.init;
+            },
+        );
     }
 
     private string dText() const @safe pure {
