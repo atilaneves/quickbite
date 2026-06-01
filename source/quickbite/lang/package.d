@@ -103,6 +103,22 @@ public struct Value {
         return data == other.data;
     }
 
+    public int asInt() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+                static if (is(T == const(int))) {
+                    return value;
+                } else {
+                    throw new Exception("Expected int value.");
+                    return int.init;
+                }
+            },
+        );
+    }
+
     private string dText() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;

@@ -2,19 +2,19 @@ module quickbite.backends.bytecode.vm;
 
 private:
 
-import quickbite.backends.bytecode.module_: BytecodeInt, BytecodeModule, OpCode;
+import quickbite.backends.bytecode.program: BytecodeModule, BytecodeValue, OpCode;
 
-public void execute(ref BytecodeModule module_) {
-    BytecodeInt[] stack;
-    BytecodeInt[] locals;
+public void execute(BytecodeModule module_) {
+    BytecodeValue[] stack;
+    BytecodeValue[] locals;
     size_t[] returnAddresses;
     size_t ip;
 
     while (ip < module_.code.length) {
         const instruction = module_.code[ip];
         final switch (instruction.op) with (OpCode) {
-            case pushInt:
-                stack ~= instruction.integerOperand;
+            case pushValue:
+                stack ~= instruction.valueOperand;
                 ++ip;
                 break;
             case loadLocal:
@@ -35,17 +35,17 @@ public void execute(ref BytecodeModule module_) {
             case add:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                stack ~= left + right;
+                stack ~= BytecodeValue(left.asInt + right.asInt);
                 ++ip;
                 break;
             case equal:
                 const right = stack.popValue;
                 const left = stack.popValue;
-                stack ~= left == right ? 1 : 0;
+                stack ~= BytecodeValue(left.asInt == right.asInt ? 1 : 0);
                 ++ip;
                 break;
             case assertTrue:
-                if (stack.popValue == 0)
+                if (stack.popValue.asInt == 0)
                     throw new Exception("bytecode assertion failed");
                 ++ip;
                 break;
@@ -58,7 +58,7 @@ public void execute(ref BytecodeModule module_) {
     }
 }
 
-private BytecodeInt popValue(ref BytecodeInt[] stack) {
+private BytecodeValue popValue(ref BytecodeValue[] stack) {
     const value = stack[$ - 1];
     stack = stack[0 .. $ - 1];
     return value;

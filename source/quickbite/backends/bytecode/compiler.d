@@ -2,13 +2,12 @@ module quickbite.backends.bytecode.compiler;
 
 private:
 
-import quickbite.backends.bytecode.module_:
-    BytecodeInt,
+import quickbite.backends.bytecode.program:
+    BytecodeValue,
     BytecodeModule,
     Instruction,
     OpCode,
-    indexInstruction,
-    pushInt;
+    pushValue;
 
 public BytecodeModule compileBytecode(
     imported!"dmd.declaration".UnitTestDeclaration unitTest,
@@ -31,7 +30,7 @@ private struct Compiler {
     private BytecodeModule module_;
     private imported!"dmd.func".FuncDeclaration[] functions;
     private size_t[imported!"dmd.func".FuncDeclaration] functionIndexes;
-    private size_t[imported!"dmd.declaration".VarDeclaration] localIndexes;
+    private size_t[imported!"dmd.declaration".VarDeclaration] variableIndexes;
 
     private void compileStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -66,7 +65,7 @@ private struct Compiler {
 
     private void compileExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp) {
-            module_.code ~= pushInt(integerValue(integer));
+            module_.code ~= pushValue(literalValue(integer));
             return;
         }
 
@@ -87,8 +86,9 @@ private struct Compiler {
             if (call.arguments !is null && call.arguments.length != 0)
                 throw new Exception("Unsupported bytecode call arguments.");
 
-            module_.code ~= indexInstruction(
+            module_.code ~= Instruction(
                 OpCode.call,
+                BytecodeValue.init,
                 functionIndex(callFunction(call)),
             );
             return;
@@ -99,7 +99,11 @@ private struct Compiler {
             if (variable is null)
                 throw new Exception("Unsupported bytecode variable.");
 
-            module_.code ~= indexInstruction(OpCode.loadLocal, localIndex(variable));
+            module_.code ~= Instruction(
+                OpCode.loadLocal,
+                BytecodeValue.init,
+                variableIndex(variable),
+            );
             return;
         }
 
@@ -139,7 +143,11 @@ private struct Compiler {
             throw new Exception("Unsupported bytecode declaration.");
 
         compileExpression(initializerExpression(variable._init.isExpInitializer.exp));
-        module_.code ~= indexInstruction(OpCode.storeLocal, localIndex(variable));
+        module_.code ~= Instruction(
+            OpCode.storeLocal,
+            BytecodeValue.init,
+            variableIndex(variable),
+        );
     }
 
     private size_t functionIndex(imported!"dmd.func".FuncDeclaration function_) {
@@ -153,13 +161,13 @@ private struct Compiler {
         return index;
     }
 
-    private size_t localIndex(imported!"dmd.declaration".VarDeclaration variable) {
-        if (auto existing = variable in localIndexes)
+    private size_t variableIndex(imported!"dmd.declaration".VarDeclaration variable) {
+        if (auto existing = variable in variableIndexes)
             return *existing;
 
-        const index = module_.localCount;
-        ++module_.localCount;
-        localIndexes[variable] = index;
+        const index = module_.variableCount;
+        ++module_.variableCount;
+        variableIndexes[variable] = index;
         return index;
     }
 
@@ -190,6 +198,6 @@ private imported!"dmd.expression".Expression initializerExpression(
     return expression;
 }
 
-private BytecodeInt integerValue(imported!"dmd.expression".IntegerExp integer) {
-    return cast(BytecodeInt) integer.getInteger;
+private BytecodeValue literalValue(imported!"dmd.expression".IntegerExp integer) {
+    return BytecodeValue(cast(int) integer.getInteger);
 }
