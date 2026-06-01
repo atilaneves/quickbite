@@ -45,3 +45,25 @@ unittest {
     result.status.should == 1;
     result.diagnostic.should == "unknown backend: ir";
 }
+
+@("repl.cli.acceptsHelpFlag")
+unittest {
+    import quickbite.repl_cli: parseReplArgs;
+    import std.algorithm: canFind;
+
+    const result = parseReplArgs(["repl", "--help"]);
+
+    result.status.should == 0;
+    result.diagnostic.canFind("Usage").should == true;
+}
+
+@("repl.cli.helpDiagnosticDocumentsFlagNames")
+unittest {
+    import quickbite.repl_cli: parseReplArgs;
+    import std.algorithm: canFind;
+
+    const result = parseReplArgs(["repl", "--help"]);
+
+    result.status.should == 0;
+    result.diagnostic.canFind("-c").should == true;
+}
