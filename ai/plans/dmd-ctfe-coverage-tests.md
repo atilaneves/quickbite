@@ -153,6 +153,20 @@ positive run count as covered. Roll those lines up by method and report:
 - the method-level coverage change that motivated the test, such as a visitor
   moving from wholly uncovered to partially covered.
 
+Operationally, the orchestrator should:
+
+1. Create the git worktree.
+2. Immediately record the starting commit SHA and run the broad coverage
+   target to capture the baseline coverage percentage for that exact
+   worktree-start commit.
+3. Keep that baseline fixed for the whole branch.
+4. Right before creating the PR, rerun the same broad coverage target at the
+   branch head, compare it with the recorded baseline, and show the delta in
+   the PR body.
+
+This matches the earlier CTFE PR summaries, which reported the branch-start
+baseline, the final branch-head coverage, and the difference between them.
+
 Do not compare a focused single-test coverage run against the broad baseline.
 Focused runs are useful for proving that a specific fixture hits the intended
 method, but their percentages are not comparable to the full
