@@ -153,10 +153,9 @@
   expressions from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.
 
-- Follow the Github section of AGENTS.md: use `gh pr create --web` to open
-  the PR form pre-filled in the browser. Do not use `xdg-open` with a raw
-  `/pull/new/` URL — that opens a blank form and forces the user to fill it
-  in manually.
+- When creating a PR, first create it with `gh pr create` and verify that
+  GitHub reports an open PR URL. Only after it exists, open that exact PR URL
+  with `xdg-open`.
 
 - Run `ci.sh` before creating a PR. AGENTS.md requires it. Skipping it means
   the PR may be created without benchmarks or integration checks passing.
@@ -200,3 +199,6 @@
   `<float not supported>` the same as `<double not supported>`: mark the
   affected migration test `@ShouldFail` with a concrete upstream formatter
   reason instead of calling it a true red.
+
+- Do not treat `gh pr create --web` as creating a PR. It only opens a
+  pre-filled form; use non-interactive `gh pr create` when asked to create one.
