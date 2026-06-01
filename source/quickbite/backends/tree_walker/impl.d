@@ -17,11 +17,51 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     }
 
     public override void runParsedTests(Module module_) {
-        assert(0);
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        Interpreter interpreter;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            interpreter.runTest(unitTest);
+        });
     }
 
     public override TestSummary runParsedTestSummary(Module module_) {
         assert(0);
     }
 
+}
+
+private struct Interpreter {
+    private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
+        runStatement(unitTest.fbody);
+    }
+
+    private void runStatement(imported!"dmd.statement".Statement statement) {
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    runStatement(child);
+            return;
+        }
+
+        if (auto expression = statement.isExpStatement) {
+            runExpression(expression.exp);
+            return;
+        }
+
+        assert(0);
+    }
+
+    private bool runExpression(imported!"dmd.expression".Expression expression) {
+        if (auto integer = expression.isIntegerExp)
+            return integer.getInteger != 0;
+
+        if (auto assert_ = expression.isAssertExp) {
+            if (!runExpression(assert_.e1))
+                throw new Exception("`assert(false)` failed");
+            return true;
+        }
+
+        assert(0);
+    }
 }

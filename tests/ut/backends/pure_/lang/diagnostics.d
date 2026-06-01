@@ -262,6 +262,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("oops");
     }
 
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -270,7 +273,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
 
+static foreach (backend; backends) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

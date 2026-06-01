@@ -51,7 +51,10 @@ Let the failing test determine what to implement.
 
 - CTFE-passing tests are the acceptance matrix. Promote a test by
   adding the tree-walking backend to it, confirm it turns red, then
-  implement the minimum handler that makes it green.
+  implement the minimum handler that makes it green. Existing
+  CTFE-passing tests are pre-approved for promotion to the
+  tree-walking backend; do not stop to ask before adding
+  `TreeWalker` to exactly one existing test.
 - When a promoted test is green without any implementation change,
   verify it is genuinely covered by mutating the test or the
   production code. A test that cannot be made to fail is not
