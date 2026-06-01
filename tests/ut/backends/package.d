@@ -4,6 +4,7 @@ module ut.backends;
 public import ut;
 public import quickbite.backends: runParsedModulesTests;
 public import quickbite.lang: Value;
+public import quickbite.backends.bytecode;
 public import quickbite.backends.ctfe;
 public import quickbite.backends.tree_walker;
 

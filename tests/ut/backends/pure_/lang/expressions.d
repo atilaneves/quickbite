@@ -14,7 +14,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Bytecode) {
     @("intAddition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -33,7 +33,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @("intAdditionFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

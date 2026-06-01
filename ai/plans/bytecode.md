@@ -39,6 +39,10 @@ Lua-specific bytecode shape.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
+- Existing CTFE-passing backend tests are pre-approved for bytecode enablement.
+  Add `Bytecode` to exactly one existing CTFE-passing test per TDD slice; do
+  not ask for separate permission just to include the bytecode backend in an
+  existing test.
 - Add focused VM contract tests only for bytecode-specific properties such as
   operand typing, frame behavior, and diagnostic boundaries.
 - Keep unsupported-slice tests narrow and behavior-driven, not layout-driven.
