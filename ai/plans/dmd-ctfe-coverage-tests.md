@@ -1596,6 +1596,48 @@ Final broad coverage verification:
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 747 tests run,
   0 failed, and 28/28 failing as expected.
 
+### 2026-06-01 master-pr-ready PR Coverage Report
+
+Starting broad coverage target:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Starting commit:
+
+```text
+235dde61508b48403e25cb5a8fbd84f2fdffb6ff
+```
+
+Starting coverage:
+
+```text
+2306/3764 executable entries, or 61.26%
+```
+
+Branch-head coverage before adding this report:
+
+```text
+2340/3764 executable entries, or 62.17%
+```
+
+Coverage delta:
+
+```text
++34 executable entries, or +0.91 percentage points
+```
+
+Method-level coverage changes:
+
+- `interpret_dup` is covered through runtime associative-array `.dup`.
+- `BinExp` pointer-plus-integral and pointer-minus-integral branches are
+  covered by runtime pointer offset tests.
+- `interpret_aaGetRvalueX` missing-key diagnostics are covered.
+- `visit(PostExp)` postfix increment is covered through runtime `value++`.
+- `visit(DotTypeExp)` was probed but did not move coverage, so the probe was
+  discarded and recorded as not reaching target logic.
+
 ### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 11
 
 Added focused pure-backend CTFE test:
