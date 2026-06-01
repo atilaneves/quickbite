@@ -1115,6 +1115,36 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("9 != 12");
     }
 
+    @("interfaceVirtualCallUsesRuntimeDispatch." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            interface Speaker {
+                int score();
+            }
+
+            class SpeakerImpl : Speaker {
+                int scoreField;
+
+                this(int seed) {
+                    scoreField = seed;
+                }
+
+                int score() {
+                    return scoreField + 1;
+                }
+            }
+
+            int speak(int seed) {
+                Speaker speaker = new SpeakerImpl(seed);
+                return speaker.score();
+            }
+
+            unittest {
+                assert(speak(41) == 42);
+            }
+        });
+    }
+
     @("typeidTypeNameReturnsIdentifier." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1721,6 +1751,39 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
+    @("complexLiteralWithRuntimeParts." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int input) {
+                return input + 1;
+            }
+
+            unittest {
+                auto base = value(41);
+                cdouble packed = cast(cdouble) base + 1.0i;
+
+                assert(packed.re == 42);
+                assert(packed.im == 1);
+            }
+        });
+    }
+
+    @("complexLiteralWithRuntimePartsFailureMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int input) {
+                return input + 1;
+            }
+
+            unittest {
+                auto base = value(41);
+                cdouble packed = cast(cdouble) base + 1.0i;
+
+                assert(cast(int) packed.re == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("sliceCastToPointerDereferencesFirstElement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1818,6 +1881,26 @@ static foreach (backend; backends) {
                 assert(*(restored + 1) == 43);
             }
         }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("castExpTypePaintedSliceFromVoidPointer." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int step(int seed) {
+                return seed + 1;
+            }
+
+            unittest {
+                int[] values = [step(40), step(41)];
+                void*[] erased = [cast(void*) &values[0], cast(void*) &values[1]];
+                int* recovered = cast(int*) erased[0];
+                int index(int value) {
+                    return value;
+                }
+
+                assert(*recovered == index(41));
+            }
+        });
     }
 
     @("pointerCastToBoolReflectsNullness." ~ backend.stringof)
@@ -2036,5 +2119,63 @@ static foreach (backend; backends) {
                 assert(values[0] == 7);
             }
         }).shouldThrowWithMessage("3 != 7");
+    }
+
+    @("runtimePointerOffsetReadsElement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 41;
+            }
+
+            int readThroughOffsetPointer() {
+                int[] values = [seed(), seed() + 1, seed() + 2, seed() + 3];
+                int* offsetOne = values.ptr + 1;
+
+                return *offsetOne + 1;
+            }
+
+            unittest {
+                assert(readThroughOffsetPointer() == 43);
+            }
+        });
+    }
+
+    @("runtimePointerDifferenceReadsElement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 41;
+            }
+
+            int readBehindPointerByOffset() {
+                int[] values = [seed(), seed() + 1, seed() + 2];
+                int* tail = &values[2];
+                int* before = tail - 1;
+
+                return *before + 1;
+            }
+
+            unittest {
+                assert(readBehindPointerByOffset() == 43);
+            }
+        });
+    }
+
+    @("postIncrementUsesRuntimeSeed." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 41;
+            }
+
+            unittest {
+                int value = seed();
+                int observed = value++;
+
+                assert(observed == 41);
+                assert(value == 42);
+            }
+        });
     }
 }
