@@ -127,6 +127,25 @@ Do not add tests for internal assertions, compiler consistency checks, frontend
 states that semantic analysis rewrites away, or impossible AST shapes. Record
 those gaps with the exact line or method and a short reason.
 
+### Known Unreachable Targets
+
+The following methods must not be proposed as test targets. The D frontend
+rewrites or rejects the surface syntax before CTFE is invoked, so no valid D
+fixture can cover these lines:
+
+| Method | Reason |
+| --- | --- |
+| `visitWhile` | Rewritten to `ForStatement` by semantic analysis |
+| `visitForeach` / `visitForeachRange` | Rewritten to `ForStatement` by semantic analysis |
+| `visitScopeGuard` | Lowered to try-finally by semantic analysis |
+| `visit(VoidInitExp)` | Internal uninitialized-variable marker; never re-interpreted |
+| `visit(ThrownExceptionExp)` | Internal already-processed exception; never re-entered |
+| `visit(DeleteExp)` | DMD 2.112 rejects `delete` in semantic analysis before CTFE |
+
+Before proposing any target, the explorer subagent must check whether the
+method body contains `assert(0)` or a comment like "rewritten to X". If so,
+record it in the Audit Log as "Not reachable / semantic rewrite" and move on.
+
 ## PR Coverage Report
 
 When creating a PR from this plan, report the CTFE method coverage delta in the
@@ -201,8 +220,20 @@ For future PR slices on this plan, the main agent should orchestrate only:
 
 1. Ask an explorer subagent to inspect the fresh coverage audit, DMD CTFE
    source, and nearby tests, then recommend the next reachable additive test
-   target.
-2. Spawn a worker subagent for the chosen commit-sized test slice.
+   target. The explorer must verify the candidate method does not appear in
+   the Known Unreachable Targets table and does not contain `assert(0)` or a
+   "rewritten to X" comment in `dmd.dinterpret`.
+2. Spawn a worker subagent for the chosen target. The worker must follow a
+   probe-first workflow:
+   a. Write the minimal behavior test only (no failure-message tests yet).
+   b. Run `scripts/dmd-ctfe-coverage.sh <test-name>` immediately and check
+      whether the targeted method or branch shows new hits in the `.lst`.
+   c. If coverage moved: write the failure-message tests, poke-check, and
+      prepare the full commit.
+   d. If coverage did not move: discard the probe, record the target as
+      "Diagnostic fires before target logic" in the Audit Log, and report
+      back to the orchestrator to pick a new target. Do not write
+      failure-message tests for a fixture that does not hit the intended lines.
 3. Review the worker diff, verify, update this plan if needed, and commit.
 
 Do not choose the next CTFE target locally before the explorer has reported.
@@ -380,6 +411,8 @@ that shim.
 | `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
 | `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
+| `foreachApplyUtf` whole method | Needs test | Pending | ~110 uncovered lines; reachable via `foreach (dchar c; str)` with multi-byte UTF-8 inputs (2-, 3-, 4-byte sequences). Largest single tractable gap. |
+| `visit(CastExp)` type-painting path | Needs test | Pending | ~81 uncovered lines; reachable via pointer-to-array casts with runtime-shaped inputs. Second-largest tractable gap. |
 
 Coverage workflow details:
 
