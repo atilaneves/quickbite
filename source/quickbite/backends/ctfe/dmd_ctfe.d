@@ -530,15 +530,8 @@ private imported!"quickbite.lang".Value structValue(
 
     return Value.structValue(
         struct_.sd.ident.toString.idup,
-        typeChars(struct_.type),
         fields,
     );
-}
-
-private string typeChars(imported!"dmd.mtype".Type type) @trusted {
-    import std.string: fromStringz;
-
-    return fromStringz(type.toChars).idup;
 }
 
 private __gshared uint _diagnosticModuleCounter;

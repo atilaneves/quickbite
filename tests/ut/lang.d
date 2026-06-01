@@ -100,7 +100,7 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
     Value(Point(2, 3)).should.not == Value(Point(1, 2));
 }
 
-@("value.struct.distinctTypes")
+@("value.struct.sameNamedStructsCompareByRenderedValue")
 @safe pure unittest {
     Value firstPoint() @safe pure {
         static struct Point {
@@ -120,7 +120,7 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
         return Value(Point(1, 2));
     }
 
-    firstPoint.should.not == secondPoint;
+    firstPoint.should == secondPoint;
 }
 
 @("value.mixed.bool.int")
