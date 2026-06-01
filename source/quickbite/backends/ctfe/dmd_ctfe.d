@@ -28,6 +28,8 @@ public class Ctfe: imported!"quickbite.backend".Backend {
                 return Value.void_;
             case expression:
                 return evalReplSource(cell.source);
+            case typeExpression:
+                return evalReplTypeSource(cell.source);
         }
     }
 
@@ -105,6 +107,18 @@ private imported!"quickbite.lang".Value evalReplSource(in string source) {
         return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
     catch (Exception exception)
         throw new Exception(withCandidateSignatures(source, exception.msg));
+}
+
+private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
+    import std.conv: text;
+    import quickbite.lang: Value;
+
+    auto interpreted = interpretCtfe(callExpression(replFunction(source)));
+    auto string_ = interpreted.isStringExp;
+    if (string_ is null)
+        throw new Exception(text("Unsupported CTFE type result: ", interpreted.op));
+
+    return Value.typeName(stringChars(string_).idup);
 }
 
 private string evalSource(in string str) {
@@ -474,11 +488,17 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
+    return Value(stringChars(string_));
+}
+
+private char[] stringChars(
+    imported!"dmd.expression".StringExp string_,
+) {
     char[] values;
     foreach (index; 0 .. string_.numberOfCodeUnits)
         values ~= cast(char) string_.getIndex(index);
 
-    return Value(values);
+    return values;
 }
 
 private imported!"quickbite.lang".Value arrayValue(
