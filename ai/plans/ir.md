@@ -80,6 +80,9 @@ covered anywhere in the current CTFE-backed language tests.
 - Use existing CTFE-passing tests as the acceptance matrix. The test-first step
   is to select a current test, make it fail against the IR backend, then make
   the smallest production change that makes it pass.
+- Adding the IR backend to an existing CTFE-passing test is pre-approved: the
+  test already exists, so do not stop for approval before making that backend
+  promotion.
 - Choose the promoted test by expected implementation size. The first PR
   should pick the already-written CTFE-passing test that can be made green with
   the least production code while still entering through the required parsed
