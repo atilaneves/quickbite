@@ -100,7 +100,6 @@ static foreach (backend; backends) {
     @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
-        import std.string: indexOf;
 
         const output = runReplLoop(
             newBackend!backend,
@@ -112,8 +111,7 @@ static foreach (backend; backends) {
             ],
         );
 
-        output.length.should == 1;
-        output[0].indexOf("Unsupported CTFE eval result.").should == -1;
+        output.should == ["MapResult([1, 2, 3], null)"];
     }
 
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)

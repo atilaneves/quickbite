@@ -55,6 +55,10 @@ public struct Value {
         data = Data(value);
     }
 
+    private this(in Null value) @safe pure {
+        data = Data(value);
+    }
+
     private this(Struct value) @safe pure {
         data = Data(value);
     }
@@ -98,11 +102,13 @@ public struct Value {
         return data.match!(
             (value) {
                 alias T = typeof(value);
-                static if (is(T == const(AssocArray))) {
+                static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
-                } else static if (is(T == const(Struct))) {
+                } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
-                } else static if (is(T == const(Null))) {
+                } else static if (is(T == const(Array)) || is(T == Array)) {
+                    return value.toString;
+                } else static if (is(T == const(Null)) || is(T == Null)) {
                     return "null";
                 } else {
                     return text(value);
@@ -134,11 +140,13 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
-                } else static if (is(T == const(AssocArray))) {
+                } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
-                } else static if (is(T == const(Struct))) {
+                } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
-                } else static if (is(T == const(Null))) {
+                } else static if (is(T == const(Array)) || is(T == Array)) {
+                    return value.toString;
+                } else static if (is(T == const(Null)) || is(T == Null)) {
                     return "null";
                 } else {
                     return data.toString;
@@ -154,6 +162,18 @@ private struct Array {
 
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
+    }
+
+    public string toString() const @safe pure {
+        string ret = "[";
+
+        foreach (i, element; elements) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= element.dText;
+        }
+
+        return ret ~ "]";
     }
 }
 
