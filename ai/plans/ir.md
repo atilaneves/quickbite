@@ -61,6 +61,22 @@ covered anywhere in the current CTFE-backed language tests.
 - After each slice, run the focused promoted tests and then `dub test --
   --random`.
 
+## Do Not Repeat From PR 98
+- Do not make the IR backend recover by reparsing `Module.src` or any other
+  source text from the already parsed module. The backend entry point already
+  receives a semantically analysed `Module`; reparsing loses the point of the
+  pipeline and hides problems in the real IR input.
+- Do not keep helper code whose only purpose is to support that reparsing path,
+  such as converting a DMD `Module` back into source text for the IR backend.
+- Do not paper over failures from `checkaction=context` assert lowering with a
+  backend-specific workaround. If promoting a CTFE-passing assertion test causes
+  the IR lowerer to encounter DMD-generated assertion machinery, either lower
+  the already parsed AST shape deliberately or choose the next smallest approved
+  slice that can run from the existing parsed module without reparsing.
+- Do not let the first IR promotion depend on a private backend escape hatch.
+  The first green test should prove that the IR backend can consume the same
+  parsed module pipeline used by the rest of Quickbite.
+
 ## Assumptions
 - AST-first lowering is acceptable; direct parser-to-IR generation is out of
   scope.
