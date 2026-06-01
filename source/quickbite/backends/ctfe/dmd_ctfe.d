@@ -65,11 +65,12 @@ private string ctfeFailureMessage(
     import quickbite.frontend.compiler: withCompilerLock;
     import dmd.dinterpret: ctfeInterpret;
     import dmd.errors: diagnostics;
+    import dmd.globals: global;
 
     string result;
     withCompilerLock(() {
         diagnostics.length = 0;
-        if (ctfeInterpret(expression).isErrorExp !is null)
+        if (ctfeInterpret(expression).isErrorExp !is null || global.errors != 0)
             result = diagnosticMessage;
     });
 
