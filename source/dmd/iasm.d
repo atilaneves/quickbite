@@ -9,6 +9,9 @@ import dmd.statement: AsmStatement, Statement;
 // Shim for dmd:frontend 2.112.x, whose library references backend inline-asm
 // semantic functions while excluding the real backend module.
 public Statement asmSemantic(AsmStatement statement, Scope* scope_) {
+    if (statement.tokens && scope_.func !is null)
+        scope_.func.hasInlineAsm = true;
+
     return null;
 }
 
