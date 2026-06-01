@@ -111,7 +111,16 @@ final class Compiler {
         import dmd.errors: diagnosticHandler;
         import dmd.location: SourceLoc;
         import core.stdc.stdarg: va_list;
-        diagnosticHandler = (const ref SourceLoc loc, Color, const(char)* header, const(char)* fmt, va_list args, const(char)* p1, const(char)* p2) {
+
+        diagnosticHandler = (
+            const ref SourceLoc loc,
+            Color, const(char)* header,
+            const(char)* fmt,
+            va_list args,
+            const(char)* p1,
+            const(char)* p2,
+        )
+        {
             import dmd.errors: Diagnostic, ErrorKind, diagnostics;
             import core.stdc.stdarg: va_copy, va_end;
             import core.stdc.stdio: vsnprintf;
