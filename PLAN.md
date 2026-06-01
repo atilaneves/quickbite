@@ -1,76 +1,56 @@
-# Pure Backend Test Package Handoff
+# CTFE Coverage Handoff
 
-The pure language-surface tests have been moved under
-`tests/ut/backends/pure_/` on branch `pure-test-package`.
+This worktree has been rebased onto current `master`. The original PR was
+merged, so the current branch is only the in-progress coverage follow-up.
 
-Commits so far:
+Current coverage state:
 
-- `eb3305c` Move eval tests under pure backend package
-- `afe6a4a` Move project cerealed tests under pure backend package
-- `ed6ab95` Move pure backend parity tests into package
+- Method coverage in `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` is now
+  `18 / 81 = 22.22%`.
+- `override void visit(StringExp e)` is now covered by mutable static string
+  literal fixtures.
+- The current audit still shows 63 uncovered CTFE areas.
 
-Earlier verification:
+Files changed in this worktree:
 
-- `dub test -- ut.backends.pure_.arrays ut.backends.pure_.control_flow
-  ut.backends.pure_.diagnostics ut.backends.pure_.eval
-  ut.backends.pure_.expressions ut.backends.pure_.logic
-  ut.backends.pure_.structs ut.backends.pure_.minicereal
-  ut.backends.pure_.projects.cerealed ut.backends.minicereal`
-- `dub test`
-- `./bin/ut -l`
+- `tests/ut/backends/pure_/lang/arrays.d`
+- `tests/ut/backends/pure_/lang/control_flow.d`
+- `tests/ut/backends/pure_/lang/structs.d`
 
-The moved tests preserve their original backend matrices. That means many
-`pure_` tests already run with `ExecutorBackend.dmdCtfe`, but not every
-individual `pure_` test currently has a CTFE variant.
+What has been verified:
 
-Handoff rule:
+- `env DUB_HOME=/tmp/qb-dub-home dub test -- --random`
+- `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh ut.backends.pure_`
 
-- Every `pure_` language-surface test should run with
-  `ExecutorBackend.dmdCtfe`.
-- If a `pure_` test does not pass with CTFE, first assume either Quickbite is
-  invoking DMD CTFE incorrectly or the test expectation is wrong.
-- If CTFE disagrees with another backend, CTFE is canonical until the completed
-  dmd codegen backend demonstrates that compiled D code behaves differently.
-- Backend-specific tests are allowed only when they do not contradict D
-  language behaviour; otherwise mark the backend deficient or fix it.
+Recent test additions that are green but did not move the method percentage:
 
-CTFE coverage audit:
+- array copy and struct copy fixtures in `arrays.d` and `structs.d`
+- direct `goto` restart fixtures in `control_flow.d`
+- `try/finally` restart fixtures in `control_flow.d`
+- catch-handler restart fixtures in `control_flow.d`
 
-- Added `ExecutorBackend.dmdCtfe` coverage for
-  `diagnostics.refParameterOops`, `diagnostics.inFunctionParametersOops`,
-  `diagnostics.refSizeTParameterOops`, and
-  `control_flow.structMethodReturnDoesNotSkipCallerStatements`.
-- Tried `arrays.nestedSliceAppendWritesThroughOuterSliceToOriginalArray` with
-  `ExecutorBackend.dmdCtfe`; it fails the fixture assertion, so that test
-  is not a valid `pure_` language-surface expectation as written.
-- Re-ran the pure-test audit. The only remaining pure test without CTFE
-  coverage is the nested-slice append write-through test in
-  `tests/ut/backends/pure_/arrays.d`.
-- Follow-up research showed this fixture contradicts both DMD CTFE and compiled
-  D behaviour: `s2 ~= 99` does not write `99` into `a[3]`. The fixture appears
-  to encode an IR aliasing implementation detail, not D language semantics.
+Recent test additions that moved method coverage:
 
-Next-agent plan:
+- mutable static string literal copy fixtures in `arrays.d`
 
-1. Ask approval to change the test expectation before editing tests.
-2. Convert `nestedSliceAppendWritesThroughOuterSliceToOriginalArray` into a
-   CTFE-backed language test that asserts the canonical D behaviour:
-   `a[3] == 3` after appending to `s2`.
-3. Run the focused test against `ExecutorBackend.dmdCtfe` and confirm it is
-   green.
-4. Add the same test to the full pure backend matrix. The IR backend should
-   fail red if it still propagates the append into the original array.
-5. Decide one of these two outcomes:
-   - Fix IR slice append alias handling so appending to a nested slice follows
-     D semantics while direct element writes through slices still propagate.
-   - If the fix is out of scope, mark IR as deficient for this CTFE-canonical
-     behaviour and exclude only IR from that test with a clear note.
-6. Re-run the pure-test backend-suffix audit and verify CTFE covers every
-   `pure_` language-surface test.
-7. Run `dub test`.
+Observed blocker:
 
-Verification after CTFE audit:
+- The direct label/restart fixtures are not yet hitting the exact
+  `istate.start == s` branches that would fully cover the small-gap visitors.
+- The remaining easy-looking targets in `dinterpret.d` are still partial:
+  `visitBreak`, `visitContinue`, `visitGoto`, `visitGotoCase`,
+  `visitGotoDefault`, and the small statement visitors around them.
 
-- `dub test -- ...` for the four focused CTFE tests listed above
-- `./bin/ut -l` plus pure-test backend-suffix audit
-- `dub test`
+Next agent plan:
+
+1. Re-read `tmp/dmd-ctfe-coverage/dmd-dinterpret-audit.md` and focus on the
+   smallest remaining gaps first.
+2. Inspect `/tmp/qb-dub-home/packages/dmd/2.112.0/dmd/compiler/src/dmd/
+   dinterpret.d` around the restart logic before adding more tests.
+3. Add one or two targeted fixtures at a time until a method row flips to
+   `Covered`.
+4. Re-run `env DUB_HOME=/tmp/qb-dub-home dub test -- --random`.
+5. Re-run `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh
+   ut.backends.pure_` and compare the audit against the current `22.22%`.
+6. Once the method percentage moves materially, hand the branch off for PR
+   creation against current `master`.

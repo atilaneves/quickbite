@@ -480,6 +480,113 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("10 != 11");
     }
 
+    @("structStaticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int* postblits;
+                int* dtors;
+
+                this(this) {
+                    ++*postblits;
+                }
+
+                ~this() {
+                    ++*dtors;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+                int dtors = 0;
+                {
+                    Tracker[2] source;
+                    source[0].postblits = &postblits;
+                    source[0].dtors = &dtors;
+                    source[1].postblits = &postblits;
+                    source[1].dtors = &dtors;
+
+                    Tracker[2] copy = source;
+
+                    assert(postblits == 2);
+                    assert(dtors == 0);
+                }
+
+                assert(dtors == 4);
+            }
+        });
+    }
+
+    @("structStaticArrayCopyRunsPostblitAndDtorsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int* postblits;
+                int* dtors;
+
+                this(this) {
+                    ++*postblits;
+                }
+
+                ~this() {
+                    ++*dtors;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+                int dtors = 0;
+                {
+                    Tracker[2] source;
+                    source[0].postblits = &postblits;
+                    source[0].dtors = &dtors;
+                    source[1].postblits = &postblits;
+                    source[1].dtors = &dtors;
+
+                    Tracker[2] copy = source;
+
+                    assert(postblits == 3);
+                }
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("structStaticArrayCopyRunsPostblitAndDtorsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int* postblits;
+                int* dtors;
+
+                this(this) {
+                    ++*postblits;
+                }
+
+                ~this() {
+                    ++*dtors;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+                int dtors = 0;
+                {
+                    Tracker[2] source;
+                    source[0].postblits = &postblits;
+                    source[0].dtors = &dtors;
+                    source[1].postblits = &postblits;
+                    source[1].dtors = &dtors;
+
+                    Tracker[2] copy = source;
+
+                    assert(dtors == 1);
+                }
+            }
+        }).shouldThrowWithMessage("0 != 1");
+    }
+
     @("scalarStructField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

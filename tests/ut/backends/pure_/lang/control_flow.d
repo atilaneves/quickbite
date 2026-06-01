@@ -370,6 +370,360 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("9 != 8");
     }
 
+    @("gotoRestartsExpressionStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total = seed(1);
+                goto target;
+                total += seed(99);
+            target:
+                total += seed(2);
+                assert(total == 3);
+            }
+        });
+    }
+
+    @("gotoRestartsCompoundStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total = seed(1);
+                goto target;
+                total += seed(99);
+            target:
+                {
+                    total += seed(2);
+                }
+                assert(total == 3);
+            }
+        });
+    }
+
+    @("gotoRestartsBreakStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(2); ++i) {
+                    if (i == 0)
+                        goto stop;
+                    total += seed(99);
+                stop:
+                    break;
+                }
+
+                assert(total == 0);
+            }
+        });
+    }
+
+    @("gotoRestartsContinueStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(2); ++i) {
+                    if (i == 0)
+                        goto skip;
+                skip:
+                    continue;
+                    total += seed(100);
+                }
+
+                assert(total == 0);
+            }
+        });
+    }
+
+    @("gotoCaseUsesRuntimeSelector." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int selector = seed(1);
+                int total;
+
+                switch (selector) {
+                    case 1:
+                        total += seed(10);
+                        goto case 2;
+                    case 2:
+                        total += seed(20);
+                        break;
+                    default:
+                        total += seed(30);
+                        break;
+                }
+
+                assert(total == 30);
+            }
+        });
+    }
+
+    @("gotoDefaultUsesRuntimeSelector." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int selector = seed(1);
+                int total;
+
+                switch (selector) {
+                    case 1:
+                        total += seed(10);
+                        goto default;
+                    case 2:
+                        total += seed(20);
+                        break;
+                    default:
+                        total += seed(30);
+                        break;
+                }
+
+                assert(total == 40);
+            }
+        });
+    }
+
+    @("gotoRestartsBreakStatementInTryFinally." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(1); ++i) {
+                    try {
+                        goto resumed;
+                        total += seed(99);
+                    resumed:
+                        break;
+                    } finally {
+                        total += seed(1);
+                    }
+                }
+
+                assert(total == 1);
+            }
+        });
+    }
+
+    @("gotoRestartsContinueStatementInTryFinally." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(2); ++i) {
+                    try {
+                        goto resumed;
+                        total += seed(99);
+                    resumed:
+                        continue;
+                    } finally {
+                        total += seed(1);
+                    }
+                }
+
+                assert(total == 2);
+            }
+        });
+    }
+
+    @("gotoRestartsGotoStatementInTryFinally." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                try {
+                    goto resumed;
+                    total += seed(99);
+                resumed:
+                    goto outside;
+                } finally {
+                    total += seed(1);
+                }
+
+            outside:
+                total += seed(2);
+                assert(total == 3);
+            }
+        });
+    }
+
+    @("gotoRestartsGotoCaseStatementInTryFinally." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int selector = seed(1);
+                int total;
+                try {
+                    switch (selector) {
+                        case 1:
+                            total += seed(10);
+                            goto resumed;
+                        resumed:
+                            goto case 2;
+                        case 2:
+                            total += seed(20);
+                            break;
+                        default:
+                            total += seed(30);
+                            break;
+                    }
+                } finally {
+                    total += seed(1);
+                }
+
+                assert(total == 31);
+            }
+        });
+    }
+
+    @("gotoRestartsGotoDefaultStatementInTryFinally." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int selector = seed(1);
+                int total;
+                try {
+                    switch (selector) {
+                        case 1:
+                            total += seed(10);
+                            goto resumed;
+                        resumed:
+                            goto default;
+                        case 2:
+                            total += seed(20);
+                            break;
+                        default:
+                            total += seed(30);
+                            break;
+                    }
+                } finally {
+                    total += seed(1);
+                }
+
+                assert(total == 41);
+            }
+        });
+    }
+
+    @("catchHandlerGotoRestartsBreakStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(1); ++i) {
+                    try {
+                        throw new Exception("expected");
+                    } catch (Exception) {
+                        goto resumed;
+                        total += seed(99);
+                    resumed:
+                        break;
+                    }
+                }
+
+                assert(total == 0);
+            }
+        });
+    }
+
+    @("catchHandlerGotoRestartsContinueStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                for (int i = 0; i < seed(2); ++i) {
+                    try {
+                        throw new Exception("expected");
+                    } catch (Exception) {
+                        goto resumed;
+                        total += seed(99);
+                    resumed:
+                        continue;
+                    }
+                }
+
+                assert(total == 0);
+            }
+        });
+    }
+
+    @("catchHandlerGotoRestartsGotoStatement." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int total;
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    goto resumed;
+                    total += seed(99);
+                resumed:
+                    goto outside;
+                }
+
+            outside:
+                total += seed(1);
+                assert(total == 1);
+            }
+        });
+    }
+
     @("supportsDoWhileBreakAndContinue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
