@@ -39,6 +39,13 @@ public ParsedModule parseModule(
     return compiler.parseModule(source, importPaths);
 }
 
+public ParsedModule parseModuleUncached(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleUncached(source, importPaths);
+}
+
 public ParsedModule parseModuleWithCheckActionContext(in string source) {
     return compiler.parseModuleWithCheckActionContext(source, []);
 }
@@ -181,7 +188,17 @@ final class Compiler {
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        return parseModuleLocked(source, importPaths, null);
+        return parseModuleLocked(source, importPaths, null, true);
+    }
+
+    ParsedModule parseModuleUncached(
+        in string source,
+        in string[] importPaths,
+    ) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseModuleLocked(source, importPaths, null, false);
     }
 
     ParsedModule parseModuleWithCheckActionContext(
@@ -198,13 +215,14 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseModuleLocked(source, importPaths, "checkaction=context");
+        return parseModuleLocked(source, importPaths, "checkaction=context", true);
     }
 
     private ParsedModule parseModuleLocked(
         in string source,
         in string[] importPaths,
         in string cacheSalt,
+        in bool useCache,
     ) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
@@ -216,6 +234,7 @@ final class Compiler {
         import std.conv: text;
 
         const key = cacheKey(source, importPaths, cacheSalt);
+        if (useCache)
         if (auto cached = key in sourceCache) {
             ParsedModule result;
             result.module_ = *cached;
@@ -245,7 +264,8 @@ final class Compiler {
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
 
-        sourceCache[key] = parsed.module_;
+        if (useCache)
+            sourceCache[key] = parsed.module_;
 
         return parsed;
     }

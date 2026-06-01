@@ -4,7 +4,8 @@ import benchmarks.harness: measure, Result;
 import quickbite.backend: Backend;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
-import quickbite.frontend.compiler: parseModule;
+import quickbite.frontend.compiler: parseModule, parseModuleUncached;
+import dmd.dmodule: Module;
 
 private:
 
@@ -73,58 +74,62 @@ public void run(string[] args) {
         if (name !in backends)
             throw new Exception("unknown backend: " ~ name);
 
+    auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, iterations);
+    auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, iterations);
+
+    if (fixtureRuns.length > 0 || dubRuns.length > 0) {
+        writeln("== frontend (parse + semantic) ==");
+        printHeader;
+        foreach (run; fixtureRuns ~ dubRuns) {
+            printRow(run.displayName, "frontend", run.frontend);
+        }
+        writeln;
+    }
+
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (name; backendNames) {
         auto backend = backends[name];
 
-        foreach (path; fixtures) {
-            const source      = readText(path);
-            const displayName = moduleDisplayName(path, importPaths);
+        foreach (run; fixtureRuns) {
             try {
-                auto parsed  = parseModule(source, importPaths);
-                auto module_ = parsed.module_;
-
-                try {
-                    printRow(
-                        displayName, name, warmup, iterations,
-                        () => backend.runParsedTests(module_),
-                    );
-                } catch (Exception e) {
-                    stderr.writefln(
-                        "skipping %s %s: %s",
-                        displayName, name, e.msg.firstLine,
-                    );
-                }
+                printRow(
+                    run.displayName, name,
+                    measure(
+                        () => backend.runParsedTests(run.module_),
+                        warmup,
+                        iterations,
+                    ),
+                );
             } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", displayName, e.msg);
+                stderr.writefln(
+                    "skipping %s %s: %s",
+                    run.displayName, name, e.msg.firstLine,
+                );
             }
             writeln;
         }
     }
 
-    if (dubFixtures.length > 0) {
-        import dmd.dmodule: Module;
-
+    if (dubRuns.length > 0) {
         Module[] dubModules;
-        foreach (path; dubFixtures) {
-            try {
-                dubModules ~= parseModule(readText(path), importPaths).module_;
-            } catch (Exception e) {
-                stderr.writefln("skipping %s: %s", path, e.msg);
-            }
-        }
+        foreach (run; dubRuns)
+            dubModules ~= run.module_;
 
         if (dubModules.length > 0) {
             foreach (name; backendNames) {
                 auto backend = backends[name];
                 try {
                     printRow(
-                        dubPkg, name, warmup, iterations,
-                        () {
-                            foreach (module_; dubModules)
-                                backend.runParsedTests(module_);
-                        },
+                        dubPkg, name,
+                        measure(
+                            () {
+                                foreach (module_; dubModules)
+                                    backend.runParsedTests(module_);
+                            },
+                            warmup,
+                            iterations,
+                        ),
                     );
                 } catch (Exception e) {
                     stderr.writefln("skipping %s %s: %s", dubPkg, name, e.msg);
@@ -147,6 +152,18 @@ struct DubInfo {
     string[] importPaths;
     string[] linkFiles;
     string[] fixtures;
+}
+
+public struct BenchmarkRun {
+    public string displayName;
+    public Module module_;
+    public Result frontend;
+}
+
+public struct BenchmarkRow {
+    public string fixture;
+    public string backend;
+    public Result result;
 }
 
 DubInfo resolveDubPkg(in string name) {
@@ -276,16 +293,13 @@ void printHeader() {
     writeln;
 }
 
-void printRow(
+public void printRow(
     in string fixture,
     in string backendName,
-    in size_t warmup,
-    in size_t iterations,
-    scope void delegate() run,
+    in Result result,
 ) {
     import std.stdio: writefln;
 
-    const result = measure(run, warmup, iterations);
     enum hnsecsPerMs = 10_000.0;
     writefln(
         "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms",
@@ -295,6 +309,69 @@ void printRow(
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
     );
+}
+
+public string renderBenchmarkSection(
+    in string title,
+    in BenchmarkRow[] rows,
+) {
+    import std.array: appender;
+    import std.format: format;
+
+    auto output = appender!string;
+    output.put("== " ~ title ~ " ==\n");
+    output.put(format(
+        "%-32s %-14s %10s %10s %10s\n\n",
+        "fixture",
+        "backend",
+        "min",
+        "median",
+        "stddev",
+    ));
+    foreach (row; rows) {
+        enum hnsecsPerMs = 10_000.0;
+        output.put(format(
+            "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms\n",
+            row.fixture,
+            row.backend,
+            row.result.min.total!"hnsecs" / hnsecsPerMs,
+            row.result.median.total!"hnsecs" / hnsecsPerMs,
+            row.result.stddevHnsecs / hnsecsPerMs,
+        ));
+    }
+    output.put("\n");
+    return output.data;
+}
+
+public BenchmarkRun[] prepareFixtureRuns(
+    in string[] fixtures,
+    in string[] importPaths,
+    in size_t warmup,
+    in size_t iterations,
+) {
+    import std.file: readText;
+
+    BenchmarkRun[] runs;
+    foreach (path; fixtures) {
+        const source      = readText(path);
+        const displayName = moduleDisplayName(path, importPaths);
+        try {
+            const frontend = measure(
+                () {
+                    parseModuleUncached(source, importPaths);
+                },
+                warmup,
+                iterations,
+            );
+            auto module_ = parseModule(source, importPaths).module_;
+            runs ~= BenchmarkRun(displayName, module_, frontend);
+        } catch (Exception e) {
+            import std.stdio: stderr;
+
+            stderr.writefln("skipping %s: %s", displayName, e.msg);
+        }
+    }
+    return runs;
 }
 
 bool isOptimisedBuild() {
