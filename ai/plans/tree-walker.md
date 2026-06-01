@@ -25,6 +25,10 @@ Only then accept the slice as done.
   dynamic type.
 - No intermediate form. Values are produced and consumed in the same
   recursive descent; no register allocation or instruction selection.
+- Interpreter values, locals, temporaries, and function returns must use
+  `quickbite.lang.Value` from the start. Do not use `long`, `bool`, or
+  `void*`-keyed placeholder state for early slices just because the first
+  promoted test only observes integer or boolean behaviour.
 - Use a flat environment model: a locals map keyed by declaration
   identity, extended and restored on scope entry and exit.
 - The executor must not import or delegate to other backends.

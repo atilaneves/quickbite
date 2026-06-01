@@ -12,6 +12,26 @@ red for the IR backend, implement the smallest IR change that makes it green,
 then move on. Do not invent a separate test suite unless a behavior is not yet
 covered anywhere in the current CTFE-backed language tests.
 
+## Minimum Implementation Rule
+- Minimum means deletion-minimum, not architecture-minimum. After the promoted
+  test passes, audit every added line with this question: if this line is
+  deleted, does the promoted test still pass? If yes, delete it.
+- Minimum still has to be honest. Do not pick a test whose already-analysed DMD
+  AST has folded away the behavior named by the test, then implement only the
+  folded result. If the source expression is `1 + 2`, compiling an
+  `IntegerLiteral(3)` is not an IR implementation of addition.
+- Keep the first green slice deliberately embarrassing. Do not add support for
+  a language construct, diagnostic path, summary path, helper abstraction, id
+  table, error message, or invariant until the single promoted test fails
+  without it.
+- The required shape is still three backend-local modules: pure IR, compiler,
+  and executor. Their contents must be only what the promoted test forces.
+  Empty or nearly empty modules are acceptable if the test does not force more.
+- Name the IR node after the AST value it actually represents. If the compiler
+  consumes an arbitrary integer expression, the result is not an
+  `IntegerLiteral` unless the compiler has verified that the input is an
+  integer literal.
+
 ## IR Shape
 - Make the IR typed and explicit. Scalar values should use SSA-style names;
   memory effects, mutable places, and call-by-reference behavior should be
@@ -26,6 +46,15 @@ covered anywhere in the current CTFE-backed language tests.
 - Keep the compiler/IR boundary hard. DMD AST and semantic lookup belong in the
   frontend or lowering layer; the IR executor should consume only IR-native
   structures.
+- Build the backend IR pipeline from scratch. Existing modules such as
+  `quickbite.ir`, `quickbite.frontend.lowering`, and `quickbite.executors.ir`
+  may be read for context, but the new backend must not route through them or
+  reuse them as its implementation.
+- Keep the first backend modules under `quickbite.backends.ir`: a pure IR data
+  module, a compiler module that lowers DMD AST to that IR, and an executor
+  module that runs only that IR. Prefer `compiler` for the lowering module name
+  because the module's public job is compiling parsed D into backend IR; use
+  small private helpers inside it rather than exposing a generic lowering API.
 
 ## Slice Plan
 - Start with the narrowest behavior already covered by CTFE parity tests:
@@ -51,8 +80,16 @@ covered anywhere in the current CTFE-backed language tests.
 - Use existing CTFE-passing tests as the acceptance matrix. The test-first step
   is to select a current test, make it fail against the IR backend, then make
   the smallest production change that makes it pass.
+- The first PR should promote a parsed-module backend test that enters through
+  `runParsedTests`, not a REPL or `eval` test. Do not implement `eval` or
+  `evalRepl` for the first IR backend slice unless that entry point is
+  explicitly requested.
 - Do not weaken or replace the CTFE tests to satisfy the IR backend. The tests
   define the target behavior.
+- Before implementing, inspect the DMD AST that reaches the IR compiler for the
+  chosen test. The selected test must force the intended IR operation after
+  semantic analysis. If DMD constant-folds the operation away, choose or approve
+  a runtime-shaped fixture that prevents folding.
 - Prefer public backend behavior tests over implementation-detail tests.
   Add IR-specific tests only for IR-native contracts such as operand typing,
   block/CFG invariants, or explicitly unsupported features.
@@ -76,6 +113,20 @@ covered anywhere in the current CTFE-backed language tests.
 - Do not let the first IR promotion depend on a private backend escape hatch.
   The first green test should prove that the IR backend can consume the same
   parsed module pipeline used by the rest of Quickbite.
+
+## Do Not Repeat From Failed PR 103
+- Failed PR 103 promoted `tests/ut/backends/pure_/lang/eval.d` and implemented
+  `Backend.eval`. That was the wrong first backend slice because it exercised a
+  REPL/eval path instead of the parsed-module unittest path.
+- Do not implement `Backend.eval` by reparsing a synthetic function such as
+  `auto f() { return expr; }`. That does not prove the IR backend can consume
+  the already parsed module supplied to `runParsedTests`.
+- Do not treat DMD constant folding as successful IR lowering. If the source
+  behavior is addition, the compiler must lower an addition-shaped AST to
+  addition-shaped IR; returning the folded integer literal is cheating.
+- Do not define IR types that overclaim what the compiler has checked. A
+  function that accepts any DMD integer expression must not return an
+  `IntegerLiteral` unless it first proves the expression is actually a literal.
 
 ## Assumptions
 - AST-first lowering is acceptable; direct parser-to-IR generation is out of
