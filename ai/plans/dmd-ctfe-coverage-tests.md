@@ -91,8 +91,15 @@ The current implementation is intentionally lightweight:
 
 ## Test Selection
 
-Add tests one behaviour at a time. Before adding or modifying any test, show
-the exact proposed test body and wait for approval.
+Add tests one behaviour at a time. Test approval is not required for this
+coverage plan. A test is good for this work when all of the following are
+true:
+
+- it passes normally;
+- it fails when the expected result or diagnostic is deliberately poked;
+- focused CTFE coverage shows the intended `dmd.dinterpret` method or branch
+  is newly covered;
+- the slice has no production-code changes.
 
 For each uncovered method group:
 
@@ -185,8 +192,8 @@ Suggested columns:
 | `visitBar` line N | Covered | `test.name.Ctfe` | Focused fixture |
 | `visitBaz` assertion | Not reachable | Semantic rewrite | No test |
 
-Update the table as tests are approved and added. Do not leave uncovered
-reachable methods as undocumented backlog.
+Update the table as tests are added or targets are rejected. Do not leave
+uncovered reachable methods as undocumented backlog.
 
 ## Subagent Workflow
 
@@ -207,6 +214,94 @@ Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
 ## Archive
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 1
+
+Branch `dmd-ctfe-coverage-tests-11` started from:
+
+```text
+928d84fe72bc8c957dbf7de4e750ed1346ee2220
+```
+
+Starting broad coverage for:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+was 2210/3760 executable entries, or 58.78%.
+
+The test-selection workflow was updated so this plan no longer requires
+approval before adding or modifying tests. For this coverage work, a test is
+accepted when it passes normally, fails when poked, increases focused CTFE
+coverage for the target, and changes no production code.
+
+Explorer recommendation 1 targeted the whole-method uncovered
+`interpret_aaIn` helper, reached through normal associative-array
+`key in aa` syntax.
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.arrays.assocArrayInFindsRuntimeKey.Ctfe
+```
+
+Coverage effect: focused coverage moved `interpret_aaIn` from whole-method
+uncovered to partially covered. The focused `.lst` showed two hook calls, one
+found-key path returning `pointerToAAValue`, and one missing-key path returning
+`NullExp`.
+
+Poke result: changing the behavior assertion from `40` to `41` failed the
+focused CTFE test with `40 != 41`; the temporary poke was reverted and the
+focused test was rerun green.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.arrays.assocArrayInFindsRuntimeKey.Ctfe` passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.arrays.assocArrayInFindsRuntimeKey.Ctfe` passed.
+- A post-slice broad coverage run passed with 2225/3760 executable entries,
+  or 59.18%.
+- `dub test -- --random` passed with 1453 tests run, 0 failed, and 28/28
+  failing as expected.
+- The slice changed only test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 2
+
+Explorer recommendation 2 targeted the reachable associative-array equality
+helper `interpret_aaEqual`, reached through normal `==` and `!=`
+associative-array comparisons with runtime-shaped keys and values.
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe
+```
+
+Coverage effect: focused coverage hit the `_d_aaEqual` dispatch twice and
+`interpret_aaEqual` twice. The focused `.lst` showed both operand
+interpretations, the `ctfeEqual` call, and the boolean result path covered.
+
+Poke result: changing the inequality assertion to
+`assert(left == different);` failed the focused CTFE test with
+`[10: 40, 11: 41] != [10: 40, 11: 42]`; the temporary poke was reverted and
+the focused test was rerun green.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe`
+  passed after sandbox escalation because DUB needed to update generated files
+  under `~/.dub`.
+- A post-slice broad coverage run passed with 2232/3760 executable entries,
+  or 59.36%.
+- `dub test -- --random` passed with 1454 tests run, 0 failed, and 28/28
+  failing as expected.
+- The slice changed only test and plan files.
 
 ### 2026-05-28 Workflow Slice
 
@@ -239,6 +334,8 @@ that shim.
 | `visit(CatExp)` elem paths | Covered | Worker 1 slice | See details below. |
 | `visit(CatExp)` array wrap | Unsupported | Worker 1 | See below. |
 | `visit(AssocArrayLiteralExp)` | Covered | Worker 1 slice | Now partial. |
+| `interpret_aaIn` found/missing | Covered | `ut.backends.pure_.lang.arrays.assocArrayInFindsRuntimeKey.Ctfe` | Runtime key `in` returns pointer/null. |
+| `interpret_aaEqual` equality/inequality | Covered | `ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe` | Runtime-shaped AA keys and values cover `_d_aaEqual` dispatch. |
 | `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
