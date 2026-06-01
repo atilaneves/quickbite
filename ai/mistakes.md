@@ -153,8 +153,13 @@
   expressions from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.
 
-- Follow the Github section of AGENTS.md: after `gh pr create`, open the
-  resulting PR URL in the browser.
+- Follow the Github section of AGENTS.md: use `gh pr create --web` to open
+  the PR form pre-filled in the browser. Do not use `xdg-open` with a raw
+  `/pull/new/` URL — that opens a blank form and forces the user to fill it
+  in manually.
+
+- Run `ci.sh` before creating a PR. AGENTS.md requires it. Skipping it means
+  the PR may be created without benchmarks or integration checks passing.
 
 - In D, member access through a pointer auto-dereferences (`ptr.field` works),
   but indexing does NOT (`ptr[i]` is pointer arithmetic). To index into a
