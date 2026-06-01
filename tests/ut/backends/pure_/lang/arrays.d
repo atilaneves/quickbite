@@ -1119,6 +1119,66 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("staticArrayCopyFromRuntimeArrayUsesArrayCtor." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int seedValue = seed(40);
+                int[2] source;
+                source[0] = seedValue;
+                source[1] = seedValue + 1;
+                int[2] copy = source;
+
+                assert(copy[0] == seedValue);
+                assert(copy[1] == seedValue + 1);
+            }
+        });
+    }
+
+    @("staticArrayCopyFromRuntimeArrayUsesArrayCtorFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int seedValue = seed(40);
+                int[2] source;
+                source[0] = seedValue;
+                source[1] = seedValue + 1;
+                int[2] copy = source;
+
+                assert(copy[0] == seedValue + 1);
+            }
+        }).shouldThrowWithMessage("40 != 41");
+    }
+
+    @("staticArrayCopyFromRuntimeArrayUsesArrayCtorFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int seedValue = seed(40);
+                int[2] source;
+                source[0] = seedValue;
+                source[1] = seedValue + 1;
+                int[2] copy = source;
+
+                assert(copy[1] == seedValue + 2);
+            }
+        }).shouldThrowWithMessage("41 != 42");
+    }
+
     @("refDynamicArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2096,5 +2156,32 @@ static foreach (backend; backends) {
                 assert(index == 2);
             }
         }).shouldThrowWithMessage("1 != 2");
+    }
+
+    @("mutableStringLiteralCopiesDoNotShareWrites." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[2] first = "ab";
+                first[0] = 'z';
+                char[2] second = "ab";
+
+                assert(second[0] == 'a');
+            }
+        });
+    }
+
+    @("mutableStringLiteralCopiesDoNotShareWritesFailureMessage." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[2] first = "ab";
+                first[0] = 'z';
+                char[2] second = "ab";
+
+                assert(second[0] == 'z');
+            }
+        }).shouldThrowWithMessage("'a' != 'z'");
     }
 }
