@@ -16,9 +16,9 @@ UP_ARROW = "\x1b[A"
 
 
 def test_repl() -> None:
-    repl = os.path.join(os.getcwd(), "bin", "repl")
+    repl = os.path.join(os.getcwd(), "bin", "qb")
     if not os.path.exists(repl):
-        pytest.skip("bin/repl does not exist; run `dub build -c repl` first")
+        pytest.skip("bin/qb does not exist; run `dub build -c qb` first")
 
     child = pexpect.spawn(repl, timeout=TIMEOUT, encoding="utf-8")
     try:
