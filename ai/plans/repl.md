@@ -13,14 +13,6 @@ must not treat that language behavior as unsupported just because the current
 
 Pick these items up before any other REPL follow-up.
 
-- Make `import std;` work in the REPL when the CTFE backend is selected. Real
-  CTFE accepts `import std;`, but the REPL currently reports DMD/CTFE
-  diagnostics from `core.atomic`:
-  `function
-  core.internal.atomic.atomicFetchAdd!(MemoryOrder.seq, true, uint)`
-  `.atomicFetchAdd has no return statement, but is expected to return a value
-  of type uint`, followed by template-instantiation errors. This disagreement
-  with real CTFE means the REPL is driving DMD incorrectly.
 - Keep failed REPL eval cells from poisoning the session. A failed no-display
   cell must not be accepted into REPL history, and later valid cells should
   still see the last known-good session state.
@@ -84,14 +76,13 @@ Completed:
   shape from `pragma(msg)`, including nested `null` values in range structs.
 - Tightened the regression in `ut.backends.repl` to assert the exact rendered
   output for the finite-range case.
-- Report DMD's CTFE diagnostic when a no-display REPL cell calls runtime-only
-  `malloc`, and keep the failed cell out of session history so later cells see
-  the last known-good state.
-- Surface CTFE diagnostics for runtime-only `std.stdio.File` writes instead of
-  silently accepting them. Manual REPL verification confirmed that
-  `File("/tmp/...", "w")` now reports DMD's `fopen64` and `malloc` CTFE
-  diagnostics, creates no file, and leaves the last known-good session state
-  usable.
+- Fixed `import std;` in the CTFE-backed REPL. Real CTFE accepts importing
+  Phobos symbols through `import std;`; the REPL failure came from Quickbite's
+  frontend-only `dmd.iasm` shim not marking functions that contain inline asm.
+  That made DMD-as-a-library reject Phobos atomic helpers during semantic
+  analysis with a spurious no-return diagnostic. The shim now matches DMD's
+  no-backend semantic path by marking the current function as containing inline
+  asm.
 
 Remaining follow-up:
 
@@ -159,6 +150,8 @@ Test scenarios to cover in `ut.backends.repl`:
   be called by later expression cells.
 - Import declaration cells persist without display, and imported symbols are
   available to later expression cells.
+- `import std;` exposes Phobos symbols to later CTFE expression cells, matching
+  DMD CTFE behavior.
 - `Repl.submit` returns `Value.void_` for no-display cells.
 - CLI backend option parsing accepts default CTFE, `--backend ctfe`, and
   `-b ctfe`.

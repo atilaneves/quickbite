@@ -97,6 +97,22 @@ static foreach (backend; backends) {
         output.should == ["1: int"];
     }
 
+    @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "import std;",
+                "[1, 2, 3].map!(a => a * 2).array",
+                ":q",
+            ],
+        );
+
+        output.should == ["[2, 4, 6]"];
+    }
+
     @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
