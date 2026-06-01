@@ -6,6 +6,7 @@ public enum ReplCellKind {
     incomplete,
     noDisplay,
     expression,
+    typeExpression,
 }
 
 public struct ReplCell {
@@ -45,6 +46,17 @@ public struct ReplSession {
                 replSource(moduleTranscript, localTranscript ~ input ~ "\n"),
                 ReplHistoryTarget.local,
                 input ~ "\n",
+            );
+
+        if (isTypeExpressionCell(input))
+            return ReplCell(
+                ReplCellKind.typeExpression,
+                replSource(
+                    moduleTranscript,
+                    localTranscript ~ "return " ~ input ~ ".stringof;",
+                ),
+                ReplHistoryTarget.local,
+                "",
             );
 
         return ReplCell(
@@ -106,6 +118,40 @@ private bool isExpressionCell(in string input) {
         const expression = parser.parseExpression;
         result = expression !is null &&
             expression.isDeclarationExp is null &&
+            parser.token.value != TOK.semicolon &&
+            global.errors == 0;
+    });
+
+    return result;
+}
+
+private bool isTypeExpressionCell(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        scope parser = new Parser!ASTCodegen(
+            null,
+            input,
+            false,
+            global.errorSinkNull,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        const expression = parser.parseExpression;
+        result = expression !is null &&
+            expression.isTypeExp !is null &&
             parser.token.value != TOK.semicolon &&
             global.errors == 0;
     });

@@ -114,6 +114,18 @@ static foreach (backend; backends) {
         output.should == ["MapResult([1, 2, 3], null)"];
     }
 
+    @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["int i;", "typeof(i)", ":q"],
+        );
+
+        output.should == ["int"];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
