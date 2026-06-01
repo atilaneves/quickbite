@@ -253,6 +253,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -262,9 +265,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("oops");
     }
 
-}
-
-static foreach (backend; backendsWith!TreeWalker) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
