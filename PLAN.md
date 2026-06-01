@@ -1,15 +1,18 @@
 # CTFE Coverage Handoff
 
-This worktree has been rebased onto current `master`. The original PR was
-merged, so the current branch is only the in-progress coverage follow-up.
+This worktree has been merged with current `master`. The original PR was
+merged, so the current branch is the in-progress coverage follow-up.
 
-Current coverage state:
+Current global coverage state:
 
-- Method coverage in `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` is now
-  `18 / 81 = 22.22%`.
+- `tmp/dmd-ctfe-coverage/dmd-dinterpret-audit.md` reports
+  `2343 / 3760 = 62.31%` executable entries covered.
+- The `dmd-dinterpret.lst` summary reports `62% covered`.
+- Before this branch, current `master` reported `2287 / 3760 = 60.82%`
+  executable entries covered, with the `dmd-dinterpret.lst` summary at
+  `60% covered`.
 - `override void visit(StringExp e)` is now covered by mutable static string
   literal fixtures.
-- The current audit still shows 63 uncovered CTFE areas.
 
 Files changed in this worktree:
 
@@ -20,7 +23,7 @@ Files changed in this worktree:
 What has been verified:
 
 - `env DUB_HOME=/tmp/qb-dub-home dub test -- --random`
-- `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh ut.backends.pure_`
+- `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh`
 
 Recent test additions that are green but did not move the method percentage:
 
@@ -50,7 +53,7 @@ Next agent plan:
 3. Add one or two targeted fixtures at a time until a method row flips to
    `Covered`.
 4. Re-run `env DUB_HOME=/tmp/qb-dub-home dub test -- --random`.
-5. Re-run `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh
-   ut.backends.pure_` and compare the audit against the current `22.22%`.
+5. Re-run `env DUB_HOME=/tmp/qb-dub-home scripts/dmd-ctfe-coverage.sh`
+   and compare the audit against the current `62.31%`.
 6. Once the method percentage moves materially, hand the branch off for PR
    creation against current `master`.
