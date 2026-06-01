@@ -51,6 +51,8 @@ covered anywhere in the current CTFE-backed language tests.
 - Use existing CTFE-passing tests as the acceptance matrix. The test-first step
   is to select a current test, make it fail against the IR backend, then make
   the smallest production change that makes it pass.
+- Existing CTFE-passing tests are pre-approved for IR promotion. Do not stop
+  for test-change approval when only adding the IR backend to an existing test.
 - Do not weaken or replace the CTFE tests to satisfy the IR backend. The tests
   define the target behavior.
 - Prefer public backend behavior tests over implementation-detail tests.
