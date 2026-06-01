@@ -48,8 +48,45 @@ behaviors already in the CTFE-passing suite — integer literals,
 arithmetic, comparisons — and work outward toward control flow,
 arrays, structs, and exceptions as each prior slice stabilises.
 
+Do not pick a CTFE-only test at random just because it currently lacks
+`TreeWalker`. Before migrating one test, inspect the fixture and choose
+the test most likely to need the fewest production changes. Count the
+visible AST features first: literals only is better than locals;
+locals are broader than direct literals; calls, imports, control flow,
+assertion formatting, type coercion, arrays, structs, and exceptions
+are each reasons to defer the test. Prefer a test whose expected red
+failure points at one missing AST handler or one tiny fake.
+
 Do not decide the ordering in advance beyond the immediate next test.
-Let the failing test determine what to implement.
+Let the smallest plausible failing test determine what to implement.
+
+### First PR Guardrails
+
+The first PR must be smaller than a general-purpose interpreter slice.
+Do not promote a test that needs locals, declarations, equality,
+assertion-message formatting, and type coercion all at once. That is
+not a minimum implementation, even if those pieces are individually
+small.
+
+For the first tree-walker promotion, prefer an existing CTFE-passing
+test whose red failure can be fixed by one AST handler or by a tiny
+single-case fake. If no such test exists, stop and ask before changing
+tests or production code. Do not silently broaden the slice.
+
+Do not promote import-path retry tests as the first tree-walker test.
+They have order-dependent frontend state and are easy to make flaky
+when duplicated across backend lists.
+
+Do not promote all-literal or enum-only fixtures for this first PR
+unless the purpose is explicitly constant-folded input. DMD may fold
+the expression before the walker sees it, producing a green test that
+does not exercise the intended AST path.
+
+After the promoted test is red, write down the exact missing AST node
+or behavior named by the failure. The production change for that cycle
+must address only that point. If passing the test appears to require a
+locals map, type coercion, assertion context formatting, and comparison
+support together, the chosen test is too broad for the first PR.
 
 ## Test Strategy
 
