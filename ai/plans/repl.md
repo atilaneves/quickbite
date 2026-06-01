@@ -86,11 +86,10 @@ Completed:
 - Fixed piped blank input in the REPL binary. `printf "\n" | bin/qb` now exits
   successfully without invoking the evaluator, and the banner is only printed
   for terminal-backed stdin so blank piped input stays silent.
+- Fixed `bin/qb -c "1 + 2"` so command evaluation prints non-void results,
+  matching piped and interactive REPL evaluation.
 
 Remaining follow-up:
-
-- Fix `bin/repl -c "1 + 2"` producing no output. The evaluated value
-  should be printed, matching `printf "1 + 2\n" | bin/repl` behaviour.
 
 - Fix strings displaying as char arrays: `"hello"` prints `[h, e, l, l, o]`
   instead of `"hello"`. Affects all string values including results of

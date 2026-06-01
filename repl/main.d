@@ -22,8 +22,7 @@ public int main(string[] args) {
     auto repl = Repl(new Ctfe);
 
     if (options.options.hasCommand) {
-        repl.submit(options.options.command);
-        return 0;
+        return submit(repl, options.options.command) ? 0 : 1;
     }
 
     if (options.options.hasFile) {
