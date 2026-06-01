@@ -383,6 +383,89 @@ Verification notes:
   tests run, 0 failed, 28/28 failing as expected.
 - The slice changed only test and plan files.
 
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 4
+
+Explorer target: `visit(CastExp)` pointer-painting branch for runtime-cast
+`void*` values.
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe
+```
+
+Coverage effect: focused run covered the runtime pointer paint in `visit(CastExp)`
+and removed part of the previously unresolved type-painting gap.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe`
+  passed.
+- The slice changed only the plan file.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 5
+
+Explorer target: `visit(ComplexExp)` through runtime-shaped complex literals.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.expressions.complexLiteralWithRuntimeParts.Ctfe
+ut.backends.pure_.lang.expressions.complexLiteralWithRuntimePartsFailureMessage.Ctfe
+```
+
+The behavior test builds a runtime integer and casts it to `cdouble`,
+then adds a `1.0i` literal.
+
+Focused coverage expectation: `visit(ComplexExp)` should be covered by this fixture
+through the complex-literal node produced by `1.0i`.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.complexLiteralWithRuntimeParts.Ctfe`
+  passed.
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.complexLiteralWithRuntimePartsFailureMessage.Ctfe`
+  passed.
+- The slice changed only the test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 6
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.expressions.interfaceVirtualCallUsesRuntimeDispatch.Ctfe
+```
+
+Coverage intent: cover interface-dispatch call behavior through an interface
+typed value constructed from a runtime class instance.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.interfaceVirtualCallUsesRuntimeDispatch.Ctfe`
+  passed.
+- The slice changed only the test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 7
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe
+```
+
+Coverage intent: cover `interpret_dup` through runtime dynamic-array duplication.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe`
+  passed.
+- The slice changed only the test and plan files.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -451,6 +534,7 @@ that shim.
 | Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
+| `interpret_dup` runtime duplication | Covered | `ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe` | `interpret_dup` path now covered through runtime dynamic-array `.dup`. |
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
@@ -461,7 +545,7 @@ that shim.
 | `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 | `foreachApplyUtf` whole method | Covered | `foreachUtf8String.Ctfe` | 2-byte UTF-8 sequence via `foreach (dchar c; s)` with `bytes.idup`. Method now partially covered. |
-| `visit(CastExp)` type-painting path | Needs test | Pending | ~81 uncovered lines; reachable via pointer-to-array casts with runtime-shaped inputs. Second-largest tractable gap. |
+| `visit(CastExp)` type-painting path | Covered | `ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe` | Runtime `void*` to array cast path now covers the pointer-painting branch in `visit(CastExp)` and closes part of the uncovered gap. |
 
 Coverage workflow details:
 

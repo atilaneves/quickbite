@@ -4,10 +4,10 @@ private:
 
 public struct Repl {
     private imported!"quickbite.frontend.repl".ReplSession session;
-    private imported!"quickbite.backend".Backend backend;
+    private imported!"quickbite.backends".Backend backend;
     private string pendingInput;
 
-    public this(imported!"quickbite.backend".Backend backend) {
+    public this(imported!"quickbite.backends".Backend backend) {
         this.backend = backend;
     }
 
@@ -41,7 +41,7 @@ public struct Repl {
 }
 
 public string[] runReplLoop(
-    imported!"quickbite.backend".Backend backend,
+    imported!"quickbite.backends".Backend backend,
     in string[] inputAtoms,
 ) {
     import quickbite.lang: Value;

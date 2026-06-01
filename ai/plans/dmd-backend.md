@@ -24,8 +24,8 @@ source/quickbite/backends/codegen/
 ## Two Backend Classes
 
 ```d
-public class SharedLib : imported!"quickbite.backend".Backend { ... }
-public class Ram       : imported!"quickbite.backend".Backend { ... }
+public class SharedLib : imported!"quickbite.backends".Backend { ... }
+public class Ram       : imported!"quickbite.backends".Backend { ... }
 ```
 
 All four interface methods implemented from the start, driven by tests.

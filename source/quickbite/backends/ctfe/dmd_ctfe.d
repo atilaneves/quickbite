@@ -4,8 +4,8 @@ module quickbite.backends.ctfe.dmd_ctfe;
 private:
 
 
-public class Ctfe: imported!"quickbite.backend".Backend {
-    import quickbite.backend: TestSummary;
+public class Ctfe: imported!"quickbite.backends".Backend {
+    import quickbite.backends: TestSummary;
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
