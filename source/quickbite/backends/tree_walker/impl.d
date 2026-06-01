@@ -58,10 +58,27 @@ private struct Interpreter {
 
         if (auto assert_ = expression.isAssertExp) {
             if (!runExpression(assert_.e1))
-                throw new Exception("`assert(false)` failed");
+                throw new Exception(assertFailureMessage(assert_));
             return true;
         }
 
         assert(0);
+    }
+
+    private string assertFailureMessage(
+        imported!"dmd.expression".AssertExp assert_,
+    ) {
+        if (assert_.msg !is null)
+            return assertMessage(assert_.msg);
+
+        return "`assert(false)` failed";
+    }
+
+    private string assertMessage(imported!"dmd.expression".Expression expression) {
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            assert(0);
+
+        return literal.peekString.idup;
     }
 }
