@@ -2,8 +2,8 @@
 
 ## Goal
 
-Use DMD coverage data to find untested paths in the CTFE engine and turn every
-reachable gap into a focused Quickbite test.
+Use DMD coverage data to find untested methods in the CTFE engine and turn
+every reachable method-level gap into a focused Quickbite test.
 
 The primary target is DMD's CTFE interpreter:
 
@@ -11,9 +11,15 @@ The primary target is DMD's CTFE interpreter:
 - local source path from `dub.selections.json`:
   `/home/atila/.dub/packages/dmd/2.112.0/dmd/compiler/src/dmd/dinterpret.d`
 
-Whole uncovered visitor methods for expression or statement AST nodes should be
-treated as the highest-priority gaps. Isolated uncovered lines should still be
-triaged, but only reachable D semantics should become tests.
+Whole uncovered visitor methods for expression or statement AST nodes are the
+highest-priority gaps. Method coverage is the goal; line hits matter only as
+evidence that a method is now reached.
+
+## Status
+
+The coverage workflow described below now exists in repository-owned scripts.
+The remaining work is to keep expanding the pure-backend CTFE test suite while
+maintaining an up-to-date method coverage audit.
 
 ## Current Baseline
 
@@ -35,13 +41,13 @@ undefined symbol: ModuleInfo for dmd.link
 undefined symbol: dmd.link.runPreprocessor(...)
 ```
 
-Both unresolved symbols were referenced from `dmd.cpreprocess`. Treat this as a
-coverage-workflow issue to investigate before relying on fresh coverage output.
-Do not edit files under `~/.dub/packages` directly to fix it.
+Both unresolved symbols were referenced from `dmd.cpreprocess`. Treat this as
+a coverage-workflow issue to investigate before relying on fresh coverage
+output. Do not edit files under `~/.dub/packages` directly to fix it.
 
-There are also stale DMD coverage `.lst` files in the repository root from an
-older DMD package version. They are useful only as examples of DMD's coverage
-file format; regenerate coverage before choosing tests.
+The repository root still contains historical DMD coverage `.lst` files from
+older runs and package versions. Treat them as format examples only.
+Regenerate coverage before choosing the next test target.
 
 ## Coverage Workflow
 
@@ -64,8 +70,8 @@ temporary DUB package/build setup that includes the DMD frontend source needed
 for the instrumented build, without changing the checked-in dependency package.
 
 After the workflow runs, parse the `dmd.dinterpret` `.lst` file and group
-`0000000|` lines by enclosing function or visitor method. The first useful
-report should separate:
+`0000000|` lines by enclosing function or visitor method. The useful report is
+method-centric. It should separate:
 
 - wholly uncovered `interpretStatement` statement visitor methods;
 - wholly uncovered `Interpreter.visit(...)` expression visitor methods;
@@ -73,12 +79,22 @@ report should separate:
 - CTFE helper functions not tied to one AST node;
 - lines that are defensive, impossible, or not reachable from semantic D code.
 
+The current implementation is intentionally lightweight:
+
+- `scripts/dmd-ctfe-coverage.sh` runs the coverage build, copies the newest
+  `dmd.dinterpret` `.lst` file into `tmp/dmd-ctfe-coverage/`, and writes the
+  audit report there.
+- `scripts/report-dmd-ctfe-coverage.sh` buckets the current coverage output by
+  the CTFE visitor and helper signatures it recognizes today.
+- If the audit taxonomy needs to expand beyond those signature forms, update
+  the script and this plan together.
+
 ## Test Selection
 
-Add tests one behaviour at a time. Before adding or modifying any test, show the
-exact proposed test body and wait for approval.
+Add tests one behaviour at a time. Before adding or modifying any test, show
+the exact proposed test body and wait for approval.
 
-For each uncovered group:
+For each uncovered method group:
 
 1. Identify the smallest D source fixture that should reach the uncovered CTFE
    code through normal semantic analysis.
@@ -94,7 +110,7 @@ For each uncovered group:
    `tests/ut/backends/pure_/lang/structs.d`, or
    `tests/ut/backends/pure_/lang/exceptions.d`.
 5. Run the focused test, then regenerate CTFE coverage and confirm the intended
-   `dmd.dinterpret` lines changed from uncovered to covered.
+   `dmd.dinterpret` lines changed from uncovered to covered in the same method.
 
 Avoid all-literal fixtures unless constant folding itself is the target. Use
 runtime-shaped values such as mutable locals or helper calls so DMD does not
@@ -106,8 +122,8 @@ those gaps with the exact line or method and a short reason.
 
 ## PR Coverage Report
 
-When creating a PR from this plan, report the `dmd.dinterpret` coverage
-percentage delta in the PR.
+When creating a PR from this plan, report the CTFE method coverage delta in the
+PR. Line coverage deltas are optional context, not the success metric.
 
 Use the same broad coverage target at the branch's starting commit and at the
 final PR branch commit. For the current plan, the broad target is:
@@ -122,31 +138,30 @@ from moving `master` after work has started. Use the starting-commit baseline
 for the whole PR, even if `master` changes or merges happen while the branch is
 in progress.
 
-Calculate the percentage from executable entries in
-`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` for the starting commit and final PR
-commit. Do not use the final DMD footer line; it rounds to a whole percentage
-and can hide small PR deltas.
+Calculate method coverage from executable entries in
+`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` for the starting commit and final
+PR commit. Do not use the final DMD footer line; it rounds to a whole
+percentage and can hide small PR deltas.
 
 Executable entries are `.lst` lines whose seven-character counter prefix is
 either a run count or `0000000`. Count `0000000` as uncovered, and count any
-positive run count as covered. Report:
+positive run count as covered. Roll those lines up by method and report:
 
-- the starting commit SHA and baseline percentage;
-- the final PR branch commit SHA and percentage;
-- the percentage-point delta;
-- all percentages and deltas with two digits after the decimal point;
+- the starting commit SHA and baseline method coverage;
+- the final PR branch commit SHA and method coverage;
+- the method-coverage delta;
 - the method-level coverage change that motivated the test, such as a visitor
   moving from wholly uncovered to partially covered.
 
 Do not compare a focused single-test coverage run against the broad baseline.
 Focused runs are useful for proving that a specific fixture hits the intended
-lines, but their percentages are not comparable to the full `ut.backends.pure_`
-coverage percentage.
+method, but their percentages are not comparable to the full
+`ut.backends.pure_` coverage percentage.
 
 ## Audit Log
 
 Keep an audit table in this plan or in a sibling coverage audit file. Each row
-should track one uncovered method or coherent branch group.
+should track one uncovered CTFE method or coherent branch group.
 
 Suggested columns:
 
@@ -172,14 +187,12 @@ For future PR slices on this plan, the main agent should orchestrate only:
 Do not choose the next CTFE target locally before the explorer has reported.
 Use medium reasoning for routine explorer and worker subagents unless a slice
 has a specific complexity that justifies a higher setting.
-For this PR, use the single PR worktree for sequential workers instead of
-creating one worktree per worker.
+Use a single PR worktree for sequential workers instead of creating one
+worktree per worker.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
-For the 2026-05-29 continuation branch, keep all explorer and worker subagents
-in the single PR worktree `worktrees/dmd-ctfe-coverage-tests-6`. Do not create
-one worktree per subagent.
+## Archive
 
 ### 2026-05-28 Workflow Slice
 
