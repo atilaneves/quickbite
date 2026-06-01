@@ -541,6 +541,29 @@ Verification notes:
   `pointerArithmetic` result path.
 - The slice changed only the test and plan files.
 
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 1 Follow-up
+
+Probe test:
+
+```text
+ut.backends.pure_.lang.expressions.complexLiteralWithRuntimeImaginaryTerm.Ctfe
+```
+
+Coverage intent: cover `visit(ComplexExp)` with runtime-shaped imaginary-literal
+multiplication.
+
+Verification notes:
+
+- Focused coverage passed with 1 test run and 0 failed:
+
+  ```sh
+  scripts/dmd-ctfe-coverage.sh \
+      ut.backends.pure_.lang.expressions.complexLiteralWithRuntimeImaginaryTerm.Ctfe
+  ```
+- Focused coverage did not move `visit(ComplexExp)`; line `1809` in
+  `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` remains `0000000`.
+- The probe did not reach the target method logic and was discarded.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -621,6 +644,7 @@ that shim.
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 | `foreachApplyUtf` whole method | Covered | `foreachUtf8String.Ctfe` | 2-byte UTF-8 sequence via `foreach (dchar c; s)` with `bytes.idup`. Method now partially covered. |
 | `visit(CastExp)` type-painting path | Covered | `ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe` | Runtime `void*` to array cast path now covers the pointer-painting branch in `visit(CastExp)` and closes part of the uncovered gap. |
+| `visit(ComplexExp)` | Not reached | `ut.backends.pure_.lang.expressions.complexLiteralWithRuntimeImaginaryTerm.Ctfe` | Probe passed, but `visit(ComplexExp)` line `1809` remained `0000000`; no test kept. |
 | `visit(DotTypeExp)` type-property probe | Not reached | dmd-ctfe-coverage-tests-11 Worker 8 | `dotTypePropertySizeofUsesRuntimeSeed.Ctfe` passed but left all `visit(DotTypeExp)` executable lines uncovered; probe discarded. |
 | `BinExp` pointer-plus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe` | Runtime `values.ptr + 1` hits the pointer arithmetic result path. |
 | `BinExp` pointer-minus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe` | Runtime `tail - 1` hits the pointer arithmetic result path. |
