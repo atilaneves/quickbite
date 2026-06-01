@@ -218,6 +218,9 @@ uncovered reachable methods as undocumented backlog.
 
 For future PR slices on this plan, the main agent should orchestrate only:
 
+Spawn all explorer and worker subagents for this plan with
+`gpt-5.3-codex-spark`.
+
 1. Ask an explorer subagent to inspect the fresh coverage audit, DMD CTFE
    source, and nearby tests, then recommend the next reachable additive test
    target. The explorer must verify the candidate method does not appear in
@@ -454,16 +457,88 @@ Verification notes:
 Added focused pure-backend CTFE test:
 
 ```text
-ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe
+ut.backends.pure_.lang.arrays.assocArrayDupCopiesEntries.Ctfe
 ```
 
-Coverage intent: cover `interpret_dup` through runtime dynamic-array duplication.
+Coverage intent: cover `interpret_dup` through runtime associative-array
+duplication.
 
 Verification notes:
 
 - `dub test -- --random
-  ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe`
+  ut.backends.pure_.lang.arrays.assocArrayDupCopiesEntries.Ctfe`
   passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.arrays.assocArrayDupCopiesEntries.Ctfe`
+  passed.
+- Focused coverage hit `interpret_dup`: argument interpretation, literal copy,
+  key/value postblit checks, mutable AA type repaint, and return.
+- The slice changed only the test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 8
+
+Probe discarded. The candidate fixture:
+
+```text
+ut.backends.pure_.lang.expressions.dotTypePropertySizeofUsesRuntimeSeed.Ctfe
+```
+
+was intended to cover `visit(DotTypeExp)` through a type-property path
+(`int.sizeof`) from a runtime-shaped local expression.
+
+Verification notes:
+
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.dotTypePropertySizeofUsesRuntimeSeed.Ctfe`
+  passed.
+- Focused coverage showed all executable lines in `visit(DotTypeExp)` still
+  uncovered, so the probe did not hit the intended target logic.
+- No test was kept for this target.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 9
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe
+```
+
+Coverage intent: exercise runtime pointer-offset access through a local
+`int*` created from a dynamic array.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe`
+  passed.
+- Focused coverage hit the `BinExp` pointer-plus-integral branch and the
+  `pointerArithmetic` result path.
+- The slice changed only the test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 10
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe
+```
+
+Coverage intent: exercise runtime pointer subtraction (`-` with integer offset)
+followed by indirect element access.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe`
+  passed.
+- Focused coverage hit the `BinExp` pointer-minus-integral branch and the
+  `pointerArithmetic` result path.
 - The slice changed only the test and plan files.
 
 ### 2026-05-28 Workflow Slice
@@ -534,7 +609,7 @@ that shim.
 | Static multidimensional slice block assignment | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | Recursive row repeat path. |
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
-| `interpret_dup` runtime duplication | Covered | `ut.backends.pure_.lang.arrays.dynamicArrayDupCopiesElements.Ctfe` | `interpret_dup` path now covered through runtime dynamic-array `.dup`. |
+| `interpret_dup` AA duplication | Covered | `ut.backends.pure_.lang.arrays.assocArrayDupCopiesEntries.Ctfe` | Runtime associative-array `.dup` covers literal copy, key/value postblit checks, type repaint, and return. |
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
@@ -546,6 +621,11 @@ that shim.
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 | `foreachApplyUtf` whole method | Covered | `foreachUtf8String.Ctfe` | 2-byte UTF-8 sequence via `foreach (dchar c; s)` with `bytes.idup`. Method now partially covered. |
 | `visit(CastExp)` type-painting path | Covered | `ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe` | Runtime `void*` to array cast path now covers the pointer-painting branch in `visit(CastExp)` and closes part of the uncovered gap. |
+| `visit(DotTypeExp)` type-property probe | Not reached | dmd-ctfe-coverage-tests-11 Worker 8 | `dotTypePropertySizeofUsesRuntimeSeed.Ctfe` passed but left all `visit(DotTypeExp)` executable lines uncovered; probe discarded. |
+| `BinExp` pointer-plus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe` | Runtime `values.ptr + 1` hits the pointer arithmetic result path. |
+| `BinExp` pointer-minus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe` | Runtime `tail - 1` hits the pointer arithmetic result path. |
+| `interpret_aaGetRvalueX` missing key | Covered | `ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe` | Missing runtime key hits the DMD CTFE diagnostic branch for AA reads. |
+| `visit(PostExp)` postfix increment | Covered | `ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe` | Runtime `value++` hits `EXP.plusPlus` and `interpretAssignCommon` with post mode. |
 
 Coverage workflow details:
 
@@ -1515,6 +1595,92 @@ Final broad coverage verification:
 
 - `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 747 tests run,
   0 failed, and 28/28 failing as expected.
+
+### 2026-06-01 master-pr-ready PR Coverage Report
+
+Starting broad coverage target:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Starting commit:
+
+```text
+235dde61508b48403e25cb5a8fbd84f2fdffb6ff
+```
+
+Starting coverage:
+
+```text
+2306/3764 executable entries, or 61.26%
+```
+
+Branch-head coverage before adding this report:
+
+```text
+2340/3764 executable entries, or 62.17%
+```
+
+Coverage delta:
+
+```text
++34 executable entries, or +0.91 percentage points
+```
+
+Method-level coverage changes:
+
+- `interpret_dup` is covered through runtime associative-array `.dup`.
+- `BinExp` pointer-plus-integral and pointer-minus-integral branches are
+  covered by runtime pointer offset tests.
+- `interpret_aaGetRvalueX` missing-key diagnostics are covered.
+- `visit(PostExp)` postfix increment is covered through runtime `value++`.
+- `visit(DotTypeExp)` was probed but did not move coverage, so the probe was
+  discarded and recorded as not reaching target logic.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 11
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe
+```
+
+Coverage intent: cover missing-key associative-array reads that surface the
+expected runtime diagnostic in D's frontend/CTFE pipeline.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe`
+  passed.
+- Focused coverage hit `interpret_aaGetRvalueX`: AA/key interpretation,
+  literal validation, failed key lookup, and missing-key diagnostic return.
+- The slice changed only the test and plan files.
+
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 12
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe
+```
+
+Coverage intent: cover runtime postfix-increment behavior through a mutable local
+seed and verify both the expression result and updated variable value.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe` passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe` passed.
+- Focused coverage hit `visit(PostExp)` through the `EXP.plusPlus` branch and
+  `interpretAssignCommon` with post mode.
+- The slice changed only the test and plan files.
 
 ## Acceptance Criteria
 

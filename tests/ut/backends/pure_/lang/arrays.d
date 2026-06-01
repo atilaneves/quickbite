@@ -853,6 +853,24 @@ static foreach (backend; backends) {
         });
     }
 
+    @("assocArrayReadMissingKeyThrowsDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int present = key(10);
+                int absent = key(present + 1);
+                int[int] values = [present: present + 30];
+
+                auto missing = values[absent];
+                assert(missing == 0);
+            }
+        }).shouldThrowWithMessage("key `absent` not found in associative array `values`");
+    }
+
     @("assocArrayRemoveRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -981,6 +999,32 @@ static foreach (backend; backends) {
                 assert(sums[1] == 63);
             }
         }).shouldThrowWithMessage("62 != 63");
+    }
+
+    @("assocArrayDupCopiesEntries." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] original = [
+                    first: first + 30,
+                    second: second + 30,
+                ];
+                int[int] copy = original.dup;
+
+                original[first] = key(99);
+
+                assert(copy.length == original.length);
+                assert(copy[first] == 40);
+                assert(copy[second] == 41);
+                assert(original[first] != copy[first]);
+            }
+        });
     }
 
     @("uninitializedDynamicArrayLength." ~ backend.stringof)
