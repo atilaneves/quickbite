@@ -80,6 +80,10 @@ covered anywhere in the current CTFE-backed language tests.
 - Use existing CTFE-passing tests as the acceptance matrix. The test-first step
   is to select a current test, make it fail against the IR backend, then make
   the smallest production change that makes it pass.
+- Choose the promoted test by expected implementation size. The first PR
+  should pick the already-written CTFE-passing test that can be made green with
+  the least production code while still entering through the required parsed
+  module path and exercising honest IR lowering/execution.
 - The first PR should promote a parsed-module backend test that enters through
   `runParsedTests`, not a REPL or `eval` test. Do not implement `eval` or
   `evalRepl` for the first IR backend slice unless that entry point is
