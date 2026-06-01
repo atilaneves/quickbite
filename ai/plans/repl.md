@@ -76,14 +76,6 @@ Completed:
   shape from `pragma(msg)`, including nested `null` values in range structs.
 - Tightened the regression in `ut.backends.repl` to assert the exact rendered
   output for the finite-range case.
-- Report DMD's CTFE diagnostic when a no-display REPL cell calls runtime-only
-  `malloc`, and keep the failed cell out of session history so later cells see
-  the last known-good state.
-- Surface CTFE diagnostics for runtime-only `std.stdio.File` writes instead of
-  silently accepting them. Manual REPL verification confirmed that
-  `File("/tmp/...", "w")` now reports DMD's `fopen64` and `malloc` CTFE
-  diagnostics, creates no file, and leaves the last known-good session state
-  usable.
 - Fixed `import std;` in the CTFE-backed REPL. Real CTFE accepts importing
   Phobos symbols through `import std;`; the REPL failure came from Quickbite's
   frontend-only `dmd.iasm` shim not marking functions that contain inline asm.
