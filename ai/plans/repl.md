@@ -63,7 +63,7 @@ Completed:
 - Added GNU readline-backed terminal input to the REPL binary, including
   up-arrow traversal of past commands.
 - Added a standalone pseudo-TTY smoke test at `tests/run_repl.py` that runs
-  `bin/repl`, enters an expression, presses up-arrow, presses Enter, and
+  `bin/qb`, enters an expression, presses up-arrow, presses Enter, and
   verifies the recalled command executes again.
 - Added `ci.sh` to run randomized unit tests, benchmarks, and the standalone
   REPL smoke test before PRs.
@@ -162,12 +162,12 @@ Verification after implementation:
 
 - Run focused tests for the backend REPL module.
 - Run `dub test -- --random`.
-- Build the REPL configuration with `dub build -c repl`.
+- Build the REPL configuration with `dub build -c qb`.
 - Actually try the REPL binary after building it. At minimum, pipe `1`,
   `int x;`, `++x;`, `x`, a multiline function declaration, a call to that
-  function, and `:q` into `bin/repl` and verify expression output appears while
+  function, and `:q` into `bin/qb` and verify expression output appears while
   no-display cells stay quiet.
-- Run `tests/run_repl.py` after `dub build -c repl` to verify interactive
+- Run `tests/run_repl.py` after `dub build -c qb` to verify interactive
   terminal command history through a pseudo-TTY.
 - Run `ci.sh` before preparing a PR.
 

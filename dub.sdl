@@ -68,9 +68,9 @@ configuration "benchmark" {
     dependency ":dmd-backend-vendor" version="*"
 }
 
-configuration "repl" {
+configuration "qb" {
     targetType "executable"
-    targetName "repl"
+    targetName "qb"
     targetPath "bin"
 
     mainSourceFile "repl/main.d"

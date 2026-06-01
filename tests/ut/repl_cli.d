@@ -10,7 +10,7 @@ private:
 unittest {
     import quickbite.repl_cli: ReplBackendName, parseReplArgs;
 
-    const result = parseReplArgs(["repl"]);
+    const result = parseReplArgs(["qb"]);
 
     result.status.should == 0;
     result.options.backend.should == ReplBackendName.ctfe;
@@ -20,7 +20,7 @@ unittest {
 unittest {
     import quickbite.repl_cli: ReplBackendName, parseReplArgs;
 
-    const result = parseReplArgs(["repl", "--backend", "ctfe"]);
+    const result = parseReplArgs(["qb", "--backend", "ctfe"]);
 
     result.status.should == 0;
     result.options.backend.should == ReplBackendName.ctfe;
@@ -30,7 +30,7 @@ unittest {
 unittest {
     import quickbite.repl_cli: ReplBackendName, parseReplArgs;
 
-    const result = parseReplArgs(["repl", "-b", "ctfe"]);
+    const result = parseReplArgs(["qb", "-b", "ctfe"]);
 
     result.status.should == 0;
     result.options.backend.should == ReplBackendName.ctfe;
@@ -40,7 +40,7 @@ unittest {
 unittest {
     import quickbite.repl_cli: parseReplArgs;
 
-    const result = parseReplArgs(["repl", "--backend", "ir"]);
+    const result = parseReplArgs(["qb", "--backend", "ir"]);
 
     result.status.should == 1;
     result.diagnostic.should == "unknown backend: ir";
