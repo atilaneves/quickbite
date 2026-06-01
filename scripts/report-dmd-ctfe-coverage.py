@@ -58,6 +58,13 @@ class AreaStats:
     first_uncovered: int | None = None
 
 
+@dataclass
+class FunctionScope:
+    name: str
+    parent_depth: int
+    opened: bool = False
+
+
 def trim(value: str) -> str:
     return value.strip()
 
@@ -119,7 +126,8 @@ def classify(source: str) -> str:
 
 def parse_coverage(path: Path) -> tuple[dict[str, AreaStats], int, int]:
     areas: dict[str, AreaStats] = {}
-    current: str | None = None
+    scopes: list[FunctionScope] = []
+    brace_depth = 0
     covered_total = 0
     total_executable = 0
 
@@ -133,23 +141,30 @@ def parse_coverage(path: Path) -> tuple[dict[str, AreaStats], int, int]:
             source = line[pipe + 1 :].rstrip("\n")
 
             if not prefix and is_function_declaration(source):
-                current = trim(source)
-                areas.setdefault(current, AreaStats(kind=classify(current)))
-                continue
+                name = trim(source)
+                areas.setdefault(name, AreaStats(kind=classify(name)))
+                scopes.append(FunctionScope(name=name, parent_depth=brace_depth))
 
-            if current is None:
-                continue
+            current = scopes[-1].name if scopes else None
 
-            if prefix == "0000000":
+            if current is not None and prefix == "0000000":
                 total_executable += 1
                 area = areas[current]
                 area.uncovered += 1
                 if area.first_uncovered is None:
                     area.first_uncovered = lineno
-            elif prefix and prefix[0].isdigit():
+            elif current is not None and prefix and prefix[0].isdigit():
                 total_executable += 1
                 areas[current].covered += 1
                 covered_total += 1
+
+            brace_depth += source.count("{") - source.count("}")
+            for scope in scopes:
+                if not scope.opened and brace_depth > scope.parent_depth:
+                    scope.opened = True
+
+            while scopes and scopes[-1].opened and brace_depth <= scopes[-1].parent_depth:
+                scopes.pop()
 
     return areas, covered_total, total_executable
 
