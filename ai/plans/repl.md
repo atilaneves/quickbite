@@ -90,6 +90,9 @@ Remaining follow-up:
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
   path. Never try to materialize infinite ranges.
+- `unittest` blocks are not supported as REPL input cells. Running a `.d` file
+  containing `unittest` blocks via `bin/repl file.d` will fail when the parser
+  encounters the first `unittest` keyword. Supporting them is future work.
 
 ## Architecture
 

@@ -10,6 +10,9 @@ public struct ReplOptions {
     public ReplBackendName backend;
     public bool hasCommand;
     public string command;
+    public bool showHelp;
+    public bool hasFile;
+    public string file;
 }
 
 public struct ReplCliResult {
@@ -18,37 +21,48 @@ public struct ReplCliResult {
     public ReplOptions options;
 }
 
-public ReplCliResult parseReplArgs(in string[] args) @safe pure {
+public ReplCliResult parseReplArgs(string[] args) {
+    import std.getopt;
+
     ReplCliResult result;
     result.options.backend = ReplBackendName.ctfe;
+    string backendName = "ctfe";
 
-    size_t index = 1;
-    while (index < args.length) {
-        const arg = args[index];
-        if (arg == "-c") {
-            if (index + 1 >= args.length)
-                return failure("missing command after -c");
+    GetoptResult helpInfo;
+    try {
+        helpInfo = getopt(
+            args,
+            "c", "Run a D expression.", (string _, string val) {
+                result.options.hasCommand = true;
+                result.options.command = val;
+            },
+            "b|backend", "Select backend (default: ctfe).", &backendName,
+        );
+    } catch (GetOptException e) {
+        return ReplCliResult(1, e.msg);
+    }
 
-            result.options.hasCommand = true;
-            result.options.command = args[index + 1];
-            index += 2;
-        } else if (arg == "--backend" || arg == "-b") {
-            if (index + 1 >= args.length)
-                return failure("missing backend after " ~ arg);
+    if (helpInfo.helpWanted) {
+        result.options.showHelp = true;
+        result.diagnostic = helpText;
+        return result;
+    }
 
-            if (args[index + 1] != "ctfe")
-                return failure("unknown backend: " ~ args[index + 1]);
+    if (backendName != "ctfe")
+        return ReplCliResult(1, "unknown backend: " ~ backendName);
 
-            result.options.backend = ReplBackendName.ctfe;
-            index += 2;
-        } else {
-            return failure("unknown option: " ~ arg);
-        }
+    if (args.length > 1) {
+        result.options.hasFile = true;
+        result.options.file = args[1];
     }
 
     return result;
 }
 
-private ReplCliResult failure(in string diagnostic) @safe pure {
-    return ReplCliResult(1, diagnostic);
-}
+private enum helpText =
+    "Usage: repl [options] [file.d]\n" ~
+    "\n" ~
+    "Options:\n" ~
+    "  -c <command>          Run a D expression\n" ~
+    "  -b, --backend <name>  Select backend (default: ctfe)\n" ~
+    "  -h, --help            Show this help\n";

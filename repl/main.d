@@ -14,10 +14,21 @@ public int main(string[] args) {
         return options.status;
     }
 
+    if (options.options.showHelp) {
+        writeln(options.diagnostic);
+        return 0;
+    }
+
     auto repl = Repl(new Ctfe);
 
     if (options.options.hasCommand) {
         repl.submit(options.options.command);
+        return 0;
+    }
+
+    if (options.options.hasFile) {
+        import std.file: readText;
+        repl.submit(readText(options.options.file));
         return 0;
     }
 
