@@ -19,8 +19,8 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     public override void runParsedTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
+        Interpreter interpreter;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            Interpreter interpreter;
             interpreter.runTest(unitTest);
         });
     }
@@ -37,14 +37,6 @@ private struct Interpreter {
     }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
-        if (statement is null)
-            return;
-
-        if (auto scope_ = statement.isScopeStatement) {
-            runStatement(scope_.statement);
-            return;
-        }
-
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements)
@@ -57,11 +49,7 @@ private struct Interpreter {
             return;
         }
 
-        import std.conv: text;
-        throw new Exception(text(
-            "Unsupported tree-walker statement: ",
-            statement.stmt,
-        ));
+        assert(0);
     }
 
     private bool runExpression(imported!"dmd.expression".Expression expression) {
@@ -74,10 +62,6 @@ private struct Interpreter {
             return true;
         }
 
-        import std.conv: text;
-        throw new Exception(text(
-            "Unsupported tree-walker expression: ",
-            expression.op,
-        ));
+        assert(0);
     }
 }
