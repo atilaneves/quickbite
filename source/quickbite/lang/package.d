@@ -23,6 +23,7 @@ public struct Value {
         wchar,
         dchar,
 
+        Null,
         float,
         double,
         real,
@@ -36,6 +37,10 @@ public struct Value {
 
     public static Value void_() @safe pure {
         return Value(Void.init);
+    }
+
+    public static Value null_() @safe pure {
+        return Value(Null.init);
     }
 
     public static Value structValue(
@@ -97,6 +102,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(Struct))) {
                     return value.toString;
+                } else static if (is(T == const(Null))) {
+                    return "null";
                 } else {
                     return text(value);
                 }
@@ -131,6 +138,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(Struct))) {
                     return value.toString;
+                } else static if (is(T == const(Null))) {
+                    return "null";
                 } else {
                     return data.toString;
                 }
@@ -234,3 +243,4 @@ private struct Field {
 
 
 private struct Void {}
+private struct Null {}
