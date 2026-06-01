@@ -396,6 +396,9 @@ private imported!"quickbite.lang".Value ctfeValue(
     if (auto array = expression.isArrayLiteralExp)
         return arrayValue(array);
 
+    if (auto struct_ = expression.isStructLiteralExp)
+        return structValue(struct_);
+
     throw new Exception("Unsupported CTFE eval result.");
 }
 
@@ -478,6 +481,20 @@ private imported!"quickbite.lang".Value arrayValue(
         values ~= cast(long) array[index].isIntegerExp.getInteger;
 
     return Value(values);
+}
+
+private imported!"quickbite.lang".Value structValue(
+    imported!"dmd.expression".StructLiteralExp struct_,
+) {
+    import quickbite.lang: Value;
+
+    return Value.structValue("struct", "", []);
+}
+
+private string typeChars(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return fromStringz(type.toChars).idup;
 }
 
 private __gshared uint _diagnosticModuleCounter;

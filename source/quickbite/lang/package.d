@@ -38,7 +38,19 @@ public struct Value {
         return Value(Void.init);
     }
 
+    public static Value structValue(
+        in string typeName,
+        in string typeIdentity,
+        in Value[] fields,
+    ) @safe pure {
+        return Value(Struct(typeName, typeIdentity, fields));
+    }
+
     private this(in Void value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(Struct value) @safe pure {
         data = Data(value);
     }
 
@@ -173,6 +185,18 @@ private struct Struct {
     public string typeName;
     public string typeIdentity;
     public Field[] fields;
+
+    public this(
+        in string typeName,
+        in string typeIdentity,
+        in Value[] fields,
+    ) @safe pure {
+        this.typeName = typeName;
+        this.typeIdentity = typeIdentity;
+
+        foreach (field; fields)
+            this.fields ~= Field("", field);
+    }
 
     public this(T)(in T value) @safe pure
     if (is(T == struct))

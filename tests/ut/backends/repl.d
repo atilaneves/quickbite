@@ -97,6 +97,25 @@ static foreach (backend; backends) {
         output.should == ["1: int"];
     }
 
+    @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+        import std.string: indexOf;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "import std.algorithm;",
+                "int[] xs = [1, 2, 3];",
+                "xs.map!(x => x * 2)",
+                ":q",
+            ],
+        );
+
+        output.length.should == 1;
+        output[0].indexOf("Unsupported CTFE eval result.").should == -1;
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
