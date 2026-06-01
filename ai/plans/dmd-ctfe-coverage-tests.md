@@ -246,7 +246,9 @@ Create one git worktree at the start of the orchestration session and keep it
 for the entire session. All workers operate inside that same worktree. Do not
 create a new worktree per worker or per target. The worktree is created once
 (step 1 of the PR Coverage Report section), all commits land on that branch,
-and the PR is opened from it at the end.
+and the PR is opened from it at the end. Any instruction to "update this plan"
+or "update the plan" means editing the plan file inside the active worktree,
+not the main checkout or another worktree.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
 
