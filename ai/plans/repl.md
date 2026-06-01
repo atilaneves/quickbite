@@ -24,20 +24,6 @@ Pick these items up before any other REPL follow-up.
 - Keep failed REPL eval cells from poisoning the session. A failed no-display
   cell must not be accepted into REPL history, and later valid cells should
   still see the last known-good session state.
-- Support C pointer values and pointer-to-integer casts in REPL cells without
-  corrupting the session parser state. This currently fails after importing
-  `core.stdc.stdlib`, allocating with `malloc`, casting the pointer to `int`,
-  and then evaluating the variable:
-
-  ```text
-  > import core.stdc.stdlib;
-  > auto ptr = malloc(42);
-  > int i = cast(int) ptr;
-  > i
-  found `}` when expecting `;` following expression
-  matching `}` expected following compound statement, not `End of File`
-  >
-  ```
 - Support type-introspection cells such as `typeof(i)` without treating the
   type node as a normal expression result. The REPL currently reports this as
   a frontend error after a variable declaration:
@@ -49,29 +35,6 @@ Pick these items up before any other REPL follow-up.
   type `int` is not an expression
   >
   ```
-- Surface CTFE diagnostics for runtime-only side-effect cells such as
-  `std.stdio.File` writes. Real CTFE rejects this code because `fopen64` and
-  `malloc` cannot be interpreted at compile time. The REPL currently lets the
-  session continue after constructing a file handle and calling `writeln`, but
-  no file is written and no diagnostic is shown:
-
-  ```text
-  Quickbite REPL
-  > import std.stdio;
-  > auto f = File("/tmp/haha.txt", "w");
-  > f.writeln("hello there");
-  >
-  ```
-
-  ```text
-  $ cat /tmp/haha.txt
-  cat: /tmp/haha.txt: No such file or directory
-  ```
-
-  The correct CTFE-backend behavior is to report DMD's compile-time
-  interpretation failure for the cell and leave the last known-good session
-  state intact, not to make `File.writeln` execute.
-
 ## Summary
 
 The REPL uses the new backend architecture. Runtime REPL evaluation and REPL
@@ -121,6 +84,14 @@ Completed:
   shape from `pragma(msg)`, including nested `null` values in range structs.
 - Tightened the regression in `ut.backends.repl` to assert the exact rendered
   output for the finite-range case.
+- Report DMD's CTFE diagnostic when a no-display REPL cell calls runtime-only
+  `malloc`, and keep the failed cell out of session history so later cells see
+  the last known-good state.
+- Surface CTFE diagnostics for runtime-only `std.stdio.File` writes instead of
+  silently accepting them. Manual REPL verification confirmed that
+  `File("/tmp/...", "w")` now reports DMD's `fopen64` and `malloc` CTFE
+  diagnostics, creates no file, and leaves the last known-good session state
+  usable.
 
 Remaining follow-up:
 

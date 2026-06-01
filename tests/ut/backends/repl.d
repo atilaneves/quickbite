@@ -125,6 +125,23 @@ static foreach (backend; backends) {
         repl.submit("x").should == Value(1);
     }
 
+    @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int good = 41;").should == Value.void_;
+        repl.submit("import core.stdc.stdlib;").should == Value.void_;
+        void allocateAtCompileTime() {
+            repl.submit("auto ptr = malloc(42);");
+        }
+        allocateAtCompileTime.shouldThrowWithMessage(
+            "`malloc` cannot be interpreted at compile time, because it has no available source code",
+        );
+        repl.submit("good + 1").should == Value(42);
+    }
+
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
