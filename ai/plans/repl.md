@@ -86,6 +86,46 @@ Completed:
 
 Remaining follow-up:
 
+- Fix the SIGSEGV (exit 139) triggered by `printf "\n" | bin/repl`.
+  Empty lines should be silently skipped.
+
+- Fix `printf "1+1\n" | bin/repl` printing `Quickbite REPL` on stdout
+  before results. The banner should only appear when stdin is a terminal.
+
+- Fix `bin/repl -c "1 + 2"` producing no output. The evaluated value
+  should be printed, matching `printf "1 + 2\n" | bin/repl` behaviour.
+
+- Fix strings displaying as char arrays: `"hello"` prints `[h, e, l, l, o]`
+  instead of `"hello"`. Affects all string values including results of
+  `to!string` etc.
+
+- Fix syntax errors exposing wrapper internals: `1 +` produces three messages
+  referencing `return`, `}`, and compound statement — artefacts of the
+  generated wrapper source. Only the user-relevant diagnostic should appear.
+
+- Fix runtime error messages being emitted twice: `1 / 0` prints
+  `divide by 0` twice; `[1,2,3][10]` prints the OOB message twice.
+
+- Fix `throw new Exception("test")` and `auto arr = [1,2,3]; arr[99]`
+  printing `Unsupported CTFE eval result: error` instead of the actual
+  error message. The user's diagnostic is lost.
+
+- Fix `printf "   \n" | bin/repl` printing `Unsupported CTFE eval result:
+  voidExpression`. Whitespace-only input should be a silent no-op.
+
+- Display numeric scalar values using D literal notation where a
+  distinguishing suffix exists: `42u` (uint), `42L` (long), `42UL`
+  (ulong), `3.8f` (float). `int` and `double` need no annotation as they
+  are D's default literal types. Use `: type` annotation only for types
+  with no D literal suffix: `byte`, `short`, `ubyte`, `ushort`, `real`.
+
+- Fix `iota(5).filter!(x => x % 2 == 0).array` producing no output and
+  no error. The result should display as `[0, 2, 4]`.
+
+- Support template function definitions as no-display cells. Currently
+  `T identity(T)(T x) { return x; }` produces parse errors and
+  `identity(42)` fails with `undefined identifier`.
+
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
