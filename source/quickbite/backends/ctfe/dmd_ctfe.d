@@ -384,6 +384,9 @@ private imported!"dmd.expression".Expression interpretCtfe(
 private imported!"quickbite.lang".Value ctfeValue(
     imported!"dmd.expression".Expression expression,
 ) {
+    import std.conv: text;
+    import quickbite.lang: Value;
+
     if (auto integer = expression.isIntegerExp)
         return integerValue(integer);
 
@@ -393,10 +396,19 @@ private imported!"quickbite.lang".Value ctfeValue(
     if (auto string_ = expression.isStringExp)
         return stringValue(string_);
 
+    if (auto null_ = expression.isNullExp)
+        return Value.null_();
+
+    if (auto construct = expression.isConstructExp)
+        return ctfeValue(construct.e2);
+
     if (auto array = expression.isArrayLiteralExp)
         return arrayValue(array);
 
-    throw new Exception("Unsupported CTFE eval result.");
+    if (auto struct_ = expression.isStructLiteralExp)
+        return structValue(struct_);
+
+    throw new Exception(text("Unsupported CTFE eval result: ", expression.op));
 }
 
 private imported!"quickbite.lang".Value integerValue(
@@ -478,6 +490,34 @@ private imported!"quickbite.lang".Value arrayValue(
         values ~= cast(long) array[index].isIntegerExp.getInteger;
 
     return Value(values);
+}
+
+private imported!"quickbite.lang".Value structValue(
+    imported!"dmd.expression".StructLiteralExp struct_,
+) {
+    import quickbite.lang: Value;
+
+    Value[] fields;
+    if (struct_.elements !is null) {
+        foreach (element; *struct_.elements) {
+            if (element is null)
+                continue;
+
+            fields ~= ctfeValue(element);
+        }
+    }
+
+    return Value.structValue(
+        struct_.sd.ident.toString.idup,
+        typeChars(struct_.type),
+        fields,
+    );
+}
+
+private string typeChars(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return fromStringz(type.toChars).idup;
 }
 
 private __gshared uint _diagnosticModuleCounter;

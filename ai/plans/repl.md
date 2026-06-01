@@ -117,19 +117,17 @@ Completed:
 - Supported import declarations as no-display REPL cells. For example,
   `import std.algorithm;` persists and a later expression can call `min`.
 - Removed dead executor REPL APIs after the backend REPL path replaced them.
+- Finished REPL display for valid finite range results so it matches the DMD
+  shape from `pragma(msg)`, including nested `null` values in range structs.
+- Tightened the regression in `ut.backends.repl` to assert the exact rendered
+  output for the finite-range case.
 
 Remaining follow-up:
 
-- Add proper range support to `Value` so REPL results can represent ranges
-  directly instead of forcing them into arrays.
-- Fix REPL display for valid finite range results. For example, after
-  `import std.algorithm;`, `[1, 2, 3].map!(x => x * 2)` currently reports
-  `Unsupported CTFE eval result.`. Until `Value` has range support, finite
-  ranges may be materialized into arrays so they fit the current
-  representation. This is a temporary `Value` representation workaround, not a
-  CTFE-backend-specific concept. Do not implement this by rewriting REPL input
-  source, appending `.array` to user expressions, or adding a display-only
-  wrapper source path. Never try to materialize infinite ranges.
+- If any additional `Value` shape work is needed, keep it generic to the
+  representation rather than CTFE-specific. Do not rewrite REPL input source,
+  append `.array` to user expressions, or add a display-only wrapper source
+  path. Never try to materialize infinite ranges.
 
 ## Architecture
 

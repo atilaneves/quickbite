@@ -97,6 +97,23 @@ static foreach (backend; backends) {
         output.should == ["1: int"];
     }
 
+    @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "import std.algorithm;",
+                "int[] xs = [1, 2, 3];",
+                "xs.map!(x => x * 2)",
+                ":q",
+            ],
+        );
+
+        output.should == ["MapResult([1, 2, 3], null)"];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
