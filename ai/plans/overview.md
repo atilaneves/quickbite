@@ -30,25 +30,10 @@ set runs a safe superset.
 
 ## Dependencies and Runtime
 
-Dependency handling is part of the experiment. The simplest first bytecode
-approach may compile everything it sees. Later variants should measure whether
-precompiled dependency bytecode, native dependency calls, or another strategy is
-faster for the average dub project.
-
-### Native Call Bridging (open problem)
-
-When the interpreter calls a function from a dependency or the D runtime
-it must cross the ABI boundary from the interpreter's value representation
-into the native calling convention. Two mechanisms are viable:
-
-- libffi: dynamic call construction, portable, overhead per call
-- JIT-compiled stubs: a small native thunk per function, compiled once at
-  session start, zero per-call overhead thereafter
-
-This decision is left open. Native calls are one possible dependency strategy,
-not an assumed end state. The JIT backend may sidestep this problem if the
-chosen library handles calling convention and symbol resolution (native code
-calls native code).
+Dependency handling is part of the experiment. The simplest first approach
+may compile everything it sees. Later variants should measure whether
+precompiled dependency bytecode, native dependency calls, or another strategy
+is faster for the average dub project.
 
 ## Common Interface
 
@@ -77,7 +62,7 @@ backend, not hidden by delegating to a different executor.
 
 ### 1. IrInterpreterExecutor
 
-Pipeline: DMD → lower to IR → execute IR with long[] temporaries.
+Pipeline: DMD → lower to IR → execute IR.
 
 Wrapped behind Executor as `ExecutorBackend.ir`.
 
@@ -99,20 +84,16 @@ D code behaves differently.
 
 ### 4. BytecodeExecutor (not yet implemented)
 
-Pipeline: DMD → emit stack bytecode directly from the analysed AST →
-switch-dispatch VM.
+Pipeline: DMD → emit bytecode directly from the analysed AST →
+interpret bytecode.
 
-The baseline avoids the IR lowering pass. An IR-to-bytecode variant may be
-measured later, but it is not the initial architecture.
+Wrapped as `ExecutorBackend.bytecode`.
 
 ### 5. JitExecutor (deferred)
 
 Pipeline: DMD → lower to IR → JIT compile to native code → execute.
 
-ABI bridging may not be needed if the chosen library handles calling
-convention and symbol resolution. Library TBD;
-MIR is the leading candidate for its low startup overhead and suitability
-for language-runtime use. Only pursue when measurements justify the spike.
+Only pursue when measurements justify the spike.
 
 ## Toy Serialization Library
 
@@ -140,16 +121,13 @@ and accepts `--import-path` flags so cerealed tests can be timed.
 2. Implement TreeWalkingExecutor. (Done.)
 3. Finish IR language coverage: bit ops, compound assignment, dynamic
    arrays, structs. (Done.)
-4. Add `tests/minicereal.d` unittest blocks. (Done; all pass on all
-   backends.)
+4. Add `tests/minicereal.d` unittest blocks. (Done.)
 5. Add backend-parity tests for shared supported behaviour. (Done.)
-6. Build benchmarking harness; run tree-walker vs IR interpreter on the
-   full minicereal test suite. (Done; harness in `benchmarks/`.)
+6. Build benchmarking harness. (Done.)
 7. Add DmdCtfe backend. (Done.)
-8. Run real cerealed tests: all 19 files exercised on all three backends.
-   (Done.)
-9. Implement the first direct AST-to-stack-bytecode slice and add it to the
-   backend parity matrix as soon as it supports the first approved behaviour.
+8. Run real cerealed tests. (Done.)
+9. Implement the first bytecode slice and add it to the backend parity
+   matrix as soon as it supports the first approved behaviour.
 10. Measure bytecode against comparable existing backends.
 11. Spike dependency strategies such as cached dependency bytecode and native
     calls when benchmarks show dependency handling matters.
@@ -174,48 +152,6 @@ mechanics only when they do not contradict D semantics, and they must be named
 and scoped as backend-specific implementation tests rather than placed in the
 pure language-surface matrix.
 
-## Future Enhancements
-
-IR currently stores most runtime values as `long`, which is not rich enough to
-format every DMD-compatible assertion-context message.  To include IR in the
-array-comparison and boolean-comparison diagnostic parity tests, carry enough D
-value type information through lowering and execution to distinguish bool,
-char, high-bit unsigned values, arrays, and other non-`long` values.
-
-## Known PR 36 Follow-Ups
-
-The contextual unittest assertion diagnostics added in PR 36 are being merged
-with known follow-up work:
-
-- `DmdCtfe` reconstructs contextual assertion messages from the last statement
-  in a compound block only. If the failing assertion is followed by another
-  statement, it reports DMD's generic `Unittest assertion failed.` message.
-- `treeWalkingOld` can re-evaluate failed comparison assertion operands while
-  formatting the diagnostic. Side effects in operands can change the reported
-  values.
-- `BytecodeExecutor` stores an explicit assertion message before evaluating the
-  assertion condition. If the condition calls code that fails an assertion, the
-  outer explicit message can leak into the inner failure.
-
-Fix these with backend-local implementations. If a backend cannot honestly
-support a diagnostic behaviour yet, exclude it from that behaviour's tests
-rather than adding a fallback path.
-
 ## Benchmarking Harness
 
-- Measure wall time of the re-parse + re-execute path (the hot loop).
-- Measure DMD frontend alone separately to expose the irreducible floor.
-- Inputs: current tiny test suite; larger suites as language coverage grows.
-- Metric: min / p50 / p95 / max over ≥200 runs per executor per input.
-- Lives in `benchmarks/`; excluded from dub test.
-- Backend parity: same selected unittest must produce the same pass/fail
-  result and the same user-facing diagnostic category across all backends.
-
-### Known issue: `-inline` disabled
-
-DMD's inliner hangs (>60 s, killed) when compiling `lowering.d` with
-`-inline` because the file is large (~8500 lines) and contains deep
-mutual recursion between `lowerExpression` and `lowerStatement`.  The
-benchmark build type `benchmark-opt` therefore omits `-inline`.  The
-fix is to split `lowering.d` into smaller modules; restore `-inline`
-(or switch back to `-b release`) once that is done.
+Lives in `benchmarks/`; excluded from `dub test`.

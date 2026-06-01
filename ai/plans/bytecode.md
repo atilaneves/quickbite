@@ -12,8 +12,6 @@ strong separation between compiler and VM. It should not borrow the JIT or the
 Lua-specific bytecode shape.
 
 ## Core Architecture
-- Use a register-oriented VM model rather than a pure stack VM, so temporaries,
-  call setup, and nested expressions stay explicit and cheap.
 - Keep the bytecode format compact and rigid, with a small set of opcodes and
   typed operand kinds such as function reference, local slot, constant index,
   comparison kind, and jump target.
