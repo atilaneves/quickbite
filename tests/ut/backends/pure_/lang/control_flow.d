@@ -1236,6 +1236,65 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("7 != 8");
     }
 
+    @("foreachUtf8String." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] bytes;
+                bytes ~= 'a';
+                bytes ~= cast(char) 0xC3;
+                bytes ~= cast(char) 0xA9;
+
+                string s = bytes.idup;
+                dchar[] chars;
+                foreach (dchar c; s)
+                    chars ~= c;
+
+                assert(chars.length == 2);
+                assert(chars[0] == 'a');
+                assert(chars[1] == '\u00e9');
+            }
+        });
+    }
+
+    @("foreachUtf8StringFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] bytes;
+                bytes ~= 'a';
+                bytes ~= cast(char) 0xC3;
+                bytes ~= cast(char) 0xA9;
+
+                string s = bytes.idup;
+                dchar[] chars;
+                foreach (dchar c; s)
+                    chars ~= c;
+
+                assert(chars.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("foreachUtf8StringFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[] bytes;
+                bytes ~= 'a';
+                bytes ~= cast(char) 0xC3;
+                bytes ~= cast(char) 0xA9;
+
+                string s = bytes.idup;
+                dchar[] chars;
+                foreach (dchar c; s)
+                    chars ~= c;
+
+                assert(chars[0] == 'b');
+            }
+        }).shouldThrowWithMessage("'a' != 'b'");
+    }
+
     @("foreachEmptyArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
