@@ -334,6 +334,52 @@ Verification notes:
   failing as expected.
 - The slice changed only test and plan files.
 
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 3
+
+Explorer target: `foreachApplyUtf` helper in `dmd.dinterpret`, reached via
+`foreach (dchar c; s)` over a multi-byte UTF-8 `string`.
+
+Added pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.control_flow.foreachUtf8String.Ctfe
+ut.backends.pure_.lang.control_flow.foreachUtf8StringFailureMessage.0.Ctfe
+ut.backends.pure_.lang.control_flow.foreachUtf8StringFailureMessage.1.Ctfe
+```
+
+The behavior test builds a two-character UTF-8 string (`'a'` + U+00E9
+as a 2-byte sequence) with mutable `char[]` locals and verifies CTFE
+decodes it to two `dchar` values. Failure-message tests poke the length
+assertion and the character value.
+
+Coverage effect: `foreachApplyUtf` moved from whole-method uncovered to
+partially covered; the broad `.lst` shows the function's first executable
+lines hit 3 times.
+
+Broad coverage command:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Executable-entry coverage from
+`tmp/dmd-ctfe-coverage/dmd-dinterpret.lst`:
+
+| Checkout | Covered | Total | Coverage |
+| --- | ---: | ---: | ---: |
+| Worker 2 end (baseline) | 2232 | 3760 | 59.36% |
+| Worker 3 final | 2307 | 3765 | 61.28% |
+
+Delta: +1.92 percentage points.
+
+Verification notes:
+
+- `dub test` passed with 1458 tests run, 0 failed, 28/28 failing as
+  expected.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed with 726
+  tests run, 0 failed, 28/28 failing as expected.
+- The slice changed only test and plan files.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -411,7 +457,7 @@ that shim.
 | `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
 | `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
-| `foreachApplyUtf` whole method | Needs test | Pending | ~110 uncovered lines; reachable via `foreach (dchar c; str)` with multi-byte UTF-8 inputs (2-, 3-, 4-byte sequences). Largest single tractable gap. |
+| `foreachApplyUtf` whole method | Covered | `foreachUtf8String.Ctfe` | 2-byte UTF-8 sequence via `foreach (dchar c; s)` with `bytes.idup`. Method now partially covered. |
 | `visit(CastExp)` type-painting path | Needs test | Pending | ~81 uncovered lines; reachable via pointer-to-array casts with runtime-shaped inputs. Second-largest tractable gap. |
 
 Coverage workflow details:
