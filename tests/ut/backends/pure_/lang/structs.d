@@ -1625,6 +1625,27 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("9 != 7");
     }
 
+    @("nestedStructReadsCapturedLocalThroughDefaultInit." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 40;
+                int bump = 2;
+
+                struct Inner {
+                    int readBase() {
+                        return seed;
+                    }
+                }
+
+                Inner inner;
+                seed += bump;
+
+                assert(inner.readBase == seed);
+            }
+        });
+    }
+
     @("structLiteralFillsStaticArrayFieldFromScalar." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

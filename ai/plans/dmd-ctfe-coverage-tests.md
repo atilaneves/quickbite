@@ -218,6 +218,7 @@ that shim.
 | `visitWith(WithStatement)` | Covered | Worker 2 slice | Now partial. |
 | `visitUnrolledLoop` | Covered | Worker 3 slice | Now partial. |
 | `visit(CommaExp)` | Covered | Worker 4 slice | Now partial. |
+| `visit(StructLiteralExp)` | Partially covered | `ut.backends.pure_.lang.structs.nestedStructReadsCapturedLocalThroughDefaultInit.Ctfe` | Poked green behavior test; audit still partial. |
 | `visitTryCatch` catch var binding | Covered | Worker 6 slice | See below. |
 | `visitTryCatch` handler local goto | Covered | Worker 1 slice | Restart path covered. |
 | `visitTryFinally` body local goto | Covered | Worker 1 slice | Finalbody runs once. |
