@@ -101,11 +101,7 @@ private imported!"dmd.expression".CallExp evalCall(in string str) {
 
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
     try
-    {
-        auto result = interpretCtfe(callExpression(replFunction(source)));
-
-        return ctfeValue(result);
-    }
+        return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
     catch (Exception exception)
         throw new Exception(withCandidateSignatures(source, exception.msg));
 }
