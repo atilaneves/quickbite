@@ -13,7 +13,20 @@ must not treat that language behavior as unsupported just because the current
 
 Pick these items up before any other REPL follow-up.
 
-No outstanding priority work.
+### Function declared twice
+
+This doesn't work:
+
+```
+Quickbite REPL
+> int twice(int i) { return i * 2; }
+> int twice(int i) { return 42; }
+function `twice(int i)` conflicts with previous declaration at <repl>(1)
+> twice(3)
+Overlong UTF-8 sequence
+```
+
+It should print 6.
 
 ## Summary
 
