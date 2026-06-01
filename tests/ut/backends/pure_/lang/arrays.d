@@ -798,6 +798,32 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("81 != 82");
     }
 
+    @("assocArrayInFindsRuntimeKey." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int missing = key(second + 1);
+                int[int] values = [
+                    first: first + 30,
+                    second: second + 30,
+                ];
+
+                int* found = first in values;
+                int* absent = missing in values;
+
+                assert(found !is null);
+                assert(*found == 40);
+                assert(absent is null);
+            }
+        });
+    }
+
     @("assocArrayRemoveRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
