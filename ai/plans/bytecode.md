@@ -26,8 +26,10 @@ Lua-specific bytecode shape.
   explicit frame bookkeeping over a deep abstraction stack.
 
 ## Implementation Direction
-- Start with the smallest useful slice: unittest blocks, integer literals,
-  equality and comparison, simple calls, returns, and assert handling.
+- Start with the smallest useful slice that can make exactly one approved
+  behavior test fail. If the slice needs unittest blocks, integer literals,
+  equality, calls, returns, and assert handling all at once, the test is too
+  broad; pick a smaller test.
 - Add locals, branches, and broader expression support only when a test forces
   the next slice.
 - Keep unsupported behavior explicit and diagnostic rather than silently
@@ -46,6 +48,33 @@ Lua-specific bytecode shape.
   language-surface question is involved.
 - Verify each new slice before expanding scope: red test, minimal
   implementation, green suite, then the next slice.
+- Do not add unsupported-diagnostic paths unless a test verifies the exact
+  diagnostic behavior.
+
+## PR 97 Review Lessons
+- Before coding a bytecode slice, ask what is the smallest behavior that should
+  fail and what code may be deleted while that test still passes.
+- Delete speculative opcodes, operands, frame fields, helper functions, and
+  public APIs. If a first test does not need calls, locals, returns, or a halt
+  instruction, do not add them yet.
+- Keep the DMD dependency only in the compiler module. The bytecode program
+  representation and VM must not import DMD AST or declaration types.
+- Keep modules separate from the start: backend adapter, compiler, bytecode
+  program representation, and VM. Do not hide all bytecode logic in the backend
+  adapter.
+- Use the existing runtime `Value` type unless a test forces a bytecode-specific
+  value representation. Do not invent int-only stack or operand types as a first
+  step.
+- Make operands earn their shape. Avoid a generic `long` operand, ad hoc
+  integer-specialized operands, or a half-built sum type unless the current test
+  proves that shape is needed.
+- Do not add module-level helpers that only wrap a single call unless they make
+  an active test simpler. Prefer inlining or overloading when that is clearer.
+- Keep names precise and conventional: use "variables" for variable metadata,
+  "indices" as the plural of index, and avoid names such as
+  `bytecode.bytecode`.
+- Preserve the repo's formatting style before asking for review. Formatting
+  churn distracts from the design slice.
 
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is
