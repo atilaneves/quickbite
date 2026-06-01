@@ -5,6 +5,7 @@
 
 import os
 import re
+import subprocess
 
 import pexpect
 import pytest
@@ -16,10 +17,7 @@ UP_ARROW = "\x1b[A"
 
 
 def test_repl() -> None:
-    repl = os.path.join(os.getcwd(), "bin", "qb")
-    if not os.path.exists(repl):
-        pytest.skip("bin/qb does not exist; run `dub build -c qb` first")
-
+    repl = qb_path()
     child = pexpect.spawn(repl, timeout=TIMEOUT, encoding="utf-8")
     try:
         child.expect_exact("Quickbite REPL")
@@ -41,6 +39,32 @@ def test_repl() -> None:
         child.close(force=True)
 
     assert child.exitstatus == 0
+
+
+def test_piped_blank_line_is_silent_noop() -> None:
+    result = run_qb(input="\n")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def run_qb(*args: str, input: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [qb_path(), *args],
+        input=input,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=TIMEOUT,
+    )
+
+
+def qb_path() -> str:
+    repl = os.path.join(os.getcwd(), "bin", "qb")
+    if not os.path.exists(repl):
+        pytest.skip("bin/qb does not exist; run `dub build -c qb` first")
+
+    return repl
 
 
 def clean(text: str) -> str:

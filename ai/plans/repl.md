@@ -83,14 +83,11 @@ Completed:
   analysis with a spurious no-return diagnostic. The shim now matches DMD's
   no-backend semantic path by marking the current function as containing inline
   asm.
+- Fixed piped blank input in the REPL binary. `printf "\n" | bin/qb` now exits
+  successfully without invoking the evaluator, and the banner is only printed
+  for terminal-backed stdin so blank piped input stays silent.
 
 Remaining follow-up:
-
-- Fix the SIGSEGV (exit 139) triggered by `printf "\n" | bin/repl`.
-  Empty lines should be silently skipped.
-
-- Fix `printf "1+1\n" | bin/repl` printing `Quickbite REPL` on stdout
-  before results. The banner should only appear when stdin is a terminal.
 
 - Fix `bin/repl -c "1 + 2"` producing no output. The evaluated value
   should be printed, matching `printf "1 + 2\n" | bin/repl` behaviour.

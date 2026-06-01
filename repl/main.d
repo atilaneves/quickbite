@@ -32,13 +32,17 @@ public int main(string[] args) {
         return 0;
     }
 
-    writeln("Quickbite REPL");
-    if (stdinIsTerminal)
+    if (stdinIsTerminal) {
+        writeln("Quickbite REPL");
         return runInteractiveRepl(repl);
+    }
 
     foreach (line; stdin.byLineCopy) {
         if (line == ":q" || line == ":quit")
             break;
+
+        if (line.length == 0)
+            continue;
 
         if (!submit(repl, line))
             return 1;
