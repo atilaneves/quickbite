@@ -2,113 +2,133 @@
 
 ## Summary
 
-Expand `quickbite.lang.Value` so it can represent useful D runtime values beyond
-the current scalar and array cases. Keep the model recursive and VM-friendly:
-`Value` should name the D value categories Quickbite needs, then each category
-can be implemented one approved TDD slice at a time.
+Expand `quickbite.lang.Value` until it can losslessly store D runtime values
+returned by backends and displayed by the REPL.
 
-The first concrete slice is struct values. Other categories are named now so the
-shape has room to grow without forcing a redesign.
+This plan is scoped to `quickbite.lang.Value` and backend/REPL result
+conversion. Do not change `quickbite.executor.Value` as part of this plan.
+
+Use a hybrid representation:
+
+- explicit recursive categories for values the VM benefits from inspecting;
+- a typed raw or identity fallback for values that cannot yet be decomposed
+  cleanly.
+
+Keep D type identity internally for lossless storage, but do not change public
+equality or display behaviour unless an approved test explicitly requires that
+change.
 
 ## Value Categories
 
-Add explicit `Value.Data` arms over time for these D value shapes:
+`Value.Data` should grow one approved TDD slice at a time. The target value
+categories are:
 
-- `Struct`: aggregate value with type identity and ordered named fields.
-- `Union`: aggregate value with type identity and a represented active field or
-  raw storage model, to be decided when implemented.
-- `ClassRef`: reference to a class object, preserving identity and dynamic type.
-- `InterfaceRef`: reference to an interface view of an object.
-- `Pointer`: pointer-like value, initially identity/address-like unless a
-  backend supplies dereferenceable storage.
-- `Delegate`: callable reference with context identity.
-- `FunctionRef`: function symbol/reference value.
+- `Void`: no value.
+- `Null`: null reference or pointer value when no more precise category is
+  needed.
+- Scalar values: `bool`, integral types, character types, and floating types.
+- `Array`: dynamic array represented recursively as `Value[]`.
+- `StaticArray`: fixed-length array represented recursively as `Value[]` plus
+  length and element type identity.
 - `AssocArray`: key/value collection represented recursively with `Value` keys
   and values.
-- Existing `Array` remains the representation for D arrays.
+- `Struct`: aggregate value with rendered type name, internal type identity,
+  and ordered fields.
+- `Union`: aggregate value with rendered type name, internal type identity,
+  and raw storage or active-field information.
+- `ClassRef`: reference to a class object, preserving identity and dynamic
+  type.
+- `InterfaceRef`: reference to an interface view of an object.
+- `Pointer`: pointer-like value, preserving pointee type identity and pointer
+  identity.
+- `Delegate`: callable reference with function and context identity.
+- `FunctionRef`: function symbol or function pointer value.
+- `Opaque`: typed raw or identity storage for value shapes that must be kept
+  losslessly before they have a dedicated recursive representation.
+- `TypeName`: display-only type result for REPL `typeof` cells.
 
-Do not add imaginary or complex-number support in this plan.
+The typed fallback should store Quickbite-owned metadata, not DMD frontend
+objects. At minimum it needs a rendered type name, a stable internal type
+identity, and either raw bytes for value-like data or identity data for
+reference-like data.
 
-## Struct Slice
+## Approved Decisions
 
-Use structs as the first example and implementation slice.
+1. Scope is `quickbite.lang.Value` plus backend/REPL result conversion.
+   `quickbite.executor.Value` is out of scope.
+2. Storage strategy is hybrid: recursive inspectable arms plus a typed
+   raw/identity fallback.
+3. Type identity is internal storage metadata. Equality and display remain
+   driven by approved behaviour tests.
+4. The first new implementation slice is recursive arrays.
+5. The first recursive-array test belongs in the backend REPL tests.
+6. The first fixture is a string array:
+   `string[] xs = ["a", "b"]; xs`.
+7. The first assertion checks rendered REPL output exactly:
+   `["a", "b"]`.
+8. The first implementation boundary is the CTFE adapter only:
+   `ArrayLiteralExp` element conversion should recurse through `ctfeValue`.
+9. Verification for the slice is the focused REPL test first, then
+   `dub test -- --random` after the edit session.
 
-A likely recursive representation is:
+## First TDD Slice: Recursive CTFE Arrays
+
+Current CTFE array conversion in `quickbite.backends.ctfe.dmd_ctfe` only reads
+integer elements from `ArrayLiteralExp`. That prevents backend/REPL results from
+displaying arrays whose elements are strings, structs, arrays, or other values
+already representable by `quickbite.lang.Value`.
+
+Proposed first test, pending explicit approval before editing tests:
 
 ```d
-private struct Struct {
-    string typeName;
-    Field[] fields;
-}
+@("repl.backend.displaysStringArrayResults." ~ backend.stringof)
+unittest {
+    import quickbite.repl: runReplLoop;
 
-private struct Field {
-    string name;
-    Value value;
+    const output = runReplLoop(
+        newBackend!backend,
+        [
+            `string[] xs = ["a", "b"];`,
+            "xs",
+            ":q",
+        ],
+    );
+
+    output.should == [`["a", "b"]`];
 }
 ```
 
-For:
+Minimal implementation after that test is approved and fails:
 
-```d
-struct Point {
-    int x;
-    int y;
-}
+- change CTFE `arrayValue(ArrayLiteralExp)` to build `Value[]` by calling
+  `ctfeValue` for each non-null element;
+- return a `quickbite.lang.Value` array from those recursive elements;
+- do not change `Value(T[])` unless the approved test proves it is needed.
 
-Value(Point(1, 2))
-```
+## Later Slices
 
-`Value` stores a `Struct` with type identity for `Point` and fields
-`x = Value(1)`, `y = Value(2)`.
+After recursive arrays are green, choose the next slice by discussion before
+writing any test. Good candidates are:
 
-Struct equality initially compares type identity, then fields in declaration
-order using `Value` equality. Exact custom `opEquals` behavior can be added
-later if a test requires matching D equality more closely.
+- static arrays, because they are close to recursive dynamic arrays;
+- complex and imaginary scalar values, if the plan should close the scalar
+  coverage gap next;
+- pointer values, to exercise the typed raw/identity fallback;
+- union values, to settle active-field versus raw-storage representation;
+- class and interface references, to model identity and dynamic type;
+- delegates and function references, to model callable values.
 
-## Implementation Options
+Each slice should add or modify one approved behaviour test first, implement
+the dumbest passing code, run the focused test, and then run the randomized
+suite after the editing session.
 
-Prefer explicit recursive categories because they are inspectable by the VM,
-serializable for diagnostics, and map naturally from backend/CTFE values.
+## Guardrails
 
-A boxed or type-erased fallback remains an implementation option for value
-shapes that cannot be represented cleanly as recursive `Value` data. It should
-not be the first design for structs, arrays, associative arrays, or other values
-where Quickbite benefits from inspecting the representation.
-
-## TDD Plan
-
-Autonomous run in `value-structs`: the user explicitly approved proceeding
-without pausing for each test.
-
-1. [done] Add one red struct test in `ut.lang`: two equal `Point` values
-   compare equal,
-   and a different `Point` compares unequal.
-2. [done] Implement the minimal `Struct` arm and `Value(T)` construction for
-   structs.
-3. [done] Add a second struct test proving two distinct struct types with the
-   same name and fields compare unequal.
-4. [done] Add a struct `text` test proving `Value(Point(...)).text` matches
-   D's compiler-generated `Point(...).text` representation.
-
-Autonomous run in `value-assoc-array`: the user explicitly approved proceeding
-without pausing for each test.
-
-1. [done] Add one red associative-array test in `ut.lang`: two equal `int[int]`
-   values compare equal, and a different value compares unequal.
-2. [done] Implement the minimal `AssocArray` arm and `Value(T)` construction
-   for associative arrays.
-3. [done] Add an associative-array `text` test proving
-   `Value([1: 10, 2: 20]).text` matches D's compiler-generated
-   `[1: 10, 2: 20].text` representation.
-4. Add approved tests one category at a time for `Union`,
-   `ClassRef`, `InterfaceRef`, `Pointer`, `Delegate`, and `FunctionRef`.
-5. After each green step, run the focused `ut.lang` test. After the edit
-   session, run `dub test -- --random`.
-
-## Assumptions
-
-- This plan targets direct `Value(...)` construction first.
-- Backend and CTFE result conversion should later map into the same categories.
-- `quickbite.executor.Value` is out of scope.
-- The plan names the value categories now; detailed representation choices
-  beyond structs are decided by later tests.
+- Ask before adding or modifying each test.
+- Do not reintroduce DMD frontend objects into `quickbite.lang.Value`.
+- Do not let type identity changes silently change equality or display.
+- Do not use string heuristics in REPL/frontend code to classify D source.
+- Do not use failed evaluation as REPL control flow.
+- Keep backend-specific DMD conversion inside backend adapters.
+- Preserve existing `Value.void_`, `Value.null_`, `Value.typeName`, and
+  `Value.structValue` callers unless an approved test requires an API change.
