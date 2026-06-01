@@ -40,13 +40,17 @@ public struct ReplSession {
                 input ~ "\n",
             );
 
-        if (!isExpressionCell(input))
+        if (!isExpressionCell(input)) {
+            if (const diagnostic = statementSyntaxDiagnostic(input))
+                throw new Exception(diagnostic);
+
             return ReplCell(
                 ReplCellKind.noDisplay,
                 replSource(moduleTranscript, localTranscript ~ input ~ "\n"),
                 ReplHistoryTarget.local,
                 input ~ "\n",
             );
+        }
 
         if (isTypeExpressionCell(input))
             return ReplCell(
@@ -113,7 +117,7 @@ private bool isExpressionCell(in string input) {
             null,
             input,
             false,
-            global.errorSinkNull,
+            global.errorSink,
             &global.compileEnv,
             true,
         );
@@ -124,6 +128,37 @@ private bool isExpressionCell(in string input) {
             expression.isDeclarationExp is null &&
             parser.token.value != TOK.semicolon &&
             global.errors == 0;
+    });
+
+    return result;
+}
+
+private string statementSyntaxDiagnostic(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        scope parser = new Parser!ASTCodegen(
+            null,
+            input,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        parser.parseStatement(0);
+        if (global.errors != 0)
+            result = firstDiagnosticMessage;
     });
 
     return result;
@@ -147,7 +182,7 @@ private bool isTypeExpressionCell(in string input) {
             null,
             input,
             false,
-            global.errorSinkNull,
+            global.errorSink,
             &global.compileEnv,
             true,
         );
@@ -258,6 +293,17 @@ private bool hasDiagnosticAtEnd(in string input) {
     }
 
     return false;
+}
+
+private string firstDiagnosticMessage() {
+    import dmd.errors: diagnostics, ErrorKind;
+
+    foreach (diagnostic; diagnostics) {
+        if (diagnostic.kind == ErrorKind.error)
+            return diagnostic.message;
+    }
+
+    return "DMD reported an error without a diagnostic message.";
 }
 
 private string replSource(in string moduleTranscript, in string localTranscript) {
