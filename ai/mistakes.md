@@ -161,6 +161,11 @@
 - Run `ci.sh` before creating a PR. AGENTS.md requires it. Skipping it means
   the PR may be created without benchmarks or integration checks passing.
 
+- When creating a PR from a coverage plan, include the coverage table and
+  delta in the PR body. The plan's PR Coverage Report section specifies the
+  exact format: starting commit SHA, final commit SHA, covered/total counts,
+  percentage, and delta. Don't leave the body blank and make the user ask.
+
 - In D, member access through a pointer auto-dereferences (`ptr.field` works),
   but indexing does NOT (`ptr[i]` is pointer arithmetic). To index into a
   struct wrapped in a pointer (e.g. `Array!T*`), always use `(*ptr)[i]`.
