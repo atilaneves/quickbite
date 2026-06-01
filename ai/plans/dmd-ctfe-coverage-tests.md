@@ -564,6 +564,34 @@ Verification notes:
   `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` remains `0000000`.
 - The probe did not reach the target method logic and was discarded.
 
+### 2026-06-01 dmd-ctfe-coverage-next Worker 2
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.arrays.assocArrayForeachAccumulatesRuntimePairs.Ctfe
+ut.backends.pure_.lang.arrays.assocArrayForeachAccumulatesRuntimePairsFailureMessage.0.Ctfe
+ut.backends.pure_.lang.arrays.assocArrayForeachAccumulatesRuntimePairsFailureMessage.1.Ctfe
+```
+
+Coverage intent: cover the associative-array `foreach (key, value; aa)`
+runtime hook path through `interpret_aaApply`.
+
+Coverage effect: focused coverage hit the `_d_aaApply2` dispatch and
+`interpret_aaApply` loop body, including runtime AA interpretation, func-literal
+delegate selection, key/value argument setup, and per-entry `interpretFunction`
+calls.
+
+Verification notes:
+
+- Focused coverage passed for
+  `assocArrayForeachAccumulatesRuntimePairs.Ctfe` and moved
+  `interpret_aaApply`.
+- Poke-checking the behavior assertion failed with `72 != 73`; the temporary
+  poke was reverted.
+- Focused behavior and paired failure-message tests passed with seed
+  `2814057392`.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -633,6 +661,7 @@ that shim.
 | Slice overlap and pointer-slice diagnostics | Covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD CTFE diagnostic substrings. |
 | Hex-string array cast | Behavior covered | dmd-ctfe-coverage-tests-5 Worker 8 | DMD semantic cast path handled before `dinterpret`. |
 | `interpret_dup` AA duplication | Covered | `ut.backends.pure_.lang.arrays.assocArrayDupCopiesEntries.Ctfe` | Runtime associative-array `.dup` covers literal copy, key/value postblit checks, type repaint, and return. |
+| `interpret_aaApply` AA foreach | Covered | `ut.backends.pure_.lang.arrays.assocArrayForeachAccumulatesRuntimePairs.Ctfe` | Runtime-shaped `foreach (key, value; aa)` covers `_d_aaApply2` and per-entry delegate calls. |
 | `visit(NewExp)` struct allocation | Covered | dmd-ctfe-coverage-tests-6 Worker 1 | `newStructAllocatesMutableInstance.Ctfe`; hits non-constructor `new Struct(args)` allocation and mutable pointer use. |
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |

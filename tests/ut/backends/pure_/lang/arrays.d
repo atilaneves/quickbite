@@ -824,6 +824,93 @@ static foreach (backend; backends) {
         });
     }
 
+    @("assocArrayForeachAccumulatesRuntimePairs." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed + 2;
+            }
+
+            unittest {
+                int first = value(8);
+                int second = value(first);
+                int third = value(second);
+
+                int[int] values = [
+                    first: first,
+                    second: second,
+                    third: third,
+                ];
+                int sum;
+
+                foreach (key, valueValue; values) {
+                    sum += key;
+                    sum += valueValue;
+                }
+
+                assert(sum == 72);
+            }
+        });
+    }
+
+    @("assocArrayForeachAccumulatesRuntimePairsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed + 2;
+            }
+
+            unittest {
+                int first = value(8);
+                int second = value(first);
+                int third = value(second);
+
+                int[int] values = [
+                    first: first,
+                    second: second,
+                    third: third,
+                ];
+                int sum;
+
+                foreach (key, valueValue; values) {
+                    sum += key;
+                    sum += valueValue;
+                }
+
+                assert(sum == 70);
+            }
+        }).shouldThrowWithMessage("72 != 70");
+    }
+
+    @("assocArrayForeachAccumulatesRuntimePairsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed + 2;
+            }
+
+            unittest {
+                int first = value(8);
+                int second = value(first);
+                int third = value(second);
+
+                int[int] values = [
+                    first: first,
+                    second: second,
+                    third: third,
+                ];
+                int sum;
+
+                foreach (key, valueValue; values) {
+                    sum += key;
+                    sum += valueValue;
+                }
+
+                assert(sum == 73);
+            }
+        }).shouldThrowWithMessage("72 != 73");
+    }
+
     @("assocArrayEqualityComparesRuntimeEntries." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
