@@ -2,6 +2,7 @@ module ut.backends.pure_.lang.diagnostics;
 
 
 import ut.backends;
+import quickbite.backends.ir;
 import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
@@ -102,6 +103,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 == 42");
     }
 
+}
+
+static foreach (backend; backendsWith!IR) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -114,6 +118,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("oops." ~ backend.stringof)
     unittest {

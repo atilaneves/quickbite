@@ -17,7 +17,10 @@ public class IR: imported!"quickbite.backends".Backend {
     }
 
     public override void runParsedTests(Module module_) {
-        assert(0);
+        import quickbite.backends.ir.compiler: compileModule;
+        import quickbite.backends.ir.executor: executeTests;
+
+        executeTests(compileModule(module_));
     }
 
     public override TestSummary runParsedTestSummary(Module module_) {
