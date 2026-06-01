@@ -2,35 +2,59 @@ module quickbite.backends.bytecode.compiler;
 
 private:
 
+
 package imported!"quickbite.backends.bytecode.bytecode".Program compileExpression(
-    in string expr,
-) {
+    in string expr
+)
+{
     import quickbite.frontend.compiler: parseExpression;
+    import quickbite.backends.bytecode.bytecode: Program;
 
     return compileExpression(parseExpression(expr));
 }
 
-package imported!"quickbite.backends.bytecode.bytecode".Program compileExpression(
+private imported!"quickbite.backends.bytecode.bytecode".Program compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
-    import quickbite.backends.bytecode.bytecode: Instruction, Op, Program;
+    import quickbite.backends.bytecode.bytecode: Program;
+
+    Program program;
+    compileExpression(expression, program);
+    return program;
+}
+
+private void compileExpression(
+    imported!"dmd.expression".Expression expression,
+    ref imported!"quickbite.backends.bytecode.bytecode".Program program,
+)
+{
+    import quickbite.backends.bytecode.bytecode: Instruction, Op;
     import std.string: fromStringz;
 
     if (auto integer = expression.isIntegerExp) {
-        return Program(
-            [
-                Instruction(Op.literal, integerValue(integer)),
-            ]
+        program.instructions ~= Instruction(
+            Op.literal,
+            integerValue(integer),
         );
+        return;
     }
 
-    string msg = "Unsupported expression `" ~ expression.toChars.fromStringz.idup ~ "`";
+    if (auto add = expression.isAddExp) {
+        compileExpression(add.e1, program);
+        compileExpression(add.e2, program);
+        program.instructions ~= Instruction(Op.add);
+        return;
+    }
+
+    const msg = "Unsupported expression `" ~ expression.toChars.fromStringz.idup ~ "`";
     throw new Exception(msg);
 }
 
+
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
-) {
+)
+{
     import quickbite.lang: Value;
     import dmd.astenums: TY;
 

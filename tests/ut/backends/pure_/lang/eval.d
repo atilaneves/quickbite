@@ -14,9 +14,7 @@ static foreach (backend; backendsWith!Bytecode) {
         newBackend!backend.eval("0").should == Value(0);
         newBackend!backend.eval("7").should == Value(7);
     }
-}
 
-static foreach (backend; backends) {
     @("add0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
@@ -31,7 +29,9 @@ static foreach (backend; backends) {
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
     }
+}
 
+static foreach (backend; backends) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [

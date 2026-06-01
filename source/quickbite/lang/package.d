@@ -203,6 +203,28 @@ public struct Value {
             },
         );
     }
+
+    public Value opBinary(string op)(in Value rhs) const @safe pure
+        if (op == "+")
+    {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(int) lhs) {
+                return rhs.data.match!(
+                    (const(int) rhs) => Value(lhs + rhs),
+                    (_) {
+                        throw new Exception("Unsupported + rhs type.");
+                        return Value.void_;
+                    },
+                    );
+            },
+            (_) {
+                throw new Exception("Unsupported + lhs type.");
+                return Value.void_;
+            },
+        );
+    }
 }
 
 
