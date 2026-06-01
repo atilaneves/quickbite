@@ -23,6 +23,7 @@ public struct Value {
         wchar,
         dchar,
 
+        Null,
         float,
         double,
         real,
@@ -38,7 +39,27 @@ public struct Value {
         return Value(Void.init);
     }
 
+    public static Value null_() @safe pure {
+        return Value(Null.init);
+    }
+
+    public static Value structValue(
+        in string typeName,
+        in string typeIdentity,
+        in Value[] fields,
+    ) @safe pure {
+        return Value(Struct(typeName, typeIdentity, fields));
+    }
+
     private this(in Void value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(in Null value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(Struct value) @safe pure {
         data = Data(value);
     }
 
@@ -81,10 +102,14 @@ public struct Value {
         return data.match!(
             (value) {
                 alias T = typeof(value);
-                static if (is(T == const(AssocArray))) {
+                static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
-                } else static if (is(T == const(Struct))) {
+                } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
+                } else static if (is(T == const(Array)) || is(T == Array)) {
+                    return value.toString;
+                } else static if (is(T == const(Null)) || is(T == Null)) {
+                    return "null";
                 } else {
                     return text(value);
                 }
@@ -115,10 +140,14 @@ public struct Value {
                     return text(value, ": long");
                 } else static if (is(T == const(ulong))) {
                     return text(value, ": ulong");
-                } else static if (is(T == const(AssocArray))) {
+                } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
-                } else static if (is(T == const(Struct))) {
+                } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
+                } else static if (is(T == const(Array)) || is(T == Array)) {
+                    return value.toString;
+                } else static if (is(T == const(Null)) || is(T == Null)) {
+                    return "null";
                 } else {
                     return data.toString;
                 }
@@ -133,6 +162,18 @@ private struct Array {
 
     public this(in Value[] elements) @safe pure {
         this.elements = elements.dup;
+    }
+
+    public string toString() const @safe pure {
+        string ret = "[";
+
+        foreach (i, element; elements) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= element.dText;
+        }
+
+        return ret ~ "]";
     }
 }
 
@@ -174,6 +215,18 @@ private struct Struct {
     public string typeIdentity;
     public Field[] fields;
 
+    public this(
+        in string typeName,
+        in string typeIdentity,
+        in Value[] fields,
+    ) @safe pure {
+        this.typeName = typeName;
+        this.typeIdentity = typeIdentity;
+
+        foreach (field; fields)
+            this.fields ~= Field("", field);
+    }
+
     public this(T)(in T value) @safe pure
     if (is(T == struct))
     {
@@ -210,3 +263,4 @@ private struct Field {
 
 
 private struct Void {}
+private struct Null {}
