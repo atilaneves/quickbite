@@ -208,20 +208,36 @@ public struct Value {
         if (op == "+")
     {
         import std.sumtype: match;
+        import std.traits: Unqual, isIntegral;
 
         return data.match!(
-            (const(int) lhs) {
-                return rhs.data.match!(
-                    (const(int) rhs) => Value(lhs + rhs),
-                    (_) {
-                        throw new Exception("Unsupported + rhs type.");
-                        return Value.void_;
-                    },
-                    );
+            (lhs) {
+                alias L = Unqual!(typeof(lhs));
+
+                static if (isIntegral!L) {
+                    return rhs.addInteger(lhs);
+                } else {
+                    throw new Exception("Unsupported + lhs type.");
+                    return Value.void_;
+                }
             },
-            (_) {
-                throw new Exception("Unsupported + lhs type.");
-                return Value.void_;
+        );
+    }
+
+    private Value addInteger(L)(const L lhs) const @safe pure {
+        import std.sumtype: match;
+        import std.traits: isIntegral;
+
+        return data.match!(
+            (rhs) {
+                alias R = typeof(rhs);
+
+                static if (isIntegral!L && isIntegral!R) {
+                    return Value(cast(L) lhs + cast(R) rhs);
+                } else {
+                    throw new Exception("Unsupported + rhs type.");
+                    return Value.void_;
+                }
             },
         );
     }
