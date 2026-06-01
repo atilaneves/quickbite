@@ -88,12 +88,11 @@ Completed:
   for terminal-backed stdin so blank piped input stays silent.
 - Fixed `bin/qb -c "1 + 2"` so command evaluation prints non-void results,
   matching piped and interactive REPL evaluation.
+- Fixed strings displaying as char arrays: `"hello"` prints `[h, e, l, l, o]`
+  instead of `"hello"`. String results such as `to!string(42)` also display
+  as quoted string values.
 
 Remaining follow-up:
-
-- Fix strings displaying as char arrays: `"hello"` prints `[h, e, l, l, o]`
-  instead of `"hello"`. Affects all string values including results of
-  `to!string` etc.
 
 - Fix syntax errors exposing wrapper internals: `1 +` produces three messages
   referencing `return`, `}`, and compound statement — artefacts of the

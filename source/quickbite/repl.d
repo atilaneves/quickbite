@@ -12,6 +12,17 @@ public struct Repl {
     }
 
     public imported!"quickbite.lang".Value submit(in string input) {
+        return submitResult(input).value;
+    }
+
+    public string submitDisplay(in string input) {
+        import quickbite.lang: Value;
+
+        const result = submitResult(input);
+        return result.value == Value.void_ ? null : result.toString;
+    }
+
+    private ReplResult submitResult(in string input) {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
@@ -21,13 +32,13 @@ public struct Repl {
         const cell = session.submit(source);
         if (cell.kind == ReplCellKind.incomplete) {
             pendingInput = source;
-            return Value.void_;
+            return ReplResult(Value.void_);
         }
 
         const value = evalReplCell(cell);
         session.accept(cell);
         pendingInput = null;
-        return value;
+        return ReplResult(value, replDisplay(cell));
     }
 
     private imported!"quickbite.lang".Value evalReplCell(
@@ -38,6 +49,71 @@ public struct Repl {
         catch (Exception exception)
             throw new Exception(userDiagnostic(exception.msg));
     }
+}
+
+private struct ReplResult {
+    public imported!"quickbite.lang".Value value;
+    public ReplDisplay display;
+
+    public string toString() const @safe pure {
+        final switch (display) with (ReplDisplay) {
+            case value:
+                return this.value.toString;
+            case string:
+                return `"` ~ this.value.asCharArrayString ~ `"`;
+        }
+    }
+}
+
+private enum ReplDisplay {
+    value,
+    string,
+}
+
+private ReplDisplay replDisplay(
+    in imported!"quickbite.frontend.repl".ReplCell cell,
+) {
+    import quickbite.frontend.repl: ReplCellKind;
+
+    return cell.kind == ReplCellKind.expression && replFunctionReturnsString(cell.source) ?
+        ReplDisplay.string :
+        ReplDisplay.value;
+}
+
+private bool replFunctionReturnsString(in string source) {
+    import quickbite.frontend.compiler: parseModule;
+
+    return functionReturnsString(functionDeclaration(parseModule(source).module_));
+}
+
+private bool functionReturnsString(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.astenums: TY;
+
+    auto returnType = function_.type is null ? null : function_.type.nextOf;
+    if (returnType is null)
+        return false;
+
+    auto array = returnType.toBasetype.isTypeDArray;
+    if (array is null || array.nextOf is null)
+        return false;
+
+    return array.nextOf.toBasetype.ty == TY.Tchar;
+}
+
+private imported!"dmd.func".FuncDeclaration functionDeclaration(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null && function_.ident.toString == "f")
+                return function_;
+        }
+    }
+
+    throw new Exception("Missing REPL function.");
 }
 
 public string[] runReplLoop(
@@ -52,9 +128,9 @@ public string[] runReplLoop(
         if (input == ":q" || input == ":quit")
             break;
 
-        const value = repl.submit(input);
-        if (value != Value.void_)
-            output ~= value.toString;
+        const display = repl.submitDisplay(input);
+        if (display !is null)
+            output ~= display;
     }
 
     return output;
