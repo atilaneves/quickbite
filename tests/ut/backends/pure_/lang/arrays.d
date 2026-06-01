@@ -824,6 +824,35 @@ static foreach (backend; backends) {
         });
     }
 
+    @("assocArrayEqualityComparesRuntimeEntries." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] left = [
+                    first: first + 30,
+                    second: second + 30,
+                ];
+                int[int] same = [
+                    second: second + 30,
+                    first: first + 30,
+                ];
+                int[int] different = [
+                    first: first + 30,
+                    second: second + 31,
+                ];
+
+                assert(left == same);
+                assert(left != different);
+            }
+        });
+    }
+
     @("assocArrayRemoveRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

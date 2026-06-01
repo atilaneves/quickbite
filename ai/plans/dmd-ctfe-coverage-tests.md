@@ -267,6 +267,42 @@ Verification notes:
   failing as expected.
 - The slice changed only test and plan files.
 
+### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 2
+
+Explorer recommendation 2 targeted the reachable associative-array equality
+helper `interpret_aaEqual`, reached through normal `==` and `!=`
+associative-array comparisons with runtime-shaped keys and values.
+
+Added focused pure-backend CTFE test:
+
+```text
+ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe
+```
+
+Coverage effect: focused coverage hit the `_d_aaEqual` dispatch twice and
+`interpret_aaEqual` twice. The focused `.lst` showed both operand
+interpretations, the `ctfeEqual` call, and the boolean result path covered.
+
+Poke result: changing the inequality assertion to
+`assert(left == different);` failed the focused CTFE test with
+`[10: 40, 11: 41] != [10: 40, 11: 42]`; the temporary poke was reverted and
+the focused test was rerun green.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe`
+  passed after sandbox escalation because DUB needed to update generated files
+  under `~/.dub`.
+- A post-slice broad coverage run passed with 2232/3760 executable entries,
+  or 59.36%.
+- `dub test -- --random` passed with 1454 tests run, 0 failed, and 28/28
+  failing as expected.
+- The slice changed only test and plan files.
+
 ### 2026-05-28 Workflow Slice
 
 The repository now has `scripts/dmd-ctfe-coverage.sh` for generating fresh
@@ -299,6 +335,7 @@ that shim.
 | `visit(CatExp)` array wrap | Unsupported | Worker 1 | See below. |
 | `visit(AssocArrayLiteralExp)` | Covered | Worker 1 slice | Now partial. |
 | `interpret_aaIn` found/missing | Covered | `ut.backends.pure_.lang.arrays.assocArrayInFindsRuntimeKey.Ctfe` | Runtime key `in` returns pointer/null. |
+| `interpret_aaEqual` equality/inequality | Covered | `ut.backends.pure_.lang.arrays.assocArrayEqualityComparesRuntimeEntries.Ctfe` | Runtime-shaped AA keys and values cover `_d_aaEqual` dispatch. |
 | `visit(GotoCaseStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visit(GotoDefaultStatement)` | Covered | Worker 1 slice | Now partial. |
 | `visitDo(DoStatement)` paths | Covered | Worker 1 slice | Fewer gaps. |
