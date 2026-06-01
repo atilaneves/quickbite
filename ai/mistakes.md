@@ -200,3 +200,6 @@
   `<float not supported>` the same as `<double not supported>`: mark the
   affected migration test `@ShouldFail` with a concrete upstream formatter
   reason instead of calling it a true red.
+
+- When asked to create a PR, actually run `gh pr create --web` after pushing.
+  Do not stop at pushing the branch or mentioning the remote's PR URL.
