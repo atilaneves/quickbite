@@ -158,9 +158,7 @@ final class Compiler {
             IdentifierCharLookup.forTable(IdentifierTable.LR);
         global.params.useUnitTests = true;
         global.params.allInst = true;
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
+        resetErrors;
     }
 
     void shutdown() {
@@ -181,13 +179,9 @@ final class Compiler {
         import dmd.globals: global;
 
         mutex.lock;
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
+        resetErrors;
         scope(exit) {
-            global.errors = 0;
-            global.warnings = 0;
-            diagnostics.length = 0;
+            resetErrors;
             mutex.unlock;
         }
         action();
@@ -255,9 +249,7 @@ final class Compiler {
         foreach (importPath; importPaths)
             addImport(importPath);
 
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
+        resetErrors;
 
         const fileName = text(
             "snippet_",
@@ -305,4 +297,12 @@ string diagnosticMessage() {
         return "DMD reported an error without a diagnostic message.";
 
     return messages.join("\n");
+}
+
+private void resetErrors() {
+    import dmd.globals: global;
+    import dmd.errors: diagnostics;
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
 }
