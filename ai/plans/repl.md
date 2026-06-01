@@ -13,20 +13,8 @@ must not treat that language behavior as unsupported just because the current
 
 Pick these items up before any other REPL follow-up.
 
-- Keep failed REPL eval cells from poisoning the session. A failed no-display
-  cell must not be accepted into REPL history, and later valid cells should
-  still see the last known-good session state.
-- Support type-introspection cells such as `typeof(i)` without treating the
-  type node as a normal expression result. The REPL currently reports this as
-  a frontend error after a variable declaration:
+No outstanding priority work.
 
-  ```text
-  Quickbite REPL
-  > int i;
-  > typeof(i)
-  type `int` is not an expression
-  >
-  ```
 ## Summary
 
 The REPL uses the new backend architecture. Runtime REPL evaluation and REPL
@@ -91,12 +79,16 @@ Completed:
 - Fixed strings displaying as char arrays: `"hello"` prints `[h, e, l, l, o]`
   instead of `"hello"`. String results such as `to!string(42)` also display
   as quoted string values.
+- Kept failed REPL eval cells from poisoning the session. A failed no-display
+  cell is not accepted into REPL history, and later valid cells still see the
+  last known-good session state.
+- Supported type-introspection cells such as `typeof(i)` without treating the
+  type node as a normal expression result.
+- Fixed syntax errors exposing wrapper internals. `1 +` now reports only the
+  primary diagnostic from the original REPL input instead of additional
+  generated-wrapper diagnostics about `}`, `return`, or compound statements.
 
 Remaining follow-up:
-
-- Fix syntax errors exposing wrapper internals: `1 +` produces three messages
-  referencing `return`, `}`, and compound statement — artefacts of the
-  generated wrapper source. Only the user-relevant diagnostic should appear.
 
 - Fix runtime error messages being emitted twice: `1 / 0` prints
   `divide by 0` twice; `[1,2,3][10]` prints the OOB message twice.

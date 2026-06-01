@@ -196,6 +196,34 @@ static foreach (backend; backends) {
             "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
     }
 
+    @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int twice(int i) { return i * 2; }").should == Value.void_;
+        void duplicateDeclaration() {
+            repl.submit("int twice(int i) { return i; }");
+        }
+        duplicateDeclaration.shouldThrow.msg.should ==
+            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+        repl.submit("twice(21)").should == Value(42);
+    }
+
+    @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        void syntaxError() {
+            repl.submit("1 +");
+        }
+        syntaxError.shouldThrow.msg.should ==
+            "expression expected, not `End of File`";
+    }
+
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
