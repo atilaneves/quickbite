@@ -1704,6 +1704,26 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("8 != 9");
     }
 
+    @("structLiteralDefaultsMissingFieldToZero." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int first;
+                int second;
+            }
+
+            unittest {
+                int seed = 40;
+                seed += 2;
+
+                auto pair = Pair(seed);
+
+                assert(pair.first == seed);
+                assert(pair.second == 0);
+            }
+        });
+    }
+
     @("dynamicArrayStructFieldReturnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
