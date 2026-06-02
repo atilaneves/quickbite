@@ -73,6 +73,9 @@ public imported!"dmd.expression".Expression parseExpression(in string source) {
     return compiler.parseExpression(source);
 }
 
+// Backend `eval` input is a tiny cell: optional statements followed by a final
+// expression. Wrap it as a function so DMD can parse and semantically resolve
+// declarations before the final value expression.
 public imported!"dmd.func".FuncDeclaration parseEvalFunction(in string source) {
     return evalFunction(parseModule(evalSource(source)).module_);
 }
