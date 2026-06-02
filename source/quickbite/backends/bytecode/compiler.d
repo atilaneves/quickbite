@@ -125,6 +125,14 @@ private struct Compiler {
             return;
         }
 
+        if (auto string_ = expression.isStringExp) {
+            program.instructions ~= Instruction(
+                Op.literal,
+                stringValue(string_),
+            );
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileExpression(add.e1);
             compileExpression(add.e2);
@@ -440,6 +448,22 @@ private imported!"quickbite.lang".Value realValue(
         return Value(cast(double) real_.toReal);
 
     return Value(cast(real) real_.toReal);
+}
+
+private imported!"quickbite.lang".Value stringValue(
+    imported!"dmd.expression".StringExp string_,
+) {
+    import quickbite.lang: Value;
+
+    return Value(stringChars(string_));
+}
+
+private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+    char[] values;
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        values ~= cast(char) string_.getIndex(index);
+
+    return values;
 }
 
 

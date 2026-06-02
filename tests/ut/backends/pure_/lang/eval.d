@@ -108,7 +108,7 @@ static foreach (backend; backendsWith!Bytecode) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Bytecode) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == Value("abc");
