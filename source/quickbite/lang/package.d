@@ -137,7 +137,7 @@ public struct Value {
             (const(Array) array) {
                 string result;
                 foreach (element; array.elements)
-                    result ~= element.asChar;
+                    result ~= element.asDchar;
                 return result;
             },
             (_) {
@@ -147,14 +147,16 @@ public struct Value {
         );
     }
 
-    private char asChar() const @safe pure {
+    private dchar asDchar() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
-            (const(char) value) => value,
+            (const(char) value) => cast(dchar) value,
+            (const(wchar) value) => cast(dchar) value,
+            (const(dchar) value) => value,
             (_) {
-                throw new Exception("Expected char.");
-                return char.init;
+                throw new Exception("Expected character.");
+                return dchar.init;
             },
         );
     }
@@ -451,7 +453,7 @@ private struct Array {
     private string charArrayString() const @safe pure {
         string result;
         foreach (element; elements)
-            result ~= element.asChar;
+            result ~= element.asDchar;
 
         return result;
     }
