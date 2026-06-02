@@ -6,6 +6,7 @@
 import os
 import re
 import subprocess
+from pathlib import Path
 
 import pexpect
 import pytest
@@ -91,6 +92,25 @@ def test_command_prints_expression_result() -> None:
 
     assert result.returncode == 0
     assert result.stdout == "3\n"
+
+
+def test_command_can_use_several_file_arguments(tmp_path: Path) -> None:
+    first = tmp_path / "first.d"
+    second = tmp_path / "second.d"
+    first.write_text(
+        "int firstValue() { return 19; }\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "int secondValue() { return firstValue() + 23; }\n",
+        encoding="utf-8",
+    )
+
+    result = run_qb(str(first), str(second), "-c", "secondValue()")
+
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+    assert result.stderr == ""
 
 
 def test_file_argument_loads_example_fixture() -> None:
