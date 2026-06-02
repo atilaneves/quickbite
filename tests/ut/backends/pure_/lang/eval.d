@@ -78,9 +78,7 @@ static foreach (backend; backendsWith!Bytecode) {
         result.should == Value(5.5);
         result.should.not == Value(0);
     }
-}
 
-static foreach (backend; backends) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
@@ -88,7 +86,9 @@ static foreach (backend; backends) {
         result.should == Value(-7.75);
         result.should.not == Value(0);
     }
+}
 
+static foreach (backend; backends) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(

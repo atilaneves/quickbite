@@ -104,6 +104,13 @@ package imported!"quickbite.lang".Value eval(
 
                 stack ~= lhs / rhs;
                 break;
+
+            case Op.negate:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                stack[$ - 1] = -stack[$ - 1];
+                break;
         }
     }
 

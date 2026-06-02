@@ -244,6 +244,26 @@ public struct Value {
         );
     }
 
+    public Value opUnary(string op)() const @safe pure
+        if (op == "-")
+    {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isIntegral!T || isFloatingPoint!T) {
+                    return Value(cast(T) -value);
+                } else {
+                    throw new Exception("Unsupported unary operand type.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
     private Value binaryInteger(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral;

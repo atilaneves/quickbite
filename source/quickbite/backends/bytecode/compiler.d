@@ -150,6 +150,12 @@ private struct Compiler {
             return;
         }
 
+        if (auto negate = expression.isNegExp) {
+            compileExpression(negate.e1);
+            program.instructions ~= Instruction(Op.negate);
+            return;
+        }
+
         const msg = "Unsupported expression `" ~
             expression.toChars.fromStringz.idup ~ "`";
         throw new Exception(msg);

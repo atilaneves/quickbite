@@ -13,6 +13,7 @@ package enum Op: ubyte {
     subtract,
     multiply,
     divide,
+    negate,
 }
 
 package enum CastTarget: size_t {
