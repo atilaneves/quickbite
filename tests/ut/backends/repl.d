@@ -182,6 +182,24 @@ static foreach (backend; backends) {
         repl.submit("good + 1").should == Value(42);
     }
 
+    @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        void divideByZero() {
+            repl.submit("1 / 0");
+        }
+        divideByZero.shouldThrow.msg.should == "divide by 0";
+
+        void outOfBoundsIndex() {
+            repl.submit("[1, 2, 3][10]");
+        }
+        outOfBoundsIndex.shouldThrow.msg.should ==
+            "array index 10 is out of bounds `[1, 2, 3][0 .. 3]`";
+    }
+
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

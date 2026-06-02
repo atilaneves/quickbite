@@ -113,9 +113,10 @@ private bool isExpressionCell(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
+        const source = input ~ '\0';
         scope parser = new Parser!ASTCodegen(
             null,
-            input,
+            source,
             false,
             global.errorSink,
             &global.compileEnv,
@@ -146,9 +147,10 @@ private string statementSyntaxDiagnostic(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
+        const source = input ~ '\0';
         scope parser = new Parser!ASTCodegen(
             null,
-            input,
+            source,
             false,
             global.errorSink,
             &global.compileEnv,
@@ -178,9 +180,10 @@ private bool isTypeExpressionCell(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
+        const source = input ~ '\0';
         scope parser = new Parser!ASTCodegen(
             null,
-            input,
+            source,
             false,
             global.errorSink,
             &global.compileEnv,
