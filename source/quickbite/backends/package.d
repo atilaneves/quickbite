@@ -15,6 +15,7 @@ public enum TestOutcome {
 
 public struct TestCaseResult {
     public TestOutcome outcome;
+    public string name;
     public string location;
     public string message;
 }

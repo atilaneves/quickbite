@@ -56,6 +56,23 @@ public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSumm
     return backend.runParsedTestSummary(parsed.module_);
 }
 
+public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestResults(T)(
+    in string moduleSource,
+) {
+    return runBackendSourceFixtureTestResults!T(moduleSource, []);
+}
+
+public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestResults(T)(
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+
+    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto backend = newBackend!T;
+    return backend.runParsedTestResults(parsed.module_);
+}
+
 public void runBackendFileFixtureTests(T)(
     in string filePath,
     in string[] importPaths,

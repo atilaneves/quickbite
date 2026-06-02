@@ -116,6 +116,23 @@ static foreach (backend; backends) {
         summary.failed.should == 1;
     }
 
+    @("runParsedTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
+    unittest {
+        const result = runBackendSourceFixtureTestResults!backend(q{
+            unittest {
+                assert(1 == 1);
+            }
+
+            unittest {
+                assert(1 == 2);
+            }
+        });
+
+        result.cases.length.should == 2;
+        result.cases[0].name.should == "__unittest_L2_C13";
+        result.cases[1].name.should == "__unittest_L6_C13";
+    }
+
     @("runParsedModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
