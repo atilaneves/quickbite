@@ -415,6 +415,19 @@ static foreach (backend; backendsWith!TreeWalker) {
 }
 
 static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return true;
+            }
+
+            unittest {
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

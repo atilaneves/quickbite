@@ -156,11 +156,11 @@ REPL-only concepts such as type-display cells belong in
 
 Current progress in `tests/ut/backends/pure_/lang/logic.d`:
 `logicalNot`, `logicalNotFailureMessage.0`, `logicalNotFailureMessage.1`,
-`logicalNotCall`, and `logicalNotCallFailureMessage.0` are covered by
-`TreeWalker`.
+`logicalNotCall`, `logicalNotCallFailureMessage.0`, and
+`logicalNotCallFailureMessage.1` are covered by `TreeWalker`.
 
-The next smallest slice is `logicalNotCallFailureMessage.1`, followed by plain
-local `&&`/`||` cases before broader call-based or short-circuit logic. Treat
+The next smallest slice is the plain local `logicalAnd` case, followed by
+plain local `||` cases before broader call-based or short-circuit logic. Treat
 each named unittest as its own promotion and commit.
 
 Module-backed interpreter support remains intentionally narrow:
