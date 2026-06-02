@@ -82,14 +82,24 @@ For `pure_` language-surface tests, CTFE is the canonical oracle for supported
 behaviour unless the completed dmd codegen backend demonstrates that compiled
 D code behaves differently.
 
-### 4. BytecodeExecutor (not yet implemented)
+### 4. BytecodeExecutor
 
 Pipeline: DMD → emit bytecode directly from the analysed AST →
 interpret bytecode.
 
 Wrapped as `ExecutorBackend.bytecode`.
 
-### 5. JitExecutor (deferred)
+### 5. DMD Codegen Backends (deferred)
+
+Pipeline: DMD frontend → DMD native codegen → execute native code through
+either a shared-library baseline or an in-process RAM codegen path.
+
+These backends are still planned, but they are likely to come after the
+tree-walking, IR, and bytecode backends have matured enough to provide useful
+comparison points. Pull them forward only when a specific benchmark or
+correctness question needs native-codegen data.
+
+### 6. JitExecutor (deferred)
 
 Pipeline: DMD → lower to IR → JIT compile to native code → execute.
 
@@ -126,12 +136,17 @@ and accepts `--import-path` flags so cerealed tests can be timed.
 6. Build benchmarking harness. (Done.)
 7. Add DmdCtfe backend. (Done.)
 8. Run real cerealed tests. (Done.)
-9. Implement the first bytecode slice and add it to the backend parity
-   matrix as soon as it supports the first approved behaviour.
-10. Measure bytecode against comparable existing backends.
-11. Spike dependency strategies such as cached dependency bytecode and native
+9. Continue maturing the tree-walking, IR, and bytecode backends in parallel,
+   adding each backend to existing backend-parity tests as soon as it supports
+   the covered behaviour.
+10. Measure tree-walking, IR, and bytecode against comparable supported
+    language slices.
+11. Add the DMD codegen shared-library baseline and RAM codegen experiment
+    after those backends have useful comparison coverage, unless an earlier
+    benchmark needs native-codegen data.
+12. Spike dependency strategies such as cached dependency bytecode and native
     calls when benchmarks show dependency handling matters.
-12. Decide whether JIT work is justified based on benchmark results.
+13. Decide whether JIT work is justified based on benchmark results.
 
 ## Test Plan
 
@@ -145,6 +160,10 @@ For every new D language feature, add three fixtures:
 Once multiple backends exist, add backend parity tests: same analyzed
 execution unit, same pass/fail result, same user-facing diagnostic
 category across all backends.
+
+Adding a backend to an existing backend-parity test does not require a fresh
+test-approval stop. Adding a new test or modifying existing test behaviour
+still requires approval before editing the test.
 
 Do not add language-surface tests whose expected result differs from CTFE or
 compiled D behaviour. Backend-specific regression tests may cover internal

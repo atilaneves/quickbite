@@ -5,13 +5,15 @@
 Walk the semantically-analysed DMD AST directly and execute it in a
 single recursive descent, with no lowering pass and no intermediate
 representation. The goal is to reach CTFE parity on the language
-surface covered by the existing test suite, driven by promoting
-CTFE-only tests one at a time to the tree-walking backend.
+surface covered by the existing test suite, driven first by the
+simplest existing `eval` tests and then by similarly small CTFE-only
+tests promoted one at a time to the tree-walking backend.
 
-The process mirrors the IR backend: pick a test that currently only
-runs under CTFE, add the tree-walking backend to it, confirm it is
-red, implement the smallest handler that makes it green, then move
-on. Do not add implementation beyond what a failing test demands.
+The process mirrors the IR backend: pick the simplest test that does
+not yet run under the tree walker, add the tree-walking backend to it,
+confirm it is red, implement the smallest handler that makes it green,
+then move on. Do not add implementation beyond what a failing test
+demands.
 
 When a test passes without any implementation change, do not assume
 the feature works. Mutate the test or the production code to confirm
@@ -20,9 +22,15 @@ Only then accept the slice as done.
 
 ## Architecture
 
+- Implement `TreeWalker.eval` first. It may parse an expression through
+  the same frontend expression path used by the bytecode backend, then
+  walk that expression directly.
+- Leave `evalRepl`, broader parsed-test execution, and test-summary
+  behavior alone until an approved test specifically requires them.
 - Walk `FuncDeclaration` and `UnitTestDeclaration` AST nodes for
   unittest bodies; dispatch to statement and expression handlers by
-  dynamic type.
+  dynamic type only after eval coverage has forced enough expression
+  support to make parsed tests the next smallest step.
 - No intermediate form. Values are produced and consumed in the same
   recursive descent; no register allocation or instruction selection.
 - Interpreter values, locals, temporaries, and function returns must use
@@ -43,10 +51,19 @@ Only then accept the slice as done.
 
 ## Slice Plan
 
-Promote tests in order of complexity. Start with the narrowest
-behaviors already in the CTFE-passing suite — integer literals,
-arithmetic, comparisons — and work outward toward control flow,
-arrays, structs, and exceptions as each prior slice stabilises.
+Promote tests in order of complexity. Start with
+`tests/ut/backends/pure_/lang/eval.d`, because those tests exercise the
+smallest backend surface: parse an expression or tiny eval cell, walk
+it, and return one `Value`. Prefer integer literals first, then simple
+arithmetic, then the next eval behavior with the fewest required D
+language features.
+
+After the existing eval tests are done, do not jump to an entire broad
+language file. Identify the next similarly simple test by counting the
+required language features in the fixture and choosing the smallest
+delta from the tree walker's current support. The next source may be
+`expressions.d`, `integral_types.d`, `logic.d`, or another file, but
+the file matters less than the feature count of the individual test.
 
 Do not pick a CTFE-only test at random just because it currently lacks
 `TreeWalker`. Before migrating one test, inspect the fixture and choose
@@ -60,18 +77,27 @@ failure points at one missing AST handler or one tiny fake.
 Do not decide the ordering in advance beyond the immediate next test.
 Let the smallest plausible failing test determine what to implement.
 
+Use this rough ordering when comparing candidates with similar size:
+literal and scalar value preservation; one binary or unary expression;
+casts that do not require locals; comparisons and boolean operations;
+one local declaration plus final expression; simple assignment or
+increment; one direct function call; then parsed unittest assertions.
+Defer imports, assertion context formatting, control flow, arrays,
+structs, exceptions, pointers, delegates, and diagnostics until simpler
+tests stop being available.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.
-Do not promote a test that needs locals, declarations, equality,
-assertion-message formatting, and type coercion all at once. That is
-not a minimum implementation, even if those pieces are individually
-small.
+Do not promote a parsed unittest test that needs locals, declarations,
+equality, assertion-message formatting, and type coercion all at once.
+That is not a minimum implementation, even if those pieces are
+individually small.
 
 For the first tree-walker promotion, prefer an existing CTFE-passing
-test whose red failure can be fixed by one AST handler or by a tiny
-single-case fake. If no such test exists, stop and ask before changing
-tests or production code. Do not silently broaden the slice.
+`eval` test whose red failure can be fixed by one AST handler or by a
+tiny single-case fake. If no such test exists, stop and ask before
+changing tests or production code. Do not silently broaden the slice.
 
 Do not promote import-path retry tests as the first tree-walker test.
 They have order-dependent frontend state and are easy to make flaky
@@ -92,10 +118,12 @@ support together, the chosen test is too broad for the first PR.
 
 - CTFE-passing tests are the acceptance matrix. Promote a test by
   adding the tree-walking backend to it, confirm it turns red, then
-  implement the minimum handler that makes it green. Existing
-  CTFE-passing tests are pre-approved for promotion to the
-  tree-walking backend; do not stop to ask before adding
-  `TreeWalker` to exactly one existing test.
+  implement the minimum handler that makes it green. Start with one
+  existing `eval` test. Existing CTFE-passing tests are pre-approved
+  for promotion to the tree-walking backend; do not stop to ask before
+  adding `TreeWalker` to exactly one existing test. This exception only covers
+  adding the backend to an existing backend-matrix test; adding a new test or
+  modifying test behaviour still requires approval before editing the test.
 - When a promoted test is green without any implementation change,
   verify it is genuinely covered by mutating the test or the
   production code. A test that cannot be made to fail is not
@@ -112,6 +140,9 @@ support together, the chosen test is too broad for the first PR.
 - AST-first execution is the baseline; no intermediate form is
   planned.
 - The executor targets unittest latency, not long-running throughput.
+- Eval is the cheapest first backend surface for both IR and the tree
+  walker. Parsed unittest execution is still required later, but it is
+  not the right first slice.
 - DMD AST node types are stable at the pinned version. If a node
   shape changes, update the handler at the point of breakage.
 - Templates and mixin expansions are resolved by DMD before the

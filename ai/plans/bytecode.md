@@ -44,8 +44,9 @@ Lua-specific bytecode shape.
 - Add focused VM contract tests only for bytecode-specific properties such as
   operand typing, frame behavior, and diagnostic boundaries.
 - Keep unsupported-slice tests narrow and behavior-driven, not layout-driven.
-- Prefer parity with compiled D behavior or canonical frontend semantics when a
-  language-surface question is involved.
+- For `pure_` language-surface tests, treat CTFE as the canonical oracle for
+  supported behaviour unless the completed DMD codegen backend demonstrates
+  that compiled D code behaves differently.
 - Verify each new slice before expanding scope: red test, minimal
   implementation, green suite, then the next slice.
 - Do not add unsupported-diagnostic paths unless a test verifies the exact

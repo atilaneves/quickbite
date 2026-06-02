@@ -149,7 +149,7 @@ first migrated fixture does not exercise it clearly:
 - a fixture with exactly one hidden unittest returns its contextual message
 - a fixture with two unittests fails at compile time via the `static assert`
 
-After implementation, run `dub test`.
+After implementation, run `dub test -- --random`.
 
 ## Assumptions
 

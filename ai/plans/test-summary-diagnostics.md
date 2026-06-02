@@ -85,4 +85,4 @@ same test identity.
   `runTests` where that backend can provide it.
 - `runTests` either delegates to `runTestSummary` or has a documented reason
   why one backend still needs a separate execution path.
-- `dub test` passes.
+- `dub test -- --random` passes.

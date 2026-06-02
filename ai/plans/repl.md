@@ -28,6 +28,12 @@ Overlong UTF-8 sequence
 
 It should print 6.
 
+### Should work with example.d
+
+Running `bin/qb tests/example.d` should work. That's just a first
+step, a second step is adding `:t` to run whatever unittest blocks
+have been defined.
+
 ## Summary
 
 The REPL uses the new backend architecture. Runtime REPL evaluation and REPL
@@ -110,7 +116,7 @@ Remaining follow-up:
   printing `Unsupported CTFE eval result: error` instead of the actual
   error message. The user's diagnostic is lost.
 
-- Fix `printf "   \n" | bin/repl` printing `Unsupported CTFE eval result:
+- Fix `printf "   \n" | bin/qb` printing `Unsupported CTFE eval result:
   voidExpression`. Whitespace-only input should be a silent no-op.
 
 - Display numeric scalar values using D literal notation where a
@@ -131,7 +137,7 @@ Remaining follow-up:
   append `.array` to user expressions, or add a display-only wrapper source
   path. Never try to materialize infinite ranges.
 - `unittest` blocks are not supported as REPL input cells. Running a `.d` file
-  containing `unittest` blocks via `bin/repl file.d` will fail when the parser
+  containing `unittest` blocks via `bin/qb file.d` will fail when the parser
   encounters the first `unittest` keyword. Supporting them is future work.
 
 ## Architecture
@@ -155,6 +161,37 @@ Remaining follow-up:
 - `runReplLoop` remains a small test/helper layer over `Repl.submit`.
 - Rendering remains outside backend/frontend logic: callers suppress
   `Value.void_`.
+
+## Cling Lessons
+
+Cling and Clang-Repl show that a systems-language REPL should be a
+compiler-as-a-service session, not a loose source preprocessor. The useful
+lesson for Quickbite is not "use a JIT"; it is to keep one incremental
+compiler/frontend session, feed it complete transactions, and let structured
+compiler state drive parsing, diagnostics, symbol visibility, and execution.
+
+Apply that lesson this way:
+
+- Treat each submitted cell as a transaction with explicit accept/reject
+  semantics. Accepted cells update the session; rejected cells must not poison
+  later cells.
+- Keep cell classification and incomplete-input detection in the frontend
+  session. Do not infer completeness or expression-vs-declaration shape from
+  delimiters, keywords, suffixes, or failed evaluation.
+- Plan for transaction-level undo once the session model can remove the last
+  accepted cell without reconstructing unrelated history.
+- Keep REPL commands separate from D source. Commands such as quit, backend
+  selection, history, imports, and future library loading should have a
+  distinct command path rather than being disguised as D snippets.
+- Treat imports and library/dependency loading as session state with explicit
+  diagnostics. If future native backends need dynamic-library loading, model it
+  as a REPL/session capability instead of hiding it in backend-specific source
+  rewriting.
+- Preserve compiler compatibility over convenience extensions. If a workaround
+  is needed for interpreted mode, keep it explicit and avoid accepting D source
+  that normal DMD compilation would reject.
+- Keep the binary, library API, and tests on the same evaluation path so the
+  interactive prompt is not a special implementation.
 
 ## Guardrails
 

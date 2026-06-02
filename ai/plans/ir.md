@@ -1,16 +1,20 @@
-# Plan: IR Backend From CTFE Parity
+# Plan: IR Backend From Eval Parity
 
 ## Summary
-Build a new IR backend from scratch and use the existing tests that already
-pass under CTFE as the implementation driver. The goal is to reach a fast
-compiler pipeline that can turn a semantically analysed D AST into IR and run
-selected unittest blocks without object files or linker involvement on the hot
-path.
+Build a new IR backend from scratch by copying the way the bytecode backend
+started, not the final structure of bytecode itself. The first implementation
+should be tiny: a compiler that lowers one expression shape, a backend-local IR
+language file, and a VM that executes that language.
 
-The test strategy is semi-TDD: pick an existing CTFE-passing behavior, make it
-red for the IR backend, implement the smallest IR change that makes it green,
-then move on. Do not invent a separate test suite unless a behavior is not yet
-covered anywhere in the current CTFE-backed language tests.
+The long-term goal is still a proper IR backend: typed, explicit, independent
+from DMD at execution time, and able to grow toward SSA-style values, explicit
+control flow, and rewrite-friendly representation. The bytecode backend is only
+the example for how to begin without overbuilding.
+
+The test strategy is semi-TDD: pick an existing CTFE-passing `eval` behavior,
+make it red for the IR backend, implement the smallest IR change that makes it
+green, then move on. Do not invent a separate test suite unless a behavior is
+not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Minimum Implementation Rule
 - Minimum means deletion-minimum, not architecture-minimum. After the promoted
@@ -24,8 +28,8 @@ covered anywhere in the current CTFE-backed language tests.
   a language construct, diagnostic path, summary path, helper abstraction, id
   table, error message, or invariant until the single promoted test fails
   without it.
-- The required shape is still three backend-local modules: pure IR, compiler,
-  and executor. Their contents must be only what the promoted test forces.
+- The required starting shape is three backend-local modules: compiler,
+  language, and VM. Their contents must be only what the promoted test forces.
   Empty or nearly empty modules are acceptable if the test does not force more.
 - Name the IR node after the AST value it actually represents. If the compiler
   consumes an arbitrary integer expression, the result is not an
@@ -51,21 +55,26 @@ covered anywhere in the current CTFE-backed language tests.
   may be read for context, but the new backend must not route through them or
   reuse them as its implementation.
 - Keep the first backend modules under `quickbite.backends.ir`: a pure IR data
-  module, a compiler module that lowers DMD AST to that IR, and an executor
-  module that runs only that IR. Prefer `compiler` for the lowering module name
-  because the module's public job is compiling parsed D into backend IR; use
-  small private helpers inside it rather than exposing a generic lowering API.
+  language module, a compiler module that lowers DMD expressions to that IR,
+  and a VM module that runs only that IR. Prefer `compiler.d`, `language.d`,
+  and `vm.d` for the initial module names.
+- The initial language may be linear and bytecode-like if that is all the
+  promoted `eval` test requires. Do not add SSA, basic blocks, terminators, or
+  rewrite machinery until an approved test slice forces them.
 
 ## Slice Plan
-- Start with the narrowest behavior already covered by CTFE parity tests:
-  integer literals, simple arithmetic, comparisons, boolean expressions, and
-  assertions.
-- Promote existing tests from `tests/ut/executors/pure_/lang/expressions.d`
-  first, because they already exercise many simple scalar behaviors without
-  needing new fixtures.
+- Start with the narrowest behavior already covered by the existing backend
+  `eval` tests. Prefer integer literals first, then simple arithmetic, then the
+  next behavior with the fewest required D language features.
+- Promote existing tests from `tests/ut/backends/pure_/lang/eval.d` first,
+  because the bytecode backend already proved that path can drive a tiny
+  backend-local compiler/language/VM slice.
+- Implement `IR.eval` first. Leave `evalRepl`, `runParsedTests`, and
+  `runParsedTestSummary` unimplemented until an approved test specifically
+  requires one of those entry points.
 - Add locals, parameters, returns, and direct calls next, using the existing
-  CTFE-passing tests in `control_flow.d` and the function-call cases already in
-  the suite.
+  CTFE-passing tests only after the eval path has forced enough expression
+  support to make those features the next smallest step.
 - Add branches and loops after the scalar and call model is stable. Use the
   current `control_flow.d` coverage as the source of truth for what must work.
 - Add arrays, structs, mutation, and reference-like behaviors only when the
@@ -82,15 +91,15 @@ covered anywhere in the current CTFE-backed language tests.
   the smallest production change that makes it pass.
 - Adding the IR backend to an existing CTFE-passing test is pre-approved: the
   test already exists, so do not stop for approval before making that backend
-  promotion.
+  promotion. This exception only covers adding the backend to an existing
+  backend-matrix test; adding a new test or modifying test behaviour still
+  requires approval before editing the test.
 - Choose the promoted test by expected implementation size. The first PR
-  should pick the already-written CTFE-passing test that can be made green with
-  the least production code while still entering through the required parsed
-  module path and exercising honest IR lowering/execution.
-- The first PR should promote a parsed-module backend test that enters through
-  `runParsedTests`, not a REPL or `eval` test. Do not implement `eval` or
-  `evalRepl` for the first IR backend slice unless that entry point is
-  explicitly requested.
+  should pick the already-written `eval` test that can be made green with the
+  least production code while still exercising honest IR lowering/execution.
+- The first PR should enter through `Backend.eval`, mirroring the successful
+  bytecode backend start. Do not promote parsed-module unittest execution for
+  the first IR backend slice.
 - Do not weaken or replace the CTFE tests to satisfy the IR backend. The tests
   define the target behavior.
 - Before implementing, inspect the DMD AST that reaches the IR compiler for the
@@ -122,18 +131,29 @@ covered anywhere in the current CTFE-backed language tests.
   parsed module pipeline used by the rest of Quickbite.
 
 ## Do Not Repeat From Failed PR 103
-- Failed PR 103 promoted `tests/ut/backends/pure_/lang/eval.d` and implemented
-  `Backend.eval`. That was the wrong first backend slice because it exercised a
-  REPL/eval path instead of the parsed-module unittest path.
-- Do not implement `Backend.eval` by reparsing a synthetic function such as
-  `auto f() { return expr; }`. That does not prove the IR backend can consume
-  the already parsed module supplied to `runParsedTests`.
+- `Backend.eval` is now the correct first entry point, but do not implement it
+  by reparsing a synthetic function such as `auto f() { return expr; }`.
+  Compile the expression through the same frontend expression path used by the
+  bytecode backend.
 - Do not treat DMD constant folding as successful IR lowering. If the source
   behavior is addition, the compiler must lower an addition-shaped AST to
   addition-shaped IR; returning the folded integer literal is cheating.
 - Do not define IR types that overclaim what the compiler has checked. A
   function that accepts any DMD integer expression must not return an
   `IntegerLiteral` unless it first proves the expression is actually a literal.
+
+## Do Not Repeat From Failed PR 109
+- Failed PR 109 did too much for the first IR slice: parsed-module unittest
+  execution, module compilation, unittest discovery, function compilation,
+  calls, declarations, equality, assertion handling, and test execution all
+  appeared before the first tiny `eval` slice existed.
+- Do not start with `compileModule`, unit test discovery, assertion lowering,
+  function tables, or parsed-test execution. Start with the expression compiler,
+  IR language, and VM needed by one `eval` test.
+- Do not add several IR node kinds because they seem inevitable. Add one only
+  when the promoted test fails without it.
+- Do not confuse eventual IR shape with first PR shape. The first PR should
+  look embarrassingly small, as the bytecode backend's first PR did.
 
 ## Assumptions
 - AST-first lowering is acceptable; direct parser-to-IR generation is out of

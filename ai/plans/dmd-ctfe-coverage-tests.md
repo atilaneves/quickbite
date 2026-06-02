@@ -21,11 +21,11 @@ The coverage workflow described below now exists in repository-owned scripts.
 The remaining work is to keep expanding the pure-backend CTFE test suite while
 maintaining an up-to-date method coverage audit.
 
-## Current Baseline
+## Historical Baseline
 
-Quickbite already has a `unittest-cov` configuration in `dub.sdl`. It is meant
-to be paired with `--build=unittest-cov`, which causes DUB/DMD to build with
-coverage enabled.
+Quickbite already has a `unittest-cov` configuration in `dub.sdl`. Before the
+repository-owned coverage scripts existed, a local probe paired it with
+`--build=unittest-cov`, which causes DUB/DMD to build with coverage enabled.
 
 A local probe of:
 
@@ -91,9 +91,10 @@ The current implementation is intentionally lightweight:
 
 ## Test Selection
 
-Add tests one behaviour at a time. Test approval is not required for this
-coverage plan. A test is good for this work when all of the following are
-true:
+Add tests one behaviour at a time. Approval is required before adding a new
+test or modifying test behaviour. The only approval exception is adding a
+backend to an existing backend-matrix test. A test is good for this work when
+all of the following are true:
 
 - it passes normally;
 - it fails when the expected result or diagnostic is deliberately poked;
@@ -268,10 +269,10 @@ scripts/dmd-ctfe-coverage.sh ut.backends.pure_
 
 was 2210/3760 executable entries, or 58.78%.
 
-The test-selection workflow was updated so this plan no longer requires
-approval before adding or modifying tests. For this coverage work, a test is
-accepted when it passes normally, fails when poked, increases focused CTFE
-coverage for the target, and changes no production code.
+The current test-selection workflow requires approval before adding or
+modifying tests. For this coverage work, a proposed test is accepted when it
+passes normally, fails when poked, increases focused CTFE coverage for the
+target, and changes no production code.
 
 Explorer recommendation 1 targeted the whole-method uncovered
 `interpret_aaIn` helper, reached through normal associative-array
