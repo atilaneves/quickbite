@@ -3,9 +3,9 @@ module quickbite.backends.bytecode.vm;
 private:
 
 package imported!"quickbite.lang".Value eval(
-    in imported!"quickbite.backends.bytecode.bytecode".Program program,
+    in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
-    import quickbite.backends.bytecode.bytecode: Op;
+    import quickbite.backends.bytecode.instructions: Op;
     import quickbite.lang: Value;
 
     Value[] stack;

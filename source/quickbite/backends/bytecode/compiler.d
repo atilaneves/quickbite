@@ -3,20 +3,20 @@ module quickbite.backends.bytecode.compiler;
 private:
 
 
-package imported!"quickbite.backends.bytecode.bytecode".Program compileExpression(
+package imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
     in string expr
 )
 {
     import quickbite.frontend.compiler: parseExpression;
-    import quickbite.backends.bytecode.bytecode: Program;
+    import quickbite.backends.bytecode.instructions: Program;
 
     return compileExpression(parseExpression(expr));
 }
 
-private imported!"quickbite.backends.bytecode.bytecode".Program compileExpression(
+private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
-    import quickbite.backends.bytecode.bytecode: Program;
+    import quickbite.backends.bytecode.instructions: Program;
 
     Program program;
     compileExpression(expression, program);
@@ -25,10 +25,10 @@ private imported!"quickbite.backends.bytecode.bytecode".Program compileExpressio
 
 private void compileExpression(
     imported!"dmd.expression".Expression expression,
-    ref imported!"quickbite.backends.bytecode.bytecode".Program program,
+    ref imported!"quickbite.backends.bytecode.instructions".Program program,
 )
 {
-    import quickbite.backends.bytecode.bytecode: Instruction, Op;
+    import quickbite.backends.bytecode.instructions: Instruction, Op;
     import std.string: fromStringz;
 
     if (auto integer = expression.isIntegerExp) {

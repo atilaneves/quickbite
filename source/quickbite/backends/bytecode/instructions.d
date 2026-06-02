@@ -1,4 +1,4 @@
-module quickbite.backends.bytecode.bytecode;
+module quickbite.backends.bytecode.instructions;
 
 private:
 
