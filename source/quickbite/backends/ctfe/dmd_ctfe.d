@@ -289,11 +289,11 @@ private imported!"quickbite.lang".Value arrayValue(
 ) {
     import quickbite.lang: Value;
 
-    long[] values;
+    Value[] values;
     foreach (index; 0 .. array.elements.length)
-        values ~= cast(long) array[index].isIntegerExp.getInteger;
+        values ~= ctfeValue(array[index]);
 
-    return Value(values);
+    return Value.arrayValue(values);
 }
 
 private imported!"quickbite.lang".Value assocArrayValue(

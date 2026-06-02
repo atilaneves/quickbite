@@ -162,6 +162,18 @@ static foreach (backend; backends) {
         output.should == ["[0, 2, 4]"];
     }
 
+    @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["[[1, 2], [3, 4]]", ":q"],
+        );
+
+        output.should == ["[[1, 2], [3, 4]]"];
+    }
+
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

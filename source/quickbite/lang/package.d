@@ -51,6 +51,10 @@ public struct Value {
         return Value(Struct(typeName, fields));
     }
 
+    public static Value arrayValue(in Value[] elements) @safe pure {
+        return Value(Array(elements));
+    }
+
     public static Value assocArrayValue(
         in Value[] keys,
         in Value[] values,
@@ -75,6 +79,10 @@ public struct Value {
     }
 
     private this(AssocArray value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(Array value) @safe pure {
         data = Data(value);
     }
 
