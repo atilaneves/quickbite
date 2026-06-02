@@ -39,7 +39,8 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 }
 
 private struct Compiler {
-    import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
+    import quickbite.backends.bytecode.instructions:
+        CastTarget, Instruction, Op, Program;
 
     private Program program;
     private size_t[imported!"dmd.declaration".VarDeclaration] locals;
@@ -86,6 +87,11 @@ private struct Compiler {
                 throw new Exception("Unsupported bytecode declaration.");
 
             compileVariableDeclaration(variable);
+            return;
+        }
+
+        if (auto cast_ = expression.isCastExp) {
+            compileCast(cast_);
             return;
         }
 
@@ -161,6 +167,21 @@ private struct Compiler {
     private void compileVariableDeclaration(
         imported!"dmd.declaration".VarDeclaration variable,
     ) {
+        if (variable._init !is null) {
+            auto initializer = variable._init.isExpInitializer;
+            if (initializer is null)
+                throw new Exception("Unsupported bytecode initializer.");
+
+            compileExpression(initializerExpression(initializer.exp));
+
+            program.instructions ~= Instruction(
+                Op.storeLocal,
+                imported!"quickbite.lang".Value.void_,
+                localIndex(variable),
+            );
+            return;
+        }
+
         program.instructions ~= Instruction(
             Op.initializeLocal,
             defaultValue(variable),
@@ -216,6 +237,43 @@ private struct Compiler {
             integerValue(integer),
             localIndex(declaration),
         );
+    }
+
+    private void compileCast(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.lang: Value;
+
+        compileExpression(cast_.e1);
+
+        program.instructions ~= Instruction(
+            Op.cast_,
+            Value.void_,
+            cast(size_t) castTarget(cast_),
+        );
+    }
+
+    private CastTarget castTarget(imported!"dmd.expression".CastExp cast_) {
+        import dmd.astenums: TY;
+
+        const type = cast_.type.toBasetype;
+        if (type.ty == TY.Tint32)
+            return CastTarget.int_;
+
+        throw new Exception("Unsupported bytecode cast.");
+    }
+
+    private imported!"dmd.expression".Expression initializerExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto assignment = expression.isAssignExp)
+            return assignment.e2;
+
+        if (auto construct = expression.isConstructExp)
+            return construct.e2;
+
+        if (auto blit = expression.isBlitExp)
+            return blit.e2;
+
+        return expression;
     }
 }
 

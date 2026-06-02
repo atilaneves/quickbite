@@ -6,11 +6,17 @@ package enum Op: ubyte {
     literal,
     loadLocal,
     initializeLocal,
+    storeLocal,
     incrementLocal,
+    cast_,
     add,
     subtract,
     multiply,
     divide,
+}
+
+package enum CastTarget: size_t {
+    int_,
 }
 
 package struct Instruction {

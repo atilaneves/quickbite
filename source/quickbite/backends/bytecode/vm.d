@@ -5,7 +5,7 @@ private:
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
-    import quickbite.backends.bytecode.instructions: Op;
+    import quickbite.backends.bytecode.instructions: CastTarget, Op;
     import quickbite.lang: Value;
 
     Value[] stack;
@@ -31,12 +31,34 @@ package imported!"quickbite.lang".Value eval(
                 locals[instruction.operand] = instruction.value;
                 break;
 
+            case Op.storeLocal:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (instruction.operand >= locals.length)
+                    locals.length = instruction.operand + 1;
+
+                locals[instruction.operand] = stack[$ - 1];
+                stack.length -= 1;
+                break;
+
             case Op.incrementLocal:
                 if (instruction.operand >= locals.length)
                     throw new Exception("Bytecode local out of bounds");
 
                 locals[instruction.operand] = locals[instruction.operand] +
                     instruction.value;
+                break;
+
+            case Op.cast_:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                final switch (cast(CastTarget) instruction.operand) {
+                    case CastTarget.int_:
+                        stack[$ - 1] = stack[$ - 1].castTo!int;
+                        break;
+                }
                 break;
 
             case Op.add:

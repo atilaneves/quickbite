@@ -204,6 +204,24 @@ public struct Value {
         );
     }
 
+    public Value castTo(T)() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias U = Unqual!(typeof(value));
+
+                static if (isIntegral!U || isFloatingPoint!U) {
+                    return Value(cast(T) value);
+                } else {
+                    throw new Exception("Unsupported cast.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
     public Value opBinary(string op)(in Value rhs) const @safe pure
         if (op == "+" || op == "-" || op == "*" || op == "/")
     {
