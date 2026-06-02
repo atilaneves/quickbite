@@ -62,6 +62,14 @@ def test_command_prints_expression_result() -> None:
     assert result.stdout == "3\n"
 
 
+def test_file_argument_loads_example_fixture() -> None:
+    result = run_qb("tests/example.d")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
 def run_qb(*args: str, input: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [qb_path(), *args],
