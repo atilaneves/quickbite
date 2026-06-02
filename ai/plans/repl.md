@@ -119,6 +119,10 @@ Completed:
 - Fixed `bin/qb tests/example.d` so file arguments load through the normal DMD
   module parser. This accepts module-level declarations and `unittest` blocks
   without running the unittest blocks yet.
+- Added `:t` to run accepted REPL `unittest` cells and loaded-file
+  `unittest` blocks. The command reparses loaded unittest source with
+  `parseModuleWithCheckActionContext` before handing it to the backend, so
+  assertion failures report DMD-style context messages such as `1 != 2`.
 
 Remaining follow-up:
 
@@ -133,10 +137,6 @@ Remaining follow-up:
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
   path. Never try to materialize infinite ranges.
-- `unittest` blocks are not supported as REPL input cells yet. Running a `.d`
-  file containing `unittest` blocks via `bin/qb file.d` loads the module, but
-  there is not yet a `:t` command to run those loaded unittest blocks.
-
 ## Architecture
 
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL
