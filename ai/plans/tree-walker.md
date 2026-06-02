@@ -56,7 +56,10 @@ Promote tests in order of complexity. Start with
 smallest backend surface: parse an expression or tiny eval cell, walk
 it, and return one `Value`. Prefer integer literals first, then simple
 arithmetic, then the next eval behavior with the fewest required D
-language features.
+language features. Once the first integer literal slice is green, keep
+the eval roadmap covering all D integer scalar types (`byte`, `ubyte`,
+`short`, `ushort`, `int`, `uint`, `long`, and `ulong`) before treating
+integer scalar preservation as complete.
 
 After the existing eval tests are done, do not jump to an entire broad
 language file. Identify the next similarly simple test by counting the

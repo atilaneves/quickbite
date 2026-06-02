@@ -9,7 +9,9 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        assert(0);
+        import quickbite.frontend.compiler: parseExpression;
+
+        return evalExpression(parseExpression(expr));
     }
 
     public override Value evalRepl(in ReplCell cell) {
@@ -29,6 +31,17 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
         assert(0);
     }
 
+}
+
+private imported!"quickbite.lang".Value evalExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    import quickbite.lang: Value;
+
+    if (auto integer = expression.isIntegerExp)
+        return Value(cast(int) integer.getInteger);
+
+    assert(0);
 }
 
 private struct Interpreter {
