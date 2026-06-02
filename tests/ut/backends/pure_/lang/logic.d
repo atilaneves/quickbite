@@ -111,24 +111,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("true != false");
     }
 
-    @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            bool failIfCalled() {
-                assert(0);
-                return true;
-            }
-
-            unittest {
-                assert((isReady && failIfCalled) == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -485,6 +467,24 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert((isReady && failIfCalled) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
