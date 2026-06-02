@@ -27,8 +27,10 @@ public int main(string[] args) {
     }
 
     if (options.options.hasFile) {
+        import quickbite.frontend.compiler: parseModule;
         import std.file: readText;
-        repl.submit(readText(options.options.file));
+
+        parseModule(readText(options.options.file));
         return 0;
     }
 
