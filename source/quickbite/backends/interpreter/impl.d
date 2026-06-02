@@ -1,4 +1,4 @@
-module quickbite.backends.tree_walker.impl;
+module quickbite.backends.interpreter.impl;
 
 private:
 
