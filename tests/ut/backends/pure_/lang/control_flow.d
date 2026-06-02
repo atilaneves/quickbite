@@ -1278,6 +1278,27 @@ static foreach (backend; backends) {
         });
     }
 
+    @("foreachUtf32StringEncodesAsUtf8." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                dchar[] codepoints;
+                codepoints ~= cast(dchar) 0x0061;
+                codepoints ~= cast(dchar) 0x00E9;
+
+                dstring s = codepoints.idup;
+                char[] bytes;
+                foreach (char c; s)
+                    bytes ~= c;
+
+                assert(bytes.length == 3);
+                assert(bytes[0] == 'a');
+                assert(bytes[1] == cast(char) 0xC3);
+                assert(bytes[2] == cast(char) 0xA9);
+            }
+        });
+    }
+
     @("foreachUtf8StringFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
