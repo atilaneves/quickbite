@@ -166,6 +166,23 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Do not confuse eventual IR shape with first PR shape. The first PR should
   look embarrassingly small, as the bytecode backend's first PR did.
 
+## Follow-Up From PR #122 Review
+
+1. **`integerValue` casts unconditionally to `int`** (`compiler.d`): dispatch on
+   `integer.type.toBasetype.ty` and produce the correctly-typed `Value`, the
+   same way `realValue` already switches on `TY`. Address before integer-type
+   tests are promoted.
+
+2. **Missing function attributes** (`compiler.d`, `vm.d`, `language.d`): add
+   `@safe pure nothrow` (and `@nogc` where applicable) to all IR backend
+   module-scope functions and structs. Verify DMD AST methods to determine
+   whether `@trusted` wrappers are needed for the compiler functions.
+
+3. **No top-level `RealExp` branch in `compileExpression`** (`compiler.d`):
+   `eval("3.75f")` would assert, and a DMD version that constant-folds
+   `1.5f + 2.25f` to a `RealExp` would silently break the float add test. Add
+   a top-level `isRealExp` branch mirroring the existing `isIntegerExp` branch.
+
 ## Assumptions
 - AST-first lowering is acceptable; direct parser-to-IR generation is out of
   scope.
