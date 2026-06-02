@@ -70,6 +70,23 @@ def test_file_argument_loads_example_fixture() -> None:
     assert result.stderr == ""
 
 
+def test_file_argument_exits_without_interactive_prompt() -> None:
+    child = pexpect.spawn(
+        qb_path(),
+        ["tests/example.d"],
+        timeout=TIMEOUT,
+        encoding="utf-8",
+    )
+    try:
+        child.expect(pexpect.EOF)
+    finally:
+        child.close(force=True)
+
+    assert child.exitstatus == 0
+    assert "Quickbite REPL" not in child.before
+    assert "> " not in child.before
+
+
 def run_qb(*args: str, input: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [qb_path(), *args],
