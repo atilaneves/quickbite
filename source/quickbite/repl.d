@@ -67,8 +67,9 @@ public struct Repl {
             parseModuleWithCheckActionContext(session.loadedModuleSource)
                 .module_,
         );
-        if (const failure = firstFailure(result))
-            throw new Exception(testFailureDiagnostic(*failure));
+        foreach (ref testCase; result.cases)
+            if (testCase.failed)
+                throw new Exception(testFailureDiagnostic(testCase));
 
         return ReplResult(Value.void_);
     }
@@ -117,16 +118,12 @@ private ReplDisplay replDisplay(
         ReplDisplay.value;
 }
 
-private const(imported!"quickbite.backends".TestCaseResult)* firstFailure(
-    ref const(imported!"quickbite.backends".TestRunResult) result,
+private bool failed(
+    ref const(imported!"quickbite.backends".TestCaseResult) testCase,
 ) @safe pure nothrow {
     import quickbite.backends: TestOutcome;
 
-    foreach (ref testCase; result.cases)
-        if (testCase.outcome == TestOutcome.failed)
-            return &testCase;
-
-    return null;
+    return testCase.outcome == TestOutcome.failed;
 }
 
 private string testFailureDiagnostic(
