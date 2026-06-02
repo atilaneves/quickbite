@@ -7,6 +7,7 @@ public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 public import quickbite.backends.tree_walker;
 public import quickbite.backends.bytecode;
+public import quickbite.backends.ir;
 
 
 alias backends = imported!"std.meta".AliasSeq!(

@@ -9,7 +9,10 @@ public class IR: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        assert(0);
+        import quickbite.backends.ir.compiler: compileExpression;
+        import quickbite.backends.ir.vm: eval;
+
+        return eval(compileExpression(expr));
     }
 
     public override Value evalRepl(in ReplCell cell) {
