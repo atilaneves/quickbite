@@ -46,49 +46,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("41 != 42");
     }
 
-    @("logicalNot." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool isReady = false;
-                assert(!isReady);
-            }
-        });
-    }
-
-    @("logicalNotFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool isReady = false;
-                assert(!isReady == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalNotFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool isReady = true;
-                assert(!isReady == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
-    @("logicalNotCall." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            unittest {
-                assert(!isReady);
-            }
-        });
-    }
-
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -432,5 +389,80 @@ static foreach (backend; backends) {
                 assert((input > 41 && input < 43) == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNotFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool isReady = true;
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalNotFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return true;
+            }
+
+            unittest {
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalNotCall." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNot." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady);
+            }
+        });
     }
 }

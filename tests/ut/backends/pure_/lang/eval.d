@@ -159,7 +159,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
+static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == Value("abc");

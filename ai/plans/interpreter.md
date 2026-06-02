@@ -9,6 +9,11 @@ surface covered by the existing test suite, driven first by the
 simplest existing `eval` tests and then by similarly small CTFE-only
 tests promoted one at a time to the tree-walking backend.
 
+Rename the backend from `TreeWalker` to `Interpreter` as the supported
+interpreter surface grows. Keep any compatibility aliases or test-matrix
+transitions narrow and temporary; the long-term public backend name should be
+`Interpreter`, not `TreeWalker`.
+
 The process mirrors the IR backend: pick the simplest test that does
 not yet run under the tree walker, add the tree-walking backend to it,
 confirm it is red, implement the smallest handler that makes it green,
@@ -92,6 +97,10 @@ tests stop being available.
 
 ### Eval Slice Lessons
 
+Current progress: all tests in `tests/ut/backends/pure_/lang/eval.d` are
+covered by `TreeWalker`, including `stringLiteralIsArray`. Keep future eval
+work focused on regressions or newly added CTFE-backed eval behaviours.
+
 When promoting one eval test, isolate that test in its own `static
 foreach` backend block if the surrounding block contains later eval
 tests. Do not change a broad block from `backends` to
@@ -142,6 +151,25 @@ expression are classified by DMD-backed frontend code instead of local
 string heuristics. Keep that common cell API backend-facing only:
 REPL-only concepts such as type-display cells belong in
 `frontend.repl`, not in the cell type consumed by backends.
+
+### Logic Slice Lessons
+
+Current progress in `tests/ut/backends/pure_/lang/logic.d`:
+`logicalNot`, `logicalNotFailureMessage.0`, `logicalNotFailureMessage.1`,
+`logicalNotCall`, `logicalNotCallFailureMessage.0`, and
+`logicalNotCallFailureMessage.1` are covered by `TreeWalker`.
+
+The next smallest slice is the plain local `logicalAnd` case, followed by
+plain local `||` cases before broader call-based or short-circuit logic. Treat
+each named unittest as its own promotion and commit.
+
+Module-backed interpreter support remains intentionally narrow:
+zero-argument free calls, return statements, comma-expression sequencing,
+local bool declarations, unary `!`, equality failure messages, truthiness, and
+DMD-lowered logical-not temporaries in assertion messages exist only because
+promoted logic tests required them. Do not generalize call parameters, methods,
+assignment, control flow, or assertion formatting until a promoted test forces
+that behaviour.
 
 ### First PR Guardrails
 
