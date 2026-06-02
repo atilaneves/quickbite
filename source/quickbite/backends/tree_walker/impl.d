@@ -41,10 +41,30 @@ private imported!"quickbite.lang".Value evalExpression(
     if (auto integer = expression.isIntegerExp)
         return Value(cast(int) integer.getInteger);
 
+    if (auto real_ = expression.isRealExp)
+        return realValue(real_);
+
     if (auto add = expression.isAddExp)
         return evalExpression(add.e1) + evalExpression(add.e2);
 
     assert(0);
+}
+
+private imported!"quickbite.lang".Value realValue(
+    imported!"dmd.expression".RealExp real_,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    const type = real_.type.toBasetype;
+
+    if (type !is null && type.ty == TY.Tfloat32)
+        return Value(cast(float) real_.toReal);
+
+    if (type !is null && type.ty == TY.Tfloat64)
+        return Value(cast(double) real_.toReal);
+
+    return Value(cast(real) real_.toReal);
 }
 
 private struct Interpreter {
