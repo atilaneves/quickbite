@@ -471,7 +471,9 @@ private struct EvalModuleInterpreter {
                 isBoolExpression(equal.e1) ||
                 isBoolExpression(equal.e2) ||
                 isLogicalNotExpression(equal.e1) ||
-                isLogicalNotExpression(equal.e2);
+                isLogicalNotExpression(equal.e2) ||
+                isLogicalExpression(equal.e1) ||
+                isLogicalExpression(equal.e2);
             return text(
                 equalityOperandMessage(equal.e1, useBoolMessage),
                 " ",
@@ -535,6 +537,18 @@ private struct EvalModuleInterpreter {
         }
 
         return expression.isNotExp !is null;
+    }
+
+    private bool isLogicalExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        while (auto cast_ = expression.isCastExp)
+            expression = cast_.e1;
+
+        if (auto comma = expression.isCommaExp)
+            return isLogicalExpression(comma.e2);
+
+        return expression.isLogicalExp !is null;
     }
 
     private string assertMessage(imported!"dmd.expression".Expression expression) {
