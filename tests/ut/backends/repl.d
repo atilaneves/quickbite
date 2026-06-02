@@ -186,6 +186,18 @@ static foreach (backend; backends) {
         output.should == [`["a", "b"]`];
     }
 
+    @("repl.backend.displaysWideStringValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`"wide"w`, `"wide"d`, ":q"],
+        );
+
+        output.should == [`"wide"`, `"wide"`];
+    }
+
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

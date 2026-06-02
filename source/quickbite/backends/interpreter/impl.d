@@ -291,6 +291,7 @@ private struct EvalModuleInterpreter {
 
     private Value[VarDeclaration] locals;
     private Value result;
+    private bool runningCalledFunction;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
@@ -332,6 +333,15 @@ private struct EvalModuleInterpreter {
         if (auto not = expression.isNotExp)
             return Value(!isTruthy(runExpression(not.e1)));
 
+        if (auto logical = expression.isLogicalExp) {
+            import dmd.tokens: EXP;
+
+            if (logical.op == EXP.andAnd)
+                return runLogicalAndExpression(logical);
+            if (logical.op == EXP.orOr)
+                return runLogicalOrExpression(logical);
+        }
+
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
 
@@ -364,6 +374,28 @@ private struct EvalModuleInterpreter {
         throw new Exception(text("Unsupported interpreter expression: ", expression.op));
     }
 
+    private Value runLogicalAndExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        const left = isTruthy(runExpression(logical.e1));
+        if (!left)
+            return Value(false);
+
+        const right = isTruthy(runExpression(logical.e2));
+        return Value(right);
+    }
+
+    private Value runLogicalOrExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        const left = isTruthy(runExpression(logical.e1));
+        if (left)
+            return Value(true);
+
+        const right = isTruthy(runExpression(logical.e2));
+        return Value(right);
+    }
+
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
         if (call.arguments !is null && call.arguments.length != 0)
             throw new Exception("Unsupported interpreter call arguments.");
@@ -381,15 +413,18 @@ private struct EvalModuleInterpreter {
     private Value runFunction(imported!"dmd.func".FuncDeclaration function_) {
         auto savedLocals = locals.dup;
         const savedResult = result;
+        const savedRunningCalledFunction = runningCalledFunction;
 
         locals = null;
         result = Value(false);
+        runningCalledFunction = true;
 
         runStatement(function_.fbody);
         const value = result;
 
         locals = savedLocals;
         result = savedResult;
+        runningCalledFunction = savedRunningCalledFunction;
         return value;
     }
 
@@ -445,42 +480,63 @@ private struct EvalModuleInterpreter {
     private string assertFailureMessage(
         imported!"dmd.expression".AssertExp assert_,
     ) {
-        if (assert_.msg !is null && assert_.msg.isStringExp !is null)
-            return assertMessage(assert_.msg);
+        if (assert_.msg !is null) {
+            if (assert_.msg.isStringExp !is null)
+                return assertMessage(assert_.msg);
+
+            if (auto message = dmdAssertFailBoolMessage(assert_.msg))
+                return message;
+        }
 
         if (auto equal = assert_.e1.isEqualExp) {
             import dmd.tokens: EXP;
             import std.conv: text;
 
             const operator = equal.op == EXP.notEqual ? "==" : "!=";
+            const left = runExpression(equal.e1);
+            const right = runExpression(equal.e2);
             const useBoolMessage =
+                isBoolValue(left) ||
+                isBoolValue(right) ||
                 isBoolExpression(equal.e1) ||
                 isBoolExpression(equal.e2) ||
                 isLogicalNotExpression(equal.e1) ||
-                isLogicalNotExpression(equal.e2);
+                isLogicalNotExpression(equal.e2) ||
+                isLogicalAndExpression(equal.e1) ||
+                isLogicalAndExpression(equal.e2);
             return text(
-                equalityOperandMessage(equal.e1, useBoolMessage),
+                equalityOperandMessage(left, useBoolMessage),
                 " ",
                 operator,
                 " ",
-                equalityOperandMessage(equal.e2, useBoolMessage),
+                equalityOperandMessage(right, useBoolMessage),
             );
+        }
+
+        if (runningCalledFunction) {
+            if (auto integer = assert_.e1.isIntegerExp) {
+                if (integer.toInteger == 0)
+                    return "`assert(0)` failed";
+            }
         }
 
         return "`assert(false)` failed";
     }
 
     private string equalityOperandMessage(
-        imported!"dmd.expression".Expression expression,
+        in Value value,
         in bool useBoolMessage,
     ) {
         import std.conv: text;
 
-        const value = runExpression(expression);
         if (useBoolMessage)
             return text(isTruthy(value));
 
         return text(value);
+    }
+
+    private bool isBoolValue(in Value value) {
+        return value == Value(false) || value == Value(true);
     }
 
     private bool isBoolExpression(imported!"dmd.expression".Expression expression) {
@@ -523,11 +579,88 @@ private struct EvalModuleInterpreter {
         return expression.isNotExp !is null;
     }
 
-    private string assertMessage(imported!"dmd.expression".Expression expression) {
-        auto literal = expression.isStringExp;
-        if (literal is null)
-            assert(0);
+    private bool isLogicalAndExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
 
-        return literal.peekString.idup;
+        while (auto cast_ = expression.isCastExp)
+            expression = cast_.e1;
+
+        if (auto comma = expression.isCommaExp)
+            return isLogicalAndExpression(comma.e2);
+
+        if (auto var = expression.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null ||
+                variable._init is null ||
+                variable._init.isExpInitializer is null)
+                return false;
+
+            auto initializer = variable._init.isExpInitializer.exp;
+            if (auto assign = initializer.isAssignExp)
+                initializer = assign.e2;
+            else if (auto construct = initializer.isConstructExp)
+                initializer = construct.e2;
+            else if (auto blit = initializer.isBlitExp)
+                initializer = blit.e2;
+
+            return isLogicalAndExpression(initializer);
+        }
+
+        if (auto logical = expression.isLogicalExp)
+            return logical.op == EXP.andAnd;
+
+        return false;
+    }
+
+    private string assertMessage(imported!"dmd.expression".Expression expression) {
+        if (auto literal = expression.isStringExp)
+            return literal.peekString.idup;
+
+        assert(0);
+    }
+
+    private string dmdAssertFailBoolMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.f is null ||
+            call.f.ident.toString != "_d_assert_fail" ||
+            call.arguments is null)
+            return null;
+
+        return dmdAssertFailBoolMessage(call);
+    }
+
+    private string dmdAssertFailBoolMessage(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import std.conv: text;
+
+        if (call.arguments.length != 3)
+            return null;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null)
+            return null;
+
+        const operatorText = operator.peekString.idup;
+        if (operatorText != "==" && operatorText != "!=")
+            return null;
+
+        auto left = (*call.arguments)[1].isIntegerExp;
+        auto right = (*call.arguments)[2].isIntegerExp;
+        if (left is null || right is null)
+            return null;
+
+        return text(
+            left.toInteger != 0,
+            " ",
+            operatorText == "==" ? "!=" : "==",
+            " ",
+            right.toInteger != 0,
+        );
     }
 }

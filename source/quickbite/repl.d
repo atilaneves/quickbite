@@ -168,7 +168,14 @@ private bool functionReturnsString(
     if (array is null || array.nextOf is null)
         return false;
 
-    return array.nextOf.toBasetype.ty == TY.Tchar;
+    switch (array.nextOf.toBasetype.ty) with (TY) {
+        case Tchar:
+        case Twchar:
+        case Tdchar:
+            return true;
+        default:
+            return false;
+    }
 }
 
 public string[] runReplLoop(

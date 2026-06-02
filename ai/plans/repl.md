@@ -171,6 +171,9 @@ Completed:
 - Fixed enum value display in CTFE-backed REPL results. Enum expressions such
   as `E.a` now render as `E.a`, including inside aggregates, while explicit
   casts such as `cast(int) E.a` still render as numeric values.
+- Fixed CTFE-backed REPL display for wide string results. Dynamic `wstring`
+  and `dstring` expression results now render as quoted strings instead of
+  character arrays.
 
 Remaining follow-up:
 
