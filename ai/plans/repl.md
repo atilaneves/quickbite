@@ -112,12 +112,17 @@ Completed:
 - Fixed direct REPL parser calls to pass NUL-terminated source buffers. This
   keeps readline-backed interactive input from exposing stray bytes such as
   `0x7f` to DMD's parser under pseudo-TTY tests.
+- Confirmed the `Function declared twice` priority item is already fixed on
+  current `master`: a duplicate function declaration reports the conflict, and
+  the first accepted function remains callable.
+- Added a red regression for expression-cell CTFE failures losing diagnostics:
+  `auto arr = [1,2,3]; arr[99]` currently reports
+  `Unsupported CTFE eval result: error` instead of DMD's bounds diagnostic.
+- Fixed expression-cell CTFE failures so DMD's diagnostic is reported before
+  `ErrorExp` reaches REPL value rendering. For example,
+  `auto arr = [1,2,3]; arr[99]` reports DMD's bounds diagnostic.
 
 Remaining follow-up:
-
-- Fix `throw new Exception("test")` and `auto arr = [1,2,3]; arr[99]`
-  printing `Unsupported CTFE eval result: error` instead of the actual
-  error message. The user's diagnostic is lost.
 
 - Fix `printf "   \n" | bin/qb` printing `Unsupported CTFE eval result:
   voidExpression`. Whitespace-only input should be a silent no-op.

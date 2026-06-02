@@ -200,6 +200,20 @@ static foreach (backend; backends) {
             "array index 10 is out of bounds `[1, 2, 3][0 .. 3]`";
     }
 
+    @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("auto arr = [1,2,3];").should == Value.void_;
+        void outOfBoundsIndex() {
+            repl.submit("arr[99]");
+        }
+        outOfBoundsIndex.shouldThrow.msg.should ==
+            "array index 99 is out of bounds `[0..3]`";
+    }
+
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

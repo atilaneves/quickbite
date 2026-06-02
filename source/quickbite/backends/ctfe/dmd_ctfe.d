@@ -104,7 +104,7 @@ private imported!"dmd.expression".CallExp evalCall(in string str) {
 
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
     try
-        return ctfeValue(interpretCtfe(callExpression(replFunction(source))));
+        return ctfeValue(interpretCtfeOrThrow(callExpression(replFunction(source))));
     catch (Exception exception)
         throw new Exception(withCandidateSignatures(source, exception.msg));
 }
@@ -392,6 +392,23 @@ private imported!"dmd.expression".Expression interpretCtfe(
     imported!"dmd.expression".Expression result;
     withCompilerLock(() {
         result = ctfeInterpret(expression);
+    });
+    return result;
+}
+
+private imported!"dmd.expression".Expression interpretCtfeOrThrow(
+    imported!"dmd.expression".Expression expression,
+) {
+    import quickbite.frontend.compiler: resetErrors, withCompilerLock;
+    import dmd.dinterpret: ctfeInterpret;
+    import dmd.globals: global;
+
+    imported!"dmd.expression".Expression result;
+    withCompilerLock(() {
+        resetErrors;
+        result = ctfeInterpret(expression);
+        if (result.isErrorExp !is null || global.errors != 0)
+            throw new Exception(diagnosticMessage);
     });
     return result;
 }
