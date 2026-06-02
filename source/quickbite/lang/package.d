@@ -266,8 +266,7 @@ public struct Value {
         );
     }
 
-    public Value fabs() const @safe pure {
-        import std.math: fabs;
+    public Value unaryFloating(alias operation)() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -276,17 +275,16 @@ public struct Value {
                 alias T = Unqual!(typeof(value));
 
                 static if (isFloatingPoint!T) {
-                    return Value(fabs(cast(T) value));
+                    return Value(operation(cast(T) value));
                 } else {
-                    throw new Exception("Unsupported fabs operand type.");
+                    throw new Exception("Unsupported unary floating operand type.");
                     return Value.void_;
                 }
             },
         );
     }
 
-    public Value pow(in Value rhs) const @safe pure {
-        import std.math: pow;
+    public Value binaryFloating(alias operation)(in Value rhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -300,18 +298,20 @@ public struct Value {
                             alias R = Unqual!(typeof(rhsValue));
 
                             static if (isFloatingPoint!R) {
-                                return Value(cast(L) pow(
+                                return Value(cast(L) operation(
                                     cast(L) lhs,
                                     cast(R) rhsValue,
                                 ));
                             } else {
-                                throw new Exception("Unsupported pow rhs type.");
+                                throw new Exception(
+                                    "Unsupported binary floating rhs type.",
+                                );
                                 return Value.void_;
                             }
                         },
                     );
                 } else {
-                    throw new Exception("Unsupported pow lhs type.");
+                    throw new Exception("Unsupported binary floating lhs type.");
                     return Value.void_;
                 }
             },

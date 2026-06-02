@@ -14,8 +14,8 @@ package enum Op: ubyte {
     multiply,
     divide,
     negate,
-    fabs,
-    pow,
+    unaryNativeCall,
+    binaryNativeCall,
 }
 
 package struct Instruction {

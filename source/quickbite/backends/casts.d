@@ -19,7 +19,6 @@ public enum CastTarget: size_t {
     double_,
     real_,
 }
-
 public CastTarget castTarget(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
@@ -97,4 +96,3 @@ public imported!"quickbite.lang".Value castValue(
             return value.castTo!real;
     }
 }
-

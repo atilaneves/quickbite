@@ -17,9 +17,9 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.cell: parseEvalFunction;
+    import quickbite.frontend.cell: parseEvalSource;
 
-    return compileFunction(parseEvalFunction(source));
+    return compileFunction(parseEvalSource(source).function_);
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -61,8 +61,8 @@ private struct Compiler {
         }
 
         // Imports are semantically resolved before bytecode compilation; eval
-        // tests for std.math intrinsics still leave their import statements in
-        // the function body, but they do not emit runtime bytecode.
+        // tests for std.math native calls still leave their import statements
+        // in the function body, but they do not emit runtime bytecode.
         if (statement.isImportStatement !is null)
             return;
 
@@ -280,66 +280,45 @@ private struct Compiler {
     }
 
     private void compileCall(CallExp call) {
-        if (isStdMathIntrinsic(call.f, "fabs")) {
-            compileFabs(call);
-            return;
+        import quickbite.backends.bytecode.builtins:
+            bytecodeBuiltin,
+            bytecodeBuiltinArgumentCount;
+
+        const builtin = bytecodeBuiltin(call.f);
+        if (call.arguments is null)
+            throw new Exception("Unsupported bytecode builtin call arguments.");
+
+        const expectedArgumentCount = bytecodeBuiltinArgumentCount(builtin);
+        if (call.arguments.length != expectedArgumentCount)
+            throw new Exception(
+                "Unsupported bytecode builtin call argument count.",
+            );
+
+        foreach (argument; *call.arguments)
+            compileExpression(argument);
+
+        switch (expectedArgumentCount) {
+            case 1:
+                program.instructions ~= Instruction(
+                    Op.unaryNativeCall,
+                    Value.void_,
+                    cast(size_t) builtin,
+                );
+                return;
+
+            case 2:
+                program.instructions ~= Instruction(
+                    Op.binaryNativeCall,
+                    Value.void_,
+                    cast(size_t) builtin,
+                );
+                return;
+
+            default:
+                break;
         }
 
-        if (isStdMathIntrinsic(call.f, "pow")) {
-            compilePow(call);
-            return;
-        }
-
-        throw new Exception("Unsupported bytecode call target.");
-    }
-
-    private void compileFabs(CallExp call) {
-        if (call.arguments is null || call.arguments.length != 1)
-            throw new Exception("Unsupported bytecode fabs argument count.");
-
-        compileExpression((*call.arguments)[0]);
-        program.instructions ~= Instruction(Op.fabs);
-    }
-
-    private void compilePow(CallExp call) {
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception("Unsupported bytecode pow argument count.");
-
-        compileExpression((*call.arguments)[0]);
-        compileExpression((*call.arguments)[1]);
-        program.instructions ~= Instruction(Op.pow);
-    }
-
-    private bool isStdMathIntrinsic(
-        FuncDeclaration function_,
-        in string identifier,
-    ) {
-        import std.algorithm: startsWith;
-
-        if (function_ is null || function_.ident is null)
-            return false;
-
-        if (function_.ident.toString != identifier)
-            return false;
-
-        return moduleName(function_) == "std.math" ||
-            moduleName(function_).startsWith("std.math.");
-    }
-
-    private string moduleName(FuncDeclaration function_) {
-        import std.algorithm: reverse;
-        import std.array: join;
-        import dmd.dsymbol: Dsymbol;
-
-        Dsymbol symbol = function_;
-        string[] segments;
-        for (symbol = symbol.parent; symbol !is null; symbol = symbol.parent) {
-            if (symbol.ident !is null)
-                segments ~= symbol.ident.toString.idup;
-        }
-
-        segments.reverse;
-        return segments.join(".");
+        throw new Exception("Unsupported bytecode builtin call.");
     }
 
     private size_t castTarget(CastExp cast_) {
