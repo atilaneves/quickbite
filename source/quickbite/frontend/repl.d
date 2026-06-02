@@ -94,6 +94,10 @@ public struct ReplSession {
         if (cell.kind == ReplCellKind.expression)
             ++valueCellCount;
     }
+
+    public string loadedModuleSource() const @safe pure {
+        return moduleTranscript;
+    }
 }
 
 private bool isExpressionCell(in string input) {
@@ -274,7 +278,8 @@ private bool allReplModuleDeclarations(imported!"dmd.dsymbol".Dsymbols* declarat
 
 private bool isReplModuleDeclaration(imported!"dmd.dsymbol".Dsymbol declaration) {
     return declaration.isFuncDeclaration !is null ||
-        declaration.isImport !is null;
+        declaration.isImport !is null ||
+        declaration.isUnitTestDeclaration !is null;
 }
 
 private bool allFunctionDeclarations(imported!"dmd.dsymbol".Dsymbols* declarations) {

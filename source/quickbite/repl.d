@@ -26,6 +26,9 @@ public struct Repl {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
+        if (input == ":t")
+            return runLoadedTests;
+
         const source = pendingInput.length == 0 ?
             input :
             pendingInput ~ "\n" ~ input;
@@ -39,6 +42,14 @@ public struct Repl {
         session.accept(cell);
         pendingInput = null;
         return ReplResult(value, replDisplay(cell));
+    }
+
+    private ReplResult runLoadedTests() {
+        import quickbite.frontend.compiler: parseModule;
+        import quickbite.lang: Value;
+
+        backend.runParsedTests(parseModule(session.loadedModuleSource).module_);
+        return ReplResult(Value.void_);
     }
 
     private imported!"quickbite.lang".Value evalReplCell(
