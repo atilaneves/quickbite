@@ -133,6 +133,30 @@ static foreach (backend; backends) {
         result.cases[1].name.should == "__unittest_L6_C13";
     }
 
+    @("runParsedTestResults.reportsFileBackedUnittestLocations." ~
+        backend.stringof)
+    unittest {
+        import unit_threaded.integration: Sandbox;
+
+        with (immutable Sandbox()) {
+            writeFile(
+                "fixture.d",
+                "unittest {\n" ~
+                "    assert(1 == 2);\n" ~
+                "}",
+            );
+            const fixturePath = inSandboxPath("fixture.d");
+
+            const result = runBackendFileFixtureTestResults!backend(
+                fixturePath,
+                [],
+            );
+
+            result.cases.length.should == 1;
+            result.cases[0].location.should == fixturePath ~ "(1)";
+        }
+    }
+
     @("runParsedModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;

@@ -77,10 +77,21 @@ public void runBackendFileFixtureTests(T)(
     in string filePath,
     in string[] importPaths,
 ) {
-    import std.file: readText;
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
 
-    auto parsed = parseModule(filePath.readText, importPaths);
+    auto parsed = parseModuleFileWithCheckActionContext(filePath, importPaths);
     auto backend = newBackend!T;
     backend.runParsedTests(parsed.module_);
+}
+
+public imported!"quickbite.backends".TestRunResult
+runBackendFileFixtureTestResults(T)(
+    in string filePath,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
+
+    auto parsed = parseModuleFileWithCheckActionContext(filePath, importPaths);
+    auto backend = newBackend!T;
+    return backend.runParsedTestResults(parsed.module_);
 }

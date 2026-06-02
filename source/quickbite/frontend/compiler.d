@@ -57,6 +57,13 @@ public ParsedModule parseModuleWithCheckActionContext(
     return compiler.parseModuleWithCheckActionContext(source, importPaths);
 }
 
+public ParsedModule parseModuleFileWithCheckActionContext(
+    in string filePath,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleFileWithCheckActionContext(filePath, importPaths);
+}
+
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
 }
@@ -225,6 +232,30 @@ final class Compiler {
         return parseModuleLocked(source, importPaths, "checkaction=context", true);
     }
 
+    ParsedModule parseModuleFileWithCheckActionContext(
+        in string filePath,
+        in string[] importPaths,
+    ) {
+        import dmd.astenums: CHECKACTION;
+        import dmd.globals: global;
+        import std.file: readText;
+        import std.conv: text;
+
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        const originalCheckAction = global.params.checkAction;
+        global.params.checkAction = CHECKACTION.context;
+        scope(exit) global.params.checkAction = originalCheckAction;
+
+        return parseModuleLocked(
+            filePath.readText,
+            importPaths,
+            text("checkaction=context\0", filePath),
+            true,
+            filePath,
+        );
+    }
 
     private imported!"dmd.expression".Expression parseExpression(in string source) {
         mutex.lock;
@@ -274,6 +305,7 @@ final class Compiler {
         in string[] importPaths,
         in string cacheSalt,
         in bool useCache,
+        in string filePath = null,
     ) {
         import core.atomic: atomicFetchAdd;
         import dmd.errors: diagnostics;
@@ -299,11 +331,13 @@ final class Compiler {
 
         resetErrors;
 
-        const fileName = text(
-            "snippet_",
-            atomicFetchAdd(_moduleCounter, 1u),
-            ".d",
-        );
+        const fileName = filePath is null ?
+            text(
+                "snippet_",
+                atomicFetchAdd(_moduleCounter, 1u),
+                ".d",
+            ) :
+            filePath;
 
         ParsedModule parsed = dmdParseModule(fileName, source);
         if (parsed.diagnostics.hasErrors)

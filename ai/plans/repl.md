@@ -130,13 +130,15 @@ Completed:
   results. The CTFE backend now reports DMD names such as
   `__unittest_L2_C13` directly rather than inspecting unit-threaded
   attributes.
+- Preserved actual source file names in structured backend test case locations
+  for file-backed fixtures by parsing files through a file-path-aware frontend
+  API instead of synthetic snippet names.
 
 Remaining follow-up:
 
 - Expand the structured backend test-result API so running tests reports what
-  ran and what failed, including file/line locations for both REPL snippets and
-  source files. Keep `runParsedTests` as a compatibility wrapper until callers
-  migrate, but future REPL, summary, and reporting work should consume
+  ran and what failed. Keep `runParsedTests` as a compatibility wrapper until
+  callers migrate, but future REPL, summary, and reporting work should consume
   structured results rather than throwing or parsing raw strings.
 
 - Keep source loaded from files from advancing typed REPL snippet locations.
