@@ -45,10 +45,12 @@ public struct Repl {
     }
 
     private ReplResult runLoadedTests() {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
         import quickbite.lang: Value;
 
-        backend.runParsedTests(parseModule(session.loadedModuleSource).module_);
+        backend.runParsedTests(
+            parseModuleWithCheckActionContext(session.loadedModuleSource).module_,
+        );
         return ReplResult(Value.void_);
     }
 

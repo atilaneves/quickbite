@@ -212,6 +212,19 @@ static foreach (backend; backends) {
         repl.submit(":t").should == Value.void_;
     }
 
+    @("repl.backend.loadedUnittestFailuresReportAssertionMessage." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(1 == 2); }").should == Value.void_;
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should == "1 != 2";
+    }
+
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
