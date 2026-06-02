@@ -25,12 +25,14 @@ static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
     @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
     }
+}
 
+static foreach (backend; backendsWith!Bytecode) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
