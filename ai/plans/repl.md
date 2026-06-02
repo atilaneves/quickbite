@@ -147,14 +147,15 @@ Completed:
 - Prefixed REPL command failures with an `Error:` label. Terminal-backed
   output renders the label red through `colorize`; piped output keeps the same
   label uncoloured and returns a failing process status for command failures.
+- Supported several file arguments in the current synthetic-module file-loading
+  path. `bin/qb first.d second.d -c "expr"` now loads both file contents in
+  argument order before evaluating the command, so declarations from both files
+  are visible.
 
 Remaining follow-up:
 
 - File-backed code should eventually keep its own file/line identity instead
   of being appended to the synthetic REPL module.
-
-- Support several file arguments. `bin/qb a.d b.d` should execute or
-  interpret all files in argument order, not only the first file.
 
 - Add `-l` so file arguments can leave the session live after execution.
   Without `-l`, file arguments should execute and exit. With `-l`, the REPL
