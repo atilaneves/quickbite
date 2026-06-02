@@ -39,7 +39,7 @@ static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
+static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
@@ -52,6 +52,9 @@ static foreach (backend; backendsWith!Bytecode) {
         foreach (c; cases)
             newBackend!backend.eval(c[0]).should == Value(c[1]);
     }
+}
+
+static foreach (backend; backends) {
 
     @("multiCell." ~ backend.stringof)
     unittest {

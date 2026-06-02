@@ -47,7 +47,24 @@ private imported!"quickbite.lang".Value evalExpression(
     if (auto add = expression.isAddExp)
         return evalExpression(add.e1) + evalExpression(add.e2);
 
+    if (auto sub = expression.isMinExp)
+        return Value(integerValue(sub.e1) - integerValue(sub.e2));
+
+    if (auto mul = expression.isMulExp)
+        return Value(integerValue(mul.e1) * integerValue(mul.e2));
+
+    if (auto div = expression.isDivExp)
+        return Value(integerValue(div.e1) / integerValue(div.e2));
+
     assert(0);
+}
+
+private int integerValue(imported!"dmd.expression".Expression expression) {
+    auto integer = expression.isIntegerExp;
+    if (integer is null)
+        assert(0);
+
+    return cast(int) integer.getInteger;
 }
 
 private imported!"quickbite.lang".Value realValue(
