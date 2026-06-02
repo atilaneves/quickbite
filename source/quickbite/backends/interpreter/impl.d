@@ -291,6 +291,7 @@ private struct EvalModuleInterpreter {
 
     private Value[VarDeclaration] locals;
     private Value result;
+    private bool runningCalledFunction;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
@@ -399,15 +400,18 @@ private struct EvalModuleInterpreter {
     private Value runFunction(imported!"dmd.func".FuncDeclaration function_) {
         auto savedLocals = locals.dup;
         const savedResult = result;
+        const savedRunningCalledFunction = runningCalledFunction;
 
         locals = null;
         result = Value(false);
+        runningCalledFunction = true;
 
         runStatement(function_.fbody);
         const value = result;
 
         locals = savedLocals;
         result = savedResult;
+        runningCalledFunction = savedRunningCalledFunction;
         return value;
     }
 
@@ -485,6 +489,13 @@ private struct EvalModuleInterpreter {
                 " ",
                 equalityOperandMessage(equal.e2, useBoolMessage),
             );
+        }
+
+        if (runningCalledFunction) {
+            if (auto integer = assert_.e1.isIntegerExp) {
+                if (integer.toInteger == 0)
+                    return "`assert(0)` failed";
+            }
         }
 
         return "`assert(false)` failed";
