@@ -90,6 +90,39 @@ Defer imports, assertion context formatting, control flow, arrays,
 structs, exceptions, pointers, delegates, and diagnostics until simpler
 tests stop being available.
 
+### Eval Slice Lessons
+
+When promoting one eval test, isolate that test in its own `static
+foreach` backend block if the surrounding block contains later eval
+tests. Do not change a broad block from `backends` to
+`backendsWith!TreeWalker` unless every test in that block is part of
+the current slice. When integrating worker commits, check that earlier
+TreeWalker promotions remain present; a later worker must not move a
+previously promoted test back to CTFE-only coverage.
+
+If a promoted test is already green because of an earlier slice, verify
+signal by temporarily mutating the production handler that should cover
+it, then revert the mutation before committing. The final commit for
+that slice may be test-only.
+
+For multiline `eval` input, the first small shape is not a general
+REPL. Wrapping prior lines in a tiny function and assigning the final
+line to a synthetic local is enough for simple cells, but keep the
+interpreter limited to the concrete AST forms the promoted test shows.
+For `int x; ++x; ++x; x`, DMD may expose declaration initialisation
+through `assign`, `construct`, or `blit`, and prefix increment may
+appear as `AddAssignExp`. Do not add decrement, generic assignment,
+control flow, imports, or arithmetic in the multiline interpreter until
+a promoted test requires it.
+
+For cast slices, prefer evaluating through the current interpreter
+state instead of chasing a variable declaration's initializer in a
+separate helper. A local such as `double input = 7.75; cast(int) input`
+should read `input` from the eval locals map, then perform only the
+requested numeric conversion. Avoid adding broad cast fallback paths
+that return guessed `long` values or silently unwrap arbitrary
+expression wrappers.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.
