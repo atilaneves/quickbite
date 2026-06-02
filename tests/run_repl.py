@@ -138,6 +138,36 @@ def test_file_argument_exits_without_interactive_prompt() -> None:
     assert "> " not in child.before
 
 
+def test_live_flag_keeps_repl_open_after_file_arguments(tmp_path: Path) -> None:
+    module = tmp_path / "loaded.d"
+    module.write_text(
+        "int loadedValue() { return 42; }\n",
+        encoding="utf-8",
+    )
+
+    child = pexpect.spawn(
+        qb_path(),
+        ["-l", str(module)],
+        timeout=TIMEOUT,
+        encoding="utf-8",
+    )
+    try:
+        child.expect_exact("Quickbite REPL")
+        child.expect_exact("> ")
+
+        child.sendline("loadedValue()")
+        child.expect_exact("> ")
+        output = clean(child.before)
+        assert "42\n" in output
+
+        child.sendline(":q")
+        child.expect(pexpect.EOF)
+    finally:
+        child.close(force=True)
+
+    assert child.exitstatus == 0
+
+
 def run_qb(*args: str, input: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [qb_path(), *args],

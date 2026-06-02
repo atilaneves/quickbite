@@ -151,17 +151,14 @@ Completed:
   path. `bin/qb first.d second.d -c "expr"` now loads both file contents in
   argument order before evaluating the command, so declarations from both files
   are visible.
+- Added `-l` so file arguments can leave the session live after loading. Without
+  `-l`, file arguments still load and exit; with `-l`, the terminal REPL starts
+  and can use declarations loaded from those files.
 
 Remaining follow-up:
 
 - File-backed code should eventually keep its own file/line identity instead
   of being appended to the synthetic REPL module.
-
-- Add `-l` so file arguments can leave the session live after execution.
-  Without `-l`, file arguments should execute and exit. With `-l`, the REPL
-  should start after executing the files, with the same effective session state
-  as if the user had pasted the code manually, except that loaded code remains
-  in its original modules.
 
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
