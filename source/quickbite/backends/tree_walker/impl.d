@@ -41,6 +41,9 @@ private imported!"quickbite.lang".Value evalExpression(
     if (auto integer = expression.isIntegerExp)
         return Value(cast(int) integer.getInteger);
 
+    if (auto add = expression.isAddExp)
+        return evalExpression(add.e1) + evalExpression(add.e2);
+
     assert(0);
 }
 
