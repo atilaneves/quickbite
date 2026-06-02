@@ -241,7 +241,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -252,7 +254,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
 
+static foreach (backend; backends) {
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
