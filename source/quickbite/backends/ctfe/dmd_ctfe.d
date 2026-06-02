@@ -241,6 +241,9 @@ private imported!"quickbite.lang".Value ctfeValue(
     if (auto array = expression.isArrayLiteralExp)
         return arrayValue(array);
 
+    if (auto assocArray = expression.isAssocArrayLiteralExp)
+        return assocArrayValue(assocArray);
+
     if (auto struct_ = expression.isStructLiteralExp)
         return structValue(struct_);
 
@@ -291,6 +294,21 @@ private imported!"quickbite.lang".Value arrayValue(
         values ~= cast(long) array[index].isIntegerExp.getInteger;
 
     return Value(values);
+}
+
+private imported!"quickbite.lang".Value assocArrayValue(
+    imported!"dmd.expression".AssocArrayLiteralExp assocArray,
+) {
+    import quickbite.lang: Value;
+
+    Value[] keys;
+    Value[] values;
+    foreach (index; 0 .. assocArray.keys.length) {
+        keys ~= ctfeValue((*assocArray.keys)[index]);
+        values ~= ctfeValue((*assocArray.values)[index]);
+    }
+
+    return Value.assocArrayValue(keys, values);
 }
 
 private imported!"quickbite.lang".Value structValue(

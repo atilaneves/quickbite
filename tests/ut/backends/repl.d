@@ -162,6 +162,18 @@ static foreach (backend; backends) {
         output.should == ["[0, 2, 4]"];
     }
 
+    @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["[1: 10, 2: 20]", ":q"],
+        );
+
+        output.should == ["[1:10, 2:20]"];
+    }
+
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

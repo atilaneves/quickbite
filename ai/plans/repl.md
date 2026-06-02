@@ -158,6 +158,10 @@ Completed:
   loaded file separately and composing the synthetic module with D `#line`
   directives. Failing loaded-file `unittest` blocks now report the file path
   and original source line instead of a synthetic REPL-only location.
+- Fixed CTFE-backed REPL display for associative-array results. Literal
+  associative arrays such as `[1: 10, 2: 20]` now render as `[1:10, 2:20]`,
+  matching DMD CTFE `pragma(msg)` shape, instead of failing with
+  `Unsupported CTFE eval result: assocArrayLiteral`.
 
 Remaining follow-up:
 
