@@ -551,6 +551,24 @@ private struct EvalModuleInterpreter {
         if (auto comma = expression.isCommaExp)
             return isLogicalAndExpression(comma.e2);
 
+        if (auto var = expression.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null ||
+                variable._init is null ||
+                variable._init.isExpInitializer is null)
+                return false;
+
+            auto initializer = variable._init.isExpInitializer.exp;
+            if (auto assign = initializer.isAssignExp)
+                initializer = assign.e2;
+            else if (auto construct = initializer.isConstructExp)
+                initializer = construct.e2;
+            else if (auto blit = initializer.isBlitExp)
+                initializer = blit.e2;
+
+            return isLogicalAndExpression(initializer);
+        }
+
         if (auto logical = expression.isLogicalExp)
             return logical.op == EXP.andAnd;
 
