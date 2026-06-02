@@ -5,6 +5,9 @@ private:
 package enum Op: ubyte {
     literal,
     add,
+    subtract,
+    multiply,
+    divide,
 }
 
 package struct Instruction {

@@ -35,8 +35,7 @@ static foreach (backend; backendsWith!Bytecode) {
     }
 }
 
-static foreach (backend; backends) {
-
+static foreach (backend; backendsWith!Bytecode) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
@@ -49,6 +48,9 @@ static foreach (backend; backends) {
         foreach (c; cases)
             newBackend!backend.eval(c[0]).should == Value(c[1]);
     }
+}
+
+static foreach (backend; backends) {
 
     @("multiCell." ~ backend.stringof)
     unittest {

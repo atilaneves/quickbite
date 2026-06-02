@@ -205,7 +205,7 @@ public struct Value {
     }
 
     public Value opBinary(string op)(in Value rhs) const @safe pure
-        if (op == "+")
+        if (op == "+" || op == "-" || op == "*" || op == "/")
     {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
@@ -215,18 +215,18 @@ public struct Value {
                 alias L = Unqual!(typeof(lhs));
 
                 static if (isIntegral!L) {
-                    return rhs.addInteger(lhs);
+                    return rhs.binaryInteger!op(lhs);
                 } else static if (isFloatingPoint!L) {
-                    return rhs.addFloatingPoint(lhs);
+                    return rhs.binaryFloatingPoint!op(lhs);
                 } else {
-                    throw new Exception("Unsupported + lhs type.");
+                    throw new Exception("Unsupported binary lhs type.");
                     return Value.void_;
                 }
             },
         );
     }
 
-    private Value addInteger(L)(const L lhs) const @safe pure {
+    private Value binaryInteger(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral;
 
@@ -235,16 +235,23 @@ public struct Value {
                 alias R = Unqual!(typeof(rhs));
 
                 static if (isIntegral!L && isIntegral!R) {
-                    return Value(cast(L) lhs + cast(R) rhs);
+                    static if (op == "+")
+                        return Value(cast(L) lhs + cast(R) rhs);
+                    else static if (op == "-")
+                        return Value(cast(L) lhs - cast(R) rhs);
+                    else static if (op == "*")
+                        return Value(cast(L) lhs * cast(R) rhs);
+                    else static if (op == "/")
+                        return Value(cast(L) lhs / cast(R) rhs);
                 } else {
-                    throw new Exception("Unsupported + rhs type.");
+                    throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
                 }
             },
         );
     }
 
-    private Value addFloatingPoint(L)(const L lhs) const @safe pure {
+    private Value binaryFloatingPoint(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -253,9 +260,16 @@ public struct Value {
                 alias R = Unqual!(typeof(rhs));
 
                 static if (isFloatingPoint!L && isFloatingPoint!R) {
-                    return Value(cast(L) lhs + cast(R) rhs);
+                    static if (op == "+")
+                        return Value(cast(L) lhs + cast(R) rhs);
+                    else static if (op == "-")
+                        return Value(cast(L) lhs - cast(R) rhs);
+                    else static if (op == "*")
+                        return Value(cast(L) lhs * cast(R) rhs);
+                    else static if (op == "/")
+                        return Value(cast(L) lhs / cast(R) rhs);
                 } else {
-                    throw new Exception("Unsupported + rhs type.");
+                    throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
                 }
             },

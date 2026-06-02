@@ -54,6 +54,27 @@ private void compileExpression(
         return;
     }
 
+    if (auto subtract = expression.isMinExp) {
+        compileExpression(subtract.e1, program);
+        compileExpression(subtract.e2, program);
+        program.instructions ~= Instruction(Op.subtract);
+        return;
+    }
+
+    if (auto multiply = expression.isMulExp) {
+        compileExpression(multiply.e1, program);
+        compileExpression(multiply.e2, program);
+        program.instructions ~= Instruction(Op.multiply);
+        return;
+    }
+
+    if (auto divide = expression.isDivExp) {
+        compileExpression(divide.e1, program);
+        compileExpression(divide.e2, program);
+        program.instructions ~= Instruction(Op.divide);
+        return;
+    }
+
     const msg = "Unsupported expression `" ~ expression.toChars.fromStringz.idup ~ "`";
     throw new Exception(msg);
 }
