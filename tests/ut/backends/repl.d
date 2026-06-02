@@ -16,7 +16,7 @@ static foreach (backend; backends) {
             ["1", "2", ":q"],
         );
 
-        output.should == ["1: int", "2: int"];
+        output.should == ["1", "2"];
     }
 
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
@@ -28,7 +28,7 @@ static foreach (backend; backends) {
             ["int x;", "x", ":q"],
         );
 
-        output.should == ["0: int"];
+        output.should == ["0"];
     }
 
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
@@ -40,7 +40,7 @@ static foreach (backend; backends) {
             ["int x;", "x++", "x", ":q"],
         );
 
-        output.should == ["0: int", "1: int"];
+        output.should == ["0", "1"];
     }
 
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
@@ -52,7 +52,7 @@ static foreach (backend; backends) {
             ["int x;", "++x;", "x", ":q"],
         );
 
-        output.should == ["1: int"];
+        output.should == ["1"];
     }
 
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
@@ -64,7 +64,7 @@ static foreach (backend; backends) {
             ["int twice(int i) { return i * 2; }", "twice(21)", ":q"],
         );
 
-        output.should == ["42: int"];
+        output.should == ["42"];
     }
 
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
@@ -82,7 +82,7 @@ static foreach (backend; backends) {
             ],
         );
 
-        output.should == ["42: int"];
+        output.should == ["42"];
     }
 
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
@@ -94,7 +94,7 @@ static foreach (backend; backends) {
             ["import std.algorithm;", "min(3, 1)", ":q"],
         );
 
-        output.should == ["1: int"];
+        output.should == ["1"];
     }
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
@@ -154,6 +154,43 @@ static foreach (backend; backends) {
         output.should == [`"hello"`];
     }
 
+    @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "42",
+                "cast(uint) 42",
+                "42L",
+                "42UL",
+                "3.8",
+                "3.8f",
+                "cast(byte) 42",
+                "cast(short) 42",
+                "cast(ubyte) 42",
+                "cast(ushort) 42",
+                "cast(real) 3.8",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "42",
+            "42u",
+            "42L",
+            "42UL",
+            "3.8",
+            "3.8f",
+            "42: byte",
+            "42: short",
+            "42: ubyte",
+            "42: ushort",
+            "3.8: real",
+        ];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -163,6 +200,39 @@ static foreach (backend; backends) {
         repl.submit("int x;").should == Value.void_;
         repl.submit("++x;").should == Value.void_;
         repl.submit("x").should == Value(1);
+    }
+
+    @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(2 + 2 == 4); }").should == Value.void_;
+        repl.submit(":t").should == Value.void_;
+    }
+
+    @("repl.backend.loadedUnittestFailuresReportAssertionMessage." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(1 == 2); }").should == Value.void_;
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should == "1 != 2";
+    }
+
+    @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleSource("unittest { assert(2 + 2 == 4); }");
+        repl.submit(":t").should == Value.void_;
     }
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)

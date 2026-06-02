@@ -11,28 +11,14 @@ must not treat that language behavior as unsupported just because the current
 
 ## Priority Work
 
-Pick these items up before any other REPL follow-up.
+Pick these items up before any other REPL follow-up. If a user asks for the
+next REPL slice or the next PR from this plan, start with the first item in
+this section, not with `Remaining follow-up`.
 
-### Function declared twice
+### Next PR: `:t` for loaded unittest blocks
 
-This doesn't work:
-
-```
-Quickbite REPL
-> int twice(int i) { return i * 2; }
-> int twice(int i) { return 42; }
-function `twice(int i)` conflicts with previous declaration at <repl>(1)
-> twice(3)
-Overlong UTF-8 sequence
-```
-
-It should print 6.
-
-### Should work with example.d
-
-Running `bin/qb tests/example.d` should work. That's just a first
-step, a second step is adding `:t` to run whatever unittest blocks
-have been defined.
+Add `:t` to run whatever unittest blocks have been defined by loaded files or
+accepted REPL cells.
 
 ## Summary
 
@@ -124,14 +110,21 @@ Completed:
 - Fixed whitespace-only piped input in the REPL binary. `printf "   \n" |
   bin/qb` now exits successfully without invoking the evaluator, matching
   blank piped input.
+- Displayed numeric scalar values using D literal notation where a
+  distinguishing suffix exists: `42u` (`uint`), `42L` (`long`), `42UL`
+  (`ulong`), and `3.8f` (`float`). Default D literal types now display
+  without annotation (`int` as `42`, `double` as `3.8`), while types with no D
+  literal suffix keep `: type` annotations (`byte`, `short`, `ubyte`,
+  `ushort`, `real`).
+- Fixed `bin/qb tests/example.d` so file arguments load through the normal DMD
+  module parser. This accepts module-level declarations and `unittest` blocks
+  without running the unittest blocks yet.
+- Added `:t` to run accepted REPL `unittest` cells and loaded-file
+  `unittest` blocks. The command reparses loaded unittest source with
+  `parseModuleWithCheckActionContext` before handing it to the backend, so
+  assertion failures report DMD-style context messages such as `1 != 2`.
 
 Remaining follow-up:
-
-- Display numeric scalar values using D literal notation where a
-  distinguishing suffix exists: `42u` (uint), `42L` (long), `42UL`
-  (ulong), `3.8f` (float). `int` and `double` need no annotation as they
-  are D's default literal types. Use `: type` annotation only for types
-  with no D literal suffix: `byte`, `short`, `ubyte`, `ushort`, `real`.
 
 - Fix `iota(5).filter!(x => x % 2 == 0).array` producing no output and
   no error. The result should display as `[0, 2, 4]`.
@@ -144,10 +137,6 @@ Remaining follow-up:
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
   path. Never try to materialize infinite ranges.
-- `unittest` blocks are not supported as REPL input cells. Running a `.d` file
-  containing `unittest` blocks via `bin/qb file.d` will fail when the parser
-  encounters the first `unittest` keyword. Supporting them is future work.
-
 ## Architecture
 
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL
@@ -214,6 +203,10 @@ Apply that lesson this way:
   classify D source.
 - Do not classify DMD diagnostics by searching rendered diagnostic text. Use
   DMD AST nodes, symbols, and semantic helpers as the protocol.
+- For `:t` assertion diagnostics, preserve DMD's own context-aware assertion
+  lowering by parsing the loaded unittest module with
+  `parseModuleWithCheckActionContext`. Do not repair default-parse CTFE
+  diagnostics by checking rendered messages for prefixes such as `` `assert ``.
 - Do not use failed REPL evaluation as control flow to distinguish expressions
   from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.

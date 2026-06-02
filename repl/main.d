@@ -28,8 +28,8 @@ public int main(string[] args) {
 
     if (options.options.hasFile) {
         import std.file: readText;
-        repl.submit(readText(options.options.file));
-        return 0;
+
+        repl.loadModuleSource(readText(options.options.file));
     }
 
     if (stdinIsTerminal) {

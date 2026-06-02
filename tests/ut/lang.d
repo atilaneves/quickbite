@@ -135,8 +135,8 @@ static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
 
 @("value.toString.integerType")
 @safe pure unittest {
-    Value(3).toString.should == "3: int";
-    Value(3u).toString.should == "3: uint";
+    Value(3).toString.should == "3";
+    Value(3u).toString.should == "3u";
 }
 
 @("value.text.struct")
