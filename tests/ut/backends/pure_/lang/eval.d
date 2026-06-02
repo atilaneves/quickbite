@@ -13,12 +13,14 @@ static foreach (backend; backendsWith!(Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
+static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
+}
 
+static foreach (backend; backendsWith!Bytecode) {
     @("add.int.1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
