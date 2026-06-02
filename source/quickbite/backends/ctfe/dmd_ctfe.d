@@ -37,7 +37,7 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override void runParsedTests(
+    public override void runTests(
         imported!"dmd.dmodule".Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
@@ -48,7 +48,7 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         });
     }
 
-    public override TestRunResult runParsedTestResults(
+    public override TestRunResult runTestResults(
         imported!"dmd.dmodule".Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
@@ -75,10 +75,10 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         return result;
     }
 
-    public override TestSummary runParsedTestSummary(
+    public override TestSummary runTestSummary(
         imported!"dmd.dmodule".Module module_,
     ) {
-        return runParsedTestResults(module_).summary;
+        return runTestResults(module_).summary;
     }
 }
 

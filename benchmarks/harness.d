@@ -11,7 +11,7 @@ public struct Result {
 }
 
 public Result measure(
-    scope void delegate() runParsed,
+    scope void delegate() runTests,
     in size_t warmup,
     in size_t iterations,
 ) {
@@ -23,7 +23,7 @@ public Result measure(
     auto timings = new Duration[](iterations);
 
     foreach (i; 0 .. warmup)
-        runParsed();
+        runTests();
 
     // Disable the GC during measurement so a stop-the-world collection
     // inside one iteration cannot dominate the stddev. Force a collection
@@ -34,7 +34,7 @@ public Result measure(
     foreach (i; 0 .. iterations) {
         GC.collect;
         const start = MonoTime.currTime;
-        runParsed();
+        runTests();
         timings[i] = MonoTime.currTime - start;
     }
 

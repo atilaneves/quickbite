@@ -29,7 +29,7 @@ Lua-specific bytecode shape.
 - Start with the smallest useful `eval` slice that can make exactly one
   approved behavior test fail.
 - After `tests/ut/backends/pure_/lang/eval.d`, target
-  `tests/ut/backends/pure_/lang/logic.d` as the first parsed-module test
+  `tests/ut/backends/pure_/lang/logic.d` as the first module-backed test
   module. Start with `logicalNot`, then plain `&&` and `||` cases before
   call-based or short-circuit cases.
 - If the slice needs unittest blocks, integer literals, equality, calls,
@@ -93,7 +93,7 @@ Lua-specific bytecode shape.
 ## PR 123 Review Lessons
 - Do not derive eval structure by inspecting source text in any layer. Splits
   on newlines, semicolons, braces, or keywords are parser bugs waiting to
-  happen. Ask the frontend for a structured cell, parsed module, function
+  happen. Ask the frontend for a structured cell, DMD module, function
   declaration, statement, or expression instead.
 - Do not paper over that rule by moving source splitting into
   `quickbite.frontend.cell`. A helper that loops over `source.lineSplitter`,
@@ -105,7 +105,7 @@ Lua-specific bytecode shape.
   rejected.
 - Do not add or keep a "find function by name in module" helper for eval. If a
   backend needs a function declaration, the frontend should hand back the
-  declaration as part of a named parsed cell/result type, not require callers
+  declaration as part of a named cell/result type, not require callers
   to know about the synthetic wrapper name.
 - Do not add a special `parseEvalFunction`-style API if it only synthesizes a
   wrapper function and looks up `f`. Either reuse the existing REPL cell
@@ -154,7 +154,7 @@ Lua-specific bytecode shape.
 
 ## PR 123 Remaining Cleanup
 - [x] Remove `parseEvalFunction` as a source-to-wrapper-function API. Replace
-  it with a frontend-owned parsed eval cell/result that exposes the structured
+  it with a frontend-owned eval cell/result that exposes the structured
   AST object the backends actually need.
 - [x] Remove line-by-line eval parsing from `frontend.cell`; eval source should
   not be decomposed by newline boundaries.

@@ -25,12 +25,12 @@ Only then accept the slice as done.
 - Implement `TreeWalker.eval` first. It may parse an expression through
   the same frontend expression path used by the bytecode backend, then
   walk that expression directly.
-- Leave `evalRepl`, broader parsed-test execution, and test-summary
+- Leave `evalRepl`, broader module-backed test execution, and test-summary
   behavior alone until an approved test specifically requires them.
 - Walk `FuncDeclaration` and `UnitTestDeclaration` AST nodes for
   unittest bodies; dispatch to statement and expression handlers by
   dynamic type only after eval coverage has forced enough expression
-  support to make parsed tests the next smallest step.
+  support to make module-backed tests the next smallest step.
 - No intermediate form. Values are produced and consumed in the same
   recursive descent; no register allocation or instruction selection.
 - Interpreter values, locals, temporaries, and function returns must use
@@ -85,7 +85,7 @@ Use this rough ordering when comparing candidates with similar size:
 literal and scalar value preservation; one binary or unary expression;
 casts that do not require locals; comparisons and boolean operations;
 one local declaration plus final expression; simple assignment or
-increment; one direct function call; then parsed unittest assertions.
+increment; one direct function call; then module-backed unittest assertions.
 Defer imports, assertion context formatting, control flow, arrays,
 structs, exceptions, pointers, delegates, and diagnostics until simpler
 tests stop being available.
@@ -146,7 +146,7 @@ REPL-only concepts such as type-display cells belong in
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.
-Do not promote a parsed unittest test that needs locals, declarations,
+Do not promote a module-backed unittest test that needs locals, declarations,
 equality, assertion-message formatting, and type coercion all at once.
 That is not a minimum implementation, even if those pieces are
 individually small.
@@ -203,7 +203,7 @@ support together, the chosen test is too broad for the first PR.
   planned.
 - The executor targets unittest latency, not long-running throughput.
 - Eval is the cheapest first backend surface for both IR and the tree
-  walker. Parsed unittest execution is still required later, but it is
+  walker. Module-backed unittest execution is still required later, but it is
   not the right first slice.
 - DMD AST node types are stable at the pinned version. If a node
   shape changes, update the handler at the point of breakage.

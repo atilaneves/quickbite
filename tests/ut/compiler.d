@@ -11,7 +11,7 @@ unittest {
     import quickbite.frontend.compiler: parseModule;
 
     // auto: DMD owns mutable Module state.
-    auto parsed = parseModule(q{
+    auto moduleResult = parseModule(q{
         unittest {
         }
 
@@ -23,7 +23,7 @@ unittest {
     });
 
     size_t count;
-    foreachUnitTestDeclaration(parsed.module_, (unitTest) {
+    foreachUnitTestDeclaration(moduleResult.module_, (unitTest) {
         ++count;
     });
 
@@ -56,12 +56,12 @@ unittest {
 
     parseModule(q{
         import quickbite_leak_import_a;
-        enum parsedWithPath = quickbiteLeakA;
+        enum moduleResultWithPath = quickbiteLeakA;
     }, [importPath]);
 
     const source = q{
         import quickbite_leak_import_b;
-        enum parsedWithoutPath = quickbiteLeakB;
+        enum moduleResultWithoutPath = quickbiteLeakB;
     };
     parseModule(source, []).shouldThrowWithMessage(
         "unable to read module `quickbite_leak_import_b`\nunable to read module `quickbite_leak_import_b`\nundefined identifier `quickbiteLeakB`",

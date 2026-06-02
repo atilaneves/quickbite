@@ -280,7 +280,7 @@ public interface Executor {
     public void runTests(in string source);
     public void runTests(in string source, in string[] importPaths);
     public TestSummary runTestSummary(in string source);
-    public void runParsedTests(imported!"dmd.dmodule".Module module_);
+    public void runTests(imported!"dmd.dmodule".Module module_);
     public Value eval(in string input);
 }
 
@@ -289,5 +289,5 @@ public void runModulesTests(
     imported!"dmd.dmodule".Module[] modules,
 ) {
     foreach (module_; modules)
-        executor.runParsedTests(module_);
+        executor.runTests(module_);
 }

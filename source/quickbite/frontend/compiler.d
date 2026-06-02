@@ -2,7 +2,7 @@ module quickbite.frontend.compiler;
 
 private:
 
-public alias ParsedModule = imported!"std.typecons".Tuple!(
+public alias ModuleParseResult = imported!"std.typecons".Tuple!(
     imported!"dmd.dmodule".Module,
     "module_",
     imported!"dmd.frontend".Diagnostics,
@@ -28,29 +28,29 @@ shared static ~this() {
     compiler.shutdown;
 }
 
-public ParsedModule parseModule(in string source) {
+public ModuleParseResult parseModule(in string source) {
     return compiler.parseModule(source, []);
 }
 
-public ParsedModule parseModule(
+public ModuleParseResult parseModule(
     in string source,
     in string[] importPaths,
 ) {
     return compiler.parseModule(source, importPaths);
 }
 
-public ParsedModule parseModuleUncached(
+public ModuleParseResult parseModuleUncached(
     in string source,
     in string[] importPaths,
 ) {
     return compiler.parseModuleUncached(source, importPaths);
 }
 
-public ParsedModule parseModuleWithCheckActionContext(in string source) {
+public ModuleParseResult parseModuleWithCheckActionContext(in string source) {
     return compiler.parseModuleWithCheckActionContext(source, []);
 }
 
-public ParsedModule parseModuleWithCheckActionContext(
+public ModuleParseResult parseModuleWithCheckActionContext(
     in string source,
     in string[] importPaths,
 ) {
@@ -191,14 +191,14 @@ final class Compiler {
         action();
     }
 
-    ParsedModule parseModule(in string source, in string[] importPaths) {
+    ModuleParseResult parseModule(in string source, in string[] importPaths) {
         mutex.lock;
         scope(exit) mutex.unlock;
 
         return parseModuleLocked(source, importPaths, null, true);
     }
 
-    ParsedModule parseModuleUncached(
+    ModuleParseResult parseModuleUncached(
         in string source,
         in string[] importPaths,
     ) {
@@ -208,7 +208,7 @@ final class Compiler {
         return parseModuleLocked(source, importPaths, null, false);
     }
 
-    ParsedModule parseModuleWithCheckActionContext(
+    ModuleParseResult parseModuleWithCheckActionContext(
         in string source,
         in string[] importPaths,
     ) {
@@ -269,7 +269,7 @@ final class Compiler {
         return expression;
     }
 
-    private ParsedModule parseModuleLocked(
+    private ModuleParseResult parseModuleLocked(
         in string source,
         in string[] importPaths,
         in string cacheSalt,
@@ -287,7 +287,7 @@ final class Compiler {
         const key = cacheKey(source, importPaths, cacheSalt);
         if (useCache)
         if (auto cached = key in sourceCache) {
-            ParsedModule result;
+            ModuleParseResult result;
             result.module_ = *cached;
             return result;
         }
@@ -305,18 +305,18 @@ final class Compiler {
             ".d",
         );
 
-        ParsedModule parsed = dmdParseModule(fileName, source);
-        if (parsed.diagnostics.hasErrors)
+        ModuleParseResult moduleResult = dmdParseModule(fileName, source);
+        if (moduleResult.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
 
-        parsed.module_.fullSemantic;
+        moduleResult.module_.fullSemantic;
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
 
         if (useCache)
-            sourceCache[key] = parsed.module_;
+            sourceCache[key] = moduleResult.module_;
 
-        return parsed;
+        return moduleResult;
     }
 
     private string cacheKey(

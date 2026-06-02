@@ -16,7 +16,7 @@ public struct EvalCell {
     private string history;
 }
 
-public struct ParsedEvalSource {
+public struct EvalSourceParseResult {
     public string source;
     public imported!"dmd.func".FuncDeclaration function_;
 }
@@ -53,7 +53,7 @@ public struct EvalSession {
                 moduleTranscript ~ input ~ "\n",
                 localTranscript,
             );
-            return parsedEvalCell(
+            return evalCellFromSource(
                 EvalCellKind.noDisplay,
                 source,
                 EvalHistoryTarget.module_,
@@ -69,7 +69,7 @@ public struct EvalSession {
                 moduleTranscript,
                 localTranscript ~ input ~ "\n",
             );
-            return parsedEvalCell(
+            return evalCellFromSource(
                 EvalCellKind.noDisplay,
                 source,
                 EvalHistoryTarget.local,
@@ -81,7 +81,7 @@ public struct EvalSession {
             moduleTranscript,
             localTranscript ~ "return " ~ input ~ ";",
         );
-        return parsedEvalCell(
+        return evalCellFromSource(
             EvalCellKind.expression,
             source,
             EvalHistoryTarget.local,
@@ -118,15 +118,15 @@ public struct EvalSession {
     }
 }
 
-public ParsedEvalSource parseEvalSource(in string source) {
+public EvalSourceParseResult parseEvalSource(in string source) {
     import quickbite.frontend.compiler: parseModule;
 
     const evalSource = completeEvalSource(source);
     try {
-        auto parsed = parseModule(evalSource);
-        return ParsedEvalSource(
+        auto moduleResult = parseModule(evalSource);
+        return EvalSourceParseResult(
             evalSource,
-            evalFunction(parsed.module_),
+            evalFunction(moduleResult.module_),
         );
     } catch (Exception exception) {
         throw new Exception(withCandidateSignatures(evalSource, exception.msg));
@@ -150,7 +150,7 @@ public string withCandidateSignatures(
     return text(diagnostic, "\nCandidates:\n- ", signatures.join("\n- "));
 }
 
-private EvalCell parsedEvalCell(
+private EvalCell evalCellFromSource(
     in EvalCellKind kind,
     in string source,
     in EvalHistoryTarget historyTarget,
@@ -159,11 +159,11 @@ private EvalCell parsedEvalCell(
     import quickbite.frontend.compiler: parseModule;
 
     try {
-        auto parsed = parseModule(source);
+        auto moduleResult = parseModule(source);
         return EvalCell(
             kind,
             source,
-            evalFunction(parsed.module_),
+            evalFunction(moduleResult.module_),
             historyTarget,
             history,
         );
@@ -186,7 +186,7 @@ private string[] candidateSignatures(in string source) {
         global.warnings = 0;
         diagnostics.length = 0;
 
-        auto parsed = dmdParseModule(
+        auto moduleResult = dmdParseModule(
             text(
                 "eval_diagnostic_",
                 atomicFetchAdd(_diagnosticModuleCounter, 1u),
@@ -194,10 +194,10 @@ private string[] candidateSignatures(in string source) {
             ),
             source,
         );
-        if (parsed.diagnostics.hasErrors)
+        if (moduleResult.diagnostics.hasErrors)
             return;
 
-        auto call = evalReturnCall(parsed.module_);
+        auto call = evalReturnCall(moduleResult.module_);
         if (call is null)
             return;
 
@@ -205,11 +205,11 @@ private string[] candidateSignatures(in string source) {
         if (callee is null)
             return;
 
-        auto candidates = candidateFunctions(parsed.module_, callee.ident);
+        auto candidates = candidateFunctions(moduleResult.module_, callee.ident);
         if (candidates.length == 0)
             return;
 
-        completeSemanticForDiagnostics(parsed.module_);
+        completeSemanticForDiagnostics(moduleResult.module_);
         if (
             !callArgumentsHaveTypes(call) ||
             hasMatchingCandidate(call, candidates)
@@ -445,14 +445,14 @@ private bool isModuleDeclarationCell(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
-        auto parsed = parseModule(
+        auto moduleResult = parseModule(
             text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
             input,
         );
-        result = !parsed.diagnostics.hasErrors &&
-            parsed.module_.members !is null &&
-            parsed.module_.members.length != 0 &&
-            allEvalModuleDeclarations(parsed.module_.members) &&
+        result = !moduleResult.diagnostics.hasErrors &&
+            moduleResult.module_.members !is null &&
+            moduleResult.module_.members.length != 0 &&
+            allEvalModuleDeclarations(moduleResult.module_.members) &&
             global.errors == 0;
     });
 
@@ -478,14 +478,14 @@ private bool isIncompleteCell(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
-        auto parsed = parseModule(
+        auto moduleResult = parseModule(
             text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
             input,
         );
-        result = parsed.diagnostics.hasErrors &&
-            parsed.module_.members !is null &&
-            parsed.module_.members.length != 0 &&
-            allFunctionDeclarations(parsed.module_.members) &&
+        result = moduleResult.diagnostics.hasErrors &&
+            moduleResult.module_.members !is null &&
+            moduleResult.module_.members.length != 0 &&
+            allFunctionDeclarations(moduleResult.module_.members) &&
             hasDiagnosticAtEnd(input);
     });
 
