@@ -24,6 +24,10 @@ turning whole uncovered visitors and helpers into language-surface tests. The
 remaining listed targets are mostly narrow branch, edge-case, or diagnostic
 paths.
 
+A fresh broad audit on `9a49df7c46c531ed3609422682a67a1d9bb28e37` reported
+2336/3760 `dmd.dinterpret` executable entries covered, or 62.13%. Treat that
+as the current recheck baseline until a new worktree-start SHA is recorded.
+
 Do not continue this plan by grinding one-off branch tests. Continue only after
 a fresh broad audit proves that a candidate still covers a baseline-uncovered
 method, a whole-to-partial method transition, or a substantial behaviour branch
@@ -105,6 +109,12 @@ backend to an existing backend-matrix test. This plan does not waive
 `AGENTS.md` test approval; if a future user instruction creates a
 coverage-specific exception, record the exact scope in this section before
 workers edit tests.
+
+For the 2026-06-02 `dmd-ctfe-coverage-last-ditch-plan` session, the user
+explicitly approved adding new tests without another approval stop when all of
+the following hold: the tests are green, each test is poked red to confirm it
+checks the intended behaviour, and the tests increase the targeted CTFE
+coverage.
 
 A test is good for this work when all of the following are true:
 
@@ -342,6 +352,57 @@ diagnostic branches.
 
 ## 2026-06-02 Research Findings
 
+### Last-Ditch Recheck
+
+A four-agent recheck plus a fresh broad run confirmed the plan is close to a
+dead end. The recheck baseline was:
+
+```text
+SHA: 9a49df7c46c531ed3609422682a67a1d9bb28e37
+Command: scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+Result: 2336/3760 executable entries, 62.13%
+Tests: 760 run, 0 failed, 28/28 failing as expected
+```
+
+Only one final batched attempt is defensible by default:
+
+- First target `foreachApplyUtf` UTF variants in
+  `tests/ut/backends/pure_/lang/control_flow.d`.
+- Cover normal `foreach (dchar c; wstring)`,
+  `foreach (dchar c; dstring)`, and `foreach_reverse` behaviour with
+  runtime-shaped strings.
+- These paths are valid language surface, not diagnostics, and the fresh
+  `.lst` still shows broad-uncovered UTF-16, UTF-32, reverse, empty-string,
+  and array-literal-to-string branches inside `foreachApplyUtf`.
+
+If the UTF batch moves meaningful broad coverage, the next-best real behaviour
+targets are:
+
+- `visitTryCatch` unmatched propagation, shaped as an inner non-matching catch
+  whose thrown exception is caught by an outer matching catch.
+- `visitUnrolledLoop` exception propagation, shaped as an
+  `AliasSeq`/expression-tuple unrolled loop body that throws and is caught
+  outside.
+
+Do not make standalone PRs for the following without explicit low-yield
+approval:
+
+- `visitReturn` closure diagnostic. PR #117 already proved it moves only
+  `+3` executable entries and `+0` method coverage.
+- `assocArrayForeachAccumulatesRuntimePairs`. PR #106 already proved the
+  non-empty `interpret_aaApply` path produced `+0` broad coverage.
+- `visitSwitch` no-default/no-match diagnostics.
+- Null or empty associative-array branch probes for `.keys`, `.values`,
+  `.remove`, or `foreach`.
+- Nested `visit(CommaExp)` branch probing unless a fresh baseline identifies
+  exact `firstComma` lines and a focused probe proves they move.
+
+The fresh broad audit also shows `visit(ComplexExp)` still whole-method
+uncovered. The existing `complexLiteralWithRuntimeParts.Ctfe` test should be
+treated as behaviour coverage only until a focused probe proves a non-folded
+route to `visit(ComplexExp)`. Do not add another complex test just to repeat
+the same folded path.
+
 ### Closed PR Re-evaluation
 
 After PR #106 and PR #117 were closed, three research agents re-evaluated this
@@ -419,6 +480,91 @@ The probe-first rule (run focused coverage before keeping any test) was not
 enforced. That rule is a hard gate, not advisory.
 
 ## Archive
+
+### 2026-06-02 dmd-ctfe-coverage-last-ditch-plan UTF Batch
+
+Branch `dmd-ctfe-coverage-last-ditch-plan` started from:
+
+```text
+f5ddc01de6a5d3b5d4698cdf4623e9a9df71bacf
+```
+
+Starting broad coverage target:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Starting broad coverage at the fixed start SHA was:
+
+```text
+2336/3760 executable entries, or 62.13%
+138/160 methods, or 86.25%
+```
+
+The final branch-head test commit before this archive entry was:
+
+```text
+b0394038f4d833772d5239eac8221f1af03486ea
+```
+
+Final broad coverage before adding this archive entry was:
+
+```text
+2362/3760 executable entries, or 62.82%
+138/160 methods, or 86.25%
+```
+
+Coverage delta:
+
+```text
++26 executable entries, or +0.69 percentage points
++0 methods
+```
+
+Coverage effect: `foreachApplyUtf` stayed partially covered but improved from
+58 covered and 52 uncovered executable entries to 84 covered and 26 uncovered
+entries. The moved entries cover UTF-16 decoding, reverse UTF-16 surrogate
+handling, UTF-32 decoding, UTF-32-to-UTF-8 loop-variable encoding, and reverse
+index bookkeeping.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.control_flow.foreachUtf16String.Ctfe
+ut.backends.pure_.lang.control_flow.foreachUtf32StringEncodesAsUtf8.Ctfe
+ut.backends.pure_.lang.control_flow.foreachReverseUtf16String.Ctfe
+```
+
+Focused coverage moved these baseline-uncovered `foreachApplyUtf` lines from
+`0000000` to positive hit counts: 7272, 7273, 7276, 7277, 7278, 7279, 7280,
+7282, 7283, 7284, 7285, 7286, 7288, 7289, 7291, 7292, 7293, 7294, 7311, 7312,
+7313, 7314, 7325, 7340, 7341, and 7342.
+
+Poke results:
+
+- `foreachUtf16String.Ctfe`: changing `chars.length == 2` to `3` failed with
+  `2 != 3`; the poke was reverted and the test rerun green.
+- `foreachUtf32StringEncodesAsUtf8.Ctfe`: changing `bytes.length == 3` to `4`
+  failed with `3 != 4`; the poke was reverted and the test rerun green.
+- `foreachReverseUtf16String.Ctfe`: changing `'z'` to `'y'` failed with
+  `'z' != 'y'`; the poke was reverted and the test rerun green.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.control_flow.foreachUtf16String.Ctfe
+  ut.backends.pure_.lang.control_flow.foreachUtf32StringEncodesAsUtf8.Ctfe
+  ut.backends.pure_.lang.control_flow.foreachReverseUtf16String.Ctfe` passed
+  with 3 tests run and 0 failed.
+- `scripts/dmd-ctfe-coverage.sh` for the same three focused test names passed
+  with 3 tests run and 0 failed.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed at the branch head
+  with 763 tests run, 0 failed, and 28/28 failing as expected.
+- A fallback subagent found `visitUnrolledLoop` exception propagation viable
+  but only a one-entry branch probe, and found `visitTryCatch` unmatched
+  propagation likely to produce `+0` coverage movement, so no fallback test was
+  added in this slice.
 
 ### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 1
 
@@ -794,19 +940,19 @@ that shim.
 | `BinExp` pointer-minus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe` | Runtime `tail - 1` hits the pointer arithmetic result path. |
 | `interpret_aaGetRvalueX` missing key | Covered | `ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe` | Missing runtime key hits the DMD CTFE diagnostic branch for AA reads. |
 | `visit(PostExp)` postfix increment | Covered | `ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe` | Runtime `value++` hits `EXP.plusPlus` and `interpretAssignCommon` with post mode. |
-| `visit(ComplexExp)` | Coverage unconfirmed | `complexLiteralWithRuntimeParts.Ctfe` added | Worker 5 (dmd-ctfe-coverage-tests-11) added tests and they passed, but the coverage script was not run to confirm the method moved; re-verify before marking covered. |
-| `interfaceVirtualCallUsesRuntimeDispatch` | Coverage unconfirmed | `interfaceVirtualCallUsesRuntimeDispatch.Ctfe` added | Worker 6 (dmd-ctfe-coverage-tests-11) added test and it passed, but coverage was not confirmed; re-verify before marking covered. |
-| `visitSwitch` no-default-no-match | Needs triage | Pending | `switch (seed) { case 1: ... }` where runtime seed matches no case and there is no default; should hit error path at dinterpret.d ~line 1289. High confidence. |
-| `visitReturn` closure error path | Needs triage | Pending | Return a delegate that closes over a local variable; should hit "closures are not yet supported in CTFE" diagnostic at dinterpret.d ~lines 1008–1015. High confidence. |
-| `visitUnrolledLoop` exception path | Needs triage | Pending | Throw inside an `AliasSeq`/expression-tuple unrolled loop body; hits `exceptionOrCant` return path at dinterpret.d ~lines 890, 900. High confidence. |
-| `interpret_aaApply` empty AA | Needs triage | Pending | `foreach` over `(int[int]).init`; hits early-return at dinterpret.d ~line 7128 before any delegate call. High confidence. |
-| `interpret_keys` null AA | Needs triage | Pending | `.keys` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~lines 6862–6865. High confidence. |
-| `interpret_values` null AA | Needs triage | Pending | `.values` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~lines 6887–6890. High confidence. |
-| `foreachApplyUtf` UTF-16 path | Needs triage | Pending | `foreach (dchar c; wstr)` over a runtime-shaped `wstring`; hits case 2 at dinterpret.d ~lines 7272–7286. High confidence. |
-| `foreachApplyUtf` UTF-32 / reverse | Needs triage | Pending | `foreach (dchar c; dstr)` over a runtime-shaped `dstring`, or `foreach_reverse` over a string; hits case 4 or reverse path at dinterpret.d ~lines 7288–7297. High confidence. |
-| `visitTryCatch` unmatched propagation | Needs triage | Pending | Throw an exception type that matches no catch handler; exception propagates uncaught out of the CTFE call, hitting the no-match path at dinterpret.d ~lines 1443–1444. High confidence. |
-| `interpret_aaDel` null AA | Needs triage | Pending | `.remove` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~line 6912. Medium confidence — semantic analysis may intercept. |
-| `visit(CommaExp)` nested chain | Needs triage | Pending | Nested comma expression such as `(a += 1, b += 2, c)` to trigger the `firstComma` inner loop at dinterpret.d ~line 4860. Medium confidence. |
+| `visit(ComplexExp)` | Still uncovered | Existing test folded | Fresh broad audit still leaves the visitor whole-method uncovered; do not add another complex test until a focused probe proves a non-folded route. |
+| `interfaceVirtualCallUsesRuntimeDispatch` | Re-verify | Existing test added | Worker 6 added the test and it passed, but branch movement is still unconfirmed. Re-run focused coverage before marking the interface dispatch branch covered. |
+| `visitSwitch` no-default-no-match | Low yield | Diagnostic-only | Reachable, but should not be a standalone PR. Batch only after larger movement and explicit low-yield approval. |
+| `visitReturn` closure error path | Do not repeat standalone | PR #117 | Valid diagnostic path, but PR #117 moved only `+3` executable entries and `+0` method coverage. |
+| `visitUnrolledLoop` exception path | Low yield | Not added | Fallback subagent found it likely moves only one executable entry: the `exceptionOrCant(e)` early return at line 900. |
+| `interpret_aaApply` empty AA | Low yield | Pending | To hit the empty-literal branch, create a non-null AA literal and remove all entries before `foreach`; default-initialized AA likely hits the earlier null/non-literal return. |
+| `interpret_keys` null AA | Low yield | Pending | Reachable via `.keys` on default-initialized AA, but only a narrow null branch. |
+| `interpret_values` null AA | Low yield | Pending | Reachable via `.values` on default-initialized AA, but only a narrow null branch. |
+| `foreachApplyUtf` UTF-16 path | Covered | `foreachUtf16String.Ctfe` / `foreachReverseUtf16String.Ctfe` | Runtime-shaped `wstring` covers normal UTF-16 decode, reverse decode, and surrogate-pair reverse handling. |
+| `foreachApplyUtf` UTF-32 / UTF-8 encode | Covered | `foreachUtf32StringEncodesAsUtf8.Ctfe` | `foreach (char c; dstring)` covers UTF-32 decode plus UTF-8 target encoding; `foreach (dchar c; dstring)` would not enter `foreachApplyUtf`. |
+| `visitTryCatch` unmatched propagation | Not useful | Not added | Fallback subagent found the fixture likely flows through already-covered no-handler propagation and produces `+0` coverage. |
+| `interpret_aaDel` null AA | Low yield | Pending | `.remove` on a null AA probably reaches the null-AA early return, but the branch is narrow and odd because the helper returns void. |
+| `visit(CommaExp)` nested chain | Exploratory only | Pending | Plausible but easy to fold or miss; require exact fresh `firstComma` baseline lines before proposing a test. |
 
 Coverage workflow details:
 
