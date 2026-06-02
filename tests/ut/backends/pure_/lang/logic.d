@@ -333,7 +333,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -346,7 +346,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -346,6 +346,17 @@ private struct EvalModuleInterpreter {
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
 
+        if (
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.greaterThan
+        ) {
+            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+            if (comparison is null)
+                assert(0);
+
+            return runComparisonExpression(comparison);
+        }
+
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1);
             return runExpression(comma.e2);
@@ -388,6 +399,19 @@ private struct EvalModuleInterpreter {
             return Value(true);
 
         return Value(isTruthy(runExpression(logical.e2)));
+    }
+
+    private Value runComparisonExpression(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(comparison.e1).asLong;
+        const right = runExpression(comparison.e2).asLong;
+
+        if (comparison.op == EXP.lessThan)
+            return Value(left < right);
+        return Value(left > right);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
