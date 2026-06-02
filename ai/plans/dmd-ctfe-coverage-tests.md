@@ -18,8 +18,16 @@ evidence that a method is now reached.
 ## Status
 
 The coverage workflow described below now exists in repository-owned scripts.
-The remaining work is to keep expanding the pure-backend CTFE test suite while
-maintaining an up-to-date method coverage audit.
+The high-yield phase of this plan is likely over. Earlier slices moved broad
+`dmd.dinterpret` executable-entry coverage from about 40% to about 62% by
+turning whole uncovered visitors and helpers into language-surface tests. The
+remaining listed targets are mostly narrow branch, edge-case, or diagnostic
+paths.
+
+Do not continue this plan by grinding one-off branch tests. Continue only after
+a fresh broad audit proves that a candidate still covers a baseline-uncovered
+method, a whole-to-partial method transition, or a substantial behaviour branch
+that is worth the test-suite cost. Otherwise pivot away from this plan.
 
 ## Historical Baseline
 
@@ -93,32 +101,42 @@ The current implementation is intentionally lightweight:
 
 Add tests one behaviour at a time. Approval is required before adding a new
 test or modifying test behaviour. The only approval exception is adding a
-backend to an existing backend-matrix test. A test is good for this work when
-all of the following are true:
+backend to an existing backend-matrix test. This plan does not waive
+`AGENTS.md` test approval; if a future user instruction creates a
+coverage-specific exception, record the exact scope in this section before
+workers edit tests.
+
+A test is good for this work when all of the following are true:
 
 - it passes normally;
 - it fails when the expected result or diagnostic is deliberately poked;
-- focused CTFE coverage shows the intended `dmd.dinterpret` method or branch
-  is newly covered;
+- a fresh broad baseline shows the intended `dmd.dinterpret` method or branch
+  is currently uncovered;
+- focused CTFE coverage shows the intended baseline-uncovered method or branch
+  moves from `0000000` to a positive hit count;
 - the slice has no production-code changes.
 
 For each uncovered method group:
 
 1. Identify the smallest D source fixture that should reach the uncovered CTFE
    code through normal semantic analysis.
-2. Check whether the fixture represents valid D language behaviour. For
+2. For branch-gap targets, record the exact baseline `.lst` line numbers or
+   audit-table row that are currently uncovered. "This method was hit" is not
+   enough if the hit path was already covered by the broad baseline.
+3. Check whether the fixture represents valid D language behaviour. For
    `pure_` tests, DMD CTFE is the canonical oracle unless completed DMD codegen
    proves compiled D differs.
-3. Prefer a normal passing behaviour test. Use a diagnostic test only when the
+4. Prefer a normal passing behaviour test. Use a diagnostic test only when the
    uncovered path is genuinely an error path.
-4. Add the test under the closest existing backend pure-test module, such as
+5. After approval, add the test under the closest existing backend pure-test
+   module, such as
    `tests/ut/backends/pure_/lang/expressions.d`,
    `tests/ut/backends/pure_/lang/control_flow.d`,
    `tests/ut/backends/pure_/lang/arrays.d`,
    `tests/ut/backends/pure_/lang/structs.d`, or
    `tests/ut/backends/pure_/lang/exceptions.d`.
-5. Run the focused test, then regenerate CTFE coverage and confirm the intended
-   `dmd.dinterpret` lines changed from uncovered to covered in the same method.
+6. Run the focused test, then regenerate CTFE coverage and confirm the exact
+   intended `dmd.dinterpret` entries changed from uncovered to covered.
 
 Avoid all-literal fixtures unless constant folding itself is the target. Use
 runtime-shaped values such as mutable locals or helper calls so DMD does not
@@ -127,6 +145,34 @@ fold away the AST node before CTFE interprets it.
 Do not add tests for internal assertions, compiler consistency checks, frontend
 states that semantic analysis rewrites away, or impossible AST shapes. Record
 those gaps with the exact line or method and a short reason.
+
+Branch-only diagnostic tests are low priority. Do not create a PR containing
+only narrow diagnostic or error-branch coverage unless the user explicitly
+approves after seeing the method-level delta, executable-entry delta, and
+efficacy assessment.
+
+## Efficacy Gate
+
+Assess efficacy after every coverage-work commit and before every PR.
+
+Record:
+
+- fixed branch-start SHA;
+- broad baseline and branch-head executable-entry coverage;
+- broad baseline and branch-head method coverage;
+- exact methods or `.lst` entries that moved;
+- whether the movement was whole-method, large partial-method, narrow branch,
+  diagnostic-only, or already-covered-path cleanup.
+
+Focused coverage proves reachability only. Broad coverage proves PR efficacy.
+If a candidate hits code in focused coverage but does not move a
+baseline-uncovered entry, discard the probe before commit or ask explicitly
+whether to keep it as a non-coverage behaviour test.
+
+Do not open a coverage PR with `+0` broad executable-entry delta. Do not open a
+PR whose only movement is a tiny branch-only delta unless the user explicitly
+accepts the low yield. If repeated valid probes produce only narrow
+diagnostic/null/empty-case deltas, stop this plan and pivot.
 
 ### Known Unreachable Targets
 
@@ -167,6 +213,10 @@ from moving `master` after work has started. Use the starting-commit baseline
 for the whole PR, even if `master` changes or merges happen while the branch is
 in progress.
 
+Record the starting SHA once before any test edit. Use that same SHA in the
+plan archive and PR body. A mismatch between the archive baseline and PR body
+baseline blocks PR creation until corrected.
+
 Calculate method coverage from executable entries in
 `tmp/dmd-ctfe-coverage/dmd-dinterpret.lst` for the starting commit and final
 PR commit. Do not use the final DMD footer line; it rounds to a whole
@@ -179,6 +229,7 @@ positive run count as covered. Roll those lines up by method and report:
 - the starting commit SHA and baseline method coverage;
 - the final PR branch commit SHA and method coverage;
 - the method-coverage delta;
+- the executable-entry coverage delta;
 - the method-level coverage change that motivated the test, such as a visitor
   moving from wholly uncovered to partially covered.
 
@@ -192,6 +243,10 @@ Operationally, the orchestrator should:
 4. Right before creating the PR, rerun the same broad coverage target at the
    branch head, compare it with the recorded baseline, and show the delta in
    the PR body.
+5. Rebase onto `master`, rerun `dub test -- --random`, and run `ci.sh` before
+   creating the PR.
+6. Create the PR with non-interactive `gh pr create`, verify GitHub returns an
+   open PR URL, then open that exact URL in the browser.
 
 This matches the earlier CTFE PR summaries, which reported the branch-start
 baseline, the final branch-head coverage, and the difference between them.
@@ -221,26 +276,36 @@ uncovered reachable methods as undocumented backlog.
 
 For future PR slices on this plan, the main agent should orchestrate only:
 
-Spawn all explorer and worker subagents for this plan with
-`gpt-5.3-codex-spark`.
+Spawn research and explorer subagents for this plan with a stronger model than
+`gpt-5.3-codex-spark` unless the user explicitly asks for Spark. Coverage-plan
+re-evaluation is a strategic task, not a fast line-finding task.
 
 1. Ask an explorer subagent to inspect the fresh coverage audit, DMD CTFE
    source, and nearby tests, then recommend the next reachable additive test
    target. The explorer must verify the candidate method does not appear in
    the Known Unreachable Targets table and does not contain `assert(0)` or a
-   "rewritten to X" comment in `dmd.dinterpret`.
-2. Spawn a worker subagent for the chosen target. The worker must follow a
-   probe-first workflow:
-   a. Write the minimal behavior test only (no failure-message tests yet).
-   b. Run `scripts/dmd-ctfe-coverage.sh <test-name>` immediately and check
-      whether the targeted method or branch shows new hits in the `.lst`.
-   c. If coverage moved: write the failure-message tests, poke-check, and
-      prepare the full commit.
-   d. If coverage did not move: discard the probe, record the target as
-      "Diagnostic fires before target logic" in the Audit Log, and report
-      back to the orchestrator to pick a new target. Do not write
-      failure-message tests for a fixture that does not hit the intended lines.
-3. Review the worker diff, verify, update this plan if needed, and commit.
+   "rewritten to X" comment in `dmd.dinterpret`. The explorer must cite the
+   exact baseline-uncovered `.lst` entries or audit row the test is expected to
+   move.
+2. Draft the exact proposed test code and stop for user approval before any
+   worker writes or modifies tests.
+3. After approval, spawn a worker subagent for the chosen target. The worker
+   must follow a probe-first workflow:
+   a. Write the approved minimal behavior test only.
+   b. Run the focused test and
+      `scripts/dmd-ctfe-coverage.sh <test-name>` immediately.
+   c. Confirm the targeted baseline-uncovered method or branch shows new hits
+      in the `.lst`.
+   d. If coverage moved: add only approved failure-message tests, poke-check,
+      and report the diff and verification notes.
+   e. If coverage did not move: discard the probe, record the target as
+      "already covered", "semantic rewrite", "diagnostic fires before target
+      logic", or another exact reason, and report back to the orchestrator to
+      pick a new target. Do not write failure-message tests for a fixture that
+      does not hit the intended lines.
+4. Review the worker diff, verify, update this plan if needed, assess efficacy,
+   and commit. Workers produce diffs and verification notes; only the
+   orchestrator commits.
 
 Do not choose the next CTFE target locally before the explorer has reported.
 Use medium reasoning for routine explorer and worker subagents unless a slice
@@ -250,10 +315,71 @@ for the entire session. All workers operate inside that same worktree. Do not
 create a new worktree per worker or per target. The worktree is created once
 (step 1 of the PR Coverage Report section), all commits land on that branch,
 and the PR is opened from it at the end.
-Create the PR once coverage improvement starts moving only incrementally
-despite valid additive slices; do not grind indefinitely chasing a large delta.
+This shared-worktree rule is an explicit plan-level exception to the usual
+editing-subagent separate-worktree guidance; because of that, run workers
+sequentially and re-read files before each edit.
+Create the PR only when the branch contains meaningful method or substantial
+branch coverage. If coverage improvement starts moving only incrementally
+despite valid additive slices, stop and reassess rather than creating another
+tiny branch-only PR by default.
+
+## Stop or Pivot Criteria
+
+Stop this plan, or ask the user whether to pivot, when any of these are true:
+
+- a fresh broad audit shows only diagnostic, null/empty-case, resume-target,
+  internal-assert, or semantic-rewrite leftovers;
+- two consecutive approved probes move only narrow branch coverage and no
+  method-level coverage;
+- a proposed PR would report no whole-to-partial method transitions and less
+  than 0.25 percentage points broad executable-entry improvement;
+- the only remaining candidates primarily improve DMD coverage metrics rather
+  than Quickbite language-confidence surface.
+
+If continuing after this gate, prefer substantial real-language behaviours
+such as UTF helper variants or still-uncovered dispatch paths over one-off
+diagnostic branches.
 
 ## 2026-06-02 Research Findings
+
+### Closed PR Re-evaluation
+
+After PR #106 and PR #117 were closed, three research agents re-evaluated this
+plan. Their conclusions were consistent:
+
+- PR #106 failed because the workflow accepted method reachability as
+  sufficient even though the final broad run reported `+0` executable entries.
+  Future branch-gap probes must name exact baseline-uncovered `.lst` entries
+  before test edits and prove those entries moved.
+- PR #117 failed strategically because it was a valid but tiny diagnostic-branch
+  gain: `+3` executable entries, `+0` method coverage, and no whole-to-partial
+  method transition. That is not enough to justify another standalone coverage
+  PR without explicit user approval.
+- Existing `tmp/dmd-ctfe-coverage/` artifacts can be focused or stale. A fresh
+  broad run is mandatory before selecting targets.
+- The plan contradicted `AGENTS.md` by letting workers write tests before user
+  approval. The workflow now requires proposed test code first, approval second,
+  and edits third.
+- Remaining candidates are mostly branch, diagnostic, null/empty AA, UTF
+  variant, or propagation paths. UTF helper variants and any still-uncovered
+  dispatch path are the only obviously worthwhile categories without a fresh
+  audit finding a better whole-method gap.
+
+Attempts that did not justify a PR:
+
+- PR #106 tried
+  `assocArrayForeachAccumulatesRuntimePairs.Ctfe` for the non-empty
+  associative-array `interpret_aaApply` foreach path. Focused coverage reached
+  the helper, but broad coverage stayed `2336/3760` to `2336/3760` (`+0`).
+  The exercised path was already covered. Lesson: do not accept "method
+  reached" as success. A branch probe must name exact baseline-uncovered
+  `.lst` entries and prove those entries moved.
+- PR #117 tried `returnNestedDelegateUnsupportedInCtfe.Ctfe` for the
+  `visit(ReturnStatement)` nested delegate closure diagnostic. Broad coverage
+  moved only `2336/3760` to `2339/3760` (`+3`, `+0.08pp`), and method coverage
+  stayed `138/160` to `138/160`. Lesson: valid coverage can still be too
+  low-value for a standalone PR. Diagnostic-only branch gains should be batched
+  behind larger method-level movement or explicitly approved as low yield.
 
 A four-subagent research session audited the remaining uncovered methods in
 `dmd.dinterpret` and produced the candidate list above. Key findings:

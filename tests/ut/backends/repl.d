@@ -202,6 +202,39 @@ static foreach (backend; backends) {
         repl.submit("x").should == Value(1);
     }
 
+    @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(2 + 2 == 4); }").should == Value.void_;
+        repl.submit(":t").should == Value.void_;
+    }
+
+    @("repl.backend.loadedUnittestFailuresReportAssertionMessage." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(1 == 2); }").should == Value.void_;
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should == "1 != 2";
+    }
+
+    @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleSource("unittest { assert(2 + 2 == 4); }");
+        repl.submit(":t").should == Value.void_;
+    }
+
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
