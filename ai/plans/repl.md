@@ -168,6 +168,9 @@ Completed:
 - Fixed nested string display in CTFE-backed REPL aggregate results. Static
   string arrays such as `string[2] xs = ["a", "b"]; xs` now render as
   `["a", "b"]` instead of `[[a], [b]]`.
+- Fixed CTFE-backed REPL display for wide string results. Dynamic `wstring`
+  and `dstring` expression results now render as quoted strings instead of
+  character arrays.
 
 Remaining follow-up:
 
