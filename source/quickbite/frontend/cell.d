@@ -21,6 +21,11 @@ public struct EvalSourceParseResult {
     public imported!"dmd.func".FuncDeclaration function_;
 }
 
+private struct LoadedModuleSource {
+    public string source;
+    public string filePath;
+}
+
 private enum EvalHistoryTarget {
     local,
     module_,
@@ -28,7 +33,7 @@ private enum EvalHistoryTarget {
 
 public struct EvalSession {
     private string localTranscript;
-    private string loadedModuleTranscript;
+    private LoadedModuleSource[] loadedModuleSources;
     private string moduleTranscript;
     private uint valueCellCount;
 
@@ -111,7 +116,11 @@ public struct EvalSession {
     }
 
     public void loadModuleSource(in string source) {
-        loadedModuleTranscript ~= source ~ "\n";
+        loadedModuleSources ~= LoadedModuleSource(source, null);
+    }
+
+    public void loadModuleFile(in string filePath, in string source) {
+        loadedModuleSources ~= LoadedModuleSource(source, filePath);
     }
 
     public string loadedModuleSource() const @safe pure {
@@ -124,14 +133,44 @@ public struct EvalSession {
 
     private string moduleSource(in string replModuleTranscript) const
     @safe pure {
-        if (loadedModuleTranscript.length == 0)
+        if (loadedModuleSources.length == 0)
             return replModuleTranscript;
 
-        return loadedModuleTranscript ~
-            `#line 1 "<repl>"` ~
-            "\n" ~
-            replModuleTranscript;
+        string result;
+        foreach (ref loadedModuleSource; loadedModuleSources)
+            result ~= loadedModuleSource.toSource;
+
+        return result ~ replLineDirective ~ replModuleTranscript;
     }
+}
+
+private string toSource(ref const LoadedModuleSource loadedModuleSource)
+@safe pure {
+    if (loadedModuleSource.filePath.length == 0)
+        return loadedModuleSource.source ~ "\n";
+
+    return lineDirective(loadedModuleSource.filePath) ~
+        loadedModuleSource.source ~
+        "\n";
+}
+
+private string replLineDirective() @safe pure {
+    return lineDirective("<repl>");
+}
+
+private string lineDirective(in string filePath) @safe pure {
+    return `#line 1 "` ~ escapedLineDirectiveFilePath(filePath) ~ `"` ~ "\n";
+}
+
+private string escapedLineDirectiveFilePath(in string filePath) @safe pure {
+    string result;
+    foreach (character; filePath) {
+        if (character == '\\' || character == '"')
+            result ~= '\\';
+        result ~= character;
+    }
+
+    return result;
 }
 
 public EvalSourceParseResult parseEvalSource(in string source) {
