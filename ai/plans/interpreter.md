@@ -155,22 +155,23 @@ REPL-only concepts such as type-display cells belong in
 ### Logic Slice Lessons
 
 Current progress in `tests/ut/backends/pure_/lang/logic.d`:
-`logicalNot`, `logicalNotFailureMessage.0`, `logicalNotFailureMessage.1`,
-`logicalNotCall`, `logicalNotCallFailureMessage.0`, and
-`logicalNotCallFailureMessage.1`, `logicalAnd`, and
-`logicalAndFailureMessage.0` are covered by `TreeWalker`.
+All `logicalNot*` and `logicalAnd*` tests are covered by `Interpreter`.
+`logicalOrBoolResult`, `logicalOrBoolResultFailureMessage.0`,
+`logicalOrBoolResultFailureMessage.1`, and `logicalOr` are covered by
+`Interpreter`.
 
-The next smallest slice is the plain local `logicalAndFailureMessage.1` case,
-followed by plain local `||` cases before broader call-based or short-circuit
+The next smallest slice is the plain local `logicalOrFailureMessage.0` case,
+followed by the remaining local `||` cases before broader comparison-operand
 logic. Treat each named unittest as its own promotion and commit.
 
 Module-backed interpreter support remains intentionally narrow:
 zero-argument free calls, return statements, comma-expression sequencing,
 local bool declarations, unary `!`, equality failure messages, truthiness, and
-DMD-lowered logical-not temporaries in assertion messages exist only because
-promoted logic tests required them. Do not generalize call parameters, methods,
-assignment, control flow, or assertion formatting until a promoted test forces
-that behaviour.
+DMD-lowered logical-not and logical-and temporaries in assertion messages exist
+only because promoted logic tests required them. Logical `&&` and `||`
+short-circuiting exists only for the promoted local and zero-argument free-call
+cases. Do not generalize call parameters, methods, assignment, control flow, or
+assertion formatting until a promoted test forces that behaviour.
 
 ### First PR Guardrails
 
