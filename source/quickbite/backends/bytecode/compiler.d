@@ -266,7 +266,19 @@ private struct Compiler {
     }
 
     private void compileCall(imported!"dmd.expression".CallExp call) {
-        if (callIdentifier(call) != "fabs")
+        const identifier = callIdentifier(call);
+
+        if (identifier == "pow") {
+            if (call.arguments is null || call.arguments.length != 2)
+                throw new Exception("Unsupported bytecode pow argument count.");
+
+            compileExpression((*call.arguments)[0]);
+            compileExpression((*call.arguments)[1]);
+            program.instructions ~= Instruction(Op.pow);
+            return;
+        }
+
+        if (identifier != "fabs")
             throw new Exception("Unsupported bytecode call target.");
 
         if (call.arguments is null || call.arguments.length != 1)

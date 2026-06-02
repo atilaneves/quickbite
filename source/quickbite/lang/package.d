@@ -283,6 +283,39 @@ public struct Value {
         );
     }
 
+    public Value pow(in Value rhs) const @safe pure {
+        import std.math: pow;
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint;
+
+        return data.match!(
+            (lhs) {
+                alias L = Unqual!(typeof(lhs));
+
+                static if (isFloatingPoint!L) {
+                    return rhs.data.match!(
+                        (rhsValue) {
+                            alias R = Unqual!(typeof(rhsValue));
+
+                            static if (isFloatingPoint!R) {
+                                return Value(cast(L) pow(
+                                    cast(L) lhs,
+                                    cast(R) rhsValue,
+                                ));
+                            } else {
+                                throw new Exception("Unsupported pow rhs type.");
+                                return Value.void_;
+                            }
+                        },
+                    );
+                } else {
+                    throw new Exception("Unsupported pow lhs type.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
     private Value binaryInteger(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral;

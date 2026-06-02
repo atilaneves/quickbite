@@ -96,9 +96,7 @@ static foreach (backend; backendsWith!Bytecode) {
         result.should == Value(cast(float) 1.25);
         result.should.not == Value(1.25);
     }
-}
 
-static foreach (backend; backends) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -108,7 +106,9 @@ static foreach (backend; backends) {
         result.should == Value(cast(float) 8.0);
         result.should.not == Value(8.0);
     }
+}
 
+static foreach (backend; backends) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == Value("abc");
