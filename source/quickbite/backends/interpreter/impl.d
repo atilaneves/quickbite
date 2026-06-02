@@ -474,6 +474,13 @@ private struct EvalModuleInterpreter {
         if (assert_.msg !is null && assert_.msg.isStringExp !is null)
             return assertMessage(assert_.msg);
 
+        if (auto not = assert_.e1.isNotExp) {
+            import std.conv: text;
+
+            if (isLogicalExpression(not.e1))
+                return text(equalityOperandMessage(not.e1, true), " == true");
+        }
+
         if (auto equal = assert_.e1.isEqualExp) {
             import dmd.tokens: EXP;
             import std.conv: text;
