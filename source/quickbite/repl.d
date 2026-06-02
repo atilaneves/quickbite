@@ -29,6 +29,15 @@ public struct Repl {
         session.loadModuleSource(source);
     }
 
+    public void loadModuleFile(in string filePath) {
+        import quickbite.frontend.compiler: parseModule;
+        import std.file: readText;
+
+        const source = filePath.readText;
+        session.loadModuleFile(filePath, source);
+        parseModule(session.loadedModuleSource);
+    }
+
     private ReplResult submitResult(in string input) {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;

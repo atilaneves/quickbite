@@ -23,13 +23,8 @@ public int main(string[] args) {
     auto repl = Repl(new Ctfe);
 
     if (options.options.hasFile) {
-        import std.file: readText;
-
-        string source;
         foreach (file; options.options.files)
-            source ~= readText(file) ~ "\n";
-
-        repl.loadModuleSource(source);
+            repl.loadModuleFile(file);
     }
 
     if (options.options.hasCommand)
