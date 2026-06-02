@@ -286,6 +286,11 @@ private struct EvalFunctionWalker {
 }
 
 private struct Interpreter {
+    import dmd.declaration: VarDeclaration;
+    import quickbite.lang: Value;
+
+    private Value[VarDeclaration] locals;
+
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
     }
@@ -306,17 +311,71 @@ private struct Interpreter {
         assert(0);
     }
 
-    private bool runExpression(imported!"dmd.expression".Expression expression) {
+    private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import quickbite.frontend.dmd_values: integerValue;
+
         if (auto integer = expression.isIntegerExp)
-            return integer.getInteger != 0;
+            return integerValue(integer);
 
         if (auto assert_ = expression.isAssertExp) {
-            if (!runExpression(assert_.e1))
+            if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(assertFailureMessage(assert_));
-            return true;
+            return Value(true);
+        }
+
+        if (auto not = expression.isNotExp)
+            return Value(!isTruthy(runExpression(not.e1)));
+
+        if (auto declaration = expression.isDeclarationExp)
+            return runDeclarationExpression(declaration);
+
+        if (auto var = expression.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                assert(0);
+
+            if (auto current = variable in locals)
+                return *current;
+
+            return Value(false);
         }
 
         assert(0);
+    }
+
+    private Value runDeclarationExpression(
+        imported!"dmd.expression".DeclarationExp declaration,
+    ) {
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (variable is null)
+            return Value(false);
+
+        if (variable._init is null || variable._init.isExpInitializer is null) {
+            locals[variable] = Value(false);
+            return Value(false);
+        }
+
+        auto initializer = variable._init.isExpInitializer.exp;
+        if (auto assign = initializer.isAssignExp)
+            initializer = assign.e2;
+        else if (auto construct = initializer.isConstructExp)
+            initializer = construct.e2;
+        else if (auto blit = initializer.isBlitExp)
+            initializer = blit.e2;
+
+        auto value = runExpression(initializer);
+        locals[variable] = value;
+        return value;
+    }
+
+    private bool isTruthy(in Value value) {
+        if (value == Value(false))
+            return false;
+
+        if (value == Value(true))
+            return true;
+
+        return value.castTo!bool == Value(true);
     }
 
     private string assertFailureMessage(

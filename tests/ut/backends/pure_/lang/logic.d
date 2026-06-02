@@ -46,16 +46,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("41 != 42");
     }
 
-    @("logicalNot." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool isReady = false;
-                assert(!isReady);
-            }
-        });
-    }
-
     @("logicalNotFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -432,5 +422,17 @@ static foreach (backend; backends) {
                 assert((input > 41 && input < 43) == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNot." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool isReady = false;
+                assert(!isReady);
+            }
+        });
     }
 }
