@@ -326,6 +326,12 @@ private struct Interpreter {
         if (auto not = expression.isNotExp)
             return Value(!isTruthy(runExpression(not.e1)));
 
+        if (auto cast_ = expression.isCastExp)
+            return castValue(cast_);
+
+        if (auto equal = expression.isEqualExp)
+            return runEqualExpression(equal);
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
@@ -341,6 +347,20 @@ private struct Interpreter {
         }
 
         assert(0);
+    }
+
+    private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(equal.e1);
+        const right = runExpression(equal.e2);
+        if (equal.op == EXP.notEqual)
+            return Value(left != right);
+        return Value(left == right);
+    }
+
+    private Value castValue(imported!"dmd.expression".CastExp cast_) {
+        return runExpression(cast_.e1);
     }
 
     private Value runDeclarationExpression(
@@ -381,10 +401,61 @@ private struct Interpreter {
     private string assertFailureMessage(
         imported!"dmd.expression".AssertExp assert_,
     ) {
-        if (assert_.msg !is null)
+        if (assert_.msg !is null && assert_.msg.isStringExp !is null)
             return assertMessage(assert_.msg);
 
+        if (auto equal = assert_.e1.isEqualExp) {
+            import dmd.tokens: EXP;
+            import std.conv: text;
+
+            const operator = equal.op == EXP.notEqual ? "==" : "!=";
+            const useBoolMessage =
+                isBoolExpression(equal.e1) ||
+                isBoolExpression(equal.e2) ||
+                isLogicalNotExpression(equal.e1) ||
+                isLogicalNotExpression(equal.e2);
+            return text(
+                equalityOperandMessage(equal.e1, useBoolMessage),
+                " ",
+                operator,
+                " ",
+                equalityOperandMessage(equal.e2, useBoolMessage),
+            );
+        }
+
         return "`assert(false)` failed";
+    }
+
+    private string equalityOperandMessage(
+        imported!"dmd.expression".Expression expression,
+        in bool useBoolMessage,
+    ) {
+        import std.conv: text;
+
+        const value = runExpression(expression);
+        if (useBoolMessage)
+            return text(isTruthy(value));
+
+        return text(value);
+    }
+
+    private bool isBoolExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
+
+        auto type = expression.type;
+        if (auto cast_ = expression.isCastExp)
+            type = cast_.to;
+
+        return type !is null && type.toBasetype.ty == TY.Tbool;
+    }
+
+    private bool isLogicalNotExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        while (auto cast_ = expression.isCastExp)
+            expression = cast_.e1;
+
+        return expression.isNotExp !is null;
     }
 
     private string assertMessage(imported!"dmd.expression".Expression expression) {
