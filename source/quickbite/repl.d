@@ -34,8 +34,8 @@ public struct Repl {
         import std.file: readText;
 
         const source = filePath.readText;
-        parseModule(source);
         session.loadModuleFile(filePath, source);
+        parseModule(session.loadedModuleSource);
     }
 
     private ReplResult submitResult(in string input) {
