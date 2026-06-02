@@ -119,12 +119,11 @@ Completed:
   `[0, 2, 4]`.
 - Confirmed template function definitions work as no-display cells and added a
   regression for `T identity(T)(T x) { return x; }` followed by `identity(42)`.
+- Fixed file-argument execution so `bin/qb tests/example.d` exits after
+  loading the file instead of entering the interactive REPL prompt when stdin
+  is a terminal.
 
 Remaining follow-up:
-
-- Fix file-argument execution so `bin/qb tests/example.d` does not leave the
-  user inside the interactive REPL prompt. Loading or running files should
-  finish and exit unless interactive mode is explicitly requested.
 
 - Prefix interactive REPL command failures with an error label, preferably
   styled red for terminal output. For example, after
