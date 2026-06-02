@@ -7,7 +7,8 @@ package imported!"quickbite.lang".Value eval(
 ) {
     import quickbite.backends.bytecode.builtins:
         BytecodeBuiltin, binaryBuiltinCall, unaryBuiltinCall;
-    import quickbite.backends.bytecode.instructions: CastTarget, Op;
+    import quickbite.backends.bytecode.instructions: Op;
+    import quickbite.backends.casts: CastTarget, castValue;
     import quickbite.lang: Value;
 
     Value[] stack;
@@ -44,43 +45,22 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 1;
                 break;
 
+            case Op.incrementLocal:
+                if (instruction.operand >= locals.length)
+                    throw new Exception("Bytecode local out of bounds");
+
+                locals[instruction.operand] = locals[instruction.operand] +
+                    instruction.value;
+                break;
+
             case Op.cast_:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
 
-                final switch (cast(CastTarget) instruction.operand) {
-                    case CastTarget.byte_:
-                        stack[$ - 1] = stack[$ - 1].castTo!byte;
-                        break;
-
-                    case CastTarget.ubyte_:
-                        stack[$ - 1] = stack[$ - 1].castTo!ubyte;
-                        break;
-
-                    case CastTarget.short_:
-                        stack[$ - 1] = stack[$ - 1].castTo!short;
-                        break;
-
-                    case CastTarget.ushort_:
-                        stack[$ - 1] = stack[$ - 1].castTo!ushort;
-                        break;
-
-                    case CastTarget.int_:
-                        stack[$ - 1] = stack[$ - 1].castTo!int;
-                        break;
-
-                    case CastTarget.uint_:
-                        stack[$ - 1] = stack[$ - 1].castTo!uint;
-                        break;
-
-                    case CastTarget.long_:
-                        stack[$ - 1] = stack[$ - 1].castTo!long;
-                        break;
-
-                    case CastTarget.ulong_:
-                        stack[$ - 1] = stack[$ - 1].castTo!ulong;
-                        break;
-                }
+                stack[$ - 1] = castValue(
+                    stack[$ - 1],
+                    cast(CastTarget) instruction.operand,
+                );
                 break;
 
             case Op.add:
@@ -138,7 +118,7 @@ package imported!"quickbite.lang".Value eval(
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
 
-                stack[$ - 1] = unaryNativeCall(
+                stack[$ - 1] = unaryBuiltinCall(
                     cast(BytecodeBuiltin) instruction.operand,
                     stack[$ - 1],
                 );
@@ -152,7 +132,7 @@ package imported!"quickbite.lang".Value eval(
                 auto lhs = stack[$ - 2];
                 stack.length -= 2;
 
-                stack ~= binaryNativeCall(
+                stack ~= binaryBuiltinCall(
                     cast(BytecodeBuiltin) instruction.operand,
                     lhs,
                     rhs,
@@ -165,23 +145,4 @@ package imported!"quickbite.lang".Value eval(
         throw new Exception("Bytecode program did not leave exactly one value");
 
     return stack[0];
-}
-
-private imported!"quickbite.lang".Value unaryNativeCall(
-    imported!"quickbite.backends.bytecode.builtins".BytecodeBuiltin builtin,
-    in imported!"quickbite.lang".Value value,
-) {
-    import quickbite.backends.bytecode.builtins: unaryBuiltinCall;
-
-    return unaryBuiltinCall(builtin, value);
-}
-
-private imported!"quickbite.lang".Value binaryNativeCall(
-    imported!"quickbite.backends.bytecode.builtins".BytecodeBuiltin builtin,
-    in imported!"quickbite.lang".Value lhs,
-    in imported!"quickbite.lang".Value rhs,
-) {
-    import quickbite.backends.bytecode.builtins: binaryBuiltinCall;
-
-    return binaryBuiltinCall(builtin, lhs, rhs);
 }

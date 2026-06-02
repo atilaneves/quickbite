@@ -64,8 +64,17 @@ public struct Repl {
     private imported!"quickbite.lang".Value evalReplCell(
         in imported!"quickbite.frontend.repl".ReplCell cell,
     ) {
+        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.lang: Value;
+
         try
-            return backend.evalRepl(cell);
+        {
+            const value = backend.evalRepl(cell.evalCell);
+            if (cell.kind == ReplCellKind.typeExpression)
+                return Value.typeName(value.asCharArrayString);
+
+            return value;
+        }
         catch (Exception exception)
             throw new Exception(userDiagnostic(exception.msg));
     }
@@ -101,11 +110,23 @@ private ReplDisplay replDisplay(
 }
 
 private bool replFunctionReturnsString(in string source) {
-    import quickbite.frontend.repl: ReplCell, ReplCellKind, replFunction;
+    import quickbite.frontend.compiler: parseModule;
 
-    return functionReturnsString(
-        replFunction(ReplCell(ReplCellKind.expression, source)),
-    );
+    return functionReturnsString(replFunction(parseModule(source).module_));
+}
+
+private imported!"dmd.func".FuncDeclaration replFunction(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null && function_.ident.toString == "f")
+                return function_;
+        }
+    }
+
+    throw new Exception("Missing REPL wrapper function.");
 }
 
 private bool functionReturnsString(

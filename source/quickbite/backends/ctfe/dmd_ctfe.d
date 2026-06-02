@@ -9,17 +9,15 @@ public class Ctfe: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
-        import quickbite.frontend.repl: evalCell;
-
-        return evalRepl(evalCell(str));
+        return ctfeValue(interpretCtfe(evalCall(str)));
     }
 
     public override Value evalRepl(
-        in imported!"quickbite.frontend.repl".ReplCell cell,
+        in imported!"quickbite.frontend.cell".EvalCell cell,
     ) {
-        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.frontend.cell: EvalCellKind;
 
-        final switch (cell.kind) with (ReplCellKind) {
+        final switch (cell.kind) with (EvalCellKind) {
             case incomplete:
                 throw new Exception("Incomplete REPL cell reached CTFE backend.");
             case noDisplay:
@@ -30,8 +28,6 @@ public class Ctfe: imported!"quickbite.backends".Backend {
                 return Value.void_;
             case expression:
                 return evalReplSource(cell.source);
-            case typeExpression:
-                return evalReplTypeSource(cell.source);
         }
     }
 
@@ -97,6 +93,12 @@ private string diagnosticMessage() {
     return messages.join("\n");
 }
 
+private imported!"dmd.expression".CallExp evalCall(in string str) {
+    import quickbite.frontend.cell: parseEvalFunction;
+
+    return callExpression(parseEvalFunction(str));
+}
+
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
     try
         return ctfeValue(interpretCtfeOrThrow(callExpression(replFunction(source))));
@@ -117,9 +119,25 @@ private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
 }
 
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
-    import quickbite.frontend.repl: ReplCell, ReplCellKind, replFunction;
+    import quickbite.frontend.compiler: parseModule;
 
-    return replFunction(ReplCell(ReplCellKind.expression, source));
+    auto parsed = parseModule(source);
+    return functionDeclaration(parsed.module_, "f");
+}
+
+private imported!"dmd.func".FuncDeclaration functionDeclaration(
+    imported!"dmd.dmodule".Module module_,
+    in string name,
+) {
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null && function_.ident.toString == name)
+                return function_;
+        }
+    }
+
+    throw new Exception("Missing CTFE function.");
 }
 
 private string withCandidateSignatures(
@@ -416,58 +434,17 @@ private imported!"quickbite.lang".Value ctfeValue(
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
 
-    const value = integer.getInteger;
-    const type = integer.type is null ? null : integer.type.toBasetype;
-    if (type is null)
-        return Value(cast(long) value);
-
-    switch (type.ty) with (TY) {
-        case Tbool:
-            return Value(value != 0);
-        case Tint8:
-            return Value(cast(byte) value);
-        case Tuns8:
-            return Value(cast(ubyte) value);
-        case Tint16:
-            return Value(cast(short) value);
-        case Tuns16:
-            return Value(cast(ushort) value);
-        case Tint32:
-            return Value(cast(int) value);
-        case Tuns32:
-            return Value(cast(uint) value);
-        case Tint64:
-            return Value(cast(long) value);
-        case Tuns64:
-            return Value(cast(ulong) value);
-        case Tchar:
-            return Value(cast(char) value);
-        case Twchar:
-            return Value(cast(wchar) value);
-        case Tdchar:
-            return Value(cast(dchar) value);
-        default:
-            return Value(cast(long) value);
-    }
+    return frontendIntegerValue(integer);
 }
 
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendRealValue = realValue;
 
-    const type = real_.type is null ? null : real_.type.toBasetype;
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(real) real_.toReal);
+    return frontendRealValue(real_);
 }
 
 private imported!"quickbite.lang".Value stringValue(

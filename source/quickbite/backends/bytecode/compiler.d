@@ -13,13 +13,13 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileExpre
     return compileExpression(parseExpression(expr));
 }
 
-package imported!"quickbite.backends.bytecode.instructions".Program compileEvalCell(
-    in imported!"quickbite.frontend.repl".ReplCell cell,
+package imported!"quickbite.backends.bytecode.instructions".Program compileEvalSource(
+    in string source,
 )
 {
-    import quickbite.frontend.repl: replFunction;
+    import quickbite.frontend.cell: parseEvalFunction;
 
-    return compileFunction(replFunction(cell));
+    return compileFunction(parseEvalFunction(source));
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -39,8 +39,9 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 }
 
 private struct Compiler {
-    import quickbite.backends.bytecode.instructions:
-        CastTarget, Instruction, Op, Program;
+    import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
+    import quickbite.backends.casts: CastTarget;
+    import quickbite.frontend.dmd_values: integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
@@ -239,14 +240,11 @@ private struct Compiler {
         if (declaration is null)
             throw new Exception("Unsupported bytecode pre-increment target.");
 
-        const index = localIndex(declaration);
-        program.instructions ~= Instruction(Op.loadLocal, Value.void_, index);
         program.instructions ~= Instruction(
-            Op.literal,
-            incrementValue(declaration),
+            Op.incrementLocal,
+            Value(1),
+            localIndex(declaration),
         );
-        program.instructions ~= Instruction(Op.add);
-        program.instructions ~= Instruction(Op.storeLocal, Value.void_, index);
     }
 
     private void compileAddAssign(
@@ -264,11 +262,11 @@ private struct Compiler {
         if (integer is null)
             throw new Exception("Unsupported bytecode += value.");
 
-        const index = localIndex(declaration);
-        program.instructions ~= Instruction(Op.loadLocal, Value.void_, index);
-        program.instructions ~= Instruction(Op.literal, integerValue(integer));
-        program.instructions ~= Instruction(Op.add);
-        program.instructions ~= Instruction(Op.storeLocal, Value.void_, index);
+        program.instructions ~= Instruction(
+            Op.incrementLocal,
+            integerValue(integer),
+            localIndex(declaration),
+        );
     }
 
     private void compileCast(CastExp cast_) {
@@ -328,39 +326,9 @@ private struct Compiler {
     }
 
     private size_t castTarget(CastExp cast_) {
-        import dmd.astenums: TY;
+        import quickbite.backends.casts: target = castTarget;
 
-        const type = cast_.type.toBasetype;
-        switch (type.ty) {
-            case TY.Tint8:
-                return CastTarget.byte_;
-
-            case TY.Tuns8:
-                return CastTarget.ubyte_;
-
-            case TY.Tint16:
-                return CastTarget.short_;
-
-            case TY.Tuns16:
-                return CastTarget.ushort_;
-
-            case TY.Tint32:
-                return CastTarget.int_;
-
-            case TY.Tuns32:
-                return CastTarget.uint_;
-
-            case TY.Tint64:
-                return CastTarget.long_;
-
-            case TY.Tuns64:
-                return CastTarget.ulong_;
-
-            default:
-                break;
-        }
-
-        throw new Exception("Unsupported bytecode cast.");
+        return target(cast_.type);
     }
 
     private Expression initializerExpression(
@@ -379,7 +347,6 @@ private struct Compiler {
     }
 }
 
-
 private imported!"quickbite.lang".Value defaultValue(
     imported!"dmd.declaration".VarDeclaration variable,
 ) {
@@ -389,35 +356,35 @@ private imported!"quickbite.lang".Value defaultValue(
     const type = variable.type.toBasetype;
     with (TY) final switch (type.ty) {
         case Tbool:
-            return initialValue!bool;
+            return Value(false);
         case Tint8:
-            return initialValue!byte;
+            return Value(cast(byte) 0);
         case Tuns8:
-            return initialValue!ubyte;
+            return Value(cast(ubyte) 0);
         case Tint16:
-            return initialValue!short;
+            return Value(cast(short) 0);
         case Tuns16:
-            return initialValue!ushort;
+            return Value(cast(ushort) 0);
         case Tint32:
-            return initialValue!int;
+            return Value(0);
         case Tuns32:
-            return initialValue!uint;
+            return Value(0u);
         case Tint64:
-            return initialValue!long;
+            return Value(0L);
         case Tuns64:
-            return initialValue!ulong;
+            return Value(0UL);
         case Tfloat32:
-            return initialValue!float;
+            return Value(0.0f);
         case Tfloat64:
-            return initialValue!double;
+            return Value(0.0);
         case Tfloat80:
-            return initialValue!real;
+            return Value(0.0L);
         case Tchar:
-            return initialValue!char;
+            return Value(char.init);
         case Twchar:
-            return initialValue!wchar;
+            return Value(wchar.init);
         case Tdchar:
-            return initialValue!dchar;
+            return Value(dchar.init);
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -455,159 +422,18 @@ private imported!"quickbite.lang".Value defaultValue(
     }
 }
 
-private imported!"quickbite.lang".Value initialValue(T)() {
-    import quickbite.lang: Value;
-
-    return Value(T.init);
-}
-
-private imported!"quickbite.lang".Value incrementValue(
-    imported!"dmd.declaration".VarDeclaration variable,
-) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
-
-    const type = variable.type.toBasetype;
-    with (TY) final switch (type.ty) {
-        case Tint8:
-            return Value(cast(byte) 1);
-        case Tuns8:
-            return Value(cast(ubyte) 1);
-        case Tint16:
-            return Value(cast(short) 1);
-        case Tuns16:
-            return Value(cast(ushort) 1);
-        case Tint32:
-            return Value(1);
-        case Tuns32:
-            return Value(1u);
-        case Tint64:
-            return Value(1L);
-        case Tuns64:
-            return Value(1UL);
-        case Tfloat32:
-            return Value(1.0f);
-        case Tfloat64:
-            return Value(1.0);
-        case Tfloat80:
-            return Value(1.0L);
-
-        case Tbool:
-        case Tchar:
-        case Twchar:
-        case Tdchar:
-        case Tvoid:
-        case Tint128:
-        case Tuns128:
-        case Timaginary32:
-        case Timaginary64:
-        case Timaginary80:
-        case Tcomplex32:
-        case Tcomplex64:
-        case Tcomplex80:
-        case Tpointer:
-        case Tfunction:
-        case Tarray:
-        case Tsarray:
-        case Taarray:
-        case Tclass:
-        case Tident:
-        case Tinstance:
-        case Ttypeof:
-        case Ttuple:
-        case Tslice:
-        case Treturn:
-        case Terror:
-        case Tnull:
-        case Tvector:
-        case Ttraits:
-        case Tmixin:
-        case Tnoreturn:
-        case Ttag:
-        case Tstruct:
-        case Tenum:
-        case Tdelegate:
-        case Treference:
-        case Tnone:
-            throw new Exception("Unsupported bytecode pre-increment type.");
-    }
-}
-
-
-private imported!"quickbite.lang".Value realValue(
-    imported!"dmd.expression".RealExp real_,
-) {
-    import quickbite.lang: Value;
-    import dmd.astenums: TY;
-
-    const type = real_.type.toBasetype;
-
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(real) real_.toReal);
-}
-
 private imported!"quickbite.lang".Value stringValue(
     imported!"dmd.expression".StringExp string_,
 ) {
     import quickbite.lang: Value;
 
-    return Value(string_.peekString.idup);
+    return Value(stringChars(string_));
 }
 
+private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+    char[] values;
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        values ~= cast(char) string_.getIndex(index);
 
-private imported!"quickbite.lang".Value integerValue(
-    imported!"dmd.expression".IntegerExp integer,
-)
-{
-    import quickbite.lang: Value;
-    import dmd.astenums: TY;
-
-    const bits = integer.getInteger;
-    const ty = integer.type.toBasetype.ty;
-
-    switch (ty) {
-        default:
-            assert(0, "not an integer");
-
-        case TY.Tbool:
-            return Value(bits != 0);
-
-        case TY.Tchar:
-            return Value(cast(char) bits);
-
-        case TY.Twchar:
-            return Value(cast(wchar) bits);
-
-        case TY.Tdchar:
-            return Value(cast(dchar) bits);
-
-        case TY.Tint8:
-            return Value(cast(byte) bits);
-
-        case TY.Tuns8:
-            return Value(cast(ubyte) bits);
-
-        case TY.Tint16:
-            return Value(cast(short) bits);
-
-        case TY.Tuns16:
-            return Value(cast(ushort) bits);
-
-        case TY.Tint32:
-            return Value(cast(int) bits);
-
-        case TY.Tuns32:
-            return Value(cast(uint) bits);
-
-        case TY.Tint64:
-            return Value(cast(long) bits);
-
-        case TY.Tuns64:
-            return Value(cast(ulong) bits);
-    }
+    return values;
 }

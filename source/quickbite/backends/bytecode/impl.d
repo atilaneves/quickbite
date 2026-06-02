@@ -4,19 +4,18 @@ private:
 
 public class Bytecode: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
-    import quickbite.frontend.repl: ReplCell;
+    import quickbite.frontend.cell: EvalCell;
     import quickbite.backends: TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.backends.bytecode.compiler: compileEvalCell;
+        import quickbite.backends.bytecode.compiler: compileEvalSource;
         import quickbite.backends.bytecode.vm: eval;
-        import quickbite.frontend.repl: evalCell;
 
-        return eval(compileEvalCell(evalCell(expr)));
+        return eval(compileEvalSource(expr));
     }
 
-    public override Value evalRepl(in ReplCell cell) {
+    public override Value evalRepl(in EvalCell cell) {
         assert(0);
     }
 

@@ -90,6 +90,59 @@ Defer imports, assertion context formatting, control flow, arrays,
 structs, exceptions, pointers, delegates, and diagnostics until simpler
 tests stop being available.
 
+### Eval Slice Lessons
+
+When promoting one eval test, isolate that test in its own `static
+foreach` backend block if the surrounding block contains later eval
+tests. Do not change a broad block from `backends` to
+`backendsWith!TreeWalker` unless every test in that block is part of
+the current slice. When integrating worker commits, check that earlier
+TreeWalker promotions remain present; a later worker must not move a
+previously promoted test back to CTFE-only coverage.
+
+If a promoted test is already green because of an earlier slice, verify
+signal by temporarily mutating the production handler that should cover
+it, then revert the mutation before committing. The final commit for
+that slice may be test-only.
+
+For multiline `eval` input, the first small shape is not a general
+REPL. Wrapping prior lines in a tiny function and assigning the final
+line to a synthetic local is enough for simple cells, but keep the
+interpreter limited to the concrete AST forms the promoted test shows.
+For `int x; ++x; ++x; x`, DMD may expose declaration initialisation
+through `assign`, `construct`, or `blit`, and prefix increment may
+appear as `AddAssignExp`. Do not add decrement, generic assignment,
+control flow, imports, or arithmetic in the multiline interpreter until
+a promoted test requires it.
+
+For cast slices, prefer evaluating through the current interpreter
+state instead of chasing a variable declaration's initializer in a
+separate helper. A local such as `double input = 7.75; cast(int) input`
+should read `input` from the eval locals map, then perform only the
+requested numeric conversion. Avoid adding broad cast fallback paths
+that return guessed `long` values or silently unwrap arbitrary
+expression wrappers.
+
+For arithmetic slices, keep operations on `quickbite.lang.Value` once
+the operands have been evaluated. Do not extract integer bits with
+`cast(int)` helpers for subtraction, multiplication, division, or
+future operators; that bypasses scalar preservation and makes the
+first integer test silently constrain later numeric support.
+
+For cast slices, put type-directed `Value` casting shared by multiple
+backends in backend-common code. Do not leave one backend with its own
+`TY` switch or `Value.castTo` matrix when bytecode, tree walker, or a
+future backend needs the same cast target semantics.
+
+Do not add a separate eval-source parser that splits on the last
+newline, synthesizes a local result variable, or creates its own
+function wrapper. Route tiny eval cells through common `frontend.cell`
+classification/parsing code so declarations, statements, and the final
+expression are classified by DMD-backed frontend code instead of local
+string heuristics. Keep that common cell API backend-facing only:
+REPL-only concepts such as type-display cells belong in
+`frontend.repl`, not in the cell type consumed by backends.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.
