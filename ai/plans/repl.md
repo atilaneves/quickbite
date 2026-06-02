@@ -124,14 +124,14 @@ Completed:
 - Fixed whitespace-only piped input in the REPL binary. `printf "   \n" |
   bin/qb` now exits successfully without invoking the evaluator, matching
   blank piped input.
+- Displayed numeric scalar values using D literal notation where a
+  distinguishing suffix exists: `42u` (`uint`), `42L` (`long`), `42UL`
+  (`ulong`), and `3.8f` (`float`). Default D literal types now display
+  without annotation (`int` as `42`, `double` as `3.8`), while types with no D
+  literal suffix keep `: type` annotations (`byte`, `short`, `ubyte`,
+  `ushort`, `real`).
 
 Remaining follow-up:
-
-- Display numeric scalar values using D literal notation where a
-  distinguishing suffix exists: `42u` (uint), `42L` (long), `42UL`
-  (ulong), `3.8f` (float). `int` and `double` need no annotation as they
-  are D's default literal types. Use `: type` annotation only for types
-  with no D literal suffix: `byte`, `short`, `ubyte`, `ushort`, `real`.
 
 - Fix `iota(5).filter!(x => x % 2 == 0).array` producing no output and
   no error. The result should display as `[0, 2, 4]`.
