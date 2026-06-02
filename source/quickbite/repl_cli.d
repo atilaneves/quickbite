@@ -14,6 +14,7 @@ public struct ReplOptions {
     public bool hasFile;
     public string file;
     public string[] files;
+    public bool liveAfterFiles;
 }
 
 public struct ReplCliResult {
@@ -38,6 +39,8 @@ public ReplCliResult parseReplArgs(string[] args) {
                 result.options.command = val;
             },
             "b|backend", "Select backend (default: ctfe).", &backendName,
+            "l", "Start the REPL after loading file arguments.",
+                &result.options.liveAfterFiles,
         );
     } catch (GetOptException e) {
         return ReplCliResult(1, e.msg);
@@ -67,4 +70,5 @@ private enum helpText =
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
     "  -b, --backend <name>  Select backend (default: ctfe)\n" ~
+    "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";

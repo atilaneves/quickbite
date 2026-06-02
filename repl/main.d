@@ -35,7 +35,7 @@ public int main(string[] args) {
     if (options.options.hasCommand)
         return submit(repl, options.options.command, FailureMode.exit) ? 0 : 1;
 
-    if (options.options.hasFile)
+    if (options.options.hasFile && !options.options.liveAfterFiles)
         return 0;
 
     if (stdinIsTerminal) {
