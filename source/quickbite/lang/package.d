@@ -159,6 +159,15 @@ public struct Value {
         );
     }
 
+    private bool isChar() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => true,
+            (_) => false,
+        );
+    }
+
     private string dText() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
@@ -173,7 +182,7 @@ public struct Value {
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
-                    return value.toString;
+                    return value.dText;
                 } else static if (is(T == const(Null)) || is(T == Null)) {
                     return "null";
                 } else {
@@ -419,6 +428,32 @@ private struct Array {
         }
 
         return ret ~ "]";
+    }
+
+    public string dText() const @safe pure {
+        if (!isNonEmptyCharArray)
+            return toString;
+
+        return `"` ~ charArrayString ~ `"`;
+    }
+
+    private bool isNonEmptyCharArray() const @safe pure {
+        if (elements.length == 0)
+            return false;
+
+        foreach (element; elements)
+            if (!element.isChar)
+                return false;
+
+        return true;
+    }
+
+    private string charArrayString() const @safe pure {
+        string result;
+        foreach (element; elements)
+            result ~= element.asChar;
+
+        return result;
     }
 }
 
