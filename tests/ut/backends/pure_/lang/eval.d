@@ -11,30 +11,22 @@ static foreach (backend; backendsWith!(Bytecode, IR)) {
         newBackend!backend.eval("0").should == Value(0);
         newBackend!backend.eval("7").should == Value(7);
     }
-}
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
-}
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("add.int.1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
     }
-}
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
     }
-}
 
-static foreach (backend; backendsWith!Bytecode) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
