@@ -46,19 +46,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("41 != 42");
     }
 
-    @("logicalNotCall." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            unittest {
-                assert(!isReady);
-            }
-        });
-    }
-
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -424,6 +411,21 @@ static foreach (backend; backendsWith!TreeWalker) {
                 assert(!isReady == false);
             }
         }).shouldThrowWithMessage("true != false");
+    }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
+    @("logicalNotCall." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady);
+            }
+        });
     }
 }
 

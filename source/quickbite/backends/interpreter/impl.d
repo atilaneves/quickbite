@@ -290,6 +290,7 @@ private struct Interpreter {
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
+    private Value result;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
@@ -305,6 +306,11 @@ private struct Interpreter {
 
         if (auto expression = statement.isExpStatement) {
             runExpression(expression.exp);
+            return;
+        }
+
+        if (auto return_ = statement.isReturnStatement) {
+            result = runExpression(return_.exp);
             return;
         }
 
@@ -332,8 +338,16 @@ private struct Interpreter {
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
 
+        if (auto comma = expression.isCommaExp) {
+            runExpression(comma.e1);
+            return runExpression(comma.e2);
+        }
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
+
+        if (auto call = expression.isCallExp)
+            return runCallExpression(call);
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
@@ -346,7 +360,37 @@ private struct Interpreter {
             return Value(false);
         }
 
-        assert(0);
+        import std.conv: text;
+        throw new Exception(text("Unsupported interpreter expression: ", expression.op));
+    }
+
+    private Value runCallExpression(imported!"dmd.expression".CallExp call) {
+        if (call.arguments !is null && call.arguments.length != 0)
+            throw new Exception("Unsupported interpreter call arguments.");
+
+        if (call.f !is null)
+            return runFunction(call.f);
+
+        if (auto var = call.e1.isVarExp)
+            if (auto function_ = var.var.isFuncDeclaration)
+                return runFunction(function_);
+
+        throw new Exception("Unsupported interpreter call.");
+    }
+
+    private Value runFunction(imported!"dmd.func".FuncDeclaration function_) {
+        auto savedLocals = locals.dup;
+        const savedResult = result;
+
+        locals = null;
+        result = Value(false);
+
+        runStatement(function_.fbody);
+        const value = result;
+
+        locals = savedLocals;
+        result = savedResult;
+        return value;
     }
 
     private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
