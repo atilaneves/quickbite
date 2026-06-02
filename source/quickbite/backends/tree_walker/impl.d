@@ -54,6 +54,9 @@ private imported!"quickbite.lang".Value evalExpression(
     if (auto real_ = expression.isRealExp)
         return realValue(real_);
 
+    if (auto cast_ = expression.isCastExp)
+        return castValue(cast_);
+
     if (auto add = expression.isAddExp)
         return evalExpression(add.e1) + evalExpression(add.e2);
 
@@ -77,6 +80,32 @@ private int integerValue(imported!"dmd.expression".Expression expression) {
     return cast(int) integer.getInteger;
 }
 
+private imported!"quickbite.lang".Value castValue(
+    imported!"dmd.expression".CastExp cast_,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    const type = cast_.to.toBasetype;
+    if (type is null)
+        return evalExpression(cast_.e1);
+
+    if (auto integer = cast_.e1.isIntegerExp) {
+        const bits = integer.getInteger;
+
+        switch (type.ty) {
+            case TY.Tuns8:
+                return Value(cast(ubyte) bits);
+            case TY.Tchar:
+                return Value(cast(char) bits);
+            default:
+                assert(0);
+        }
+    }
+
+    return evalExpression(cast_.e1);
+}
+
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
 ) {
@@ -91,7 +120,7 @@ private imported!"quickbite.lang".Value realValue(
     if (type !is null && type.ty == TY.Tfloat64)
         return Value(cast(double) real_.toReal);
 
-    return Value(cast(real) real_.toReal);
+    return Value(cast(double) real_.toReal);
 }
 
 private imported!"quickbite.lang".Value evalMultiCell(
