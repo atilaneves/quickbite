@@ -1257,6 +1257,69 @@ static foreach (backend; backends) {
         });
     }
 
+    @("foreachUtf16String." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                wchar[] units;
+                units ~= cast(wchar) 0x0061;
+                units ~= cast(wchar) 0xD83C;
+                units ~= cast(wchar) 0xDF4C;
+
+                wstring s = units.idup;
+                dchar[] chars;
+                foreach (dchar c; s)
+                    chars ~= c;
+
+                assert(chars.length == 2);
+                assert(chars[0] == 'a');
+                assert(chars[1] == cast(dchar) 0x1F34C);
+            }
+        });
+    }
+
+    @("foreachUtf32StringEncodesAsUtf8." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                dchar[] codepoints;
+                codepoints ~= cast(dchar) 0x0061;
+                codepoints ~= cast(dchar) 0x00E9;
+
+                dstring s = codepoints.idup;
+                char[] bytes;
+                foreach (char c; s)
+                    bytes ~= c;
+
+                assert(bytes.length == 3);
+                assert(bytes[0] == 'a');
+                assert(bytes[1] == cast(char) 0xC3);
+                assert(bytes[2] == cast(char) 0xA9);
+            }
+        });
+    }
+
+    @("foreachReverseUtf16String." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                wchar[] units;
+                units ~= cast(wchar) 0xD83C;
+                units ~= cast(wchar) 0xDF4C;
+                units ~= cast(wchar) 0x007A;
+
+                wstring s = units.idup;
+                dchar[] chars;
+                foreach_reverse (dchar c; s)
+                    chars ~= c;
+
+                assert(chars.length == 2);
+                assert(chars[0] == 'z');
+                assert(chars[1] == cast(dchar) 0x1F34C);
+            }
+        });
+    }
+
     @("foreachUtf8StringFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
