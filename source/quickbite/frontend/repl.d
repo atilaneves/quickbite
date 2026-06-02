@@ -41,6 +41,13 @@ public struct ReplSession {
         evalSession.loadModuleFile(filePath, source);
     }
 
+    public string loadedModuleFileSource(
+        in string filePath,
+        in string source,
+    ) const {
+        return evalSession.loadedModuleFileSource(filePath, source);
+    }
+
     public string loadedModuleSource() const @safe pure {
         return evalSession.loadedModuleSource;
     }

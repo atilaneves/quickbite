@@ -32,7 +32,7 @@ public struct Repl {
     public void loadModuleFile(in string filePath, in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        parseModule(source);
+        parseModule(session.loadedModuleFileSource(filePath, source));
         session.loadModuleFile(filePath, source);
     }
 

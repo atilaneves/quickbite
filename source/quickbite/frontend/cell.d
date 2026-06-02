@@ -115,9 +115,16 @@ public struct EvalSession {
     }
 
     public void loadModuleFile(in string filePath, in string source) {
+        loadedModuleTranscript = loadedModuleFileSource(filePath, source);
+    }
+
+    public string loadedModuleFileSource(
+        in string filePath,
+        in string source,
+    ) const {
         import std.conv: text;
 
-        loadedModuleTranscript ~= text(
+        return loadedModuleTranscript ~ text(
             `#line 1 "`,
             filePath,
             `"`,
