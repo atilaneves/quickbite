@@ -171,6 +171,53 @@ promoted logic tests required them. Do not generalize call parameters, methods,
 assignment, control flow, or assertion formatting until a promoted test forces
 that behaviour.
 
+### Implementation Review Notes
+
+**Finding 5 — Builtin call zero-argument check uses `is null` instead of a length guard.**
+`EvalFunctionWalker` tests `call.arguments is null` to detect a zero-argument
+builtin. DMD may produce a non-null empty `Expressions*` (`.length == 0`)
+rather than null for a call with no arguments, causing the check to fail and
+the interpreter to throw "Unsupported eval call argument count" for a valid
+zero-argument builtin. Replace with `call.arguments is null ||
+call.arguments.length == 0`.
+
+**Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from `EvalModuleInterpreter`.**
+`EvalFunctionWalker` converts `StringExp` to a `char[]` array `Value` (covers
+the `stringLiteralIsArray` eval test). `EvalModuleInterpreter` has no
+`StringExp` case and would throw unsupported for any module-backed unittest
+that references a string literal. Before promoting any logic or diagnostics
+test that involves string values, add a shared `StringExp` → `char[]`
+conversion or a matching case in `EvalModuleInterpreter`.
+
+**Finding 3 — Uninitialized variable reads return hardcoded types regardless of declared type.**
+Both walkers fall back to a hardcoded `Value` when a variable is not yet in the
+locals map: `EvalFunctionWalker` returns `Value(cast(int) 0)` and
+`EvalModuleInterpreter` returns `Value(false)`. D initialises every variable to
+its type's default (`double` → `double.nan`, `int` → `0`, etc.), so the
+hardcoded fallbacks are wrong for any type other than `int`/`bool`
+respectively. The two walkers also disagree with each other. The fix is to
+derive the default `Value` from the variable's declared type rather than
+hard-coding a scalar.
+
+**Finding 2 — Two expression evaluators with divergent coverage.**
+`evalExpression()` (called by the top-level `eval()` path) handles a narrow
+set of node types and throws on the rest. `EvalFunctionWalker.runExpression()`
+handles a broader set (strings, declarations, prefix increment, calls).
+Any node type supported by `runExpression` but absent from `evalExpression`
+silently fails on the simpler path with no indication that the function-wrapper
+path should have been taken instead. The two evaluators should either share a
+single dispatch table or `evalExpression` should be removed in favour of always
+routing through `EvalFunctionWalker`.
+
+**Finding 1 — Mixed `assert(0)` vs `Exception` for unsupported nodes.**
+The plan requires an explicit unsupported diagnostic rather than crashing.
+`impl.d` throws `Exception("Unsupported …")` on some paths but uses `assert(0)`
+on several reachable internal paths (lines 70, 138, 174, 247, 251, 317, 355,
+529). The unimplemented Backend stubs (`evalRepl`, `runTestResults`,
+`runTestSummary`) also use `assert(0)`. Replace reachable `assert(0)` with
+explicit unsupported diagnostics; keep `assert(0)` only for internal
+invariants that can never be triggered by a supported AST input.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.
