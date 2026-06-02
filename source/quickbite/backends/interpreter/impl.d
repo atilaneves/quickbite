@@ -338,6 +338,8 @@ private struct EvalModuleInterpreter {
 
             if (logical.op == EXP.andAnd)
                 return runLogicalAndExpression(logical);
+            if (logical.op == EXP.orOr)
+                return runLogicalOrExpression(logical);
         }
 
         if (auto cast_ = expression.isCastExp)
@@ -378,6 +380,17 @@ private struct EvalModuleInterpreter {
         const left = isTruthy(runExpression(logical.e1));
         if (!left)
             return Value(false);
+
+        const right = isTruthy(runExpression(logical.e2));
+        return Value(right);
+    }
+
+    private Value runLogicalOrExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        const left = isTruthy(runExpression(logical.e1));
+        if (left)
+            return Value(true);
 
         const right = isTruthy(runExpression(logical.e2));
         return Value(right);

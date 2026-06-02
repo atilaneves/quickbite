@@ -283,6 +283,17 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+
+    @("logicalOr." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert(left || right);
+            }
+        });
+    }
 }
 
 static foreach (backend; backendsWith!Interpreter) {
