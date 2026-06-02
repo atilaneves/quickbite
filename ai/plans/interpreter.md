@@ -9,6 +9,11 @@ surface covered by the existing test suite, driven first by the
 simplest existing `eval` tests and then by similarly small CTFE-only
 tests promoted one at a time to the tree-walking backend.
 
+Rename the backend from `TreeWalker` to `Interpreter` as the supported
+interpreter surface grows. Keep any compatibility aliases or test-matrix
+transitions narrow and temporary; the long-term public backend name should be
+`Interpreter`, not `TreeWalker`.
+
 The process mirrors the IR backend: pick the simplest test that does
 not yet run under the tree walker, add the tree-walking backend to it,
 confirm it is red, implement the smallest handler that makes it green,
