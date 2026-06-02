@@ -132,6 +132,13 @@ Remaining follow-up:
   future REPL, summary, and reporting work should consume structured results
   rather than throwing or parsing raw strings.
 
+- Keep source loaded from files from advancing typed REPL snippet locations.
+  For example, after `loadModuleSource("int loadedValue() { return 41; }\n")`
+  and a typed `unittest { assert(1 == 2); }`, `:t` should report
+  `unittest at <repl>(1) failed: 1 != 2`, not a later line caused by the
+  loaded source. File-backed code should eventually keep its own file/line
+  identity instead of being appended to the synthetic REPL module.
+
 - Prefix non-unittest interactive REPL command failures with an error label,
   preferably styled red for terminal output. For example, after a command
   failure the output should not be only the raw backend diagnostic.
