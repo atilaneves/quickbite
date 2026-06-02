@@ -330,6 +330,38 @@ static foreach (backend; backends) {
             "unittest at <repl>(1) failed: 1 != 2";
     }
 
+    @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+        import std.file: remove, tempDir, write;
+        import std.path: buildPath;
+
+        const filePath = buildPath(
+            tempDir,
+            "quickbite-repl-loaded-file-failure.d",
+        );
+        filePath.write(q{
+            int loadedValue() {
+                return 41;
+            }
+
+            unittest {
+                assert(loadedValue() == 42);
+            }
+        });
+        scope (exit) filePath.remove;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleFile(filePath);
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should ==
+            "unittest at " ~ filePath ~ "(6) failed: 41 != 42";
+    }
+
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
