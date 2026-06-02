@@ -101,11 +101,10 @@ private ReplDisplay replDisplay(
 }
 
 private bool replFunctionReturnsString(in string source) {
-    import quickbite.frontend.compiler: parseModule;
-    import quickbite.frontend.functions: functionDeclaration;
+    import quickbite.frontend.repl: ReplCell, ReplCellKind, replFunction;
 
     return functionReturnsString(
-        functionDeclaration(parseModule(source).module_, "f"),
+        replFunction(ReplCell(ReplCellKind.expression, source)),
     );
 }
 

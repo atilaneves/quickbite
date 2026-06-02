@@ -16,6 +16,21 @@ public struct ReplCell {
     private string history;
 }
 
+public ReplCell evalCell(in string source) {
+    return ReplCell(
+        ReplCellKind.expression,
+        replSource(null, evalLocalTranscript(source)),
+        ReplHistoryTarget.local,
+        "",
+    );
+}
+
+public imported!"dmd.func".FuncDeclaration replFunction(in ReplCell cell) {
+    import quickbite.frontend.compiler: parseModule;
+
+    return trailingFunctionDeclaration(parseModule(cell.source).module_);
+}
+
 private enum ReplHistoryTarget {
     local,
     module_,
@@ -316,6 +331,77 @@ private string firstDiagnosticMessage() {
     }
 
     return "DMD reported an error without a diagnostic message.";
+}
+
+private string evalLocalTranscript(in string source) {
+    const sourceWithTerminator = source ~ ";";
+    const returnOffset = finalExpressionStatementOffset(sourceWithTerminator);
+    return sourceWithTerminator[0 .. returnOffset] ~
+        "return " ~
+        sourceWithTerminator[returnOffset .. $];
+}
+
+private uint finalExpressionStatementOffset(in string source) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errorsink: ErrorSinkNull;
+    import dmd.globals: global;
+    import dmd.parse: Parser, ParseStatementFlags;
+    import dmd.statement: Statement;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: resetErrors, withCompilerLock;
+
+    uint result;
+    bool found;
+    withCompilerLock(() {
+        resetErrors;
+
+        auto errorSink = new ErrorSinkNull;
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source ~ '\0',
+            false,
+            errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+
+        Statement statement;
+        while (parser.token.value != TOK.endOfFile) {
+            statement = parser.parseStatement(ParseStatementFlags.semiOk);
+            if (global.errors != 0)
+                throw new Exception(firstDiagnosticMessage);
+        }
+
+        auto expression = statement is null ? null : statement.isExpStatement;
+        if (expression is null ||
+            expression.exp is null ||
+            expression.exp.isDeclarationExp !is null)
+            throw new Exception("Eval source must end with an expression.");
+
+        result = expression.loc.fileOffset;
+        found = true;
+    });
+
+    if (!found)
+        throw new Exception("Eval source must end with an expression.");
+
+    return result;
+}
+
+private imported!"dmd.func".FuncDeclaration trailingFunctionDeclaration(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members !is null) {
+        foreach_reverse (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null)
+                return function_;
+        }
+    }
+
+    throw new Exception("Missing REPL wrapper function.");
 }
 
 private string replSource(in string moduleTranscript, in string localTranscript) {

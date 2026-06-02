@@ -73,15 +73,6 @@ public imported!"dmd.expression".Expression parseExpression(in string source) {
     return compiler.parseExpression(source);
 }
 
-public imported!"dmd.func".FuncDeclaration parseEvalFunction(in string source) {
-    import quickbite.frontend.functions: functionDeclaration;
-
-    return functionDeclaration(
-        parseModule(evalFunctionSource(source)).module_,
-        "f",
-    );
-}
-
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
@@ -338,17 +329,6 @@ final class Compiler {
 
         return text(source, "\0", importPaths.join("\0"), "\0", cacheSalt);
     }
-}
-
-private string evalFunctionSource(in string source) {
-    import std.string: lastIndexOf;
-
-    // Eval input is a sequence of statements followed by the expression whose
-    // value should be displayed; DMD needs a function body to parse that shape.
-    const lastNl = source.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : source[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? source : source[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 }
 
 string diagnosticMessage() {

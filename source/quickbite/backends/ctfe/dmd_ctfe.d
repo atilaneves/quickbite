@@ -9,7 +9,9 @@ public class Ctfe: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
-        return ctfeValue(interpretCtfe(evalCall(str)));
+        import quickbite.frontend.repl: evalCell;
+
+        return evalRepl(evalCell(str));
     }
 
     public override Value evalRepl(
@@ -95,12 +97,6 @@ private string diagnosticMessage() {
     return messages.join("\n");
 }
 
-private imported!"dmd.expression".CallExp evalCall(in string str) {
-    import quickbite.frontend.compiler: parseEvalFunction;
-
-    return callExpression(parseEvalFunction(str));
-}
-
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
     try
         return ctfeValue(interpretCtfeOrThrow(callExpression(replFunction(source))));
@@ -121,11 +117,9 @@ private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
 }
 
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
-    import quickbite.frontend.compiler: parseModule;
-    import quickbite.frontend.functions: functionDeclaration;
+    import quickbite.frontend.repl: ReplCell, ReplCellKind, replFunction;
 
-    auto parsed = parseModule(source);
-    return functionDeclaration(parsed.module_, "f");
+    return replFunction(ReplCell(ReplCellKind.expression, source));
 }
 
 private string withCandidateSignatures(

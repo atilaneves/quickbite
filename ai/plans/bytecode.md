@@ -146,9 +146,9 @@ Lua-specific bytecode shape.
   support.
 - [x] Stop inspecting eval source text in the bytecode backend; rely on a
   frontend-provided structure instead.
-- [ ] Remove eval source string splitting from shared frontend code; drive eval
+- [x] Remove eval source string splitting from shared frontend code; drive eval
   through parser-backed REPL/frontend classification instead.
-- [ ] Remove or replace `parseEvalFunction` if it remains only a wrapper-source
+- [x] Remove or replace `parseEvalFunction` if it remains only a wrapper-source
   synthesizer plus `f` lookup.
 - [x] Replace hand-written default scalar values with a type-to-D-value mapping
   based on `T.init`.

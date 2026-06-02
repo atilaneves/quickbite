@@ -56,9 +56,9 @@ package bool bytecodeBuiltinIsImplemented(
     in BytecodeBuiltin builtin,
 ) @safe pure nothrow @nogc {
     with (BytecodeBuiltin) switch (builtin) {
-        case fabs:
-        case pow:
-            return true;
+        static foreach (implemented; implementedBuiltinNames) {
+            mixin("case " ~ implemented ~ ": return true;");
+        }
 
         default:
             return false;
@@ -69,12 +69,10 @@ package size_t bytecodeBuiltinArgumentCount(
     in BytecodeBuiltin builtin,
 ) {
     with (BytecodeBuiltin) switch (builtin) {
-        case fabs:
-            return 1;
-
-        case pow:
-            return 2;
-
+        static foreach (implemented; implementedBuiltinNames) {
+            mixin("case " ~ implemented ~
+                ": return stdMathBuiltinArgumentCount!implemented;");
+        }
         default:
             break;
     }
@@ -89,10 +87,12 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     import quickbite.lang: Value;
 
     with (BytecodeBuiltin) switch (builtin) {
-        case fabs:
-            import std.math: fabs;
-
-            return value.unaryFloating!fabs;
+        static foreach (implemented; implementedBuiltinNames) {
+            static if (stdMathBuiltinArgumentCount!implemented == 1) {
+                mixin("case " ~ implemented ~
+                    ": return value.unaryFloating!(stdMathBuiltin!implemented);");
+            }
+        }
 
         default:
             break;
@@ -109,10 +109,12 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
     import quickbite.lang: Value;
 
     with (BytecodeBuiltin) switch (builtin) {
-        case pow:
-            import std.math: pow;
-
-            return lhs.binaryFloating!pow(rhs);
+        static foreach (implemented; implementedBuiltinNames) {
+            static if (stdMathBuiltinArgumentCount!implemented == 2) {
+                mixin("case " ~ implemented ~
+                    ": return lhs.binaryFloating!(stdMathBuiltin!implemented)(rhs);");
+            }
+        }
 
         default:
             break;
@@ -127,74 +129,9 @@ private BytecodeBuiltin bytecodeBuiltinFromDmd(
     import dmd.func: BUILTIN;
 
     with (BUILTIN) final switch (builtin) {
-        case sin:
-            return BytecodeBuiltin.sin;
-        case cos:
-            return BytecodeBuiltin.cos;
-        case tan:
-            return BytecodeBuiltin.tan;
-        case sqrt:
-            return BytecodeBuiltin.sqrt;
-        case fabs:
-            return BytecodeBuiltin.fabs;
-        case ldexp:
-            return BytecodeBuiltin.ldexp;
-        case log:
-            return BytecodeBuiltin.log;
-        case log2:
-            return BytecodeBuiltin.log2;
-        case log10:
-            return BytecodeBuiltin.log10;
-        case exp:
-            return BytecodeBuiltin.exp;
-        case expm1:
-            return BytecodeBuiltin.expm1;
-        case exp2:
-            return BytecodeBuiltin.exp2;
-        case round:
-            return BytecodeBuiltin.round;
-        case floor:
-            return BytecodeBuiltin.floor;
-        case ceil:
-            return BytecodeBuiltin.ceil;
-        case trunc:
-            return BytecodeBuiltin.trunc;
-        case copysign:
-            return BytecodeBuiltin.copysign;
-        case pow:
-            return BytecodeBuiltin.pow;
-        case fmin:
-            return BytecodeBuiltin.fmin;
-        case fmax:
-            return BytecodeBuiltin.fmax;
-        case fma:
-            return BytecodeBuiltin.fma;
-        case isnan:
-            return BytecodeBuiltin.isnan;
-        case isinfinity:
-            return BytecodeBuiltin.isinfinity;
-        case isfinite:
-            return BytecodeBuiltin.isfinite;
-        case bsf:
-            return BytecodeBuiltin.bsf;
-        case bsr:
-            return BytecodeBuiltin.bsr;
-        case bswap:
-            return BytecodeBuiltin.bswap;
-        case popcnt:
-            return BytecodeBuiltin.popcnt;
-        case yl2x:
-            return BytecodeBuiltin.yl2x;
-        case yl2xp1:
-            return BytecodeBuiltin.yl2xp1;
-        case toPrecFloat:
-            return BytecodeBuiltin.toPrecFloat;
-        case toPrecDouble:
-            return BytecodeBuiltin.toPrecDouble;
-        case toPrecReal:
-            return BytecodeBuiltin.toPrecReal;
-        case ctfeWrite:
-            return BytecodeBuiltin.ctfeWrite;
+        static foreach (member; bytecodeBuiltinNames) {
+            mixin("case " ~ member ~ ": return BytecodeBuiltin." ~ member ~ ";");
+        }
         case unknown:
         case unimp:
         case gcc:
@@ -203,4 +140,72 @@ private BytecodeBuiltin bytecodeBuiltinFromDmd(
     }
 
     throw new Exception("Unsupported bytecode call target.");
+}
+
+private enum implementedBuiltinNames = [
+    "fabs",
+    "pow",
+];
+
+private enum bytecodeBuiltinNames = [
+    "sin",
+    "cos",
+    "tan",
+    "sqrt",
+    "fabs",
+    "ldexp",
+    "log",
+    "log2",
+    "log10",
+    "exp",
+    "expm1",
+    "exp2",
+    "round",
+    "floor",
+    "ceil",
+    "trunc",
+    "copysign",
+    "pow",
+    "fmin",
+    "fmax",
+    "fma",
+    "isnan",
+    "isinfinity",
+    "isfinite",
+    "bsf",
+    "bsr",
+    "bswap",
+    "popcnt",
+    "yl2x",
+    "yl2xp1",
+    "toPrecFloat",
+    "toPrecDouble",
+    "toPrecReal",
+    "ctfeWrite",
+];
+
+private template stdMathBuiltin(string name) {
+    mixin(
+        "import std.math: " ~ name ~ ";",
+        "alias stdMathBuiltin = " ~ name ~ ";",
+    );
+}
+
+private template stdMathBuiltinArgumentCount(string name) {
+    import std.math;
+
+    mixin(
+        "enum acceptsOneArgument = __traits(compiles, " ~
+            name ~ "(1.0L));",
+        "enum acceptsTwoArguments = __traits(compiles, " ~
+            name ~ "(1.0L, 2.0L));",
+    );
+
+    static if (acceptsOneArgument) {
+        enum stdMathBuiltinArgumentCount = 1;
+    } else static if (acceptsTwoArguments) {
+        enum stdMathBuiltinArgumentCount = 2;
+    } else {
+        static assert(false, "Unsupported std.math builtin arity: " ~ name);
+    }
 }
