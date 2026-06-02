@@ -375,8 +375,11 @@ private struct EvalModuleInterpreter {
         imported!"dmd.expression".LogicalExp logical,
     ) {
         const left = isTruthy(runExpression(logical.e1));
+        if (!left)
+            return Value(false);
+
         const right = isTruthy(runExpression(logical.e2));
-        return Value(left && right);
+        return Value(right);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {

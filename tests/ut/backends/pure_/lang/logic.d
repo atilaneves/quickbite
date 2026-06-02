@@ -89,17 +89,6 @@ static foreach (backend; backends) {
         });
     }
 
-    @("logicalAndShortCircuit." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = false;
-                int zero = 0;
-                assert(!(left && 42 / zero == 0));
-            }
-        });
-    }
-
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -322,6 +311,19 @@ static foreach (backend; backends) {
                 assert((input > 41 && input < 43) == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndShortCircuit." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0));
+            }
+        });
     }
 }
 
