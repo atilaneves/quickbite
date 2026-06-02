@@ -315,6 +315,17 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert((left && 42 / zero == 0) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
