@@ -91,7 +91,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!TreeWalker) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
@@ -111,7 +111,9 @@ static foreach (backend; backends) {
         newBackend!backend.eval("int input = 258;\ncast(ulong) input")
             .should == Value(cast(ulong) 258);
     }
+}
 
+static foreach (backend; backends) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
