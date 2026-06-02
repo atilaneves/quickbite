@@ -254,7 +254,7 @@ static foreach (backend; backends) {
         void runTests() {
             repl.submit(":t");
         }
-        runTests.shouldThrow.msg.should == "1 != 2";
+        runTests.shouldThrow.msg.should == "Error: 1 != 2";
     }
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)

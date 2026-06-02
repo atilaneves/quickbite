@@ -130,6 +130,13 @@ Remaining follow-up:
   `unittest { assert(1 == 2); }` and `:t`, the output should not be only
   `1 != 2`.
 
+- For red terminal error labels, add a small DUB dependency that renders ANSI
+  colour only when the output stream is a terminal. Test the actual colour in
+  the standalone pseudo-TTY path, not normal `dub test`: extend
+  `tests/run_repl.py` to enter a failing command such as `:t` after a failing
+  `unittest` cell, then assert the captured TTY output contains the red SGR
+  sequence around the `Error:` label and still omits colour for piped output.
+
 - Support several file arguments. `bin/qb a.d b.d` should execute or
   interpret all files in argument order, not only the first file.
 
