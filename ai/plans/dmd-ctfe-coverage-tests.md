@@ -28,6 +28,10 @@ A fresh broad audit on `9a49df7c46c531ed3609422682a67a1d9bb28e37` reported
 2336/3760 `dmd.dinterpret` executable entries covered, or 62.13%. Treat that
 as the current recheck baseline until a new worktree-start SHA is recorded.
 
+The `dmd-ctfe-coverage-continuation` branch started from
+`32b260229e9fdcccce1bf1e36f8a915d136120e0`. Its fixed broad baseline is
+2362/3760 `dmd.dinterpret` executable entries covered, or 62.82%.
+
 Do not continue this plan by grinding one-off branch tests. Continue only after
 a fresh broad audit proves that a candidate still covers a baseline-uncovered
 method, a whole-to-partial method transition, or a substantial behaviour branch
@@ -281,6 +285,40 @@ Suggested columns:
 
 Update the table as tests are added or targets are rejected. Do not leave
 uncovered reachable methods as undocumented backlog.
+
+### 2026-06-02 dmd-ctfe-coverage-continuation
+
+Branch start: `32b260229e9fdcccce1bf1e36f8a915d136120e0`.
+
+Broad baseline:
+
+```text
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+dmd.dinterpret executable entries: 2362/3760, 62.82%
+```
+
+`arrayLiteralToString` probe: rejected. A direct
+`foreach (dchar c; char[])` fixture was green and red-poked, but broad
+coverage stayed at 2362/3760 and `arrayLiteralToString` remained wholly
+uncovered. The test was discarded before commit.
+
+`visit(CastExp)` static-array pointer cast branch: covered. Added the focused
+`arrayElementAddressCastsToStaticArrayPointer.Ctfe` test and failure-message
+variants for:
+
+```d
+int[2]* window = cast(int[2]*) &values[start];
+assert((*window)[0] == 42);
+assert((*window)[1] == 43);
+```
+
+The passing test was green, poked red with `43 != 44`, and restored green.
+Broad coverage moved to 2374/3760 executable entries, or 63.14%, a +12 entry
+delta over the branch baseline. The target branch in `visit(CastExp)` changed
+from `0000000` to hit counts on the `castToSarrayPointer` path that synthesizes
+`&val[idx .. idx + dim]`; the audit row for `visit(CastExp)` dropped from 81
+to 70 uncovered executable lines. `visit(PtrExp)` also dropped from 34 to 33
+uncovered executable lines.
 
 ## Subagent Workflow
 

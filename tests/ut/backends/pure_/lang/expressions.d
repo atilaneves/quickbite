@@ -1883,6 +1883,63 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
+    @("arrayElementAddressCastsToStaticArrayPointer." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                size_t start = cast(size_t) value(1);
+                int[2]* window = cast(int[2]*) &values[start];
+
+                assert((*window)[0] == 42);
+                assert((*window)[1] == 43);
+            }
+        });
+    }
+
+    @("arrayElementAddressCastsToStaticArrayPointerFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                size_t start = cast(size_t) value(1);
+                int[2]* window = cast(int[2]*) &values[start];
+
+                assert((*window)[0] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
+    @("arrayElementAddressCastsToStaticArrayPointerFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(41);
+                int[] values = [first, first + 1, first + 2, first + 3];
+                size_t start = cast(size_t) value(1);
+                int[2]* window = cast(int[2]*) &values[start];
+
+                assert((*window)[1] == 44);
+            }
+        }).shouldThrowWithMessage("43 != 44");
+    }
+
     @("castExpTypePaintedSliceFromVoidPointer." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
