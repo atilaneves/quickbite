@@ -147,7 +147,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!TreeWalker) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(

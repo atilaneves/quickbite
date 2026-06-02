@@ -186,14 +186,23 @@ private struct EvalFunctionWalker {
         import dmd.builtin: isBuiltin;
         import dmd.func: BUILTIN;
         import std.math: mathFabs = fabs;
+        import std.math: mathPow = pow;
 
-        if (call.arguments is null || call.arguments.length != 1)
+        if (call.arguments is null)
             throw new Exception("Unsupported eval call argument count.");
 
         with (BUILTIN) switch (isBuiltin(call.f)) {
             case fabs:
+                if (call.arguments.length != 1)
+                    throw new Exception("Unsupported eval call argument count.");
                 return runExpression((*call.arguments)[0])
                     .unaryFloating!mathFabs;
+
+            case pow:
+                if (call.arguments.length != 2)
+                    throw new Exception("Unsupported eval call argument count.");
+                return runExpression((*call.arguments)[0])
+                    .binaryFloating!mathPow(runExpression((*call.arguments)[1]));
 
             default:
                 break;
