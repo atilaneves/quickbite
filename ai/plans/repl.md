@@ -9,18 +9,6 @@ how Quickbite drives DMD. For example, CTFE can `pragma(msg)` a
 must not treat that language behavior as unsupported just because the current
 `Value` display path cannot represent the result yet.
 
-## Priority Work
-
-Pick these items up before any other REPL follow-up. If a user asks for the
-next REPL slice or the next PR from this plan, start with the first item in
-this section, not with `Remaining follow-up`.
-
-### Next PR: template function definitions
-
-Support template function definitions as no-display cells. Currently
-`T identity(T)(T x) { return x; }` produces parse errors and `identity(42)`
-fails with `undefined identifier`.
-
 ## Summary
 
 The REPL uses the new backend architecture. Runtime REPL evaluation and REPL
@@ -129,12 +117,10 @@ Completed:
   DMD statement parsing instead of accepting DMD's prototype-shaped module
   parse as an incomplete/no-display cell, so the result displays as
   `[0, 2, 4]`.
+- Confirmed template function definitions work as no-display cells and added a
+  regression for `T identity(T)(T x) { return x; }` followed by `identity(42)`.
 
 Remaining follow-up:
-
-- Support template function definitions as no-display cells. Currently
-  `T identity(T)(T x) { return x; }` produces parse errors and
-  `identity(42)` fails with `undefined identifier`.
 
 - Fix file-argument execution so `bin/qb tests/example.d` does not leave the
   user inside the interactive REPL prompt. Loading or running files should
