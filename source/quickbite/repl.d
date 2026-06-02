@@ -67,9 +67,9 @@ public struct Repl {
             parseModuleWithCheckActionContext(session.loadedModuleSource)
                 .module_,
         );
-        foreach (ref testCase; result.cases)
-            if (testCase.failed)
-                throw new Exception(testFailureDiagnostic(testCase));
+        const failureDiagnostic = testFailureDiagnostics(result.cases);
+        if (failureDiagnostic !is null)
+            throw new Exception(failureDiagnostic);
 
         return ReplResult(Value.void_);
     }
@@ -131,6 +131,19 @@ private string testFailureDiagnostic(
 ) @safe pure {
     return "unittest at " ~ testCase.location ~ " failed: " ~
         testCase.message;
+}
+
+private string testFailureDiagnostics(
+    const(imported!"quickbite.backends".TestCaseResult)[] testCases,
+) @safe pure {
+    import std.array: join;
+
+    string[] diagnostics;
+    foreach (ref testCase; testCases)
+        if (testCase.failed)
+            diagnostics ~= testFailureDiagnostic(testCase);
+
+    return diagnostics.join("\n");
 }
 
 private bool functionReturnsString(
