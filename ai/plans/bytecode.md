@@ -90,6 +90,26 @@ Lua-specific bytecode shape.
 - Preserve the repo's formatting style before asking for review. Formatting
   churn distracts from the design slice.
 
+## PR 123 Review Lessons
+- Do not put new shared frontend helpers in vague catch-all modules such as
+  `util.d`. If the helper is worth sharing, name the module after the domain
+  concept it exposes.
+- Do not create a tiny bytecode compiler helper just to hide four emitted
+  instructions. Inline the lowering until a second behaviour makes the
+  abstraction earn its name and shape.
+- Do not add or keep a special VM opcode for a language operation that is just
+  existing bytecode plus typed operands. `++x` should lower through `add`
+  unless VM semantics genuinely differ.
+- Do not emit untyped convenience literals such as `Value(1)` when lowering a
+  typed language operation. Either derive the literal from the D type or make
+  assignment/storage perform the required D conversion.
+- Do not treat "move this to common frontend code" as permission to relocate
+  opaque wrappers unchanged. Name the frontend API for the AST structure the
+  backend needs, and leave source-shaping details behind that API.
+- When extracting shared DMD symbol lookup, check nearby callers for duplicate
+  local implementations and move them together if the ownership boundary is
+  the same.
+
 ## PR 114 Review Follow-up
 - [x] Explain or remove the `compileEvalSource` wrapper around eval input.
 - [x] Justify or remove import-statement skipping in bytecode statement
