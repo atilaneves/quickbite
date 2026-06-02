@@ -225,6 +225,16 @@ static foreach (backend; backends) {
         runTests.shouldThrow.msg.should == "1 != 2";
     }
 
+    @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleSource("unittest { assert(2 + 2 == 4); }");
+        repl.submit(":t").should == Value.void_;
+    }
+
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;

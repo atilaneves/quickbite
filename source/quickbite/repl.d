@@ -22,6 +22,13 @@ public struct Repl {
         return result.value == Value.void_ ? null : result.toString;
     }
 
+    public void loadModuleSource(in string source) {
+        import quickbite.frontend.compiler: parseModule;
+
+        parseModule(source);
+        session.loadModuleSource(source);
+    }
+
     private ReplResult submitResult(in string input) {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;

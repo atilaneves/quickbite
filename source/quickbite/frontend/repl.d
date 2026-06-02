@@ -95,6 +95,10 @@ public struct ReplSession {
             ++valueCellCount;
     }
 
+    public void loadModuleSource(in string source) {
+        moduleTranscript ~= source ~ "\n";
+    }
+
     public string loadedModuleSource() const @safe pure {
         return moduleTranscript;
     }
