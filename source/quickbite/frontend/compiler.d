@@ -74,7 +74,12 @@ public imported!"dmd.expression".Expression parseExpression(in string source) {
 }
 
 public imported!"dmd.func".FuncDeclaration parseEvalFunction(in string source) {
-    return functionDeclaration(parseModule(evalSource(source)).module_, "f");
+    import quickbite.frontend.functions: functionDeclaration;
+
+    return functionDeclaration(
+        parseModule(evalFunctionSource(source)).module_,
+        "f",
+    );
 }
 
 final class Compiler {
@@ -335,28 +340,15 @@ final class Compiler {
     }
 }
 
-private string evalSource(in string source) {
+private string evalFunctionSource(in string source) {
     import std.string: lastIndexOf;
 
+    // Eval input is a sequence of statements followed by the expression whose
+    // value should be displayed; DMD needs a function body to parse that shape.
     const lastNl = source.lastIndexOf('\n');
     const prior  = lastNl < 0 ? "" : source[0 .. lastNl + 1];
     const last   = lastNl < 0 ? source : source[lastNl + 1 .. $];
     return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-    in string name,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == name)
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing frontend eval function.");
 }
 
 string diagnosticMessage() {

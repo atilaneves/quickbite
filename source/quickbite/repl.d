@@ -102,8 +102,11 @@ private ReplDisplay replDisplay(
 
 private bool replFunctionReturnsString(in string source) {
     import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.functions: functionDeclaration;
 
-    return functionReturnsString(functionDeclaration(parseModule(source).module_));
+    return functionReturnsString(
+        functionDeclaration(parseModule(source).module_, "f"),
+    );
 }
 
 private bool functionReturnsString(
@@ -120,20 +123,6 @@ private bool functionReturnsString(
         return false;
 
     return array.nextOf.toBasetype.ty == TY.Tchar;
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing REPL function.");
 }
 
 public string[] runReplLoop(

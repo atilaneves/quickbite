@@ -122,24 +122,10 @@ private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
 
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
     import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.functions: functionDeclaration;
 
     auto parsed = parseModule(source);
     return functionDeclaration(parsed.module_, "f");
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-    in string name,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == name)
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing CTFE function.");
 }
 
 private string withCandidateSignatures(

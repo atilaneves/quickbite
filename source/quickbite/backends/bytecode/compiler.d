@@ -239,7 +239,14 @@ private struct Compiler {
         if (declaration is null)
             throw new Exception("Unsupported bytecode pre-increment target.");
 
-        compileAddToLocal(declaration, Value(1));
+        const index = localIndex(declaration);
+        program.instructions ~= Instruction(Op.loadLocal, Value.void_, index);
+        program.instructions ~= Instruction(
+            Op.literal,
+            incrementValue(declaration),
+        );
+        program.instructions ~= Instruction(Op.add);
+        program.instructions ~= Instruction(Op.storeLocal, Value.void_, index);
     }
 
     private void compileAddAssign(
@@ -257,16 +264,9 @@ private struct Compiler {
         if (integer is null)
             throw new Exception("Unsupported bytecode += value.");
 
-        compileAddToLocal(declaration, integerValue(integer));
-    }
-
-    private void compileAddToLocal(
-        VarDeclaration declaration,
-        in Value value,
-    ) {
         const index = localIndex(declaration);
         program.instructions ~= Instruction(Op.loadLocal, Value.void_, index);
-        program.instructions ~= Instruction(Op.literal, value);
+        program.instructions ~= Instruction(Op.literal, integerValue(integer));
         program.instructions ~= Instruction(Op.add);
         program.instructions ~= Instruction(Op.storeLocal, Value.void_, index);
     }
@@ -491,6 +491,78 @@ private imported!"quickbite.lang".Value initialValue(T)() {
     import quickbite.lang: Value;
 
     return Value(T.init);
+}
+
+private imported!"quickbite.lang".Value incrementValue(
+    imported!"dmd.declaration".VarDeclaration variable,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    const type = variable.type.toBasetype;
+    with (TY) final switch (type.ty) {
+        case Tint8:
+            return Value(cast(byte) 1);
+        case Tuns8:
+            return Value(cast(ubyte) 1);
+        case Tint16:
+            return Value(cast(short) 1);
+        case Tuns16:
+            return Value(cast(ushort) 1);
+        case Tint32:
+            return Value(1);
+        case Tuns32:
+            return Value(1u);
+        case Tint64:
+            return Value(1L);
+        case Tuns64:
+            return Value(1UL);
+        case Tfloat32:
+            return Value(1.0f);
+        case Tfloat64:
+            return Value(1.0);
+        case Tfloat80:
+            return Value(1.0L);
+
+        case Tbool:
+        case Tchar:
+        case Twchar:
+        case Tdchar:
+        case Tvoid:
+        case Tint128:
+        case Tuns128:
+        case Timaginary32:
+        case Timaginary64:
+        case Timaginary80:
+        case Tcomplex32:
+        case Tcomplex64:
+        case Tcomplex80:
+        case Tpointer:
+        case Tfunction:
+        case Tarray:
+        case Tsarray:
+        case Taarray:
+        case Tclass:
+        case Tident:
+        case Tinstance:
+        case Ttypeof:
+        case Ttuple:
+        case Tslice:
+        case Treturn:
+        case Terror:
+        case Tnull:
+        case Tvector:
+        case Ttraits:
+        case Tmixin:
+        case Tnoreturn:
+        case Ttag:
+        case Tstruct:
+        case Tenum:
+        case Tdelegate:
+        case Treference:
+        case Tnone:
+            throw new Exception("Unsupported bytecode pre-increment type.");
+    }
 }
 
 
