@@ -5,7 +5,7 @@ private:
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
-    import quickbite.backends.bytecode.instructions: CastTarget, Op;
+    import quickbite.backends.bytecode.instructions: CastTarget, NativeFunction, Op;
     import quickbite.lang: Value;
 
     Value[] stack;
@@ -40,14 +40,6 @@ package imported!"quickbite.lang".Value eval(
 
                 locals[instruction.operand] = stack[$ - 1];
                 stack.length -= 1;
-                break;
-
-            case Op.incrementLocal:
-                if (instruction.operand >= locals.length)
-                    throw new Exception("Bytecode local out of bounds");
-
-                locals[instruction.operand] = locals[instruction.operand] +
-                    instruction.value;
                 break;
 
             case Op.cast_:
@@ -140,14 +132,17 @@ package imported!"quickbite.lang".Value eval(
                 stack[$ - 1] = -stack[$ - 1];
                 break;
 
-            case Op.fabs:
+            case Op.unaryNativeCall:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
 
-                stack[$ - 1] = stack[$ - 1].fabs;
+                stack[$ - 1] = unaryNativeCall(
+                    cast(NativeFunction) instruction.operand,
+                    stack[$ - 1],
+                );
                 break;
 
-            case Op.pow:
+            case Op.binaryNativeCall:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
 
@@ -155,7 +150,11 @@ package imported!"quickbite.lang".Value eval(
                 auto lhs = stack[$ - 2];
                 stack.length -= 2;
 
-                stack ~= lhs.pow(rhs);
+                stack ~= binaryNativeCall(
+                    cast(NativeFunction) instruction.operand,
+                    lhs,
+                    rhs,
+                );
                 break;
         }
     }
@@ -164,4 +163,39 @@ package imported!"quickbite.lang".Value eval(
         throw new Exception("Bytecode program did not leave exactly one value");
 
     return stack[0];
+}
+
+private imported!"quickbite.lang".Value unaryNativeCall(
+    imported!"quickbite.backends.bytecode.instructions".NativeFunction function_,
+    in imported!"quickbite.lang".Value value,
+) {
+    final switch (function_) {
+        case typeof(function_).fabs:
+            import std.math: fabs;
+
+            return value.unaryFloating!fabs;
+
+        case typeof(function_).pow:
+            break;
+    }
+
+    throw new Exception("Unsupported bytecode unary native call.");
+}
+
+private imported!"quickbite.lang".Value binaryNativeCall(
+    imported!"quickbite.backends.bytecode.instructions".NativeFunction function_,
+    in imported!"quickbite.lang".Value lhs,
+    in imported!"quickbite.lang".Value rhs,
+) {
+    final switch (function_) {
+        case typeof(function_).fabs:
+            break;
+
+        case typeof(function_).pow:
+            import std.math: pow;
+
+            return lhs.binaryFloating!pow(rhs);
+    }
+
+    throw new Exception("Unsupported bytecode binary native call.");
 }

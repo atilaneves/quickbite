@@ -105,21 +105,21 @@ Lua-specific bytecode shape.
   compilation.
 - [x] Decide whether integer casts need broader tests before broadening
   support.
-- [ ] Stop inspecting eval source text in the bytecode backend; rely on a
+- [x] Stop inspecting eval source text in the bytecode backend; rely on a
   frontend-provided structure instead.
-- [ ] Replace hand-written default scalar values with a type-to-D-value mapping
+- [x] Replace hand-written default scalar values with a type-to-D-value mapping
   based on `T.init`.
-- [ ] Replace manual string code-unit conversion with standard library support
-  if available.
+- [x] Replace manual string code-unit conversion with DMD literal slice
+  support; no `std.utf`/`std.uni` helper is needed for the current AST node.
 - [ ] Include bool and character value kinds in integer-like binary operations
   if DMD treats them that way.
-- [ ] Decide whether `incrementLocal` should remain distinct from `add`.
-- [ ] Clarify or remove the `CastTarget` enum if the current operand shape is
+- [x] Decide whether `incrementLocal` should remain distinct from `add`.
+- [x] Clarify or remove the `CastTarget` enum if the current operand shape is
   not earning its keep.
-- [ ] Remove one-off `Value.fabs` API growth or justify it with a more general
-  intrinsic-call design.
-- [ ] Remove one-off `Value.pow` API growth or justify it with a more general
-  intrinsic-call design.
+- [x] Remove one-off `Value.fabs` API growth or justify it with a more general
+  native-call design.
+- [x] Remove one-off `Value.pow` API growth or justify it with a more general
+  native-call design.
 
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is

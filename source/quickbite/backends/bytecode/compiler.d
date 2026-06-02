@@ -17,11 +17,9 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseEvalFunction;
 
-    // Eval input may contain declarations/imports before the final expression.
-    // Parse it as a function body so DMD gives the bytecode compiler an AST.
-    return compileFunction(functionDeclaration(parseModule(evalSource(source)).module_));
+    return compileFunction(parseEvalFunction(source));
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -42,7 +40,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 
 private struct Compiler {
     import quickbite.backends.bytecode.instructions:
-        CastTarget, Instruction, Op, Program;
+        CastTarget, Instruction, NativeFunction, Op, Program;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
@@ -62,8 +60,8 @@ private struct Compiler {
         }
 
         // Imports are semantically resolved before bytecode compilation; eval
-        // tests for std.math intrinsics still leave their import statements in
-        // the function body, but they do not emit runtime bytecode.
+        // tests for std.math native calls still leave their import statements
+        // in the function body, but they do not emit runtime bytecode.
         if (statement.isImportStatement !is null)
             return;
 
@@ -241,11 +239,7 @@ private struct Compiler {
         if (declaration is null)
             throw new Exception("Unsupported bytecode pre-increment target.");
 
-        program.instructions ~= Instruction(
-            Op.incrementLocal,
-            Value(1),
-            localIndex(declaration),
-        );
+        compileAddToLocal(declaration, Value(1));
     }
 
     private void compileAddAssign(
@@ -263,11 +257,18 @@ private struct Compiler {
         if (integer is null)
             throw new Exception("Unsupported bytecode += value.");
 
-        program.instructions ~= Instruction(
-            Op.incrementLocal,
-            integerValue(integer),
-            localIndex(declaration),
-        );
+        compileAddToLocal(declaration, integerValue(integer));
+    }
+
+    private void compileAddToLocal(
+        VarDeclaration declaration,
+        in Value value,
+    ) {
+        const index = localIndex(declaration);
+        program.instructions ~= Instruction(Op.loadLocal, Value.void_, index);
+        program.instructions ~= Instruction(Op.literal, value);
+        program.instructions ~= Instruction(Op.add);
+        program.instructions ~= Instruction(Op.storeLocal, Value.void_, index);
     }
 
     private void compileCast(CastExp cast_) {
@@ -281,50 +282,65 @@ private struct Compiler {
     }
 
     private void compileCall(CallExp call) {
-        if (isStdMathIntrinsic(call.f, "fabs")) {
-            compileFabs(call);
-            return;
+        const function_ = nativeFunction(call.f);
+        if (call.arguments is null)
+            throw new Exception("Unsupported bytecode native call arguments.");
+
+        final switch (function_) {
+            case NativeFunction.fabs:
+                if (call.arguments.length != 1)
+                    throw new Exception(
+                        "Unsupported bytecode unary native call argument count.",
+                    );
+
+                compileExpression((*call.arguments)[0]);
+                program.instructions ~= Instruction(
+                    Op.unaryNativeCall,
+                    Value.void_,
+                    cast(size_t) function_,
+                );
+                return;
+
+            case NativeFunction.pow:
+                if (call.arguments.length != 2)
+                    throw new Exception(
+                        "Unsupported bytecode binary native call argument count.",
+                    );
+
+                compileExpression((*call.arguments)[0]);
+                compileExpression((*call.arguments)[1]);
+                program.instructions ~= Instruction(
+                    Op.binaryNativeCall,
+                    Value.void_,
+                    cast(size_t) function_,
+                );
+                return;
         }
-
-        if (isStdMathIntrinsic(call.f, "pow")) {
-            compilePow(call);
-            return;
-        }
-
-        throw new Exception("Unsupported bytecode call target.");
     }
 
-    private void compileFabs(CallExp call) {
-        if (call.arguments is null || call.arguments.length != 1)
-            throw new Exception("Unsupported bytecode fabs argument count.");
-
-        compileExpression((*call.arguments)[0]);
-        program.instructions ~= Instruction(Op.fabs);
-    }
-
-    private void compilePow(CallExp call) {
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception("Unsupported bytecode pow argument count.");
-
-        compileExpression((*call.arguments)[0]);
-        compileExpression((*call.arguments)[1]);
-        program.instructions ~= Instruction(Op.pow);
-    }
-
-    private bool isStdMathIntrinsic(
-        FuncDeclaration function_,
-        in string identifier,
-    ) {
+    private NativeFunction nativeFunction(FuncDeclaration function_) {
         import std.algorithm: startsWith;
 
         if (function_ is null || function_.ident is null)
-            return false;
+            throw new Exception("Unsupported bytecode call target.");
 
-        if (function_.ident.toString != identifier)
-            return false;
+        const name = function_.ident.toString;
+        const module_ = moduleName(function_);
+        if (module_ != "std.math" && !module_.startsWith("std.math."))
+            throw new Exception("Unsupported bytecode call target.");
 
-        return moduleName(function_) == "std.math" ||
-            moduleName(function_).startsWith("std.math.");
+        switch (name) {
+            case "fabs":
+                return NativeFunction.fabs;
+
+            case "pow":
+                return NativeFunction.pow;
+
+            default:
+                break;
+        }
+
+        throw new Exception("Unsupported bytecode call target.");
     }
 
     private string moduleName(FuncDeclaration function_) {
@@ -396,29 +412,6 @@ private struct Compiler {
 }
 
 
-private string evalSource(in string str) {
-    import std.string: lastIndexOf;
-
-    const lastNl = str.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing bytecode eval function.");
-}
-
 private imported!"quickbite.lang".Value defaultValue(
     imported!"dmd.declaration".VarDeclaration variable,
 ) {
@@ -428,35 +421,35 @@ private imported!"quickbite.lang".Value defaultValue(
     const type = variable.type.toBasetype;
     with (TY) final switch (type.ty) {
         case Tbool:
-            return Value(false);
+            return initialValue!bool;
         case Tint8:
-            return Value(cast(byte) 0);
+            return initialValue!byte;
         case Tuns8:
-            return Value(cast(ubyte) 0);
+            return initialValue!ubyte;
         case Tint16:
-            return Value(cast(short) 0);
+            return initialValue!short;
         case Tuns16:
-            return Value(cast(ushort) 0);
+            return initialValue!ushort;
         case Tint32:
-            return Value(0);
+            return initialValue!int;
         case Tuns32:
-            return Value(0u);
+            return initialValue!uint;
         case Tint64:
-            return Value(0L);
+            return initialValue!long;
         case Tuns64:
-            return Value(0UL);
+            return initialValue!ulong;
         case Tfloat32:
-            return Value(0.0f);
+            return initialValue!float;
         case Tfloat64:
-            return Value(0.0);
+            return initialValue!double;
         case Tfloat80:
-            return Value(0.0L);
+            return initialValue!real;
         case Tchar:
-            return Value(char.init);
+            return initialValue!char;
         case Twchar:
-            return Value(wchar.init);
+            return initialValue!wchar;
         case Tdchar:
-            return Value(dchar.init);
+            return initialValue!dchar;
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -494,6 +487,12 @@ private imported!"quickbite.lang".Value defaultValue(
     }
 }
 
+private imported!"quickbite.lang".Value initialValue(T)() {
+    import quickbite.lang: Value;
+
+    return Value(T.init);
+}
+
 
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
@@ -517,15 +516,7 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
-    return Value(stringChars(string_));
-}
-
-private char[] stringChars(imported!"dmd.expression".StringExp string_) {
-    char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(char) string_.getIndex(index);
-
-    return values;
+    return Value(string_.peekString.idup);
 }
 
 

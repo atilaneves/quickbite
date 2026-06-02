@@ -96,10 +96,9 @@ private string diagnosticMessage() {
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseEvalFunction;
 
-    auto parsed = parseModule(evalSource(str));
-    return callExpression(functionDeclaration(parsed.module_, "f"));
+    return callExpression(parseEvalFunction(str));
 }
 
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
@@ -119,15 +118,6 @@ private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
         throw new Exception(text("Unsupported CTFE type result: ", interpreted.op));
 
     return Value.typeName(stringChars(string_).idup);
-}
-
-private string evalSource(in string str) {
-    import std.string: lastIndexOf;
-
-    const lastNl = str.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 }
 
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
