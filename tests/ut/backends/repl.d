@@ -210,6 +210,28 @@ static foreach (backend; backends) {
         output.should == ["[1:10, 2:20]"];
     }
 
+    @("repl.backend.displaysEnumValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "enum E { a = 7, b = 8 }",
+                "E.a",
+                "[E.a, E.b]",
+                "cast(int) E.a",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "E.a",
+            "[E.a, E.b]",
+            "7",
+        ];
+    }
+
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

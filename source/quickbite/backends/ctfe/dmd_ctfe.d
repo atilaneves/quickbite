@@ -253,9 +253,23 @@ private imported!"quickbite.lang".Value ctfeValue(
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
+    import dmd.astenums: TY;
     import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
+    import quickbite.lang: Value;
+
+    if (
+        integer.type !is null &&
+        integer.type.ty == TY.Tenum
+    )
+        return Value.enumValue(expressionChars(integer));
 
     return frontendIntegerValue(integer);
+}
+
+private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
+    import std.string: fromStringz;
+
+    return expression.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.lang".Value realValue(
