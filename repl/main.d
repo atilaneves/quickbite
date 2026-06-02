@@ -30,6 +30,7 @@ public int main(string[] args) {
         import std.file: readText;
 
         repl.loadModuleSource(readText(options.options.file));
+        return 0;
     }
 
     if (stdinIsTerminal) {
