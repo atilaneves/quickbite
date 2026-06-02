@@ -48,6 +48,13 @@ def test_piped_blank_line_is_silent_noop() -> None:
     assert result.stdout == ""
 
 
+def test_piped_whitespace_line_is_silent_noop() -> None:
+    result = run_qb(input="   \n")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
 def test_command_prints_expression_result() -> None:
     result = run_qb("-c", "1 + 2")
 
