@@ -15,11 +15,10 @@ Pick these items up before any other REPL follow-up. If a user asks for the
 next REPL slice or the next PR from this plan, start with the first item in
 this section, not with `Remaining follow-up`.
 
-### Next PR: `bin/qb tests/example.d`
+### Next PR: `:t` for loaded unittest blocks
 
-Running `bin/qb tests/example.d` should work. That's just a first
-step, a second step is adding `:t` to run whatever unittest blocks
-have been defined.
+Add `:t` to run whatever unittest blocks have been defined by loaded files or
+accepted REPL cells.
 
 ## Summary
 
@@ -117,6 +116,9 @@ Completed:
   without annotation (`int` as `42`, `double` as `3.8`), while types with no D
   literal suffix keep `: type` annotations (`byte`, `short`, `ubyte`,
   `ushort`, `real`).
+- Fixed `bin/qb tests/example.d` so file arguments load through the normal DMD
+  module parser. This accepts module-level declarations and `unittest` blocks
+  without running the unittest blocks yet.
 
 Remaining follow-up:
 
@@ -131,9 +133,9 @@ Remaining follow-up:
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
   path. Never try to materialize infinite ranges.
-- `unittest` blocks are not supported as REPL input cells. Running a `.d` file
-  containing `unittest` blocks via `bin/qb file.d` will fail when the parser
-  encounters the first `unittest` keyword. Supporting them is future work.
+- `unittest` blocks are not supported as REPL input cells yet. Running a `.d`
+  file containing `unittest` blocks via `bin/qb file.d` loads the module, but
+  there is not yet a `:t` command to run those loaded unittest blocks.
 
 ## Architecture
 
