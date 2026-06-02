@@ -5,7 +5,7 @@ private:
 public class Bytecode: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestSummary;
+    import quickbite.backends: TestRunResult, TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -20,6 +20,10 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     }
 
     public override void runParsedTests(Module module_) {
+        assert(0);
+    }
+
+    public override TestRunResult runParsedTestResults(Module module_) {
         assert(0);
     }
 

@@ -244,7 +244,7 @@ static foreach (backend; backends) {
         repl.submit(":t").should == Value.void_;
     }
 
-    @("repl.backend.loadedUnittestFailuresReportAssertionMessage." ~ backend.stringof)
+    @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
 
@@ -254,7 +254,8 @@ static foreach (backend; backends) {
         void runTests() {
             repl.submit(":t");
         }
-        runTests.shouldThrow.msg.should == "Error: 1 != 2";
+        runTests.shouldThrow.msg.should ==
+            "unittest at <repl>(1) failed: 1 != 2";
     }
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)

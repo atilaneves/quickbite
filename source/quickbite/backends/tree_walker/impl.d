@@ -5,7 +5,7 @@ private:
 public class TreeWalker: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestSummary;
+    import quickbite.backends: TestRunResult, TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -25,6 +25,10 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
         foreachUnitTestDeclaration(module_, (unitTest) {
             interpreter.runTest(unitTest);
         });
+    }
+
+    public override TestRunResult runParsedTestResults(Module module_) {
+        assert(0);
     }
 
     public override TestSummary runParsedTestSummary(Module module_) {
