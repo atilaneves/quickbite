@@ -174,6 +174,18 @@ static foreach (backend; backends) {
         output.should == ["[[1, 2], [3, 4]]"];
     }
 
+    @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`string[2] xs = ["a", "b"];`, "xs", ":q"],
+        );
+
+        output.should == [`["a", "b"]`];
+    }
+
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

@@ -165,6 +165,9 @@ Completed:
 - Fixed CTFE-backed REPL display for nested array results. Array literal
   conversion now recursively preserves each element's `Value` representation,
   so `[[1, 2], [3, 4]]` renders without crashing.
+- Fixed nested string display in CTFE-backed REPL aggregate results. Static
+  string arrays such as `string[2] xs = ["a", "b"]; xs` now render as
+  `["a", "b"]` instead of `[[a], [b]]`.
 
 Remaining follow-up:
 
