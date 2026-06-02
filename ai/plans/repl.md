@@ -203,6 +203,10 @@ Apply that lesson this way:
   classify D source.
 - Do not classify DMD diagnostics by searching rendered diagnostic text. Use
   DMD AST nodes, symbols, and semantic helpers as the protocol.
+- For `:t` assertion diagnostics, preserve DMD's own context-aware assertion
+  lowering by parsing the loaded unittest module with
+  `parseModuleWithCheckActionContext`. Do not repair default-parse CTFE
+  diagnostics by checking rendered messages for prefixes such as `` `assert ``.
 - Do not use failed REPL evaluation as control flow to distinguish expressions
   from statements/declarations or incomplete input. Exceptions are
   diagnostics/failures, not a parser API.
