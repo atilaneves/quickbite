@@ -9,10 +9,10 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.backends.bytecode.compiler: compileExpression;
+        import quickbite.backends.bytecode.compiler: compileEvalSource;
         import quickbite.backends.bytecode.vm: eval;
 
-        return eval(compileExpression(expr));
+        return eval(compileEvalSource(expr));
     }
 
     public override Value evalRepl(in ReplCell cell) {

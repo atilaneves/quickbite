@@ -9,11 +9,34 @@ package imported!"quickbite.lang".Value eval(
     import quickbite.lang: Value;
 
     Value[] stack;
+    Value[] locals;
 
     foreach (instruction; program.instructions) {
         final switch (instruction.op) {
             case Op.literal:
                 stack ~= instruction.value;
+                break;
+
+            case Op.loadLocal:
+                if (instruction.operand >= locals.length)
+                    throw new Exception("Bytecode local out of bounds");
+
+                stack ~= locals[instruction.operand];
+                break;
+
+            case Op.initializeLocal:
+                if (instruction.operand >= locals.length)
+                    locals.length = instruction.operand + 1;
+
+                locals[instruction.operand] = instruction.value;
+                break;
+
+            case Op.incrementLocal:
+                if (instruction.operand >= locals.length)
+                    throw new Exception("Bytecode local out of bounds");
+
+                locals[instruction.operand] = locals[instruction.operand] +
+                    instruction.value;
                 break;
 
             case Op.add:

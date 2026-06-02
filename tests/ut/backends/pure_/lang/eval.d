@@ -48,15 +48,14 @@ static foreach (backend; backendsWith!Bytecode) {
         foreach (c; cases)
             newBackend!backend.eval(c[0]).should == Value(c[1]);
     }
-}
-
-static foreach (backend; backends) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
+}
 
+static foreach (backend; backends) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(ubyte) 3").should ==

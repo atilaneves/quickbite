@@ -4,6 +4,9 @@ private:
 
 package enum Op: ubyte {
     literal,
+    loadLocal,
+    initializeLocal,
+    incrementLocal,
     add,
     subtract,
     multiply,
@@ -13,6 +16,7 @@ package enum Op: ubyte {
 package struct Instruction {
     Op op;
     imported!"quickbite.lang".Value value;
+    size_t operand;
 }
 
 package struct Program {
