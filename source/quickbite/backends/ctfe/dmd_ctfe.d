@@ -291,9 +291,19 @@ private imported!"quickbite.lang".Value stringValue(
 private char[] stringChars(
     imported!"dmd.expression".StringExp string_,
 ) {
+    import std.utf: encode;
+
     char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(char) string_.getIndex(index);
+    foreach (index; 0 .. string_.numberOfCodeUnits) {
+        const codeUnit = string_.getIndex(index);
+        if (string_.sz == 1) {
+            values ~= cast(char) codeUnit;
+        } else {
+            char[4] encoded;
+            const length = encode(encoded, cast(dchar) codeUnit);
+            values ~= encoded[0 .. length];
+        }
+    }
 
     return values;
 }
