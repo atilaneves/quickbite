@@ -6,13 +6,13 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source).module_);
+        runTests(parseModule(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, importPaths).module_);
+        runTests(parseModule(source, importPaths).module_);
     }
 
     public override imported!"quickbite.executor".TestSummary runTestSummary(
@@ -23,7 +23,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         return testSummary(parseModule(source).module_);
     }
 
-    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
+    public override void runTests(imported!"dmd.dmodule".Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         foreachUnitTestDeclaration(module_, (unitTest) {
@@ -48,8 +48,8 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 
-        auto parsed = parseModule(source);
-        auto module_ = parsed.module_;
+        auto moduleResult = parseModule(source);
+        auto module_ = moduleResult.module_;
 
         FuncDeclaration f;
         if (module_.members !is null) {

@@ -241,21 +241,21 @@ public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor 
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, sourceImportPaths).module_);
+        runTests(parseModule(source, sourceImportPaths).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
         auto module_ = parseModule(source, importPaths).module_;
-        compileParsedTests(module_, importPaths);
+        compileTests(module_, importPaths);
     }
 
-    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
-        compileParsedTests(module_, sourceImportPaths);
+    public override void runTests(imported!"dmd.dmodule".Module module_) {
+        compileTests(module_, sourceImportPaths);
     }
 
-    private void compileParsedTests(
+    private void compileTests(
         imported!"dmd.dmodule".Module module_,
         in string[] importPaths,
     ) {
@@ -323,7 +323,7 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
 
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, sourceImportPaths).module_);
+        runTests(parseModule(source, sourceImportPaths).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
@@ -333,14 +333,14 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
         import quickbite.frontend.compiler: parseModule;
 
         auto module_ = parseModule(source, importPaths).module_;
-        compileParsedTests(module_, importPaths);
+        compileTests(module_, importPaths);
     }
 
-    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
-        compileParsedTests(module_, sourceImportPaths);
+    public override void runTests(imported!"dmd.dmodule".Module module_) {
+        compileTests(module_, sourceImportPaths);
     }
 
-    private void compileParsedTests(
+    private void compileTests(
         imported!"dmd.dmodule".Module module_,
         in string[] importPaths,
     ) {
@@ -803,7 +803,7 @@ private CodegenSession generateCodegenSession(
     semantic3Dependencies(fixtureModules);
     throwIfDmdErrors;
 
-    // Run codegen over every parsed module that is not provided by a linked
+    // Run codegen over every DMD module that is not provided by a linked
     // archive.  The current fixture is always compiled explicitly.  Fixture
     // modules that are not accumulated yet are compiled once to emit shared
     // cross-fixture symbols; imported package modules are compiled when they
@@ -3910,11 +3910,11 @@ private imported!"dmd.dmodule".Module dmdCodegenSupportModule(in uint idx) @trus
         },
     );
 
-    auto parsed = parseModule(moduleName ~ ".d", source);
-    if (parsed.diagnostics.hasErrors)
+    auto moduleResult = parseModule(moduleName ~ ".d", source);
+    if (moduleResult.diagnostics.hasErrors)
         throw new Exception("DMD codegen support module failed to parse.");
 
-    return parsed.module_;
+    return moduleResult.module_;
 }
 
 private string nestedNestedTypeInfoInitDefinitions(in uint maxIdx) @safe {

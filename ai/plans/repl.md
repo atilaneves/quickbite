@@ -133,20 +133,23 @@ Completed:
 - Preserved actual source file names in structured backend test case locations
   for file-backed fixtures by parsing files through a file-path-aware frontend
   API instead of synthetic snippet names.
+- Kept source loaded from files from advancing typed REPL snippet locations.
+  After `loadModuleSource("int loadedValue() { return 41; }\n")` and a typed
+  `unittest { assert(1 == 2); }`, `:t` reports
+  `unittest at <repl>(1) failed: 1 != 2`. Loaded source and typed REPL module
+  source are tracked separately and composed with a D line directive before
+  typed REPL code for the current synthetic-module implementation.
 
 Remaining follow-up:
 
 - Expand the structured backend test-result API so running tests reports what
-  ran and what failed. Keep `runParsedTests` as a compatibility wrapper until
-  callers migrate, but future REPL, summary, and reporting work should consume
-  structured results rather than throwing or parsing raw strings.
+  ran and what failed. Keep `runTests` as the throwing wrapper for callers that
+  only need failure diagnostics, but future REPL, summary, and reporting work
+  should consume structured results rather than throwing or parsing raw
+  strings.
 
-- Keep source loaded from files from advancing typed REPL snippet locations.
-  For example, after `loadModuleSource("int loadedValue() { return 41; }\n")`
-  and a typed `unittest { assert(1 == 2); }`, `:t` should report
-  `unittest at <repl>(1) failed: 1 != 2`, not a later line caused by the
-  loaded source. File-backed code should eventually keep its own file/line
-  identity instead of being appended to the synthetic REPL module.
+- File-backed code should eventually keep its own file/line identity instead
+  of being appended to the synthetic REPL module.
 
 - Prefix non-unittest interactive REPL command failures with an error label,
   preferably styled red for terminal output. For example, after a command

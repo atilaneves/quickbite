@@ -169,13 +169,13 @@ unittest {
     }
 }
 
-@("parsedModuleCanRunTwice.dmdCodegen")
+@("moduleCanRunTwice.dmdCodegen")
 unittest {
     if (experimentalExecutorTestsEnabled) {
         import quickbite.executors.dmd_codegen: DmdCodegen;
         import quickbite.frontend.compiler: parseModule;
 
-        // Reusing a parsed module catches stale DMD codegen object state
+        // Reusing a DMD module catches stale DMD codegen object state
         // between in-process codegen runs. Without the reset, DMD can carry
         // codegen symbols such as `__bzeroBytes` from the first object into
         // the second; the linker then rejects the generated objects before
@@ -191,8 +191,8 @@ unittest {
         }).module_;
         auto executorName = new DmdCodegen;
 
-        executorName.runParsedTests(module_);
-        executorName.runParsedTests(module_);
+        executorName.runTests(module_);
+        executorName.runTests(module_);
     }
 }
 

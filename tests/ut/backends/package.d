@@ -2,7 +2,7 @@ module ut.backends;
 
 
 public import ut;
-public import quickbite.backends: runParsedModulesTests;
+public import quickbite.backends: runModulesTests;
 public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 public import quickbite.backends.interpreter;
@@ -34,9 +34,9 @@ public void runBackendSourceFixtureTests(T)(
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
-    backend.runParsedTests(parsed.module_);
+    backend.runTests(moduleResult.module_);
 }
 
 public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSummary(T)(
@@ -51,9 +51,9 @@ public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSumm
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
-    return backend.runParsedTestSummary(parsed.module_);
+    return backend.runTestSummary(moduleResult.module_);
 }
 
 public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestResults(T)(
@@ -68,9 +68,12 @@ public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestRe
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(
+        moduleSource,
+        importPaths,
+    );
     auto backend = newBackend!T;
-    return backend.runParsedTestResults(parsed.module_);
+    return backend.runTestResults(moduleResult.module_);
 }
 
 public void runBackendFileFixtureTests(T)(
@@ -79,9 +82,12 @@ public void runBackendFileFixtureTests(T)(
 ) {
     import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
 
-    auto parsed = parseModuleFileWithCheckActionContext(filePath, importPaths);
+    auto moduleResult = parseModuleFileWithCheckActionContext(
+        filePath,
+        importPaths,
+    );
     auto backend = newBackend!T;
-    backend.runParsedTests(parsed.module_);
+    backend.runTests(moduleResult.module_);
 }
 
 public imported!"quickbite.backends".TestRunResult
@@ -91,7 +97,10 @@ runBackendFileFixtureTestResults(T)(
 ) {
     import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
 
-    auto parsed = parseModuleFileWithCheckActionContext(filePath, importPaths);
+    auto moduleResult = parseModuleFileWithCheckActionContext(
+        filePath,
+        importPaths,
+    );
     auto backend = newBackend!T;
-    return backend.runParsedTestResults(parsed.module_);
+    return backend.runTestResults(moduleResult.module_);
 }

@@ -10,7 +10,7 @@ import std.path: buildPath;
 private:
 
 static foreach (backend; backends) {
-    @("runParsedTests.runsAttributedUnittests." ~ backend.stringof)
+    @("runTests.runsAttributedUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             @("quickbite regression")
@@ -20,7 +20,7 @@ static foreach (backend; backends) {
         }).shouldThrow;
     }
 
-    @("runParsedTests.runsAttributedThrowingUnittests." ~ backend.stringof)
+    @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             @("quickbite regression")
@@ -30,7 +30,7 @@ static foreach (backend; backends) {
         }).shouldThrow.msg.canFind("quickbite regression").should == true;
     }
 
-    @("runParsedTests.importPathsRetryAfterFailure." ~ backend.stringof)
+    @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
 
@@ -59,7 +59,7 @@ static foreach (backend; backends) {
         runBackendSourceFixtureTests!backend(source, [importPath]);
     }
 
-    @("runParsedTestSummary.countsAttributedPassingAndFailingUnittests." ~
+    @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -83,7 +83,7 @@ static foreach (backend; backends) {
         summary.failed.should == 1;
     }
 
-    @("runParsedTestSummary.countsAllPassingUnittests." ~ backend.stringof)
+    @("runTestSummary.countsAllPassingUnittests." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
             unittest {
@@ -101,7 +101,7 @@ static foreach (backend; backends) {
         summary.failed.should == 0;
     }
 
-    @("runParsedTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
+    @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
             import core.exception: AssertError;
@@ -116,7 +116,7 @@ static foreach (backend; backends) {
         summary.failed.should == 1;
     }
 
-    @("runParsedTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
+    @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
             unittest {
@@ -133,7 +133,7 @@ static foreach (backend; backends) {
         result.cases[1].name.should == "__unittest_L6_C13";
     }
 
-    @("runParsedTestResults.reportsFileBackedUnittestLocations." ~
+    @("runTestResults.reportsFileBackedUnittestLocations." ~
         backend.stringof)
     unittest {
         import unit_threaded.integration: Sandbox;
@@ -159,7 +159,7 @@ static foreach (backend; backends) {
         }
     }
 
-    @("runParsedModulesTests.runsBothModules." ~ backend.stringof)
+    @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
 
@@ -176,7 +176,7 @@ static foreach (backend; backends) {
         }).module_;
 
         auto backend_ = newBackend!backend;
-        runParsedModulesTests(backend_, [module1, module2,]).shouldThrow.msg
+        runModulesTests(backend_, [module1, module2,]).shouldThrow.msg
             .canFind("second module ran").should == true;
     }
 

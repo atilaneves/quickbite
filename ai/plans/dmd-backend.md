@@ -3,7 +3,7 @@
 ## Context
 
 The project needs two DMD codegen backends implementing the modern `Backend`
-interface (`eval`, `evalRepl`, `runParsedTests`, `runParsedTestSummary`).
+interface (`eval`, `evalRepl`, `runTests`, `runTestSummary`).
 One compiles to a shared library and loads it via `dlopen`/`dlsym`; the
 other emits object code into `mmap`'d RAM and relocates it in-process. Both
 live in a new `quickbite.backends.codegen` package. The architecture rule
@@ -53,18 +53,18 @@ explicitly pulled forward for benchmarking.
 When a codegen backend is ready to join the shared backend language matrix,
 follow the same module order as the active latency backends: finish the
 existing `eval.d` behavior first, then target
-`tests/ut/backends/pure_/lang/logic.d` as the first parsed-module target.
+`tests/ut/backends/pure_/lang/logic.d` as the first module-backed target.
 Start with `logicalNot`, then plain `&&` and `||` cases before call-based or
 short-circuit cases.
 
 1. `SharedLib.eval`
-2. `SharedLib.runParsedTests` / `runParsedTestSummary`
+2. `SharedLib.runTests` / `runTestSummary`
 3. `SharedLib.evalRepl`
 4. Decide the RAM strategy from measurements and available DMD backend hooks:
    JITLink/object emission, a custom `Obj`-to-RAM backend, or a narrower
    custom relocator.
 5. `Ram.eval`
-6. `Ram.runParsedTests` / `runParsedTestSummary`
+6. `Ram.runTests` / `runTestSummary`
 7. `Ram.evalRepl`
 
 Each slice: one failing test → dumbest green code → ask before the next

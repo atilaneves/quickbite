@@ -17,16 +17,16 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source).module_);
+        runTests(parseModule(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, importPaths).module_);
+        runTests(parseModule(source, importPaths).module_);
     }
 
-    public override void runParsedTests(
+    public override void runTests(
         Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
@@ -1023,8 +1023,8 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
 
-        auto parsed = parseModule(source);
-        auto module_ = parsed.module_;
+        auto moduleResult = parseModule(source);
+        auto module_ = moduleResult.module_;
 
         FuncDeclaration f;
         if (module_.members !is null) {
