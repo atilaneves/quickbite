@@ -473,6 +473,10 @@ private struct Array {
         this.display = display;
     }
 
+    public bool opEquals(in Array other) const @safe pure {
+        return elements == other.elements;
+    }
+
     public string toString() const @safe pure {
         string ret = "[";
 

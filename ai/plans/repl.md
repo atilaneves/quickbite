@@ -178,6 +178,10 @@ Completed:
   The CTFE string conversion now respects DMD's stored string code-unit width,
   and generic `Value` string extraction preserves UTF-8 bytes instead of
   widening each byte independently.
+- Fixed nested empty string display in CTFE-backed REPL aggregate results.
+  CTFE `StringExp` values now preserve string display provenance on their
+  array-shaped `Value`, so `string[] values = ["", "a"]; values` renders as
+  `["", "a"]` instead of `[[], "a"]`.
 
 Remaining follow-up:
 
