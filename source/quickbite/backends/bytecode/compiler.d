@@ -351,6 +351,18 @@ private imported!"quickbite.lang".Value integerValue(
         default:
             assert(0, "not an integer");
 
+        case TY.Tbool:
+            return Value(bits != 0);
+
+        case TY.Tchar:
+            return Value(cast(char) bits);
+
+        case TY.Twchar:
+            return Value(cast(wchar) bits);
+
+        case TY.Tdchar:
+            return Value(cast(dchar) bits);
+
         case TY.Tint8:
             return Value(cast(byte) bits);
 

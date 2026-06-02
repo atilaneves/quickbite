@@ -53,9 +53,7 @@ static foreach (backend; backendsWith!Bytecode) {
     unittest {
         newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
-}
 
-static foreach (backend; backends) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(ubyte) 3").should ==
@@ -64,7 +62,9 @@ static foreach (backend; backends) {
             Value(cast(char) 65);
         newBackend!backend.eval("1.25").should == Value(1.25);
     }
+}
 
+static foreach (backend; backends) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
