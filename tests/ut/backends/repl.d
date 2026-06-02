@@ -67,6 +67,22 @@ static foreach (backend; backends) {
         output.should == ["42"];
     }
 
+    @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "T identity(T)(T x) { return x; }",
+                "identity(42)",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
