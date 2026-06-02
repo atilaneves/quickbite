@@ -153,6 +153,9 @@ private struct EvalFunctionWalker {
         if (auto sub = expression.isMinExp)
             return runExpression(sub.e1) - runExpression(sub.e2);
 
+        if (auto neg = expression.isNegExp)
+            return -runExpression(neg.e1);
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 

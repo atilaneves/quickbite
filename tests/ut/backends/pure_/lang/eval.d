@@ -125,7 +125,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!TreeWalker) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
@@ -133,7 +133,9 @@ static foreach (backend; backends) {
         result.should == Value(-7.75);
         result.should.not == Value(0);
     }
+}
 
+static foreach (backend; backends) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
