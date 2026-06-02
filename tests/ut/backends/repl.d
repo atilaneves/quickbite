@@ -210,6 +210,22 @@ static foreach (backend; backends) {
         output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
     }
 
+    @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                `[cast(wchar) 'a', cast(wchar) 'b']`,
+                `[cast(dchar) 'a', cast(dchar) 'b']`,
+                ":q",
+            ],
+        );
+
+        output.should == [`"ab"`, `"ab"`];
+    }
+
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

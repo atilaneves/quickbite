@@ -182,13 +182,19 @@ Completed:
   CTFE `StringExp` values now preserve string display provenance on their
   array-shaped `Value`, so `string[] values = ["", "a"]; values` renders as
   `["", "a"]` instead of `[[], "a"]`.
+- Fixed explicit wide character array display in CTFE-backed REPL results.
+  Array-shaped `Value` results containing `wchar` or `dchar` elements now
+  convert to UTF-8 through generic `Value` character-array rendering, so
+  `[cast(wchar) 'a', cast(wchar) 'b']` and
+  `[cast(dchar) 'a', cast(dchar) 'b']` render as `"ab"` instead of crashing
+  while expecting `char` elements.
 
 Remaining follow-up:
 
-- If any additional `Value` shape work is needed, keep it generic to the
-  representation rather than CTFE-specific. Do not rewrite REPL input source,
-  append `.array` to user expressions, or add a display-only wrapper source
-  path. Never try to materialize infinite ranges.
+- No concrete `Value` display shape follow-up is currently known. If another
+  one appears, keep it generic to the representation rather than CTFE-specific.
+  Do not rewrite REPL input source, append `.array` to user expressions, or add
+  a display-only wrapper source path. Never try to materialize infinite ranges.
 ## Architecture
 
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL
