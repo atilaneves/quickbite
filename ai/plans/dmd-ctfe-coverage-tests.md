@@ -110,6 +110,12 @@ backend to an existing backend-matrix test. This plan does not waive
 coverage-specific exception, record the exact scope in this section before
 workers edit tests.
 
+For the 2026-06-02 `dmd-ctfe-coverage-last-ditch-plan` session, the user
+explicitly approved adding new tests without another approval stop when all of
+the following hold: the tests are green, each test is poked red to confirm it
+checks the intended behaviour, and the tests increase the targeted CTFE
+coverage.
+
 A test is good for this work when all of the following are true:
 
 - it passes normally;
@@ -474,6 +480,91 @@ The probe-first rule (run focused coverage before keeping any test) was not
 enforced. That rule is a hard gate, not advisory.
 
 ## Archive
+
+### 2026-06-02 dmd-ctfe-coverage-last-ditch-plan UTF Batch
+
+Branch `dmd-ctfe-coverage-last-ditch-plan` started from:
+
+```text
+f5ddc01de6a5d3b5d4698cdf4623e9a9df71bacf
+```
+
+Starting broad coverage target:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+Starting broad coverage at the fixed start SHA was:
+
+```text
+2336/3760 executable entries, or 62.13%
+138/160 methods, or 86.25%
+```
+
+The final branch-head test commit before this archive entry was:
+
+```text
+b0394038f4d833772d5239eac8221f1af03486ea
+```
+
+Final broad coverage before adding this archive entry was:
+
+```text
+2362/3760 executable entries, or 62.82%
+138/160 methods, or 86.25%
+```
+
+Coverage delta:
+
+```text
++26 executable entries, or +0.69 percentage points
++0 methods
+```
+
+Coverage effect: `foreachApplyUtf` stayed partially covered but improved from
+58 covered and 52 uncovered executable entries to 84 covered and 26 uncovered
+entries. The moved entries cover UTF-16 decoding, reverse UTF-16 surrogate
+handling, UTF-32 decoding, UTF-32-to-UTF-8 loop-variable encoding, and reverse
+index bookkeeping.
+
+Added focused pure-backend CTFE tests:
+
+```text
+ut.backends.pure_.lang.control_flow.foreachUtf16String.Ctfe
+ut.backends.pure_.lang.control_flow.foreachUtf32StringEncodesAsUtf8.Ctfe
+ut.backends.pure_.lang.control_flow.foreachReverseUtf16String.Ctfe
+```
+
+Focused coverage moved these baseline-uncovered `foreachApplyUtf` lines from
+`0000000` to positive hit counts: 7272, 7273, 7276, 7277, 7278, 7279, 7280,
+7282, 7283, 7284, 7285, 7286, 7288, 7289, 7291, 7292, 7293, 7294, 7311, 7312,
+7313, 7314, 7325, 7340, 7341, and 7342.
+
+Poke results:
+
+- `foreachUtf16String.Ctfe`: changing `chars.length == 2` to `3` failed with
+  `2 != 3`; the poke was reverted and the test rerun green.
+- `foreachUtf32StringEncodesAsUtf8.Ctfe`: changing `bytes.length == 3` to `4`
+  failed with `3 != 4`; the poke was reverted and the test rerun green.
+- `foreachReverseUtf16String.Ctfe`: changing `'z'` to `'y'` failed with
+  `'z' != 'y'`; the poke was reverted and the test rerun green.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.control_flow.foreachUtf16String.Ctfe
+  ut.backends.pure_.lang.control_flow.foreachUtf32StringEncodesAsUtf8.Ctfe
+  ut.backends.pure_.lang.control_flow.foreachReverseUtf16String.Ctfe` passed
+  with 3 tests run and 0 failed.
+- `scripts/dmd-ctfe-coverage.sh` for the same three focused test names passed
+  with 3 tests run and 0 failed.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed at the branch head
+  with 763 tests run, 0 failed, and 28/28 failing as expected.
+- A fallback subagent found `visitUnrolledLoop` exception propagation viable
+  but only a one-entry branch probe, and found `visitTryCatch` unmatched
+  propagation likely to produce `+0` coverage movement, so no fallback test was
+  added in this slice.
 
 ### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 1
 
@@ -853,13 +944,13 @@ that shim.
 | `interfaceVirtualCallUsesRuntimeDispatch` | Re-verify | Existing test added | Worker 6 added the test and it passed, but branch movement is still unconfirmed. Re-run focused coverage before marking the interface dispatch branch covered. |
 | `visitSwitch` no-default-no-match | Low yield | Diagnostic-only | Reachable, but should not be a standalone PR. Batch only after larger movement and explicit low-yield approval. |
 | `visitReturn` closure error path | Do not repeat standalone | PR #117 | Valid diagnostic path, but PR #117 moved only `+3` executable entries and `+0` method coverage. |
-| `visitUnrolledLoop` exception path | Secondary candidate | Pending | Throw inside an `AliasSeq`/expression-tuple unrolled loop body and catch outside; prefer only after UTF paths move broad coverage. |
+| `visitUnrolledLoop` exception path | Low yield | Not added | Fallback subagent found it likely moves only one executable entry: the `exceptionOrCant(e)` early return at line 900. |
 | `interpret_aaApply` empty AA | Low yield | Pending | To hit the empty-literal branch, create a non-null AA literal and remove all entries before `foreach`; default-initialized AA likely hits the earlier null/non-literal return. |
 | `interpret_keys` null AA | Low yield | Pending | Reachable via `.keys` on default-initialized AA, but only a narrow null branch. |
 | `interpret_values` null AA | Low yield | Pending | Reachable via `.values` on default-initialized AA, but only a narrow null branch. |
-| `foreachApplyUtf` UTF-16 path | Last-ditch first target | Pending | `foreach (dchar c; wstr)` over a runtime-shaped `wstring`; hits case 2 at dinterpret.d ~lines 7272–7286. |
-| `foreachApplyUtf` UTF-32 / reverse | Last-ditch first target | Pending | `foreach (dchar c; dstr)` over runtime-shaped `dstring`, plus `foreach_reverse`; hits case 4 and reverse-index branches. |
-| `visitTryCatch` unmatched propagation | Secondary candidate | Pending | Prefer a passing behaviour fixture: inner non-matching catch propagates to an outer matching catch. |
+| `foreachApplyUtf` UTF-16 path | Covered | `foreachUtf16String.Ctfe` / `foreachReverseUtf16String.Ctfe` | Runtime-shaped `wstring` covers normal UTF-16 decode, reverse decode, and surrogate-pair reverse handling. |
+| `foreachApplyUtf` UTF-32 / UTF-8 encode | Covered | `foreachUtf32StringEncodesAsUtf8.Ctfe` | `foreach (char c; dstring)` covers UTF-32 decode plus UTF-8 target encoding; `foreach (dchar c; dstring)` would not enter `foreachApplyUtf`. |
+| `visitTryCatch` unmatched propagation | Not useful | Not added | Fallback subagent found the fixture likely flows through already-covered no-handler propagation and produces `+0` coverage. |
 | `interpret_aaDel` null AA | Low yield | Pending | `.remove` on a null AA probably reaches the null-AA early return, but the branch is narrow and odd because the helper returns void. |
 | `visit(CommaExp)` nested chain | Exploratory only | Pending | Plausible but easy to fold or miss; require exact fresh `firstComma` baseline lines before proposing a test. |
 
