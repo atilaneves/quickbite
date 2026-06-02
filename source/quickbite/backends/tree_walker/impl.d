@@ -69,47 +69,15 @@ private imported!"quickbite.lang".Value evalExpression(
 private imported!"quickbite.lang".Value castValue(
     imported!"dmd.expression".CastExp cast_,
 ) {
-    import dmd.astenums: TY;
+    import quickbite.backends.casts:
+        backendCastTarget = castTarget,
+        backendCastValue = castValue;
 
-    const type = cast_.to.toBasetype;
+    auto type = cast_.to.toBasetype;
     if (type is null)
         return evalExpression(cast_.e1);
 
-    const value = evalExpression(cast_.e1);
-    switch (type.ty) with (TY) {
-        case Tbool:
-            return value.castTo!bool;
-        case Tint8:
-            return value.castTo!byte;
-        case Tuns8:
-            return value.castTo!ubyte;
-        case Tchar:
-            return value.castTo!char;
-        case Tint16:
-            return value.castTo!short;
-        case Tuns16:
-            return value.castTo!ushort;
-        case Twchar:
-            return value.castTo!wchar;
-        case Tint32:
-            return value.castTo!int;
-        case Tuns32:
-            return value.castTo!uint;
-        case Tdchar:
-            return value.castTo!dchar;
-        case Tint64:
-            return value.castTo!long;
-        case Tuns64:
-            return value.castTo!ulong;
-        case Tfloat32:
-            return value.castTo!float;
-        case Tfloat64:
-            return value.castTo!double;
-        case Tfloat80:
-            return value.castTo!real;
-        default:
-            assert(0);
-    }
+    return backendCastValue(evalExpression(cast_.e1), backendCastTarget(type));
 }
 
 private imported!"quickbite.lang".Value evalFunction(
@@ -125,7 +93,6 @@ private struct EvalFunctionWalker {
     import dmd.declaration: VarDeclaration;
 
     private Value[VarDeclaration] locals;
-    private real[VarDeclaration] realLocals;
     private Value result;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
@@ -219,8 +186,6 @@ private struct EvalFunctionWalker {
 
         auto value = runExpression(initializer);
         locals[variable] = value;
-        if (auto real_ = initializedRealLiteral(initializer))
-            realLocals[variable] = real_.toReal;
         return value;
     }
 
@@ -246,45 +211,15 @@ private struct EvalFunctionWalker {
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
-        import dmd.astenums: TY;
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
 
-        const type = cast_.to.toBasetype;
+        auto type = cast_.to.toBasetype;
         if (type is null)
-            assert(0);
+            return runExpression(cast_.e1);
 
-        if (type.ty == TY.Tfloat64)
-            if (auto real_ = initializedRealLiteral(cast_.e1))
-                return Value(cast(double) real_.toReal);
-
-        if (type.ty == TY.Tint32) {
-            auto var = cast_.e1.isVarExp;
-            if (var is null)
-                assert(0);
-
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null)
-                assert(0);
-
-            auto value = variable in realLocals;
-            if (value is null)
-                assert(0);
-
-            return Value(cast(int) *value);
-        }
-
-        assert(0);
-    }
-
-    private imported!"dmd.expression".RealExp initializedRealLiteral(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        if (auto real_ = expression.isRealExp)
-            return real_;
-
-        if (auto cast_ = expression.isCastExp)
-            return initializedRealLiteral(cast_.e1);
-
-        return null;
+        return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
     }
 }
 

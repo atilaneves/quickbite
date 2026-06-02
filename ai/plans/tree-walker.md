@@ -129,6 +129,11 @@ the operands have been evaluated. Do not extract integer bits with
 future operators; that bypasses scalar preservation and makes the
 first integer test silently constrain later numeric support.
 
+For cast slices, put type-directed `Value` casting shared by multiple
+backends in backend-common code. Do not leave one backend with its own
+`TY` switch or `Value.castTo` matrix when bytecode, tree walker, or a
+future backend needs the same cast target semantics.
+
 Do not add a separate eval-source parser that splits on the last
 newline, synthesizes a local result variable, or creates its own
 function wrapper. Route tiny eval cells through common `frontend.cell`

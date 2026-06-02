@@ -39,8 +39,8 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 }
 
 private struct Compiler {
-    import quickbite.backends.bytecode.instructions:
-        CastTarget, Instruction, Op, Program;
+    import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
+    import quickbite.backends.casts: CastTarget;
     import quickbite.frontend.dmd_values: integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
@@ -343,39 +343,9 @@ private struct Compiler {
     }
 
     private size_t castTarget(CastExp cast_) {
-        import dmd.astenums: TY;
+        import quickbite.backends.casts: target = castTarget;
 
-        const type = cast_.type.toBasetype;
-        switch (type.ty) {
-            case TY.Tint8:
-                return CastTarget.byte_;
-
-            case TY.Tuns8:
-                return CastTarget.ubyte_;
-
-            case TY.Tint16:
-                return CastTarget.short_;
-
-            case TY.Tuns16:
-                return CastTarget.ushort_;
-
-            case TY.Tint32:
-                return CastTarget.int_;
-
-            case TY.Tuns32:
-                return CastTarget.uint_;
-
-            case TY.Tint64:
-                return CastTarget.long_;
-
-            case TY.Tuns64:
-                return CastTarget.ulong_;
-
-            default:
-                break;
-        }
-
-        throw new Exception("Unsupported bytecode cast.");
+        return target(cast_.type);
     }
 
     private Expression initializerExpression(
