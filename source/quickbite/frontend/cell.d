@@ -375,7 +375,7 @@ private bool isExpressionCell(in string input) {
         global.warnings = 0;
         diagnostics.length = 0;
 
-        const source = input ~ '\0';
+        const source = input ~ ";\0";
         scope parser = new Parser!ASTCodegen(
             null,
             source,
@@ -386,10 +386,12 @@ private bool isExpressionCell(in string input) {
         );
 
         parser.nextToken;
-        const expression = parser.parseExpression;
+        const statement = parser.parseStatement(0);
+        const expression = statement is null ? null : statement.isExpStatement;
         result = expression !is null &&
-            expression.isDeclarationExp is null &&
-            parser.token.value != TOK.semicolon &&
+            expression.exp !is null &&
+            expression.exp.isDeclarationExp is null &&
+            parser.token.value == TOK.endOfFile &&
             global.errors == 0;
     });
 
@@ -504,16 +506,30 @@ private bool allEvalModuleDeclarations(
 private bool isEvalModuleDeclaration(
     imported!"dmd.dsymbol".Dsymbol declaration,
 ) {
-    return declaration.isFuncDeclaration !is null ||
-        declaration.isImport !is null ||
-        declaration.isUnitTestDeclaration !is null;
+    if (declaration.isImport !is null)
+        return true;
+
+    if (declaration.isUnitTestDeclaration !is null)
+        return true;
+
+    if (isEvalFunctionDeclaration(declaration))
+        return true;
+
+    return false;
+}
+
+private bool isEvalFunctionDeclaration(
+    imported!"dmd.dsymbol".Dsymbol declaration,
+) {
+    auto function_ = declaration.isFuncDeclaration;
+    return function_ !is null && function_.fbody !is null;
 }
 
 private bool allFunctionDeclarations(
     imported!"dmd.dsymbol".Dsymbols* declarations,
 ) {
     foreach (declaration; *declarations) {
-        if (declaration.isFuncDeclaration is null)
+        if (!isEvalFunctionDeclaration(declaration))
             return false;
     }
 
