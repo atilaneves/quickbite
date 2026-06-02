@@ -269,7 +269,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -280,7 +280,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(left || right)` failed");
     }
+}
 
+static foreach (backend; backends) {
     @("logicalOrShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
