@@ -480,7 +480,11 @@ private struct EvalModuleInterpreter {
             import std.conv: text;
 
             const operator = equal.op == EXP.notEqual ? "==" : "!=";
+            const left = runExpression(equal.e1);
+            const right = runExpression(equal.e2);
             const useBoolMessage =
+                isBoolValue(left) ||
+                isBoolValue(right) ||
                 isBoolExpression(equal.e1) ||
                 isBoolExpression(equal.e2) ||
                 isLogicalNotExpression(equal.e1) ||
@@ -488,11 +492,11 @@ private struct EvalModuleInterpreter {
                 isLogicalAndExpression(equal.e1) ||
                 isLogicalAndExpression(equal.e2);
             return text(
-                equalityOperandMessage(equal.e1, useBoolMessage),
+                equalityOperandMessage(left, useBoolMessage),
                 " ",
                 operator,
                 " ",
-                equalityOperandMessage(equal.e2, useBoolMessage),
+                equalityOperandMessage(right, useBoolMessage),
             );
         }
 
@@ -507,16 +511,19 @@ private struct EvalModuleInterpreter {
     }
 
     private string equalityOperandMessage(
-        imported!"dmd.expression".Expression expression,
+        in Value value,
         in bool useBoolMessage,
     ) {
         import std.conv: text;
 
-        const value = runExpression(expression);
         if (useBoolMessage)
             return text(isTruthy(value));
 
         return text(value);
+    }
+
+    private bool isBoolValue(in Value value) {
+        return value == Value(false) || value == Value(true);
     }
 
     private bool isBoolExpression(imported!"dmd.expression".Expression expression) {

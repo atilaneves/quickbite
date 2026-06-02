@@ -252,6 +252,20 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool zero() {
+                return false;
+            }
+
+            unittest {
+                bool left = zero;
+                assert((left || false) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
