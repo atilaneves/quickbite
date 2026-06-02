@@ -140,12 +140,14 @@ static foreach (backend; backends) {
 
         with (immutable Sandbox()) {
             writeFile(
-                "fixture.d",
+                "structured_result_locations.d",
                 "unittest {\n" ~
                 "    assert(1 == 2);\n" ~
                 "}",
             );
-            const fixturePath = inSandboxPath("fixture.d");
+            const fixturePath = inSandboxPath(
+                "structured_result_locations.d",
+            );
 
             const result = runBackendFileFixtureTestResults!backend(
                 fixturePath,
