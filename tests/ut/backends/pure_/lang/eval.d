@@ -18,14 +18,14 @@ static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
-}
 
-static foreach (backend; backendsWith!Bytecode) {
     @("add.int.1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
     }
+}
 
+static foreach (backend; backendsWith!Bytecode) {
     @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
