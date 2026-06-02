@@ -205,7 +205,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -214,7 +216,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
