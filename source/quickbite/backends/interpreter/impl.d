@@ -333,9 +333,12 @@ private struct EvalModuleInterpreter {
         if (auto not = expression.isNotExp)
             return Value(!isTruthy(runExpression(not.e1)));
 
-        if (auto logical = expression.isLogicalExp)
+        if (auto logical = expression.isLogicalExp) {
             if (logical.op == EXP.andAnd)
                 return runAndAndExpression(logical);
+            else if (logical.op == EXP.orOr)
+                return runOrOrExpression(logical);
+        }
 
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
@@ -374,6 +377,15 @@ private struct EvalModuleInterpreter {
     ) {
         if (!isTruthy(runExpression(logical.e1)))
             return Value(false);
+
+        return Value(isTruthy(runExpression(logical.e2)));
+    }
+
+    private Value runOrOrExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        if (isTruthy(runExpression(logical.e1)))
+            return Value(true);
 
         return Value(isTruthy(runExpression(logical.e2)));
     }
