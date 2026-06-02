@@ -118,13 +118,11 @@ Completed:
 - Added a red regression for expression-cell CTFE failures losing diagnostics:
   `auto arr = [1,2,3]; arr[99]` currently reports
   `Unsupported CTFE eval result: error` instead of DMD's bounds diagnostic.
+- Fixed expression-cell CTFE failures so DMD's diagnostic is reported before
+  `ErrorExp` reaches REPL value rendering. For example,
+  `auto arr = [1,2,3]; arr[99]` reports DMD's bounds diagnostic.
 
 Remaining follow-up:
-
-- Fix expression-cell CTFE failures such as
-  `auto arr = [1,2,3]; arr[99]` printing
-  `Unsupported CTFE eval result: error` instead of the actual error message.
-  The user's diagnostic is lost.
 
 - Fix `printf "   \n" | bin/qb` printing `Unsupported CTFE eval result:
   voidExpression`. Whitespace-only input should be a silent no-op.

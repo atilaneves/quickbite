@@ -347,7 +347,7 @@ string diagnosticMessage() {
     return messages.join("\n");
 }
 
-private void resetErrors() {
+public void resetErrors() {
     import dmd.globals: global;
     import dmd.errors: diagnostics;
     global.errors = 0;
