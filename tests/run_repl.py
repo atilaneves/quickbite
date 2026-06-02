@@ -55,6 +55,37 @@ def test_piped_whitespace_line_is_silent_noop() -> None:
     assert result.stdout == ""
 
 
+def test_interactive_error_label_is_red() -> None:
+    child = pexpect.spawn(qb_path(), timeout=TIMEOUT, encoding="utf-8")
+    try:
+        child.expect_exact("Quickbite REPL")
+        child.expect_exact("> ")
+
+        child.sendline("unittest { assert(1 == 2); }")
+        child.expect_exact("> ")
+
+        child.sendline(":t")
+        child.expect_exact(
+            "\x1b[31mError:\x1b[0m unittest at <repl>(1) failed: 1 != 2",
+        )
+        child.expect_exact("> ")
+
+        child.sendline(":q")
+        child.expect(pexpect.EOF)
+    finally:
+        child.close(force=True)
+
+    assert child.exitstatus == 0
+
+
+def test_piped_error_label_is_not_coloured() -> None:
+    result = run_qb(input="1 / 0\n")
+
+    assert result.returncode == 1
+    assert result.stdout.startswith("Error: ")
+    assert "\x1b[" not in result.stdout
+
+
 def test_command_prints_expression_result() -> None:
     result = run_qb("-c", "1 + 2")
 
