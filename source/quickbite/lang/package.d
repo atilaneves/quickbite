@@ -179,8 +179,6 @@ public struct Value {
                     return text(value, ": short");
                 } else static if (is(T == const(ushort))) {
                     return text(value, ": ushort");
-                } else static if (is(T == const(int))) {
-                    return text(value, ": int");
                 } else static if (is(T == const(uint))) {
                     return text(value, "u");
                 } else static if (is(T == const(long))) {

@@ -16,7 +16,7 @@ static foreach (backend; backends) {
             ["1", "2", ":q"],
         );
 
-        output.should == ["1: int", "2: int"];
+        output.should == ["1", "2"];
     }
 
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
@@ -28,7 +28,7 @@ static foreach (backend; backends) {
             ["int x;", "x", ":q"],
         );
 
-        output.should == ["0: int"];
+        output.should == ["0"];
     }
 
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
@@ -40,7 +40,7 @@ static foreach (backend; backends) {
             ["int x;", "x++", "x", ":q"],
         );
 
-        output.should == ["0: int", "1: int"];
+        output.should == ["0", "1"];
     }
 
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
@@ -52,7 +52,7 @@ static foreach (backend; backends) {
             ["int x;", "++x;", "x", ":q"],
         );
 
-        output.should == ["1: int"];
+        output.should == ["1"];
     }
 
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
@@ -64,7 +64,7 @@ static foreach (backend; backends) {
             ["int twice(int i) { return i * 2; }", "twice(21)", ":q"],
         );
 
-        output.should == ["42: int"];
+        output.should == ["42"];
     }
 
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
@@ -82,7 +82,7 @@ static foreach (backend; backends) {
             ],
         );
 
-        output.should == ["42: int"];
+        output.should == ["42"];
     }
 
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
@@ -94,7 +94,7 @@ static foreach (backend; backends) {
             ["import std.algorithm;", "min(3, 1)", ":q"],
         );
 
-        output.should == ["1: int"];
+        output.should == ["1"];
     }
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
@@ -161,9 +161,11 @@ static foreach (backend; backends) {
         const output = runReplLoop(
             newBackend!backend,
             [
+                "42",
                 "cast(uint) 42",
                 "42L",
                 "42UL",
+                "3.8",
                 "3.8f",
                 "cast(byte) 42",
                 "cast(short) 42",
@@ -175,9 +177,11 @@ static foreach (backend; backends) {
         );
 
         output.should == [
+            "42",
             "42u",
             "42L",
             "42UL",
+            "3.8",
             "3.8f",
             "42: byte",
             "42: short",
