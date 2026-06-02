@@ -182,11 +182,15 @@ public struct Value {
                 } else static if (is(T == const(int))) {
                     return text(value, ": int");
                 } else static if (is(T == const(uint))) {
-                    return text(value, ": uint");
+                    return text(value, "u");
                 } else static if (is(T == const(long))) {
-                    return text(value, ": long");
+                    return text(value, "L");
                 } else static if (is(T == const(ulong))) {
-                    return text(value, ": ulong");
+                    return text(value, "UL");
+                } else static if (is(T == const(float))) {
+                    return text(value, "f");
+                } else static if (is(T == const(real))) {
+                    return text(value, ": real");
                 } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {

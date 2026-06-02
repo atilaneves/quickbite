@@ -154,6 +154,39 @@ static foreach (backend; backends) {
         output.should == [`"hello"`];
     }
 
+    @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "cast(uint) 42",
+                "42L",
+                "42UL",
+                "3.8f",
+                "cast(byte) 42",
+                "cast(short) 42",
+                "cast(ubyte) 42",
+                "cast(ushort) 42",
+                "cast(real) 3.8",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "42u",
+            "42L",
+            "42UL",
+            "3.8f",
+            "42: byte",
+            "42: short",
+            "42: ubyte",
+            "42: ushort",
+            "3.8: real",
+        ];
+    }
+
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
