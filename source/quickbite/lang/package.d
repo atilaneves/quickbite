@@ -208,7 +208,7 @@ public struct Value {
         if (op == "+")
     {
         import std.sumtype: match;
-        import std.traits: Unqual, isIntegral;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
 
         return data.match!(
             (lhs) {
@@ -216,6 +216,8 @@ public struct Value {
 
                 static if (isIntegral!L) {
                     return rhs.addInteger(lhs);
+                } else static if (isFloatingPoint!L) {
+                    return rhs.addFloatingPoint(lhs);
                 } else {
                     throw new Exception("Unsupported + lhs type.");
                     return Value.void_;
@@ -226,13 +228,31 @@ public struct Value {
 
     private Value addInteger(L)(const L lhs) const @safe pure {
         import std.sumtype: match;
-        import std.traits: isIntegral;
+        import std.traits: Unqual, isIntegral;
 
         return data.match!(
             (rhs) {
-                alias R = typeof(rhs);
+                alias R = Unqual!(typeof(rhs));
 
                 static if (isIntegral!L && isIntegral!R) {
+                    return Value(cast(L) lhs + cast(R) rhs);
+                } else {
+                    throw new Exception("Unsupported + rhs type.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
+    private Value addFloatingPoint(L)(const L lhs) const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint;
+
+        return data.match!(
+            (rhs) {
+                alias R = Unqual!(typeof(rhs));
+
+                static if (isFloatingPoint!L && isFloatingPoint!R) {
                     return Value(cast(L) lhs + cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported + rhs type.");

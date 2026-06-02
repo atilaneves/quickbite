@@ -39,6 +39,14 @@ private void compileExpression(
         return;
     }
 
+    if (auto real_ = expression.isRealExp) {
+        program.instructions ~= Instruction(
+            Op.literal,
+            realValue(real_),
+        );
+        return;
+    }
+
     if (auto add = expression.isAddExp) {
         compileExpression(add.e1, program);
         compileExpression(add.e2, program);
@@ -48,6 +56,24 @@ private void compileExpression(
 
     const msg = "Unsupported expression `" ~ expression.toChars.fromStringz.idup ~ "`";
     throw new Exception(msg);
+}
+
+
+private imported!"quickbite.lang".Value realValue(
+    imported!"dmd.expression".RealExp real_,
+) {
+    import quickbite.lang: Value;
+    import dmd.astenums: TY;
+
+    const type = real_.type.toBasetype;
+
+    if (type !is null && type.ty == TY.Tfloat32)
+        return Value(cast(float) real_.toReal);
+
+    if (type !is null && type.ty == TY.Tfloat64)
+        return Value(cast(double) real_.toReal);
+
+    return Value(cast(real) real_.toReal);
 }
 
 

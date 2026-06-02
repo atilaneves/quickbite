@@ -2,11 +2,8 @@ module ut.backends.pure_.lang.eval;
 
 
 import ut.backends;
-
-
-private:
-
 import std.typecons: tuple;
+
 
 static foreach (backend; backendsWith!Bytecode) {
     @("literal." ~ backend.stringof)
@@ -15,23 +12,29 @@ static foreach (backend; backendsWith!Bytecode) {
         newBackend!backend.eval("7").should == Value(7);
     }
 
-    @("add0." ~ backend.stringof)
+    @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
 
-    @("add1." ~ backend.stringof)
+    @("add.int.1." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("2 + 2").should == Value(4);
     }
 
-    @("add2." ~ backend.stringof)
+    @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
+    }
+
+    @("add.float." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
     }
 }
 
 static foreach (backend; backends) {
+
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
