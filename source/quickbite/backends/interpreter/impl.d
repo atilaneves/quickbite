@@ -499,6 +499,27 @@ private struct Interpreter {
         while (auto cast_ = expression.isCastExp)
             expression = cast_.e1;
 
+        if (auto comma = expression.isCommaExp)
+            return isLogicalNotExpression(comma.e2);
+
+        if (auto var = expression.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null ||
+                variable._init is null ||
+                variable._init.isExpInitializer is null)
+                return false;
+
+            auto initializer = variable._init.isExpInitializer.exp;
+            if (auto assign = initializer.isAssignExp)
+                initializer = assign.e2;
+            else if (auto construct = initializer.isConstructExp)
+                initializer = construct.e2;
+            else if (auto blit = initializer.isBlitExp)
+                initializer = blit.e2;
+
+            return isLogicalNotExpression(initializer);
+        }
+
         return expression.isNotExp !is null;
     }
 

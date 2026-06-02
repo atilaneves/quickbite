@@ -156,19 +156,20 @@ REPL-only concepts such as type-display cells belong in
 
 Current progress in `tests/ut/backends/pure_/lang/logic.d`:
 `logicalNot`, `logicalNotFailureMessage.0`, `logicalNotFailureMessage.1`,
-and `logicalNotCall` are covered by `TreeWalker`.
+`logicalNotCall`, and `logicalNotCallFailureMessage.0` are covered by
+`TreeWalker`.
 
-The next smallest slices are the `logicalNotCallFailureMessage.*` pair,
-followed by plain local `&&`/`||` cases before broader call-based or
-short-circuit logic. Treat each named unittest as its own promotion and
-commit.
+The next smallest slice is `logicalNotCallFailureMessage.1`, followed by plain
+local `&&`/`||` cases before broader call-based or short-circuit logic. Treat
+each named unittest as its own promotion and commit.
 
 Module-backed interpreter support remains intentionally narrow:
 zero-argument free calls, return statements, comma-expression sequencing,
-local bool declarations, unary `!`, equality failure messages, and truthiness
-exist only because promoted logic tests required them. Do not generalize call
-parameters, methods, assignment, control flow, or assertion formatting until a
-promoted test forces that behaviour.
+local bool declarations, unary `!`, equality failure messages, truthiness, and
+DMD-lowered logical-not temporaries in assertion messages exist only because
+promoted logic tests required them. Do not generalize call parameters, methods,
+assignment, control flow, or assertion formatting until a promoted test forces
+that behaviour.
 
 ### First PR Guardrails
 
