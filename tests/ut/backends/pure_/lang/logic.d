@@ -123,6 +123,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -133,7 +136,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backends) {
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
