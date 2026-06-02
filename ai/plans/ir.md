@@ -97,6 +97,10 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Choose the promoted test by expected implementation size. The first PR
   should pick the already-written `eval` test that can be made green with the
   least production code while still exercising honest IR lowering/execution.
+- Integer literal support eventually needs explicit coverage for every D
+  integer type, not only the default `int` literals in the first eval slice.
+  Promote or add coverage for `byte`, `ubyte`, `short`, `ushort`, `int`,
+  `uint`, `long`, and `ulong` before relying on literal lowering more broadly.
 - The first PR should enter through `Backend.eval`, mirroring the successful
   bytecode backend start. Do not promote parsed-module unittest execution for
   the first IR backend slice.
