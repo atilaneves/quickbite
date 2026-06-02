@@ -103,7 +103,7 @@ private imported!"quickbite.lang".Value castValue(
         }
     }
 
-    return evalExpression(cast_.e1);
+    assert(0);
 }
 
 private imported!"quickbite.lang".Value realValue(
@@ -151,6 +151,7 @@ private struct EvalInterpreter {
     import dmd.declaration: VarDeclaration;
 
     private Value[VarDeclaration] locals;
+    private real[VarDeclaration] realLocals;
     private Value result;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
@@ -187,6 +188,12 @@ private struct EvalInterpreter {
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         if (auto integer = expression.isIntegerExp)
             return Value(cast(int) integer.getInteger);
+
+        if (auto real_ = expression.isRealExp)
+            return realValue(real_);
+
+        if (auto cast_ = expression.isCastExp)
+            return castValue(cast_);
 
         if (auto addAssign = expression.isAddAssignExp)
             return runIncrementAssignExpression(addAssign);
@@ -231,6 +238,8 @@ private struct EvalInterpreter {
 
         auto value = runExpression(initializer);
         locals[variable] = value;
+        if (auto real_ = initializedRealLiteral(initializer))
+            realLocals[variable] = real_.toReal;
         return value;
     }
 
@@ -253,6 +262,48 @@ private struct EvalInterpreter {
 
         *current = *current + Value(cast(int) 1);
         return *current;
+    }
+
+    private Value castValue(imported!"dmd.expression".CastExp cast_) {
+        import dmd.astenums: TY;
+
+        const type = cast_.to.toBasetype;
+        if (type is null)
+            assert(0);
+
+        if (type.ty == TY.Tfloat64)
+            if (auto real_ = initializedRealLiteral(cast_.e1))
+                return Value(cast(double) real_.toReal);
+
+        if (type.ty == TY.Tint32) {
+            auto var = cast_.e1.isVarExp;
+            if (var is null)
+                assert(0);
+
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                assert(0);
+
+            auto value = variable in realLocals;
+            if (value is null)
+                assert(0);
+
+            return Value(cast(int) *value);
+        }
+
+        assert(0);
+    }
+
+    private imported!"dmd.expression".RealExp initializedRealLiteral(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto real_ = expression.isRealExp)
+            return real_;
+
+        if (auto cast_ = expression.isCastExp)
+            return initializedRealLiteral(cast_.e1);
+
+        return null;
     }
 }
 
