@@ -472,7 +472,9 @@ private struct EvalModuleInterpreter {
                 isBoolExpression(equal.e1) ||
                 isBoolExpression(equal.e2) ||
                 isLogicalNotExpression(equal.e1) ||
-                isLogicalNotExpression(equal.e2);
+                isLogicalNotExpression(equal.e2) ||
+                isLogicalAndExpression(equal.e1) ||
+                isLogicalAndExpression(equal.e2);
             return text(
                 equalityOperandMessage(equal.e1, useBoolMessage),
                 " ",
@@ -536,6 +538,23 @@ private struct EvalModuleInterpreter {
         }
 
         return expression.isNotExp !is null;
+    }
+
+    private bool isLogicalAndExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        while (auto cast_ = expression.isCastExp)
+            expression = cast_.e1;
+
+        if (auto comma = expression.isCommaExp)
+            return isLogicalAndExpression(comma.e2);
+
+        if (auto logical = expression.isLogicalExp)
+            return logical.op == EXP.andAnd;
+
+        return false;
     }
 
     private string assertMessage(imported!"dmd.expression".Expression expression) {
