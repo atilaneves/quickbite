@@ -130,9 +130,11 @@ Completed:
 Remaining follow-up:
 
 - Expand the structured backend test-result API so running tests reports what
-  ran and what failed, including stable unittest names when available and
-  file/line locations for both REPL snippets and source files. Keep
-  `runParsedTests` as a compatibility wrapper until callers migrate, but
+  ran and what failed, including DMD's own stable generated unittest symbol
+  names and file/line locations for both REPL snippets and source files. Do
+  not inspect unit-threaded attributes or otherwise bake in unit-threaded test
+  naming; if DMD gives a unittest an ugly generated name, report that name.
+  Keep `runParsedTests` as a compatibility wrapper until callers migrate, but
   future REPL, summary, and reporting work should consume structured results
   rather than throwing or parsing raw strings.
 
