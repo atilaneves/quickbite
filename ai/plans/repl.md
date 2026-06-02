@@ -140,6 +140,11 @@ Remaining follow-up:
   user inside the interactive REPL prompt. Loading or running files should
   finish and exit unless interactive mode is explicitly requested.
 
+- Prefix interactive REPL command failures with an error label, preferably
+  styled red for terminal output. For example, after
+  `unittest { assert(1 == 2); }` and `:t`, the output should not be only
+  `1 != 2`.
+
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
