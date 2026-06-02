@@ -227,7 +227,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

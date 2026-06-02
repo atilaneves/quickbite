@@ -521,6 +521,10 @@ private struct EvalModuleInterpreter {
     private bool isBoolExpression(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
 
+        if (auto cast_ = expression.isCastExp)
+            if (isBoolExpression(cast_.e1))
+                return true;
+
         auto type = expression.type;
         if (auto cast_ = expression.isCastExp)
             type = cast_.to;
