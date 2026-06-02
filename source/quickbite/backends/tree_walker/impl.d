@@ -47,9 +47,10 @@ private imported!"quickbite.lang".Value evalExpression(
     imported!"dmd.expression".Expression expression,
 ) {
     import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: integerValue, realValue;
 
     if (auto integer = expression.isIntegerExp)
-        return Value(cast(int) integer.getInteger);
+        return integerValue(integer);
 
     if (auto real_ = expression.isRealExp)
         return realValue(real_);
@@ -61,66 +62,46 @@ private imported!"quickbite.lang".Value evalExpression(
         return evalExpression(add.e1) + evalExpression(add.e2);
 
     if (auto sub = expression.isMinExp)
-        return Value(integerValue(sub.e1) - integerValue(sub.e2));
+        return Value(integerBits(sub.e1) - integerBits(sub.e2));
 
     if (auto mul = expression.isMulExp)
-        return Value(integerValue(mul.e1) * integerValue(mul.e2));
+        return Value(integerBits(mul.e1) * integerBits(mul.e2));
 
     if (auto div = expression.isDivExp)
-        return Value(integerValue(div.e1) / integerValue(div.e2));
+        return Value(integerBits(div.e1) / integerBits(div.e2));
 
     assert(0);
 }
 
-private int integerValue(imported!"dmd.expression".Expression expression) {
-    auto integer = expression.isIntegerExp;
-    if (integer is null)
-        assert(0);
-
-    return cast(int) integer.getInteger;
+private int integerBits(imported!"dmd.expression".Expression expression)
+in (expression.isIntegerExp !is null)
+{
+    return cast(int) expression.isIntegerExp.getInteger;
 }
 
 private imported!"quickbite.lang".Value castValue(
     imported!"dmd.expression".CastExp cast_,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values:
+        castIntegerValue,
+        castSignedIntegerValue;
 
     const type = cast_.to.toBasetype;
     if (type is null)
         return evalExpression(cast_.e1);
 
-    if (auto integer = cast_.e1.isIntegerExp) {
-        const bits = integer.getInteger;
+    if (auto integer = cast_.e1.isIntegerExp)
+        return castIntegerValue(integer, type.ty);
 
-        switch (type.ty) {
-            case TY.Tuns8:
-                return Value(cast(ubyte) bits);
-            case TY.Tchar:
-                return Value(cast(char) bits);
-            default:
-                assert(0);
-        }
+    if (auto neg = cast_.e1.isNegExp) {
+        if (auto integer = neg.e1.isIntegerExp)
+            return castSignedIntegerValue(
+                -cast(long) integer.getInteger,
+                type.ty,
+            );
     }
 
     assert(0);
-}
-
-private imported!"quickbite.lang".Value realValue(
-    imported!"dmd.expression".RealExp real_,
-) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
-
-    const type = real_.type.toBasetype;
-
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(double) real_.toReal);
 }
 
 private imported!"quickbite.lang".Value evalMultiCell(
@@ -186,8 +167,10 @@ private struct EvalInterpreter {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import quickbite.frontend.dmd_values: integerValue, realValue;
+
         if (auto integer = expression.isIntegerExp)
-            return Value(cast(int) integer.getInteger);
+            return integerValue(integer);
 
         if (auto real_ = expression.isRealExp)
             return realValue(real_);

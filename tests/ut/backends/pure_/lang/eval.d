@@ -65,8 +65,18 @@ static foreach (backend; backendsWith!TreeWalker) {
 static foreach (backend; backendsWith!TreeWalker) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
+        newBackend!backend.eval("cast(byte) -3").should ==
+            Value(cast(byte) -3);
         newBackend!backend.eval("cast(ubyte) 3").should ==
             Value(cast(ubyte) 3);
+        newBackend!backend.eval("cast(short) -3").should ==
+            Value(cast(short) -3);
+        newBackend!backend.eval("cast(ushort) 3").should ==
+            Value(cast(ushort) 3);
+        newBackend!backend.eval("3").should == Value(3);
+        newBackend!backend.eval("3u").should == Value(3u);
+        newBackend!backend.eval("3L").should == Value(3L);
+        newBackend!backend.eval("3UL").should == Value(3UL);
         newBackend!backend.eval("cast(char) 65").should ==
             Value(cast(char) 65);
         newBackend!backend.eval("1.25").should == Value(1.25);

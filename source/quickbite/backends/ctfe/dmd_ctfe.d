@@ -446,58 +446,17 @@ private imported!"quickbite.lang".Value ctfeValue(
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
 
-    const value = integer.getInteger;
-    const type = integer.type is null ? null : integer.type.toBasetype;
-    if (type is null)
-        return Value(cast(long) value);
-
-    switch (type.ty) with (TY) {
-        case Tbool:
-            return Value(value != 0);
-        case Tint8:
-            return Value(cast(byte) value);
-        case Tuns8:
-            return Value(cast(ubyte) value);
-        case Tint16:
-            return Value(cast(short) value);
-        case Tuns16:
-            return Value(cast(ushort) value);
-        case Tint32:
-            return Value(cast(int) value);
-        case Tuns32:
-            return Value(cast(uint) value);
-        case Tint64:
-            return Value(cast(long) value);
-        case Tuns64:
-            return Value(cast(ulong) value);
-        case Tchar:
-            return Value(cast(char) value);
-        case Twchar:
-            return Value(cast(wchar) value);
-        case Tdchar:
-            return Value(cast(dchar) value);
-        default:
-            return Value(cast(long) value);
-    }
+    return frontendIntegerValue(integer);
 }
 
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendRealValue = realValue;
 
-    const type = real_.type is null ? null : real_.type.toBasetype;
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(real) real_.toReal);
+    return frontendRealValue(real_);
 }
 
 private imported!"quickbite.lang".Value stringValue(
