@@ -33,8 +33,14 @@ public struct Repl {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
-        if (input == ":t")
-            return runLoadedTests;
+        if (input == ":t") {
+            try
+                return runLoadedTests;
+            catch (Exception exception)
+                throw new Exception(
+                    commandDiagnostic(userDiagnostic(exception.msg)),
+                );
+        }
 
         const source = pendingInput.length == 0 ?
             input :
@@ -163,6 +169,10 @@ private string userDiagnostic(in string diagnostic) @safe pure {
     }
 
     return withoutConsecutiveDuplicateLines(result);
+}
+
+private string commandDiagnostic(in string diagnostic) @safe pure {
+    return "Error: " ~ diagnostic;
 }
 
 private string withoutConsecutiveDuplicateLines(in string diagnostic)
