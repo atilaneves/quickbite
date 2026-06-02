@@ -192,10 +192,10 @@ static foreach (backend; backends) {
 
         const output = runReplLoop(
             newBackend!backend,
-            [`"wide"w`, `"wide"d`, ":q"],
+            [`"wide"w`, `"wide"d`, `"\U0001F600"d`, ":q"],
         );
 
-        output.should == [`"wide"`, `"wide"`];
+        output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
     }
 
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)

@@ -174,6 +174,10 @@ Completed:
 - Fixed CTFE-backed REPL display for wide string results. Dynamic `wstring`
   and `dstring` expression results now render as quoted strings instead of
   character arrays.
+- Fixed non-BMP `dstring` code point display in CTFE-backed REPL results.
+  The CTFE string conversion now respects DMD's stored string code-unit width,
+  and generic `Value` string extraction preserves UTF-8 bytes instead of
+  widening each byte independently.
 
 Remaining follow-up:
 

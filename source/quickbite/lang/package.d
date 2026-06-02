@@ -144,10 +144,10 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) {
-                string result;
+                char[] result;
                 foreach (element; array.elements)
-                    result ~= element.asDchar;
-                return result;
+                    result ~= element.asChar;
+                return result.idup;
             },
             (_) {
                 throw new Exception("Expected char array.");
@@ -176,6 +176,18 @@ public struct Value {
         return data.match!(
             (const(char) value) => true,
             (_) => false,
+        );
+    }
+
+    private char asChar() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => value,
+            (_) {
+                throw new Exception("Expected char.");
+                return char.init;
+            },
         );
     }
 
@@ -477,11 +489,11 @@ private struct Array {
     }
 
     private string charArrayString() const @safe pure {
-        string result;
+        char[] result;
         foreach (element; elements)
-            result ~= element.asDchar;
+            result ~= element.asChar;
 
-        return result;
+        return result.idup;
     }
 }
 
