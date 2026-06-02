@@ -5,7 +5,7 @@ import ut.backends;
 import std.typecons: tuple;
 
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
     @("literal." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("0").should == Value(0);
