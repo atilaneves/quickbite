@@ -130,6 +130,22 @@ static foreach (backend; backends) {
         output.should == ["MapResult([1, 2, 3], null)"];
     }
 
+    @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "import std;",
+                "iota(5).filter!(x => x % 2 == 0).array",
+                ":q",
+            ],
+        );
+
+        output.should == ["[0, 2, 4]"];
+    }
+
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
