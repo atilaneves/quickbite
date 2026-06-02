@@ -28,6 +28,7 @@ private enum EvalHistoryTarget {
 
 public struct EvalSession {
     private string localTranscript;
+    private string loadedModuleTranscript;
     private string moduleTranscript;
     private uint valueCellCount;
 
@@ -50,7 +51,7 @@ public struct EvalSession {
 
         if (isModuleDeclarationCell(input)) {
             const source = evalSource(
-                moduleTranscript ~ input ~ "\n",
+                moduleSource(moduleTranscript ~ input ~ "\n"),
                 localTranscript,
             );
             return parsedEvalCell(
@@ -66,7 +67,7 @@ public struct EvalSession {
                 throw new Exception(diagnostic);
 
             const source = evalSource(
-                moduleTranscript,
+                moduleSource,
                 localTranscript ~ input ~ "\n",
             );
             return parsedEvalCell(
@@ -78,7 +79,7 @@ public struct EvalSession {
         }
 
         const source = evalSource(
-            moduleTranscript,
+            moduleSource,
             localTranscript ~ "return " ~ input ~ ";",
         );
         return parsedEvalCell(
@@ -110,11 +111,26 @@ public struct EvalSession {
     }
 
     public void loadModuleSource(in string source) {
-        moduleTranscript ~= source ~ "\n";
+        loadedModuleTranscript ~= source ~ "\n";
     }
 
     public string loadedModuleSource() const @safe pure {
-        return moduleTranscript;
+        return moduleSource;
+    }
+
+    private string moduleSource() const @safe pure {
+        return moduleSource(moduleTranscript);
+    }
+
+    private string moduleSource(in string replModuleTranscript) const
+    @safe pure {
+        if (loadedModuleTranscript.length == 0)
+            return replModuleTranscript;
+
+        return loadedModuleTranscript ~
+            `#line 1 "<repl>"` ~
+            "\n" ~
+            replModuleTranscript;
     }
 }
 
