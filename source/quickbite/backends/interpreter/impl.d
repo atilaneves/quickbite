@@ -332,6 +332,13 @@ private struct EvalModuleInterpreter {
         if (auto not = expression.isNotExp)
             return Value(!isTruthy(runExpression(not.e1)));
 
+        if (auto logical = expression.isLogicalExp) {
+            import dmd.tokens: EXP;
+
+            if (logical.op == EXP.andAnd)
+                return runLogicalAndExpression(logical);
+        }
+
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
 
@@ -362,6 +369,14 @@ private struct EvalModuleInterpreter {
 
         import std.conv: text;
         throw new Exception(text("Unsupported interpreter expression: ", expression.op));
+    }
+
+    private Value runLogicalAndExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        const left = isTruthy(runExpression(logical.e1));
+        const right = isTruthy(runExpression(logical.e2));
+        return Value(left && right);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
