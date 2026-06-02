@@ -467,8 +467,13 @@ private struct EvalModuleInterpreter {
     private string assertFailureMessage(
         imported!"dmd.expression".AssertExp assert_,
     ) {
-        if (assert_.msg !is null && assert_.msg.isStringExp !is null)
-            return assertMessage(assert_.msg);
+        if (assert_.msg !is null) {
+            if (assert_.msg.isStringExp !is null)
+                return assertMessage(assert_.msg);
+
+            if (auto message = dmdAssertFailBoolMessage(assert_.msg))
+                return message;
+        }
 
         if (auto equal = assert_.e1.isEqualExp) {
             import dmd.tokens: EXP;
@@ -590,10 +595,52 @@ private struct EvalModuleInterpreter {
     }
 
     private string assertMessage(imported!"dmd.expression".Expression expression) {
-        auto literal = expression.isStringExp;
-        if (literal is null)
-            assert(0);
+        if (auto literal = expression.isStringExp)
+            return literal.peekString.idup;
 
-        return literal.peekString.idup;
+        assert(0);
+    }
+
+    private string dmdAssertFailBoolMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.f is null ||
+            call.f.ident.toString != "_d_assert_fail" ||
+            call.arguments is null)
+            return null;
+
+        return dmdAssertFailBoolMessage(call);
+    }
+
+    private string dmdAssertFailBoolMessage(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import std.conv: text;
+
+        if (call.arguments.length != 3)
+            return null;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null)
+            return null;
+
+        const operatorText = operator.peekString.idup;
+        if (operatorText != "==" && operatorText != "!=")
+            return null;
+
+        auto left = (*call.arguments)[1].isIntegerExp;
+        auto right = (*call.arguments)[2].isIntegerExp;
+        if (left is null || right is null)
+            return null;
+
+        return text(
+            left.toInteger != 0,
+            " ",
+            operatorText == "==" ? "!=" : "==",
+            " ",
+            right.toInteger != 0,
+        );
     }
 }
