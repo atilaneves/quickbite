@@ -458,6 +458,25 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCall." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert(left && right);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNot." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
