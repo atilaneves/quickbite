@@ -72,39 +72,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
-    @("logicalAnd." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = true;
-                bool right = true;
-                assert(left && right);
-            }
-        });
-    }
-
-    @("logicalAndFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = true;
-                bool right = true;
-                assert((left && right) == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalAndFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = true;
-                bool right = false;
-                assert((left && right) == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
     @("logicalAndCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -118,51 +85,6 @@ static foreach (backend; backends) {
 
             unittest {
                 assert(left && right);
-            }
-        });
-    }
-
-    @("logicalAndCallFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool left() {
-                return true;
-            }
-
-            bool right() {
-                return true;
-            }
-
-            unittest {
-                assert((left && right) == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalAndCallFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool left() {
-                return true;
-            }
-
-            bool right() {
-                return false;
-            }
-
-            unittest {
-                assert((left && right) == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
-    @("logicalAndShortCircuit." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = false;
-                int zero = 0;
-                assert(!(left && 42 / zero == 0));
             }
         });
     }
@@ -187,69 +109,6 @@ static foreach (backend; backends) {
                 assert(!(left && 42 / zero == 0) == false);
             }
         }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalAndCallShortCircuit." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            bool failIfCalled() {
-                assert(0);
-                return true;
-            }
-
-            unittest {
-                assert(!(isReady && failIfCalled));
-            }
-        });
-    }
-
-    @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            bool failIfCalled() {
-                assert(0);
-                return true;
-            }
-
-            unittest {
-                assert((isReady && failIfCalled) == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
-    @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return true;
-            }
-
-            bool failIfCalled() {
-                assert(0);
-                return true;
-            }
-
-            unittest {
-                assert(!(isReady && failIfCalled));
-            }
-        }).shouldThrowWithMessage("`assert(0)` failed");
-    }
-
-    @("logicalOrBoolResult." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                assert((2 || false) == true);
-            }
-        });
     }
 
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
@@ -393,6 +252,122 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool zero() {
+                return false;
+            }
+
+            unittest {
+                bool left = zero;
+                assert((left || false) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                assert((2 || false) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalOrBoolResult." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                assert((2 || false) == true);
+            }
+        });
+    }
+
+    @("logicalOr." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert(left || right);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert((left && 42 / zero == 0) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalAndShortCircuit." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                int zero = 0;
+                assert(!(left && 42 / zero == 0));
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return false;
+            }
+
+            unittest {
+                assert((left && right) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert((left && right) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -450,6 +425,116 @@ static foreach (backend; backendsWith!Interpreter) {
 
             unittest {
                 assert(!isReady);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = true;
+                bool right = false;
+                assert((left && right) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert((left && right) == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalAnd." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert(left && right);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCall." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert(left && right);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return true;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert(!(isReady && failIfCalled));
+            }
+        }).shouldThrowWithMessage("`assert(0)` failed");
+    }
+
+    @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert((isReady && failIfCalled) == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
+    @("logicalAndCallShortCircuit." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            bool failIfCalled() {
+                assert(0);
+                return true;
+            }
+
+            unittest {
+                assert(!(isReady && failIfCalled));
             }
         });
     }
