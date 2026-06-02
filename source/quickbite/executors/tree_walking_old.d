@@ -130,16 +130,16 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source).module_);
+        runTests(parseModule(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, importPaths).module_);
+        runTests(parseModule(source, importPaths).module_);
     }
 
-    public override void runParsedTests(
+    public override void runTests(
         Module module_,
     ) {
         walkModule(module_);
@@ -150,9 +150,9 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
     ) {
         import quickbite.frontend.compiler: parseModule;
 
-        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
-        auto parsed = parseModule(source);
-        return testSummary(parsed.module_);
+        // Keep the result mutable: the DMD frontend owns mutable Module state.
+        auto moduleResult = parseModule(source);
+        return testSummary(moduleResult.module_);
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
@@ -167,8 +167,8 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 
-        auto parsed = parseModule(source);
-        auto module_ = parsed.module_;
+        auto moduleResult = parseModule(source);
+        auto module_ = moduleResult.module_;
 
         FuncDeclaration f;
         if (module_.members !is null) {

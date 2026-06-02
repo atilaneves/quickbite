@@ -12,16 +12,16 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source).module_);
+        runTests(parseModule(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        runParsedTests(parseModule(source, importPaths).module_);
+        runTests(parseModule(source, importPaths).module_);
     }
 
-    public override void runParsedTests(imported!"dmd.dmodule".Module module_) {
+    public override void runTests(imported!"dmd.dmodule".Module module_) {
         import quickbite.executors.bytecode.compiler: compileBytecode;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 

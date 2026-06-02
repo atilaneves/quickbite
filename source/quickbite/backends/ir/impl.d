@@ -19,15 +19,15 @@ public class IR: imported!"quickbite.backends".Backend {
         assert(0);
     }
 
-    public override void runParsedTests(Module module_) {
+    public override void runTests(Module module_) {
         assert(0);
     }
 
-    public override TestRunResult runParsedTestResults(Module module_) {
+    public override TestRunResult runTestResults(Module module_) {
         assert(0);
     }
 
-    public override TestSummary runParsedTestSummary(Module module_) {
+    public override TestSummary runTestSummary(Module module_) {
         assert(0);
     }
 

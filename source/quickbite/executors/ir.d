@@ -27,18 +27,18 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        auto parsed = parseModule(source);
-        runParsedTests(parsed.module_);
+        auto moduleResult = parseModule(source);
+        runTests(moduleResult.module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         import quickbite.frontend.compiler: parseModule;
 
-        auto parsed = parseModule(source, importPaths);
-        runParsedTests(parsed.module_);
+        auto moduleResult = parseModule(source, importPaths);
+        runTests(moduleResult.module_);
     }
 
-    public override void runParsedTests(Module module_) {
+    public override void runTests(Module module_) {
         import quickbite.frontend.compiler: lowerModule;
 
         const loweredModule = lowerModule(module_);
@@ -50,9 +50,9 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     ) {
         import quickbite.frontend.compiler: lowerModule, parseModule;
 
-        // Keep `parsed` mutable: the DMD frontend owns mutable Module state.
-        auto parsed = parseModule(source);
-        const loweredModule = lowerModule(parsed.module_);
+        // Keep the result mutable: the DMD frontend owns mutable Module state.
+        auto moduleResult = parseModule(source);
+        const loweredModule = lowerModule(moduleResult.module_);
         return testSummary(loweredModule);
     }
 
@@ -68,8 +68,8 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
             "auto f() { " ~ prior ~ "return " ~ last ~ "; }\n" ~
             "unittest { f(); }";
 
-        auto parsed = parseModule(source);
-        const loweredModule = lowerModule(parsed.module_);
+        auto moduleResult = parseModule(source);
+        const loweredModule = lowerModule(moduleResult.module_);
 
         // f is the first (and only) non-test function in the lowered module
         if (loweredModule.functions.length == 0)

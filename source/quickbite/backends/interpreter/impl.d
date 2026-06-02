@@ -1,4 +1,4 @@
-module quickbite.backends.tree_walker.impl;
+module quickbite.backends.interpreter.impl;
 
 private:
 
@@ -18,7 +18,7 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
         assert(0);
     }
 
-    public override void runParsedTests(Module module_) {
+    public override void runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         Interpreter interpreter;
@@ -27,11 +27,11 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
         });
     }
 
-    public override TestRunResult runParsedTestResults(Module module_) {
+    public override TestRunResult runTestResults(Module module_) {
         assert(0);
     }
 
-    public override TestSummary runParsedTestSummary(Module module_) {
+    public override TestSummary runTestSummary(Module module_) {
         assert(0);
     }
 

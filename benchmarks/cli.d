@@ -96,7 +96,7 @@ public void run(string[] args) {
                 printRow(
                     run.displayName, name,
                     measure(
-                        () => backend.runParsedTests(run.module_),
+                        () => backend.runTests(run.module_),
                         warmup,
                         iterations,
                     ),
@@ -125,7 +125,7 @@ public void run(string[] args) {
                         measure(
                             () {
                                 foreach (module_; dubModules)
-                                    backend.runParsedTests(module_);
+                                    backend.runTests(module_);
                             },
                             warmup,
                             iterations,

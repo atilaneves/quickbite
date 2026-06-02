@@ -31,15 +31,15 @@ public interface Backend {
 
     public Value eval(in string expr);
     public Value evalRepl(EvalCell cell);
-    public void runParsedTests(Module module_);
-    public TestRunResult runParsedTestResults(Module module_);
-    public TestSummary runParsedTestSummary(Module module_);
+    public void runTests(Module module_);
+    public TestRunResult runTestResults(Module module_);
+    public TestSummary runTestSummary(Module module_);
 }
 
-public void runParsedModulesTests(
+public void runModulesTests(
     Backend backend,
     imported!"dmd.dmodule".Module[] modules,
 ) {
     foreach (module_; modules)
-        backend.runParsedTests(module_);
+        backend.runTests(module_);
 }

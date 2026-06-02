@@ -63,7 +63,7 @@ public struct Repl {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
         import quickbite.lang: Value;
 
-        const result = backend.runParsedTestResults(
+        const result = backend.runTestResults(
             parseModuleWithCheckActionContext(session.loadedModuleSource)
                 .module_,
         );

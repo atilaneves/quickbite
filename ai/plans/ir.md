@@ -69,11 +69,11 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Promote existing tests from `tests/ut/backends/pure_/lang/eval.d` first,
   because the bytecode backend already proved that path can drive a tiny
   backend-local compiler/language/VM slice.
-- Implement `IR.eval` first. Leave `evalRepl`, `runParsedTests`, and
-  `runParsedTestSummary` unimplemented until an approved test specifically
+- Implement `IR.eval` first. Leave `evalRepl`, `runTests`, and
+  `runTestSummary` unimplemented until an approved test specifically
   requires one of those entry points.
 - After `eval.d`, target `tests/ut/backends/pure_/lang/logic.d` as the first
-  parsed-module test module. Start with the simplest individual test, such as
+  module-backed test module. Start with the simplest individual test, such as
   `logicalNot`, before taking call-based or short-circuit cases.
 - Add locals, parameters, returns, and direct calls only after `eval.d` and the
   early `logic.d` tests have forced enough support to make those features the
@@ -105,7 +105,7 @@ not yet covered anywhere in the current CTFE-backed language tests.
   Promote or add coverage for `byte`, `ubyte`, `short`, `ushort`, `int`,
   `uint`, `long`, and `ulong` before relying on literal lowering more broadly.
 - The first PR should enter through `Backend.eval`, mirroring the successful
-  bytecode backend start. Do not promote parsed-module unittest execution for
+  bytecode backend start. Do not promote module-backed unittest execution for
   the first IR backend slice.
 - Do not weaken or replace the CTFE tests to satisfy the IR backend. The tests
   define the target behavior.
@@ -127,7 +127,7 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Do Not Repeat From PR 98
 - Do not make the IR backend recover by reparsing `Module.src` or any other
-  source text from the already parsed module. The backend entry point already
+  source text from the existing DMD module. The backend entry point already
   receives a semantically analysed `Module`; reparsing loses the point of the
   pipeline and hides problems in the real IR input.
 - Do not keep helper code whose only purpose is to support that reparsing path,
@@ -135,11 +135,11 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Do not paper over failures from `checkaction=context` assert lowering with a
   backend-specific workaround. If promoting a CTFE-passing assertion test causes
   the IR lowerer to encounter DMD-generated assertion machinery, either lower
-  the already parsed AST shape deliberately or choose the next smallest approved
-  slice that can run from the existing parsed module without reparsing.
+  the existing DMD AST shape deliberately or choose the next smallest approved
+  slice that can run from the existing DMD module without reparsing.
 - Do not let the first IR promotion depend on a private backend escape hatch.
   The first green test should prove that the IR backend can consume the same
-  parsed module pipeline used by the rest of Quickbite.
+  module pipeline used by the rest of Quickbite.
 
 ## Do Not Repeat From Failed PR 103
 - `Backend.eval` is now the correct first entry point, but do not implement it
@@ -154,12 +154,12 @@ not yet covered anywhere in the current CTFE-backed language tests.
   `IntegerLiteral` unless it first proves the expression is actually a literal.
 
 ## Do Not Repeat From Failed PR 109
-- Failed PR 109 did too much for the first IR slice: parsed-module unittest
+- Failed PR 109 did too much for the first IR slice: module-backed unittest
   execution, module compilation, unittest discovery, function compilation,
   calls, declarations, equality, assertion handling, and test execution all
   appeared before the first tiny `eval` slice existed.
 - Do not start with `compileModule`, unit test discovery, assertion lowering,
-  function tables, or parsed-test execution. Start with the expression compiler,
+  function tables, or module-backed test execution. Start with the expression compiler,
   IR language, and VM needed by one `eval` test.
 - Do not add several IR node kinds because they seem inevitable. Add one only
   when the promoted test fails without it.

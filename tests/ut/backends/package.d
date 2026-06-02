@@ -2,10 +2,10 @@ module ut.backends;
 
 
 public import ut;
-public import quickbite.backends: runParsedModulesTests;
+public import quickbite.backends: runModulesTests;
 public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
-public import quickbite.backends.tree_walker;
+public import quickbite.backends.interpreter;
 public import quickbite.backends.bytecode;
 public import quickbite.backends.ir;
 
@@ -34,9 +34,9 @@ public void runBackendSourceFixtureTests(T)(
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
-    backend.runParsedTests(parsed.module_);
+    backend.runTests(moduleResult.module_);
 }
 
 public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSummary(T)(
@@ -51,9 +51,9 @@ public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSumm
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto parsed = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
-    return backend.runParsedTestSummary(parsed.module_);
+    return backend.runTestSummary(moduleResult.module_);
 }
 
 public void runBackendFileFixtureTests(T)(
@@ -63,7 +63,7 @@ public void runBackendFileFixtureTests(T)(
     import std.file: readText;
     import quickbite.frontend.compiler: parseModule;
 
-    auto parsed = parseModule(filePath.readText, importPaths);
+    auto moduleResult = parseModule(filePath.readText, importPaths);
     auto backend = newBackend!T;
-    backend.runParsedTests(parsed.module_);
+    backend.runTests(moduleResult.module_);
 }

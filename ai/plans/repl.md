@@ -137,8 +137,8 @@ Remaining follow-up:
 
 - Expand the structured backend test-result API so running tests reports what
   ran and what failed, including stable unittest names when available and
-  file/line locations for both REPL snippets and source files. Keep
-  `runParsedTests` as a compatibility wrapper until callers migrate, but
+  file/line locations for both REPL snippets and source files. Keep `runTests`
+  as the throwing wrapper for callers that only need failure diagnostics, but
   future REPL, summary, and reporting work should consume structured results
   rather than throwing or parsing raw strings.
 
