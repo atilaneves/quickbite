@@ -162,6 +162,9 @@ Completed:
   associative arrays such as `[1: 10, 2: 20]` now render as `[1:10, 2:20]`,
   matching DMD CTFE `pragma(msg)` shape, instead of failing with
   `Unsupported CTFE eval result: assocArrayLiteral`.
+- Fixed CTFE-backed REPL display for nested array results. Array literal
+  conversion now recursively preserves each element's `Value` representation,
+  so `[[1, 2], [3, 4]]` renders without crashing.
 
 Remaining follow-up:
 
