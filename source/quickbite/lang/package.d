@@ -32,6 +32,7 @@ public struct Value {
         AssocArray,
         Struct,
         TypeName,
+        EnumValue,
     );
 
     private Data data = Data(Void.init);
@@ -66,6 +67,10 @@ public struct Value {
         return Value(TypeName(name));
     }
 
+    public static Value enumValue(in string name) @safe pure {
+        return Value(EnumValue(name));
+    }
+
     private this(in Void value) @safe pure {
         data = Data(value);
     }
@@ -87,6 +92,10 @@ public struct Value {
     }
 
     private this(in TypeName value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(in EnumValue value) @safe pure {
         data = Data(value);
     }
 
@@ -181,6 +190,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
+                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
+                    return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.dText;
                 } else static if (is(T == const(Null)) || is(T == Null)) {
@@ -222,6 +233,8 @@ public struct Value {
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
+                    return value.toString;
+                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.toString;
@@ -399,6 +412,19 @@ public struct Value {
 
 
 private struct TypeName {
+    public string name;
+
+    public this(in string name) @safe pure {
+        this.name = name;
+    }
+
+    public string toString() const @safe pure {
+        return name;
+    }
+}
+
+
+private struct EnumValue {
     public string name;
 
     public this(in string name) @safe pure {

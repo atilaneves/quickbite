@@ -168,6 +168,9 @@ Completed:
 - Fixed nested string display in CTFE-backed REPL aggregate results. Static
   string arrays such as `string[2] xs = ["a", "b"]; xs` now render as
   `["a", "b"]` instead of `[[a], [b]]`.
+- Fixed enum value display in CTFE-backed REPL results. Enum expressions such
+  as `E.a` now render as `E.a`, including inside aggregates, while explicit
+  casts such as `cast(int) E.a` still render as numeric values.
 
 Remaining follow-up:
 
