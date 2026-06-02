@@ -11,8 +11,14 @@ public enum EvalCellKind {
 public struct EvalCell {
     public EvalCellKind kind;
     public string source;
+    public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
+}
+
+public struct ParsedEvalSource {
+    public string source;
+    public imported!"dmd.func".FuncDeclaration function_;
 }
 
 private enum EvalHistoryTarget {
@@ -42,21 +48,30 @@ public struct EvalSession {
         if (allowIncomplete && isIncompleteCell(input))
             return EvalCell(EvalCellKind.incomplete);
 
-        if (isModuleDeclarationCell(input))
-            return EvalCell(
+        if (isModuleDeclarationCell(input)) {
+            const source = evalSource(
+                moduleTranscript ~ input ~ "\n",
+                localTranscript,
+            );
+            return parsedEvalCell(
                 EvalCellKind.noDisplay,
-                evalSource(moduleTranscript ~ input ~ "\n", localTranscript),
+                source,
                 EvalHistoryTarget.module_,
                 input ~ "\n",
             );
+        }
 
         if (!isExpressionCell(input)) {
             if (const diagnostic = statementSyntaxDiagnostic(input))
                 throw new Exception(diagnostic);
 
-            return EvalCell(
+            const source = evalSource(
+                moduleTranscript,
+                localTranscript ~ input ~ "\n",
+            );
+            return parsedEvalCell(
                 EvalCellKind.noDisplay,
-                evalSource(moduleTranscript, localTranscript ~ input ~ "\n"),
+                source,
                 EvalHistoryTarget.local,
                 input ~ "\n",
             );
@@ -66,7 +81,7 @@ public struct EvalSession {
             moduleTranscript,
             localTranscript ~ "return " ~ input ~ ";",
         );
-        return EvalCell(
+        return parsedEvalCell(
             EvalCellKind.expression,
             source,
             EvalHistoryTarget.local,
@@ -103,25 +118,244 @@ public struct EvalSession {
     }
 }
 
-public imported!"dmd.func".FuncDeclaration parseEvalFunction(in string source) {
+public ParsedEvalSource parseEvalSource(in string source) {
     import quickbite.frontend.compiler: parseModule;
-    import std.string: lineSplitter;
 
-    EvalSession session;
-    foreach (line; source.lineSplitter) {
-        const cell = session.submitComplete(line);
-        final switch (cell.kind) with (EvalCellKind) {
-            case incomplete:
-                throw new Exception("Incomplete eval input.");
-            case noDisplay:
-                session.accept(cell);
-                break;
-            case expression:
-                return evalFunction(parseModule(cell.source).module_);
-        }
+    const evalSource = completeEvalSource(source);
+    try {
+        auto parsed = parseModule(evalSource);
+        return ParsedEvalSource(
+            evalSource,
+            evalFunction(parsed.module_),
+        );
+    } catch (Exception exception) {
+        throw new Exception(withCandidateSignatures(evalSource, exception.msg));
+    }
+}
+
+public string withCandidateSignatures(
+    in string source,
+    in string diagnostic,
+) {
+    import std.array: join;
+    import std.conv: text;
+
+    const signatures = candidateSignatures(source);
+    if (signatures.length == 0)
+        return diagnostic;
+
+    if (signatures.length == 1)
+        return text(diagnostic, "\nCandidate: ", signatures[0]);
+
+    return text(diagnostic, "\nCandidates:\n- ", signatures.join("\n- "));
+}
+
+private EvalCell parsedEvalCell(
+    in EvalCellKind kind,
+    in string source,
+    in EvalHistoryTarget historyTarget,
+    in string history,
+) {
+    import quickbite.frontend.compiler: parseModule;
+
+    try {
+        auto parsed = parseModule(source);
+        return EvalCell(
+            kind,
+            source,
+            evalFunction(parsed.module_),
+            historyTarget,
+            history,
+        );
+    } catch (Exception exception) {
+        throw new Exception(withCandidateSignatures(source, exception.msg));
+    }
+}
+
+private string[] candidateSignatures(in string source) {
+    import core.atomic: atomicFetchAdd;
+    import dmd.errors: diagnostics;
+    import dmd.frontend: dmdParseModule = parseModule;
+    import dmd.globals: global;
+    import quickbite.frontend.compiler: withCompilerLock;
+    import std.conv: text;
+
+    string[] result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        auto parsed = dmdParseModule(
+            text(
+                "eval_diagnostic_",
+                atomicFetchAdd(_diagnosticModuleCounter, 1u),
+                ".d",
+            ),
+            source,
+        );
+        if (parsed.diagnostics.hasErrors)
+            return;
+
+        auto call = evalReturnCall(parsed.module_);
+        if (call is null)
+            return;
+
+        auto callee = call.e1.isIdentifierExp;
+        if (callee is null)
+            return;
+
+        auto candidates = candidateFunctions(parsed.module_, callee.ident);
+        if (candidates.length == 0)
+            return;
+
+        completeSemanticForDiagnostics(parsed.module_);
+        if (
+            !callArgumentsHaveTypes(call) ||
+            hasMatchingCandidate(call, candidates)
+        )
+            return;
+
+        result = candidateSignatures(candidates);
+    });
+
+    return result;
+}
+
+private imported!"dmd.expression".CallExp evalReturnCall(
+    imported!"dmd.dmodule".Module module_,
+) {
+    auto function_ = evalFunction(module_);
+    if (function_.fbody is null)
+        return null;
+
+    if (auto return_ = function_.fbody.isReturnStatement)
+        return return_.exp is null ? null : return_.exp.isCallExp;
+
+    auto compound = function_.fbody.isCompoundStatement;
+    if (compound is null || compound.statements is null)
+        return null;
+
+    for (size_t index = compound.statements.length; index > 0; --index) {
+        auto statement = (*compound.statements)[index - 1];
+        if (statement is null)
+            continue;
+
+        if (auto return_ = statement.isReturnStatement)
+            return return_.exp is null ? null : return_.exp.isCallExp;
     }
 
-    throw new Exception("Eval input did not end with an expression.");
+    return null;
+}
+
+private imported!"dmd.func".FuncDeclaration[] candidateFunctions(
+    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.identifier".Identifier identifier,
+) {
+    imported!"dmd.func".FuncDeclaration[] result;
+    if (module_.members is null)
+        return result;
+
+    foreach (member; *module_.members) {
+        auto function_ = member.isFuncDeclaration;
+        if (function_ !is null && function_.ident is identifier)
+            appendOverloads(result, function_);
+    }
+
+    return result;
+}
+
+private void appendOverloads(
+    ref imported!"dmd.func".FuncDeclaration[] functions,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    auto current = function_;
+    while (current !is null) {
+        functions ~= current;
+        auto next = current.overnext;
+        current = next is null ? null : next.isFuncDeclaration;
+    }
+}
+
+private void completeSemanticForDiagnostics(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: fullSemantic;
+    import dmd.globals: global;
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+
+    const oldGagged = global.startGagging;
+    module_.fullSemantic;
+    global.endGagging(oldGagged);
+
+    global.errors = 0;
+    global.warnings = 0;
+    diagnostics.length = 0;
+}
+
+private bool callArgumentsHaveTypes(
+    imported!"dmd.expression".CallExp call,
+) {
+    if (call.arguments is null)
+        return true;
+
+    foreach (argument; *call.arguments) {
+        if (argument is null || argument.type is null)
+            return false;
+    }
+
+    return true;
+}
+
+private bool hasMatchingCandidate(
+    imported!"dmd.expression".CallExp call,
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    import dmd.astenums: MATCH;
+    import dmd.typesem: callMatch;
+
+    foreach (candidate; candidates) {
+        auto type = candidate.type is null
+            ? null
+            : candidate.type.isTypeFunction;
+        if (type is null)
+            continue;
+
+        if (callMatch(
+            candidate,
+            type,
+            null,
+            call.argumentList,
+            0,
+            null,
+            candidate._scope,
+        ) > MATCH.nomatch)
+            return true;
+    }
+
+    return false;
+}
+
+private string[] candidateSignatures(
+    imported!"dmd.func".FuncDeclaration[] candidates,
+) {
+    string[] result;
+    foreach (candidate; candidates)
+        result ~= fullSignature(candidate);
+
+    return result;
+}
+
+private string fullSignature(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.string: fromStringz;
+
+    return fromStringz(function_.toFullSignature).idup;
 }
 
 private bool isExpressionCell(in string input) {
@@ -316,18 +550,85 @@ private string evalSource(
     return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
 }
 
+private string completeEvalSource(in string source) {
+    const expressionStart = finalExpressionStart(source);
+    return evalSource(
+        null,
+        source[0 .. expressionStart] ~
+            "return " ~
+            source[expressionStart .. $] ~
+            ";",
+    );
+}
+
+private size_t finalExpressionStart(in string source) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    size_t result = size_t.max;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const parseSource = source ~ ";\0";
+        scope parser = new Parser!ASTCodegen(
+            null,
+            parseSource,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        while (parser.token.value != TOK.endOfFile) {
+            auto statement = parser.parseStatement(0);
+            if (statement is null)
+                break;
+
+            auto expression = statement.isExpStatement;
+            if (expression !is null &&
+                expression.exp !is null &&
+                expression.exp.isDeclarationExp is null)
+                result = statement.loc.fileOffset;
+            else
+                result = size_t.max;
+        }
+
+        if (global.errors != 0)
+            result = size_t.max;
+    });
+
+    if (result == size_t.max)
+        throw new Exception("Eval input did not end with an expression.");
+
+    return result;
+}
+
 private imported!"dmd.func".FuncDeclaration evalFunction(
     imported!"dmd.dmodule".Module module_,
 ) {
+    imported!"dmd.func".FuncDeclaration result;
     if (module_.members !is null) {
         foreach (member; *module_.members) {
             auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
+            if (function_ is null)
+                continue;
+
+            result = function_;
         }
     }
 
-    throw new Exception("Missing eval function.");
+    if (result is null)
+        throw new Exception("Missing eval function.");
+
+    return result;
 }
 
 private __gshared uint _evalModuleCounter;
+private __gshared uint _diagnosticModuleCounter;

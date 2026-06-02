@@ -14,7 +14,7 @@ public interface Backend {
     import dmd.dmodule: Module;
 
     public Value eval(in string expr);
-    public Value evalRepl(in EvalCell cell);
+    public Value evalRepl(EvalCell cell);
     public void runParsedTests(Module module_);
     public TestSummary runParsedTestSummary(Module module_);
 }

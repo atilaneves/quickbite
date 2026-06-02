@@ -17,9 +17,9 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.cell: parseEvalFunction;
+    import quickbite.frontend.cell: parseEvalSource;
 
-    return compileFunction(parseEvalFunction(source));
+    return compileFunction(parseEvalSource(source).function_);
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -282,13 +282,9 @@ private struct Compiler {
     private void compileCall(CallExp call) {
         import quickbite.backends.bytecode.builtins:
             bytecodeBuiltin,
-            bytecodeBuiltinArgumentCount,
-            bytecodeBuiltinIsImplemented;
+            bytecodeBuiltinArgumentCount;
 
         const builtin = bytecodeBuiltin(call.f);
-        if (!bytecodeBuiltinIsImplemented(builtin))
-            throw new Exception("Unsupported bytecode builtin.");
-
         if (call.arguments is null)
             throw new Exception("Unsupported bytecode builtin call arguments.");
 

@@ -39,16 +39,20 @@ public struct Repl {
         const source = pendingInput.length == 0 ?
             input :
             pendingInput ~ "\n" ~ input;
-        const cell = session.submit(source);
-        if (cell.kind == ReplCellKind.incomplete) {
-            pendingInput = source;
-            return ReplResult(Value.void_);
-        }
 
-        const value = evalReplCell(cell);
-        session.accept(cell);
-        pendingInput = null;
-        return ReplResult(value, replDisplay(cell));
+        try {
+            auto cell = session.submit(source);
+            if (cell.kind == ReplCellKind.incomplete) {
+                pendingInput = source;
+                return ReplResult(Value.void_);
+            }
+
+            const value = evalReplCell(cell);
+            session.accept(cell);
+            pendingInput = null;
+            return ReplResult(value, replDisplay(cell));
+        } catch (Exception exception)
+            throw new Exception(userDiagnostic(exception.msg));
     }
 
     private ReplResult runLoadedTests() {
@@ -56,27 +60,24 @@ public struct Repl {
         import quickbite.lang: Value;
 
         backend.runParsedTests(
-            parseModuleWithCheckActionContext(session.loadedModuleSource).module_,
+            parseModuleWithCheckActionContext(
+                session.loadedModuleSource,
+            ).module_,
         );
         return ReplResult(Value.void_);
     }
 
     private imported!"quickbite.lang".Value evalReplCell(
-        in imported!"quickbite.frontend.repl".ReplCell cell,
+        imported!"quickbite.frontend.repl".ReplCell cell,
     ) {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
-        try
-        {
-            const value = backend.evalRepl(cell.evalCell);
-            if (cell.kind == ReplCellKind.typeExpression)
-                return Value.typeName(value.asCharArrayString);
+        const value = backend.evalRepl(cell.evalCell);
+        if (cell.kind == ReplCellKind.typeExpression)
+            return Value.typeName(value.asCharArrayString);
 
-            return value;
-        }
-        catch (Exception exception)
-            throw new Exception(userDiagnostic(exception.msg));
+        return value;
     }
 }
 
@@ -100,33 +101,14 @@ private enum ReplDisplay {
 }
 
 private ReplDisplay replDisplay(
-    in imported!"quickbite.frontend.repl".ReplCell cell,
+    imported!"quickbite.frontend.repl".ReplCell cell,
 ) {
     import quickbite.frontend.repl: ReplCellKind;
 
-    return cell.kind == ReplCellKind.expression && replFunctionReturnsString(cell.source) ?
+    return cell.kind == ReplCellKind.expression &&
+        functionReturnsString(cell.evalCell.function_) ?
         ReplDisplay.string :
         ReplDisplay.value;
-}
-
-private bool replFunctionReturnsString(in string source) {
-    import quickbite.frontend.compiler: parseModule;
-
-    return functionReturnsString(replFunction(parseModule(source).module_));
-}
-
-private imported!"dmd.func".FuncDeclaration replFunction(
-    imported!"dmd.dmodule".Module module_,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing REPL wrapper function.");
 }
 
 private bool functionReturnsString(
@@ -203,7 +185,9 @@ private string withoutConsecutiveDuplicateLines(in string diagnostic)
 
         previousLine = line;
         havePreviousLine = true;
-        lineStart = lineEnd == diagnostic.length ? diagnostic.length : lineEnd + 1;
+        lineStart = lineEnd == diagnostic.length
+            ? diagnostic.length
+            : lineEnd + 1;
     }
 
     return result;

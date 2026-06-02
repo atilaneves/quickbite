@@ -9,9 +9,9 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.frontend.cell: parseEvalFunction;
+        import quickbite.frontend.cell: parseEvalSource;
 
-        return evalFunction(parseEvalFunction(expr));
+        return evalFunction(parseEvalSource(expr).function_);
     }
 
     public override Value evalRepl(in EvalCell cell) {

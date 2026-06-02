@@ -95,6 +95,18 @@ Lua-specific bytecode shape.
   on newlines, semicolons, braces, or keywords are parser bugs waiting to
   happen. Ask the frontend for a structured cell, parsed module, function
   declaration, statement, or expression instead.
+- Do not paper over that rule by moving source splitting into
+  `quickbite.frontend.cell`. A helper that loops over `source.lineSplitter`,
+  feeds each line to the REPL cell classifier, then returns a wrapper function
+  is still source-text protocol, not a structured frontend API.
+- Do not mark the eval-source review comments addressed while
+  `parseEvalFunction` still exists as "turn source into `auto f() { ... }`,
+  parse a module, then find function `f`". That is the abstraction the review
+  rejected.
+- Do not add or keep a "find function by name in module" helper for eval. If a
+  backend needs a function declaration, the frontend should hand back the
+  declaration as part of a named parsed cell/result type, not require callers
+  to know about the synthetic wrapper name.
 - Do not add a special `parseEvalFunction`-style API if it only synthesizes a
   wrapper function and looks up `f`. Either reuse the existing REPL cell
   frontend path, or expose a frontend API named for the AST/domain object the
@@ -119,6 +131,14 @@ Lua-specific bytecode shape.
   bytecode backend needs CTFE builtin parity, use DMD's builtin classification
   or a project-owned semantic wrapper around it, then keep bytecode execution
   scoped to the implemented builtin subset.
+- Do not answer "use introspection on std.math" with a hand-maintained
+  duplicate of DMD's entire builtin enum plus string mixins. If only `fabs` and
+  `pow` are implemented, keep the implemented surface small, explicit, and
+  mechanically connected to DMD's builtin classification.
+- Do not use `static foreach` plus string `mixin` to hide tiny two-case
+  dispatch. The review explicitly called out mixin use here; prefer ordinary
+  `final switch` cases until real duplication justifies compile-time
+  generation.
 - Do not emit untyped convenience literals such as `Value(1)` when lowering a
   typed language operation. Either derive the literal from the D type or make
   assignment/storage perform the required D conversion.
@@ -128,6 +148,22 @@ Lua-specific bytecode shape.
 - When extracting shared DMD symbol lookup, check nearby callers for duplicate
   local implementations and move them together if the ownership boundary is
   the same.
+- Do not mark a PR review checklist item complete just because the offending
+  code moved. Before checking it off, `rg` for the rejected names/patterns and
+  verify the new code no longer does the rejected behaviour.
+
+## PR 123 Remaining Cleanup
+- [x] Remove `parseEvalFunction` as a source-to-wrapper-function API. Replace
+  it with a frontend-owned parsed eval cell/result that exposes the structured
+  AST object the backends actually need.
+- [x] Remove line-by-line eval parsing from `frontend.cell`; eval source should
+  not be decomposed by newline boundaries.
+- [x] Remove synthetic-wrapper-name lookup from eval/repl paths. The wrapper
+  may exist as frontend implementation detail, but callers should not know or
+  search for `f`.
+- [x] Revisit bytecode builtin support after removing the mixin-generated
+  duplicate builtin enum mapping. Keep only the implemented native-call bridge
+  surface unless a test forces broader builtin metadata.
 
 ## PR 114 Review Follow-up
 - [x] Explain or remove the `compileEvalSource` wrapper around eval input.

@@ -20,11 +20,11 @@ public struct ReplSession {
 
     public ReplCell submit(in string input) {
         if (isTypeExpressionCell(input)) {
-            const cell = evalSession.submit(input ~ ".stringof");
+            auto cell = evalSession.submit(input ~ ".stringof");
             return ReplCell(ReplCellKind.typeExpression, cell.source, cell);
         }
 
-        const cell = evalSession.submit(input);
+        auto cell = evalSession.submit(input);
         return ReplCell(replCellKind(cell.kind), cell.source, cell);
     }
 
