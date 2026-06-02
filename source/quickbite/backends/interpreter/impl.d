@@ -357,6 +357,9 @@ private struct EvalModuleInterpreter {
             return runComparisonExpression(comparison);
         }
 
+        if (auto bitOr = expression.isOrExp)
+            return runBitwiseOrExpression(bitOr);
+
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1);
             return runExpression(comma.e2);
@@ -451,6 +454,12 @@ private struct EvalModuleInterpreter {
         if (equal.op == EXP.notEqual)
             return Value(left != right);
         return Value(left == right);
+    }
+
+    private Value runBitwiseOrExpression(imported!"dmd.expression".OrExp bitOr) {
+        const left = runExpression(bitOr.e1).asLong;
+        const right = runExpression(bitOr.e2).asLong;
+        return Value(cast(int) (left | right));
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
