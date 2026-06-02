@@ -90,6 +90,37 @@ Lua-specific bytecode shape.
 - Preserve the repo's formatting style before asking for review. Formatting
   churn distracts from the design slice.
 
+## PR 114 Review Follow-up
+- [x] Explain or remove the `compileEvalSource` wrapper around eval input.
+- [x] Justify or remove import-statement skipping in bytecode statement
+  compilation.
+- [x] Refactor duplicated binary-expression compilation.
+- [x] Remove all non-module-scope `imported!"..."` usages from bytecode
+  compiler helpers.
+- [x] Make `castTarget` return the operand type expected by bytecode
+  instructions.
+- [x] Remove direct `pow` function-name special-casing from bytecode call
+  compilation.
+- [x] Remove direct `fabs` function-name special-casing from bytecode call
+  compilation.
+- [x] Decide whether integer casts need broader tests before broadening
+  support.
+- [ ] Stop inspecting eval source text in the bytecode backend; rely on a
+  frontend-provided structure instead.
+- [ ] Replace hand-written default scalar values with a type-to-D-value mapping
+  based on `T.init`.
+- [ ] Replace manual string code-unit conversion with standard library support
+  if available.
+- [ ] Include bool and character value kinds in integer-like binary operations
+  if DMD treats them that way.
+- [ ] Decide whether `incrementLocal` should remain distinct from `add`.
+- [ ] Clarify or remove the `CastTarget` enum if the current operand shape is
+  not earning its keep.
+- [ ] Remove one-off `Value.fabs` API growth or justify it with a more general
+  intrinsic-call design.
+- [ ] Remove one-off `Value.pow` API growth or justify it with a more general
+  intrinsic-call design.
+
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is
   the right starting point.

@@ -55,8 +55,36 @@ package imported!"quickbite.lang".Value eval(
                     throw new Exception("Bytecode stack underflow");
 
                 final switch (cast(CastTarget) instruction.operand) {
+                    case CastTarget.byte_:
+                        stack[$ - 1] = stack[$ - 1].castTo!byte;
+                        break;
+
+                    case CastTarget.ubyte_:
+                        stack[$ - 1] = stack[$ - 1].castTo!ubyte;
+                        break;
+
+                    case CastTarget.short_:
+                        stack[$ - 1] = stack[$ - 1].castTo!short;
+                        break;
+
+                    case CastTarget.ushort_:
+                        stack[$ - 1] = stack[$ - 1].castTo!ushort;
+                        break;
+
                     case CastTarget.int_:
                         stack[$ - 1] = stack[$ - 1].castTo!int;
+                        break;
+
+                    case CastTarget.uint_:
+                        stack[$ - 1] = stack[$ - 1].castTo!uint;
+                        break;
+
+                    case CastTarget.long_:
+                        stack[$ - 1] = stack[$ - 1].castTo!long;
+                        break;
+
+                    case CastTarget.ulong_:
+                        stack[$ - 1] = stack[$ - 1].castTo!ulong;
                         break;
                 }
                 break;

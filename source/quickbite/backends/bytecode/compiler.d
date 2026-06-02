@@ -19,6 +19,8 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
 {
     import quickbite.frontend.compiler: parseModule;
 
+    // Eval input may contain declarations/imports before the final expression.
+    // Parse it as a function body so DMD gives the bytecode compiler an AST.
     return compileFunction(functionDeclaration(parseModule(evalSource(source)).module_));
 }
 
@@ -41,11 +43,17 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 private struct Compiler {
     import quickbite.backends.bytecode.instructions:
         CastTarget, Instruction, Op, Program;
+    import quickbite.lang: Value;
+    import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration;
+    import dmd.expression:
+        AddAssignExp, BinExp, CallExp, CastExp, Expression, PreExp;
+    import dmd.statement: Statement;
 
     private Program program;
-    private size_t[imported!"dmd.declaration".VarDeclaration] locals;
+    private size_t[VarDeclaration] locals;
 
-    private void compileStatement(imported!"dmd.statement".Statement statement) {
+    private void compileStatement(Statement statement) {
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements)
@@ -53,6 +61,9 @@ private struct Compiler {
             return;
         }
 
+        // Imports are semantically resolved before bytecode compilation; eval
+        // tests for std.math intrinsics still leave their import statements in
+        // the function body, but they do not emit runtime bytecode.
         if (statement.isImportStatement !is null)
             return;
 
@@ -71,7 +82,7 @@ private struct Compiler {
     }
 
     private void compileExpression(
-        imported!"dmd.expression".Expression expression,
+        Expression expression,
     )
     {
         import std.string: fromStringz;
@@ -134,30 +145,22 @@ private struct Compiler {
         }
 
         if (auto add = expression.isAddExp) {
-            compileExpression(add.e1);
-            compileExpression(add.e2);
-            program.instructions ~= Instruction(Op.add);
+            compileBinaryExpression(add, Op.add);
             return;
         }
 
         if (auto subtract = expression.isMinExp) {
-            compileExpression(subtract.e1);
-            compileExpression(subtract.e2);
-            program.instructions ~= Instruction(Op.subtract);
+            compileBinaryExpression(subtract, Op.subtract);
             return;
         }
 
         if (auto multiply = expression.isMulExp) {
-            compileExpression(multiply.e1);
-            compileExpression(multiply.e2);
-            program.instructions ~= Instruction(Op.multiply);
+            compileBinaryExpression(multiply, Op.multiply);
             return;
         }
 
         if (auto divide = expression.isDivExp) {
-            compileExpression(divide.e1);
-            compileExpression(divide.e2);
-            program.instructions ~= Instruction(Op.divide);
+            compileBinaryExpression(divide, Op.divide);
             return;
         }
 
@@ -177,7 +180,13 @@ private struct Compiler {
         throw new Exception(msg);
     }
 
-    private size_t localIndex(imported!"dmd.declaration".VarDeclaration variable) {
+    private void compileBinaryExpression(BinExp expression, in Op op) {
+        compileExpression(expression.e1);
+        compileExpression(expression.e2);
+        program.instructions ~= Instruction(op);
+    }
+
+    private size_t localIndex(VarDeclaration variable) {
         if (auto existing = variable in locals)
             return *existing;
 
@@ -187,7 +196,7 @@ private struct Compiler {
     }
 
     private void compileVariableDeclaration(
-        imported!"dmd.declaration".VarDeclaration variable,
+        VarDeclaration variable,
     ) {
         if (variable._init !is null) {
             auto initializer = variable._init.isExpInitializer;
@@ -198,7 +207,7 @@ private struct Compiler {
 
             program.instructions ~= Instruction(
                 Op.storeLocal,
-                imported!"quickbite.lang".Value.void_,
+                Value.void_,
                 localIndex(variable),
             );
             return;
@@ -212,17 +221,17 @@ private struct Compiler {
     }
 
     private void compileVariableLoad(
-        imported!"dmd.declaration".VarDeclaration variable,
+        VarDeclaration variable,
     ) {
         program.instructions ~= Instruction(
             Op.loadLocal,
-            imported!"quickbite.lang".Value.void_,
+            Value.void_,
             localIndex(variable),
         );
     }
 
     private void compilePreIncrement(
-        imported!"dmd.expression".PreExp increment,
+        PreExp increment,
     ) {
         auto variable = increment.e1.isVarExp;
         if (variable is null)
@@ -234,13 +243,13 @@ private struct Compiler {
 
         program.instructions ~= Instruction(
             Op.incrementLocal,
-            imported!"quickbite.lang".Value(1),
+            Value(1),
             localIndex(declaration),
         );
     }
 
     private void compileAddAssign(
-        imported!"dmd.expression".AddAssignExp addAssign,
+        AddAssignExp addAssign,
     ) {
         auto variable = addAssign.e1.isVarExp;
         if (variable is null)
@@ -261,34 +270,31 @@ private struct Compiler {
         );
     }
 
-    private void compileCast(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.lang: Value;
-
+    private void compileCast(CastExp cast_) {
         compileExpression(cast_.e1);
 
         program.instructions ~= Instruction(
             Op.cast_,
             Value.void_,
-            cast(size_t) castTarget(cast_),
+            castTarget(cast_),
         );
     }
 
-    private void compileCall(imported!"dmd.expression".CallExp call) {
-        const identifier = callIdentifier(call);
-
-        if (identifier == "pow") {
-            if (call.arguments is null || call.arguments.length != 2)
-                throw new Exception("Unsupported bytecode pow argument count.");
-
-            compileExpression((*call.arguments)[0]);
-            compileExpression((*call.arguments)[1]);
-            program.instructions ~= Instruction(Op.pow);
+    private void compileCall(CallExp call) {
+        if (isStdMathIntrinsic(call.f, "fabs")) {
+            compileFabs(call);
             return;
         }
 
-        if (identifier != "fabs")
-            throw new Exception("Unsupported bytecode call target.");
+        if (isStdMathIntrinsic(call.f, "pow")) {
+            compilePow(call);
+            return;
+        }
 
+        throw new Exception("Unsupported bytecode call target.");
+    }
+
+    private void compileFabs(CallExp call) {
         if (call.arguments is null || call.arguments.length != 1)
             throw new Exception("Unsupported bytecode fabs argument count.");
 
@@ -296,29 +302,85 @@ private struct Compiler {
         program.instructions ~= Instruction(Op.fabs);
     }
 
-    private string callIdentifier(imported!"dmd.expression".CallExp call) {
-        if (call.f !is null && call.f.ident !is null)
-            return call.f.ident.toString.idup;
+    private void compilePow(CallExp call) {
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception("Unsupported bytecode pow argument count.");
 
-        if (auto variable = call.e1.isVarExp)
-            if (variable.var.ident !is null)
-                return variable.var.ident.toString.idup;
-
-        return "";
+        compileExpression((*call.arguments)[0]);
+        compileExpression((*call.arguments)[1]);
+        program.instructions ~= Instruction(Op.pow);
     }
 
-    private CastTarget castTarget(imported!"dmd.expression".CastExp cast_) {
+    private bool isStdMathIntrinsic(
+        FuncDeclaration function_,
+        in string identifier,
+    ) {
+        import std.algorithm: startsWith;
+
+        if (function_ is null || function_.ident is null)
+            return false;
+
+        if (function_.ident.toString != identifier)
+            return false;
+
+        return moduleName(function_) == "std.math" ||
+            moduleName(function_).startsWith("std.math.");
+    }
+
+    private string moduleName(FuncDeclaration function_) {
+        import std.algorithm: reverse;
+        import std.array: join;
+        import dmd.dsymbol: Dsymbol;
+
+        Dsymbol symbol = function_;
+        string[] segments;
+        for (symbol = symbol.parent; symbol !is null; symbol = symbol.parent) {
+            if (symbol.ident !is null)
+                segments ~= symbol.ident.toString.idup;
+        }
+
+        segments.reverse;
+        return segments.join(".");
+    }
+
+    private size_t castTarget(CastExp cast_) {
         import dmd.astenums: TY;
 
         const type = cast_.type.toBasetype;
-        if (type.ty == TY.Tint32)
-            return CastTarget.int_;
+        switch (type.ty) {
+            case TY.Tint8:
+                return CastTarget.byte_;
+
+            case TY.Tuns8:
+                return CastTarget.ubyte_;
+
+            case TY.Tint16:
+                return CastTarget.short_;
+
+            case TY.Tuns16:
+                return CastTarget.ushort_;
+
+            case TY.Tint32:
+                return CastTarget.int_;
+
+            case TY.Tuns32:
+                return CastTarget.uint_;
+
+            case TY.Tint64:
+                return CastTarget.long_;
+
+            case TY.Tuns64:
+                return CastTarget.ulong_;
+
+            default:
+                break;
+        }
 
         throw new Exception("Unsupported bytecode cast.");
     }
 
-    private imported!"dmd.expression".Expression initializerExpression(
-        imported!"dmd.expression".Expression expression,
+    private Expression initializerExpression(
+        Expression expression,
     ) {
         if (auto assignment = expression.isAssignExp)
             return assignment.e2;

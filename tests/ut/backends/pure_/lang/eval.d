@@ -69,6 +69,26 @@ static foreach (backend; backendsWith!Bytecode) {
             .should == Value(7);
     }
 
+    @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("int input = 258;\ncast(byte) input")
+            .should == Value(cast(byte) 258);
+        newBackend!backend.eval("int input = 258;\ncast(ubyte) input")
+            .should == Value(cast(ubyte) 258);
+        newBackend!backend.eval("int input = 258;\ncast(short) input")
+            .should == Value(cast(short) 258);
+        newBackend!backend.eval("int input = 258;\ncast(ushort) input")
+            .should == Value(cast(ushort) 258);
+        newBackend!backend.eval("int input = 258;\ncast(int) input")
+            .should == Value(cast(int) 258);
+        newBackend!backend.eval("int input = 258;\ncast(uint) input")
+            .should == Value(cast(uint) 258);
+        newBackend!backend.eval("int input = 258;\ncast(long) input")
+            .should == Value(cast(long) 258);
+        newBackend!backend.eval("int input = 258;\ncast(ulong) input")
+            .should == Value(cast(ulong) 258);
+    }
+
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
