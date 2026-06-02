@@ -318,6 +318,7 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.tokens: EXP;
         import quickbite.frontend.dmd_values: integerValue;
 
         if (auto integer = expression.isIntegerExp)
@@ -331,6 +332,10 @@ private struct EvalModuleInterpreter {
 
         if (auto not = expression.isNotExp)
             return Value(!isTruthy(runExpression(not.e1)));
+
+        if (auto logical = expression.isLogicalExp)
+            if (logical.op == EXP.andAnd)
+                return runAndAndExpression(logical);
 
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
@@ -362,6 +367,15 @@ private struct EvalModuleInterpreter {
 
         import std.conv: text;
         throw new Exception(text("Unsupported interpreter expression: ", expression.op));
+    }
+
+    private Value runAndAndExpression(
+        imported!"dmd.expression".LogicalExp logical,
+    ) {
+        if (!isTruthy(runExpression(logical.e1)))
+            return Value(false);
+
+        return Value(isTruthy(runExpression(logical.e2)));
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {

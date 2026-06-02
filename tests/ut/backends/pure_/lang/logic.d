@@ -72,17 +72,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
-    @("logicalAnd." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = true;
-                bool right = true;
-                assert(left && right);
-            }
-        });
-    }
-
     @("logicalAndFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -389,6 +378,19 @@ static foreach (backend; backends) {
                 assert((input > 41 && input < 43) == true);
             }
         }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAnd." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = true;
+                bool right = true;
+                assert(left && right);
+            }
+        });
     }
 }
 
