@@ -51,6 +51,13 @@ public struct Value {
         return Value(Struct(typeName, fields));
     }
 
+    public static Value assocArrayValue(
+        in Value[] keys,
+        in Value[] values,
+    ) @safe pure {
+        return Value(AssocArray(keys, values));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -64,6 +71,10 @@ public struct Value {
     }
 
     private this(Struct value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(AssocArray value) @safe pure {
         data = Data(value);
     }
 
@@ -406,6 +417,15 @@ private struct Array {
 
 private struct AssocArray {
     public Entry[] entries;
+
+    public this(
+        in Value[] keys,
+        in Value[] values,
+    ) @safe pure {
+        assert(keys.length == values.length);
+        foreach (index, key; keys)
+            entries ~= Entry(key, values[index]);
+    }
 
     public this(K, V)(in V[K] values) @safe pure {
         foreach (key, value; values)
