@@ -142,6 +142,8 @@ fixture can cover these lines:
 | `visit(VoidInitExp)` | Internal uninitialized-variable marker; never re-interpreted |
 | `visit(ThrownExceptionExp)` | Internal already-processed exception; never re-entered |
 | `visit(DeleteExp)` | DMD 2.112 rejects `delete` in semantic analysis before CTFE |
+| `visitTryFinally` | Semantic analysis lowers fall-through `try/finally` to `CompoundStatement`; two independent probes left the whole method uncovered |
+| `visit(DotTypeExp)` | Property accesses (`.sizeof`, `.alignof`, etc.) are constant-folded at semantic time before CTFE; two independent probes confirmed no valid D fixture reaches this visitor |
 
 Before proposing any target, the explorer subagent must check whether the
 method body contains `assert(0)` or a comment like "rewritten to X". If so,
@@ -250,6 +252,45 @@ create a new worktree per worker or per target. The worktree is created once
 and the PR is opened from it at the end.
 Create the PR once coverage improvement starts moving only incrementally
 despite valid additive slices; do not grind indefinitely chasing a large delta.
+
+## 2026-06-02 Research Findings
+
+A four-subagent research session audited the remaining uncovered methods in
+`dmd.dinterpret` and produced the candidate list above. Key findings:
+
+**Confirmed unreachable (added to Known Unreachable Targets):**
+
+- `visitTryFinally` — semantic analysis lowers fall-through `try/finally` to a
+  plain `CompoundStatement` before CTFE runs. Two independent probes (Worker 5
+  of dmd-ctfe-coverage-tests-6 and a second probe in this session) left the
+  whole method uncovered with passing fixtures.
+- `visit(DotTypeExp)` — property accesses such as `.sizeof` and `.alignof` are
+  constant-folded to `IntegerExp` at semantic analysis time and never create a
+  `DotTypeExp` node. Two independent probes confirmed no valid D fixture reaches
+  this visitor.
+
+**Coverage data staleness warning:**
+
+The `tmp/dmd-ctfe-coverage/` files are from a previous run and do not reflect
+recent PRs. One subagent reported `interpret_dup` as uncovered, but the plan
+archive confirms it was covered in Worker 7 of dmd-ctfe-coverage-tests-11.
+Regenerate coverage with `scripts/dmd-ctfe-coverage.sh ut.backends.pure_`
+before starting the next worker session and before triaging any Pending entry
+in the Audit Log.
+
+**Unconfirmed coverage from PR #11 workers:**
+
+Workers 5 and 6 of dmd-ctfe-coverage-tests-11 added tests that passed but did
+not run the coverage script to confirm the target methods moved. Both are
+marked "Coverage unconfirmed" in the Audit Log. Re-verify as part of the next
+broad coverage run.
+
+**Why PR #106 produced zero coverage gain:**
+
+The `assocArrayForeachAccumulatesRuntimePairs` fixture exercised
+`interpret_aaApply`, but the paths it hit were already covered by earlier tests.
+The probe-first rule (run focused coverage before keeping any test) was not
+enforced. That rule is a hard gate, not advisory.
 
 ## Archive
 
@@ -615,18 +656,31 @@ that shim.
 | `visit(ArrayLiteralExp)` omitted element copy | Not reachable | dmd-ctfe-coverage-tests-6 Worker 2 | Indexed array initializers are densified by semantic lowering before CTFE; range basis spelling rejected by DMD 2.112. |
 | `visit(CondExp)` pointer condition | Covered | dmd-ctfe-coverage-tests-6 Worker 3 | `conditionalExpressionTreatsNonNullPointerAsTrue.Ctfe`; non-null pointer condition normalized to true. |
 | `visitTryCatch` non-matching catch skip | Covered | dmd-ctfe-coverage-tests-6 Worker 4 | `catchSkipsNonMatchingSiblingException.Ctfe`; skips sibling handler and binds base catch variable. |
-| `visitTryFinally` finally throws after normal body | Not reached | dmd-ctfe-coverage-tests-6 Worker 5 | Valid additive test was poked, but focused coverage left `visitTryFinally` whole-method uncovered; no test kept. |
+| `visitTryFinally` | Not reachable | Semantic rewrite | Semantic analysis lowers fall-through `try/finally` to `CompoundStatement`; two independent probes left whole-method uncovered. |
 | `visitDtorExp(DtorExpStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 6 | `scopeDestructorRunsAtCtfe.Ctfe`; scope-exit struct destructor mutates dynamic array state. |
 | `visitDefault(DefaultStatement)` | Covered | dmd-ctfe-coverage-tests-6 Worker 7 | `switchFallsThroughToDefault.Ctfe`; normal switch default execution, not `goto default`. |
 | `recursivelyCreateArrayLiteral` char dynamic array | Covered | dmd-ctfe-coverage-tests-6 Worker 8 | `newCharArrayUsesRuntimeLengthAndDefaultFill.Ctfe`; runtime `new char[]` default fill uses string-literal block path. |
 | `resolveIndexing(IndexExp)` direct array OOB | Covered | dmd-ctfe-coverage-tests-6 Worker 9 | `dynamicArrayIndexPastLengthDiagnostic.Ctfe`; direct dynamic-array indexing, distinct from slice-index diagnostic. |
 | `foreachApplyUtf` whole method | Covered | `foreachUtf8String.Ctfe` | 2-byte UTF-8 sequence via `foreach (dchar c; s)` with `bytes.idup`. Method now partially covered. |
 | `visit(CastExp)` type-painting path | Covered | `ut.backends.pure_.lang.expressions.castExpTypePaintedSliceFromVoidPointer.Ctfe` | Runtime `void*` to array cast path now covers the pointer-painting branch in `visit(CastExp)` and closes part of the uncovered gap. |
-| `visit(DotTypeExp)` type-property probe | Not reached | dmd-ctfe-coverage-tests-11 Worker 8 | `dotTypePropertySizeofUsesRuntimeSeed.Ctfe` passed but left all `visit(DotTypeExp)` executable lines uncovered; probe discarded. |
+| `visit(DotTypeExp)` | Not reachable | Semantic rewrite | Property accesses constant-folded before CTFE; two independent probes confirmed no valid D fixture reaches this visitor. |
 | `BinExp` pointer-plus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerOffsetReadsElement.Ctfe` | Runtime `values.ptr + 1` hits the pointer arithmetic result path. |
 | `BinExp` pointer-minus-integral branch | Covered | `ut.backends.pure_.lang.expressions.runtimePointerDifferenceReadsElement.Ctfe` | Runtime `tail - 1` hits the pointer arithmetic result path. |
 | `interpret_aaGetRvalueX` missing key | Covered | `ut.backends.pure_.lang.arrays.assocArrayReadMissingKeyThrowsDiagnostic.Ctfe` | Missing runtime key hits the DMD CTFE diagnostic branch for AA reads. |
 | `visit(PostExp)` postfix increment | Covered | `ut.backends.pure_.lang.expressions.postIncrementUsesRuntimeSeed.Ctfe` | Runtime `value++` hits `EXP.plusPlus` and `interpretAssignCommon` with post mode. |
+| `visit(ComplexExp)` | Coverage unconfirmed | `complexLiteralWithRuntimeParts.Ctfe` added | Worker 5 (dmd-ctfe-coverage-tests-11) added tests and they passed, but the coverage script was not run to confirm the method moved; re-verify before marking covered. |
+| `interfaceVirtualCallUsesRuntimeDispatch` | Coverage unconfirmed | `interfaceVirtualCallUsesRuntimeDispatch.Ctfe` added | Worker 6 (dmd-ctfe-coverage-tests-11) added test and it passed, but coverage was not confirmed; re-verify before marking covered. |
+| `visitSwitch` no-default-no-match | Needs triage | Pending | `switch (seed) { case 1: ... }` where runtime seed matches no case and there is no default; should hit error path at dinterpret.d ~line 1289. High confidence. |
+| `visitReturn` closure error path | Needs triage | Pending | Return a delegate that closes over a local variable; should hit "closures are not yet supported in CTFE" diagnostic at dinterpret.d ~lines 1008–1015. High confidence. |
+| `visitUnrolledLoop` exception path | Needs triage | Pending | Throw inside an `AliasSeq`/expression-tuple unrolled loop body; hits `exceptionOrCant` return path at dinterpret.d ~lines 890, 900. High confidence. |
+| `interpret_aaApply` empty AA | Needs triage | Pending | `foreach` over `(int[int]).init`; hits early-return at dinterpret.d ~line 7128 before any delegate call. High confidence. |
+| `interpret_keys` null AA | Needs triage | Pending | `.keys` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~lines 6862–6865. High confidence. |
+| `interpret_values` null AA | Needs triage | Pending | `.values` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~lines 6887–6890. High confidence. |
+| `foreachApplyUtf` UTF-16 path | Needs triage | Pending | `foreach (dchar c; wstr)` over a runtime-shaped `wstring`; hits case 2 at dinterpret.d ~lines 7272–7286. High confidence. |
+| `foreachApplyUtf` UTF-32 / reverse | Needs triage | Pending | `foreach (dchar c; dstr)` over a runtime-shaped `dstring`, or `foreach_reverse` over a string; hits case 4 or reverse path at dinterpret.d ~lines 7288–7297. High confidence. |
+| `visitTryCatch` unmatched propagation | Needs triage | Pending | Throw an exception type that matches no catch handler; exception propagates uncaught out of the CTFE call, hitting the no-match path at dinterpret.d ~lines 1443–1444. High confidence. |
+| `interpret_aaDel` null AA | Needs triage | Pending | `.remove` on a null AA in CTFE; hits null-AA early return at dinterpret.d ~line 6912. Medium confidence — semantic analysis may intercept. |
+| `visit(CommaExp)` nested chain | Needs triage | Pending | Nested comma expression such as `(a += 1, b += 2, c)` to trigger the `firstComma` inner loop at dinterpret.d ~line 4860. Medium confidence. |
 
 Coverage workflow details:
 
