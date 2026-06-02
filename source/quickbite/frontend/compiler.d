@@ -73,6 +73,10 @@ public imported!"dmd.expression".Expression parseExpression(in string source) {
     return compiler.parseExpression(source);
 }
 
+public imported!"dmd.func".FuncDeclaration parseEvalFunction(in string source) {
+    return evalFunction(parseModule(evalSource(source)).module_);
+}
+
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
@@ -353,4 +357,27 @@ public void resetErrors() {
     global.errors = 0;
     global.warnings = 0;
     diagnostics.length = 0;
+}
+
+private string evalSource(in string source) {
+    import std.string: lastIndexOf;
+
+    const lastNl = source.lastIndexOf('\n');
+    const prior = lastNl < 0 ? "" : source[0 .. lastNl + 1];
+    const last = lastNl < 0 ? source : source[lastNl + 1 .. $];
+    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
+}
+
+private imported!"dmd.func".FuncDeclaration evalFunction(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto function_ = member.isFuncDeclaration;
+            if (function_ !is null && function_.ident.toString == "f")
+                return function_;
+        }
+    }
+
+    throw new Exception("Missing eval function.");
 }

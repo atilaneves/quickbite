@@ -9,19 +9,9 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.frontend.compiler: parseExpression, parseModule;
-        import std.string: lastIndexOf;
+        import quickbite.frontend.compiler: parseEvalFunction;
 
-        const lastNl = expr.lastIndexOf('\n');
-        if (lastNl < 0)
-            return evalExpression(parseExpression(expr));
-
-        const prior = expr[0 .. lastNl + 1];
-        const last = expr[lastNl + 1 .. $];
-        const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
-
-        auto parsed = parseModule(source);
-        return evalMultiCell(parsed.module_);
+        return evalFunction(parseEvalFunction(expr));
     }
 
     public override Value evalRepl(in ReplCell cell) {
@@ -104,30 +94,15 @@ private imported!"quickbite.lang".Value castValue(
     assert(0);
 }
 
-private imported!"quickbite.lang".Value evalMultiCell(
-    imported!"dmd.dmodule".Module module_,
+private imported!"quickbite.lang".Value evalFunction(
+    imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.func: FuncDeclaration;
-
-    FuncDeclaration f;
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto func = member.isFuncDeclaration;
-            if (func !is null && func.ident.toString == "f") {
-                f = func;
-                break;
-            }
-        }
-    }
-
-    assert(f !is null);
-
-    EvalInterpreter interpreter;
-    interpreter.runStatement(f.fbody);
-    return interpreter.result;
+    EvalFunctionWalker walker;
+    walker.runStatement(function_.fbody);
+    return walker.result;
 }
 
-private struct EvalInterpreter {
+private struct EvalFunctionWalker {
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
 
@@ -160,6 +135,11 @@ private struct EvalInterpreter {
 
         if (auto expression = statement.isExpStatement) {
             result = runExpression(expression.exp);
+            return;
+        }
+
+        if (auto return_ = statement.isReturnStatement) {
+            result = runExpression(return_.exp);
             return;
         }
 

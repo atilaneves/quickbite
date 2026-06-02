@@ -17,11 +17,9 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseEvalFunction;
 
-    // Eval input may contain declarations/imports before the final expression.
-    // Parse it as a function body so DMD gives the bytecode compiler an AST.
-    return compileFunction(functionDeclaration(parseModule(evalSource(source)).module_));
+    return compileFunction(parseEvalFunction(source));
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -394,30 +392,6 @@ private struct Compiler {
 
         return expression;
     }
-}
-
-
-private string evalSource(in string str) {
-    import std.string: lastIndexOf;
-
-    const lastNl = str.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing bytecode eval function.");
 }
 
 private imported!"quickbite.lang".Value defaultValue(
