@@ -11,24 +11,11 @@ must not treat that language behavior as unsupported just because the current
 
 ## Priority Work
 
-Pick these items up before any other REPL follow-up.
+Pick these items up before any other REPL follow-up. If a user asks for the
+next REPL slice or the next PR from this plan, start with the first item in
+this section, not with `Remaining follow-up`.
 
-### Function declared twice
-
-This doesn't work:
-
-```
-Quickbite REPL
-> int twice(int i) { return i * 2; }
-> int twice(int i) { return 42; }
-function `twice(int i)` conflicts with previous declaration at <repl>(1)
-> twice(3)
-Overlong UTF-8 sequence
-```
-
-It should print 6.
-
-### Should work with example.d
+### Next PR: `bin/qb tests/example.d`
 
 Running `bin/qb tests/example.d` should work. That's just a first
 step, a second step is adding `:t` to run whatever unittest blocks
@@ -124,14 +111,14 @@ Completed:
 - Fixed whitespace-only piped input in the REPL binary. `printf "   \n" |
   bin/qb` now exits successfully without invoking the evaluator, matching
   blank piped input.
+- Displayed numeric scalar values using D literal notation where a
+  distinguishing suffix exists: `42u` (`uint`), `42L` (`long`), `42UL`
+  (`ulong`), and `3.8f` (`float`). Default D literal types now display
+  without annotation (`int` as `42`, `double` as `3.8`), while types with no D
+  literal suffix keep `: type` annotations (`byte`, `short`, `ubyte`,
+  `ushort`, `real`).
 
 Remaining follow-up:
-
-- Display numeric scalar values using D literal notation where a
-  distinguishing suffix exists: `42u` (uint), `42L` (long), `42UL`
-  (ulong), `3.8f` (float). `int` and `double` need no annotation as they
-  are D's default literal types. Use `: type` annotation only for types
-  with no D literal suffix: `byte`, `short`, `ubyte`, `ushort`, `real`.
 
 - Fix `iota(5).filter!(x => x % 2 == 0).array` producing no output and
   no error. The result should display as `[0, 2, 4]`.
