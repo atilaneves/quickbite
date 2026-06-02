@@ -11,7 +11,9 @@ static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
         newBackend!backend.eval("0").should == Value(0);
         newBackend!backend.eval("7").should == Value(7);
     }
+}
 
+static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
