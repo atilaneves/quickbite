@@ -147,6 +147,9 @@ private struct EvalFunctionWalker {
         if (auto real_ = expression.isRealExp)
             return realValue(real_);
 
+        if (auto string_ = expression.isStringExp)
+            return stringValue(string_);
+
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
 
@@ -267,6 +270,18 @@ private struct EvalFunctionWalker {
             return runExpression(cast_.e1);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    private Value stringValue(imported!"dmd.expression".StringExp string_) {
+        return Value(stringChars(string_));
+    }
+
+    private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        char[] values;
+        foreach (index; 0 .. string_.numberOfCodeUnits)
+            values ~= cast(char) string_.getIndex(index);
+
+        return values;
     }
 }
 
