@@ -72,23 +72,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
-    @("logicalAndCall." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool left() {
-                return true;
-            }
-
-            bool right() {
-                return true;
-            }
-
-            unittest {
-                assert(left && right);
-            }
-        });
-    }
-
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -123,6 +106,25 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("logicalAndCall." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool left() {
+                return true;
+            }
+
+            bool right() {
+                return true;
+            }
+
+            unittest {
+                assert(left && right);
+            }
+        });
+    }
 }
 
 static foreach (backend; backendsWith!Interpreter) {
