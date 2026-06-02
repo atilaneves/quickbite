@@ -130,6 +130,15 @@ Remaining follow-up:
   `unittest { assert(1 == 2); }` and `:t`, the output should not be only
   `1 != 2`.
 
+- Support several file arguments. `bin/qb a.d b.d` should execute or
+  interpret all files in argument order, not only the first file.
+
+- Add `-l` so file arguments can leave the session live after execution.
+  Without `-l`, file arguments should execute and exit. With `-l`, the REPL
+  should start after executing the files, with the same effective session state
+  as if the user had pasted the code manually, except that loaded code remains
+  in its original modules.
+
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
