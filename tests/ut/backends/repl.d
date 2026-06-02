@@ -186,6 +186,18 @@ static foreach (backend; backends) {
         output.should == [`["a", "b"]`];
     }
 
+    @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`string[] values = ["", "a"];`, "values", ":q"],
+        );
+
+        output.should == [`["", "a"]`];
+    }
+
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
