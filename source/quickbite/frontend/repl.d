@@ -37,6 +37,10 @@ public struct ReplSession {
         evalSession.loadModuleSource(source);
     }
 
+    public void loadModuleFile(in string filePath, in string source) {
+        evalSession.loadModuleFile(filePath, source);
+    }
+
     public string loadedModuleSource() const @safe pure {
         return evalSession.loadedModuleSource;
     }

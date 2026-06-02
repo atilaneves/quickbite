@@ -314,6 +314,27 @@ static foreach (backend; backends) {
         repl.submit(":t").should == Value.void_;
     }
 
+    @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleFile("loaded_repl_file.d", q{
+            int loadedValue() { return 41; }
+
+            unittest {
+                assert(loadedValue() == 42);
+            }
+        });
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should ==
+            "unittest at loaded_repl_file.d(4) failed: 41 != 42";
+    }
+
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
     unittest {

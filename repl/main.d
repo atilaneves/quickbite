@@ -25,11 +25,8 @@ public int main(string[] args) {
     if (options.options.hasFile) {
         import std.file: readText;
 
-        string source;
         foreach (file; options.options.files)
-            source ~= readText(file) ~ "\n";
-
-        repl.loadModuleSource(source);
+            repl.loadModuleFile(file, readText(file));
     }
 
     if (options.options.hasCommand)

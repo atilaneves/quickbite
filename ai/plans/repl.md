@@ -154,11 +154,12 @@ Completed:
 - Added `-l` so file arguments can leave the session live after loading. Without
   `-l`, file arguments still load and exit; with `-l`, the terminal REPL starts
   and can use declarations loaded from those files.
+- Preserved loaded-file identity in REPL `:t` diagnostics. File arguments now
+  load through a file-path-aware REPL API, and failing loaded-file
+  `unittest` blocks report their source filename and line while typed REPL
+  cells still report `<repl>`.
 
 Remaining follow-up:
-
-- File-backed code should eventually keep its own file/line identity instead
-  of being appended to the synthetic REPL module.
 
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
