@@ -144,22 +144,14 @@ Completed:
   wrapper for callers that only need failure diagnostics, while REPL test
   reporting now aggregates failed `TestCaseResult` diagnostics instead of
   stopping at the first failure.
+- Prefixed REPL command failures with an `Error:` label. Terminal-backed
+  output renders the label red through `colorize`; piped output keeps the same
+  label uncoloured and returns a failing process status for command failures.
 
 Remaining follow-up:
 
 - File-backed code should eventually keep its own file/line identity instead
   of being appended to the synthetic REPL module.
-
-- Prefix non-unittest interactive REPL command failures with an error label,
-  preferably styled red for terminal output. For example, after a command
-  failure the output should not be only the raw backend diagnostic.
-
-- For red terminal error labels, add a small DUB dependency that renders ANSI
-  colour only when the output stream is a terminal. Test the actual colour in
-  the standalone pseudo-TTY path, not normal `dub test`: extend
-  `tests/run_repl.py` to enter a failing command such as `:t` after a failing
-  `unittest` cell, then assert the captured TTY output contains the red SGR
-  sequence around the `Error:` label and still omits colour for piped output.
 
 - Support several file arguments. `bin/qb a.d b.d` should execute or
   interpret all files in argument order, not only the first file.
