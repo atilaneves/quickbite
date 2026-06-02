@@ -22,15 +22,21 @@ public int main(string[] args) {
 
     auto repl = Repl(new Ctfe);
 
-    if (options.options.hasCommand)
-        return submit(repl, options.options.command, FailureMode.exit) ? 0 : 1;
-
     if (options.options.hasFile) {
         import std.file: readText;
 
-        repl.loadModuleSource(readText(options.options.file));
-        return 0;
+        string source;
+        foreach (file; options.options.files)
+            source ~= readText(file) ~ "\n";
+
+        repl.loadModuleSource(source);
     }
+
+    if (options.options.hasCommand)
+        return submit(repl, options.options.command, FailureMode.exit) ? 0 : 1;
+
+    if (options.options.hasFile)
+        return 0;
 
     if (stdinIsTerminal) {
         writeln("Quickbite REPL");

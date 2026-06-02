@@ -13,6 +13,7 @@ public struct ReplOptions {
     public bool showHelp;
     public bool hasFile;
     public string file;
+    public string[] files;
 }
 
 public struct ReplCliResult {
@@ -54,13 +55,14 @@ public ReplCliResult parseReplArgs(string[] args) {
     if (args.length > 1) {
         result.options.hasFile = true;
         result.options.file = args[1];
+        result.options.files = args[1 .. $];
     }
 
     return result;
 }
 
 private enum helpText =
-    "Usage: repl [options] [file.d]\n" ~
+    "Usage: repl [options] [file.d ...]\n" ~
     "\n" ~
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
