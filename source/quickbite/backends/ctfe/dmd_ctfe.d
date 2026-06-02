@@ -5,7 +5,11 @@ private:
 
 
 public class Ctfe: imported!"quickbite.backends".Backend {
-    import quickbite.backends: TestSummary;
+    import quickbite.backends:
+        TestCaseResult,
+        TestOutcome,
+        TestRunResult,
+        TestSummary;
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
@@ -44,21 +48,44 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         });
     }
 
-    public override TestSummary runParsedTestSummary(
+    public override TestRunResult runParsedTestResults(
         imported!"dmd.dmodule".Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        TestSummary summary;
+        TestRunResult result;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            ++summary.total;
-            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
-                ++summary.failed;
-            else
-                ++summary.passed;
+            ++result.summary.total;
+            if (const failure = ctfeFailureMessage(callExpression(unitTest))) {
+                ++result.summary.failed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.failed,
+                    locChars(unitTest.loc),
+                    failure,
+                );
+            } else {
+                ++result.summary.passed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.passed,
+                    locChars(unitTest.loc),
+                    null,
+                );
+            }
         });
-        return summary;
+        return result;
     }
+
+    public override TestSummary runParsedTestSummary(
+        imported!"dmd.dmodule".Module module_,
+    ) {
+        return runParsedTestResults(module_).summary;
+    }
+}
+
+private string locChars(imported!"dmd.location".Loc loc) @trusted {
+    import std.string: fromStringz;
+
+    return loc.toChars.fromStringz.idup;
 }
 
 private string ctfeFailureMessage(

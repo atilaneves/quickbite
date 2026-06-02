@@ -122,13 +122,46 @@ Completed:
 - Fixed file-argument execution so `bin/qb tests/example.d` exits after
   loading the file instead of entering the interactive REPL prompt when stdin
   is a terminal.
+- Added structured backend test results and used them for REPL `:t`
+  diagnostics. Failing REPL unittest blocks now report the unittest location,
+  such as `unittest at <repl>(1) failed: 1 != 2`, while existing raw backend
+  failure-message callers keep their old messages.
 
 Remaining follow-up:
 
-- Prefix interactive REPL command failures with an error label, preferably
-  styled red for terminal output. For example, after
-  `unittest { assert(1 == 2); }` and `:t`, the output should not be only
-  `1 != 2`.
+- Expand the structured backend test-result API so running tests reports what
+  ran and what failed, including stable unittest names when available and
+  file/line locations for both REPL snippets and source files. Keep
+  `runParsedTests` as a compatibility wrapper until callers migrate, but
+  future REPL, summary, and reporting work should consume structured results
+  rather than throwing or parsing raw strings.
+
+- Keep source loaded from files from advancing typed REPL snippet locations.
+  For example, after `loadModuleSource("int loadedValue() { return 41; }\n")`
+  and a typed `unittest { assert(1 == 2); }`, `:t` should report
+  `unittest at <repl>(1) failed: 1 != 2`, not a later line caused by the
+  loaded source. File-backed code should eventually keep its own file/line
+  identity instead of being appended to the synthetic REPL module.
+
+- Prefix non-unittest interactive REPL command failures with an error label,
+  preferably styled red for terminal output. For example, after a command
+  failure the output should not be only the raw backend diagnostic.
+
+- For red terminal error labels, add a small DUB dependency that renders ANSI
+  colour only when the output stream is a terminal. Test the actual colour in
+  the standalone pseudo-TTY path, not normal `dub test`: extend
+  `tests/run_repl.py` to enter a failing command such as `:t` after a failing
+  `unittest` cell, then assert the captured TTY output contains the red SGR
+  sequence around the `Error:` label and still omits colour for piped output.
+
+- Support several file arguments. `bin/qb a.d b.d` should execute or
+  interpret all files in argument order, not only the first file.
+
+- Add `-l` so file arguments can leave the session live after execution.
+  Without `-l`, file arguments should execute and exit. With `-l`, the REPL
+  should start after executing the files, with the same effective session state
+  as if the user had pasted the code manually, except that loaded code remains
+  in its original modules.
 
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,

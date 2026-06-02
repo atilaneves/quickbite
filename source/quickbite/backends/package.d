@@ -8,6 +8,22 @@ public struct TestSummary {
     public size_t failed;
 }
 
+public enum TestOutcome {
+    passed,
+    failed,
+}
+
+public struct TestCaseResult {
+    public TestOutcome outcome;
+    public string location;
+    public string message;
+}
+
+public struct TestRunResult {
+    public TestSummary summary;
+    public TestCaseResult[] cases;
+}
+
 public interface Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
@@ -16,6 +32,7 @@ public interface Backend {
     public Value eval(in string expr);
     public Value evalRepl(EvalCell cell);
     public void runParsedTests(Module module_);
+    public TestRunResult runParsedTestResults(Module module_);
     public TestSummary runParsedTestSummary(Module module_);
 }
 

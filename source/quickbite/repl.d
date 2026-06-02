@@ -33,8 +33,12 @@ public struct Repl {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
-        if (input == ":t")
-            return runLoadedTests;
+        if (input == ":t") {
+            try
+                return runLoadedTests;
+            catch (Exception exception)
+                throw new Exception(userDiagnostic(exception.msg));
+        }
 
         const source = pendingInput.length == 0 ?
             input :
@@ -59,11 +63,14 @@ public struct Repl {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
         import quickbite.lang: Value;
 
-        backend.runParsedTests(
-            parseModuleWithCheckActionContext(
-                session.loadedModuleSource,
-            ).module_,
+        const result = backend.runParsedTestResults(
+            parseModuleWithCheckActionContext(session.loadedModuleSource)
+                .module_,
         );
+        foreach (ref testCase; result.cases)
+            if (testCase.failed)
+                throw new Exception(testFailureDiagnostic(testCase));
+
         return ReplResult(Value.void_);
     }
 
@@ -109,6 +116,21 @@ private ReplDisplay replDisplay(
         functionReturnsString(cell.evalCell.function_) ?
         ReplDisplay.string :
         ReplDisplay.value;
+}
+
+private bool failed(
+    ref const(imported!"quickbite.backends".TestCaseResult) testCase,
+) @safe pure nothrow {
+    import quickbite.backends: TestOutcome;
+
+    return testCase.outcome == TestOutcome.failed;
+}
+
+private string testFailureDiagnostic(
+    ref const(imported!"quickbite.backends".TestCaseResult) testCase,
+) @safe pure {
+    return "unittest at " ~ testCase.location ~ " failed: " ~
+        testCase.message;
 }
 
 private bool functionReturnsString(
