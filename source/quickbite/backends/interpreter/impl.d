@@ -474,6 +474,10 @@ private struct EvalModuleInterpreter {
         if (assert_.msg !is null && assert_.msg.isStringExp !is null)
             return assertMessage(assert_.msg);
 
+        if (auto integer = assert_.e1.isIntegerExp)
+            if (!isBoolExpression(integer))
+                return "`assert(0)` failed";
+
         if (auto not = assert_.e1.isNotExp) {
             import std.conv: text;
 
