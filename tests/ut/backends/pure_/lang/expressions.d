@@ -1367,6 +1367,27 @@ static foreach (backend; backends) {
             "`dg.funcptr` cannot be evaluated at compile time");
     }
 
+    @("returnNestedDelegateUnsupportedInCtfe." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeDelegate(int seed) {
+                int captured = seed + 1;
+
+                int nested() {
+                    captured += 2;
+                    return captured;
+                }
+
+                return &nested;
+            }
+
+            unittest {
+                auto dg = makeDelegate(3);
+                assert(dg() == 5);
+            }
+        }).shouldThrowWithMessage("closures are not yet supported in CTFE");
+    }
+
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -91,10 +91,9 @@ The current implementation is intentionally lightweight:
 
 ## Test Selection
 
-Add tests one behaviour at a time. Approval is required before adding a new
-test or modifying test behaviour. The only approval exception is adding a
-backend to an existing backend-matrix test. A test is good for this work when
-all of the following are true:
+Add tests one behaviour at a time. New tests for this plan do not need
+pre-approval. A test is good for this work only when all of the following are
+true:
 
 - it passes normally;
 - it fails when the expected result or diagnostic is deliberately poked;
@@ -117,8 +116,10 @@ For each uncovered method group:
    `tests/ut/backends/pure_/lang/arrays.d`,
    `tests/ut/backends/pure_/lang/structs.d`, or
    `tests/ut/backends/pure_/lang/exceptions.d`.
-5. Run the focused test, then regenerate CTFE coverage and confirm the intended
-   `dmd.dinterpret` lines changed from uncovered to covered in the same method.
+5. Run the focused test, deliberately poke the expected result or diagnostic
+   so it fails for the intended reason, then revert the poke.
+6. Regenerate CTFE coverage and confirm the intended `dmd.dinterpret` lines
+   changed from uncovered to covered in the same method.
 
 Avoid all-literal fixtures unless constant folding itself is the target. Use
 runtime-shaped values such as mutable locals or helper calls so DMD does not
@@ -127,6 +128,25 @@ fold away the AST node before CTFE interprets it.
 Do not add tests for internal assertions, compiler consistency checks, frontend
 states that semantic analysis rewrites away, or impossible AST shapes. Record
 those gaps with the exact line or method and a short reason.
+
+## Efficacy Gate
+
+Assess coverage work after every commit before choosing another target. Record
+at least:
+
+- executable-entry coverage before and after the commit;
+- percentage-point delta;
+- method-level coverage before and after the commit;
+- whether the commit covered a whole method, a meaningful partial-method
+  region, or only a narrow branch;
+- whether the next slice still justifies the orchestration and verification
+  cost.
+
+Prefer targets that can move whole-method coverage or large uncovered regions.
+Small branch-only diagnostic tests are acceptable when they cover real CTFE
+behavior, pass normally, fail when poked, and increase coverage, but repeated
+branch-only gains are a signal to stop the current PR slice and reassess the
+remaining candidate list.
 
 ### Known Unreachable Targets
 
@@ -231,12 +251,14 @@ Spawn all explorer and worker subagents for this plan with
    "rewritten to X" comment in `dmd.dinterpret`.
 2. Spawn a worker subagent for the chosen target. The worker must follow a
    probe-first workflow:
-   a. Write the minimal behavior test only (no failure-message tests yet).
-   b. Run `scripts/dmd-ctfe-coverage.sh <test-name>` immediately and check
-      whether the targeted method or branch shows new hits in the `.lst`.
-   c. If coverage moved: write the failure-message tests, poke-check, and
-      prepare the full commit.
-   d. If coverage did not move: discard the probe, record the target as
+   a. Write the minimal behavior or diagnostic test.
+   b. Run the focused test normally.
+   c. Deliberately poke the expected result or diagnostic and confirm the test
+      fails for the intended reason, then revert the poke.
+   d. Run `scripts/dmd-ctfe-coverage.sh <test-name>` and check whether the
+      targeted method or branch shows new hits in the `.lst`.
+   e. If coverage moved: prepare the full commit.
+   f. If coverage did not move: discard the probe, record the target as
       "Diagnostic fires before target logic" in the Audit Log, and report
       back to the orchestrator to pick a new target. Do not write
       failure-message tests for a fixture that does not hit the intended lines.
@@ -293,6 +315,52 @@ The probe-first rule (run focused coverage before keeping any test) was not
 enforced. That rule is a hard gate, not advisory.
 
 ## Archive
+
+### 2026-06-02 dmd-ctfe-coverage-slice Worker 1
+
+Branch `dmd-ctfe-coverage-slice` started from:
+
+```text
+09f2eff7f90130664e0e0de5babfac889efe59d4
+```
+
+Starting broad coverage for:
+
+```sh
+scripts/dmd-ctfe-coverage.sh ut.backends.pure_
+```
+
+was 2336/3760 executable entries, or 62.13%.
+
+Explorer recommendation 1 targeted the `visit(ReturnStatement)` branch that
+rejects returning a nested delegate when it closes over local variables.
+
+Added focused pure-backend CTFE diagnostic test:
+
+```text
+ut.backends.pure_.lang.expressions.returnNestedDelegateUnsupportedInCtfe.Ctfe
+```
+
+Poke result: changing the expected diagnostic to
+`closures are not yet supported in CTFE?` failed with the actual diagnostic
+`closures are not yet supported in CTFE`; the poke was reverted and the focused
+test was rerun green.
+
+Coverage effect: focused coverage hit the closure-diagnostic branch in
+`visit(ReturnStatement)`, including the diagnostic, `CTFEExp.cantexp`
+assignment, and early return. The broad coverage after the slice was
+2339/3760 executable entries, or 62.21%, a gain of 3 executable entries and
+0.08 percentage points.
+
+Verification notes:
+
+- `dub test -- --random
+  ut.backends.pure_.lang.expressions.returnNestedDelegateUnsupportedInCtfe.Ctfe`
+  passed.
+- `scripts/dmd-ctfe-coverage.sh
+  ut.backends.pure_.lang.expressions.returnNestedDelegateUnsupportedInCtfe.Ctfe`
+  passed and showed the targeted branch covered.
+- `scripts/dmd-ctfe-coverage.sh ut.backends.pure_` passed.
 
 ### 2026-06-01 dmd-ctfe-coverage-tests-11 Worker 1
 
