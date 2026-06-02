@@ -106,11 +106,14 @@ Completed:
 - Fixed syntax errors exposing wrapper internals. `1 +` now reports only the
   primary diagnostic from the original REPL input instead of additional
   generated-wrapper diagnostics about `}`, `return`, or compound statements.
+- Fixed duplicated runtime error messages in user-visible REPL diagnostics.
+  Runtime CTFE failures such as `1 / 0` and `[1, 2, 3][10]` now report the
+  DMD diagnostic once instead of repeating the same line.
+- Fixed direct REPL parser calls to pass NUL-terminated source buffers. This
+  keeps readline-backed interactive input from exposing stray bytes such as
+  `0x7f` to DMD's parser under pseudo-TTY tests.
 
 Remaining follow-up:
-
-- Fix runtime error messages being emitted twice: `1 / 0` prints
-  `divide by 0` twice; `[1,2,3][10]` prints the OOB message twice.
 
 - Fix `throw new Exception("test")` and `auto arr = [1,2,3]; arr[99]`
   printing `Unsupported CTFE eval result: error` instead of the actual

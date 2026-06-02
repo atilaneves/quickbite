@@ -151,6 +151,32 @@ private string userDiagnostic(in string diagnostic) @safe pure {
         ++index;
     }
 
+    return withoutConsecutiveDuplicateLines(result);
+}
+
+private string withoutConsecutiveDuplicateLines(in string diagnostic)
+@safe pure {
+    string result;
+    string previousLine;
+    bool havePreviousLine;
+    size_t lineStart;
+    while (lineStart < diagnostic.length) {
+        size_t lineEnd = lineStart;
+        while (lineEnd < diagnostic.length && diagnostic[lineEnd] != '\n')
+            ++lineEnd;
+
+        const line = diagnostic[lineStart .. lineEnd];
+        if (!havePreviousLine || line != previousLine) {
+            if (result.length != 0)
+                result ~= '\n';
+            result ~= line;
+        }
+
+        previousLine = line;
+        havePreviousLine = true;
+        lineStart = lineEnd == diagnostic.length ? diagnostic.length : lineEnd + 1;
+    }
+
     return result;
 }
 
