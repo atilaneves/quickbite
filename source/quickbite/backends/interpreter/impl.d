@@ -150,6 +150,9 @@ private struct EvalFunctionWalker {
         if (auto addAssign = expression.isAddAssignExp)
             return runIncrementAssignExpression(addAssign);
 
+        if (auto sub = expression.isMinExp)
+            return runExpression(sub.e1) - runExpression(sub.e2);
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
