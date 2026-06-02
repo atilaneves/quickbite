@@ -80,6 +80,7 @@ configuration "qb" {
 
     dependency "dmd:frontend" version="~>2.112.0"
     dependency ":dmd-backend-vendor" version="*"
+    dependency "colorize" version="~>1.0.5"
     dependency "readline" version="0.3.0"
 }
 

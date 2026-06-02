@@ -22,9 +22,8 @@ public int main(string[] args) {
 
     auto repl = Repl(new Ctfe);
 
-    if (options.options.hasCommand) {
-        return submit(repl, options.options.command) ? 0 : 1;
-    }
+    if (options.options.hasCommand)
+        return submit(repl, options.options.command, FailureMode.exit) ? 0 : 1;
 
     if (options.options.hasFile) {
         import std.file: readText;
@@ -45,7 +44,7 @@ public int main(string[] args) {
         if (line.strip.length == 0)
             continue;
 
-        if (!submit(repl, line))
+        if (!submit(repl, line, FailureMode.exit))
             return 1;
     }
 
@@ -57,6 +56,13 @@ private bool stdinIsTerminal() {
     import std.stdio: stdin;
 
     return stdin.isOpen && isatty(stdin.fileno) != 0;
+}
+
+private bool stdoutIsTerminal() {
+    import core.sys.posix.unistd: isatty;
+    import std.stdio: stdout;
+
+    return stdout.isOpen && isatty(stdout.fileno) != 0;
 }
 
 private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
@@ -79,14 +85,23 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
         if (line.strip.length != 0)
             add_history(rawLine);
 
-        if (!submit(repl, line))
+        if (!submit(repl, line, FailureMode.continue_))
             return 1;
     }
 }
 
 extern (C) private void add_history(const(char)* line);
 
-private bool submit(ref imported!"quickbite.repl".Repl repl, in string line) {
+private enum FailureMode {
+    exit,
+    continue_,
+}
+
+private bool submit(
+    ref imported!"quickbite.repl".Repl repl,
+    in string line,
+    in FailureMode failureMode,
+) {
     import std.stdio: writeln;
 
     try {
@@ -94,11 +109,22 @@ private bool submit(ref imported!"quickbite.repl".Repl repl, in string line) {
         if (display !is null)
             writeln(display);
     } catch (Exception e) {
-        writeln(e.msg);
+        writeln(errorDiagnostic(e.msg));
+        return failureMode == FailureMode.continue_;
     } catch (Error e) {
-        writeln(e.msg);
+        writeln(errorDiagnostic(e.msg));
         return false;
     }
 
     return true;
+}
+
+private string errorDiagnostic(in string diagnostic) {
+    return errorLabel ~ " " ~ diagnostic;
+}
+
+private string errorLabel() {
+    import colorize: color, fg;
+
+    return stdoutIsTerminal ? "Error:".color(fg.red) : "Error:";
 }
