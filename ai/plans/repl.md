@@ -121,11 +121,11 @@ Completed:
 - Fixed expression-cell CTFE failures so DMD's diagnostic is reported before
   `ErrorExp` reaches REPL value rendering. For example,
   `auto arr = [1,2,3]; arr[99]` reports DMD's bounds diagnostic.
+- Fixed whitespace-only piped input in the REPL binary. `printf "   \n" |
+  bin/qb` now exits successfully without invoking the evaluator, matching
+  blank piped input.
 
 Remaining follow-up:
-
-- Fix `printf "   \n" | bin/qb` printing `Unsupported CTFE eval result:
-  voidExpression`. Whitespace-only input should be a silent no-op.
 
 - Display numeric scalar values using D literal notation where a
   distinguishing suffix exists: `42u` (uint), `42L` (long), `42UL`

@@ -7,6 +7,7 @@ public int main(string[] args) {
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
     import std.stdio: stderr, stdin, writeln;
+    import std.string: strip;
 
     const options = parseReplArgs(args);
     if (options.status != 0) {
@@ -40,7 +41,7 @@ public int main(string[] args) {
         if (line == ":q" || line == ":quit")
             break;
 
-        if (line.length == 0)
+        if (line.strip.length == 0)
             continue;
 
         if (!submit(repl, line))
@@ -60,6 +61,7 @@ private bool stdinIsTerminal() {
 private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
     import gnu.readline: readline, rl_free;
     import std.string: fromStringz;
+    import std.string: strip;
 
     while (true) {
         char* rawLine = readline("> ");
@@ -73,7 +75,7 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
         if (line == ":q" || line == ":quit")
             return 0;
 
-        if (line.length != 0)
+        if (line.strip.length != 0)
             add_history(rawLine);
 
         if (!submit(repl, line))
