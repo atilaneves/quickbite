@@ -78,6 +78,10 @@ Lua-specific bytecode shape.
 - Make operands earn their shape. Avoid a generic `long` operand, ad hoc
   integer-specialized operands, or a half-built sum type unless the current test
   proves that shape is needed.
+- Do not split one language operation into one opcode per scalar type unless
+  the VM semantics genuinely differ. Prefer one opcode with a typed operand
+  domain, for example a cast opcode plus a target-type operand, before adding
+  `castInt`, `castFloat`, or similar families.
 - Do not add module-level helpers that only wrap a single call unless they make
   an active test simpler. Prefer inlining or overloading when that is clearer.
 - Keep names precise and conventional: use "variables" for variable metadata,
