@@ -3,6 +3,12 @@ module quickbite.lang;
 private:
 
 
+private enum ArrayDisplay {
+    normal,
+    string,
+}
+
+
 public struct Value {
     private alias Data = imported!"std.sumtype".SumType!(
 
@@ -54,6 +60,14 @@ public struct Value {
 
     public static Value arrayValue(in Value[] elements) @safe pure {
         return Value(Array(elements));
+    }
+
+    public static Value stringValue(in char[] elements) @safe pure {
+        Value[] values;
+        foreach (element; elements)
+            values ~= Value(element);
+
+        return Value(Array(values, ArrayDisplay.string));
     }
 
     public static Value assocArrayValue(
@@ -116,11 +130,7 @@ public struct Value {
     }
 
     public this(in string value) @safe pure {
-        Value[] elements;
-        foreach (char_; value)
-            elements ~= Value(char_);
-
-        data = Data(Array(elements));
+        data = Value.stringValue(value).data;
     }
 
     public this(T)(in T[] values) @safe pure {
@@ -453,9 +463,18 @@ private struct EnumValue {
 
 private struct Array {
     public Value[] elements;
+    public ArrayDisplay display;
 
-    public this(in Value[] elements) @safe pure {
+    public this(
+        in Value[] elements,
+        in ArrayDisplay display = ArrayDisplay.normal,
+    ) @safe pure {
         this.elements = elements.dup;
+        this.display = display;
+    }
+
+    public bool opEquals(in Array other) const @safe pure {
+        return elements == other.elements;
     }
 
     public string toString() const @safe pure {
@@ -471,16 +490,24 @@ private struct Array {
     }
 
     public string dText() const @safe pure {
-        if (!isNonEmptyCharArray)
-            return toString;
-
-        return `"` ~ charArrayString ~ `"`;
+        final switch (display) with (ArrayDisplay) {
+            case normal:
+                if (!isNonEmptyCharArray)
+                    return toString;
+                return `"` ~ charArrayString ~ `"`;
+            case string:
+                return `"` ~ charArrayString ~ `"`;
+        }
     }
 
     private bool isNonEmptyCharArray() const @safe pure {
         if (elements.length == 0)
             return false;
 
+        return isCharArray;
+    }
+
+    private bool isCharArray() const @safe pure {
         foreach (element; elements)
             if (!element.isChar)
                 return false;
@@ -489,6 +516,9 @@ private struct Array {
     }
 
     private string charArrayString() const @safe pure {
+        if (!isCharArray)
+            return toString;
+
         char[] result;
         foreach (element; elements)
             result ~= element.asChar;

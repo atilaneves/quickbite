@@ -285,7 +285,7 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
-    return Value(stringChars(string_));
+    return Value.stringValue(stringChars(string_));
 }
 
 private char[] stringChars(
