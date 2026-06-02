@@ -72,9 +72,12 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Implement `IR.eval` first. Leave `evalRepl`, `runParsedTests`, and
   `runParsedTestSummary` unimplemented until an approved test specifically
   requires one of those entry points.
-- Add locals, parameters, returns, and direct calls next, using the existing
-  CTFE-passing tests only after the eval path has forced enough expression
-  support to make those features the next smallest step.
+- After `eval.d`, target `tests/ut/backends/pure_/lang/logic.d` as the first
+  parsed-module test module. Start with the simplest individual test, such as
+  `logicalNot`, before taking call-based or short-circuit cases.
+- Add locals, parameters, returns, and direct calls only after `eval.d` and the
+  early `logic.d` tests have forced enough support to make those features the
+  next smallest step.
 - Add branches and loops after the scalar and call model is stable. Use the
   current `control_flow.d` coverage as the source of truth for what must work.
 - Add arrays, structs, mutation, and reference-like behaviors only when the
@@ -111,6 +114,10 @@ not yet covered anywhere in the current CTFE-backed language tests.
   block/CFG invariants, or explicitly unsupported features.
 - When a behavior is already covered by CTFE, treat CTFE as the oracle for
   language-surface behavior unless compiled D code proves otherwise.
+- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
+  backend `pure_` language modules run against CTFE, so choose post-`eval`
+  targets by required D language features, not by file length or coverage
+  counts.
 - After each slice, run the focused promoted tests and then `dub test --
   --random`.
 

@@ -26,10 +26,15 @@ Lua-specific bytecode shape.
   explicit frame bookkeeping over a deep abstraction stack.
 
 ## Implementation Direction
-- Start with the smallest useful slice that can make exactly one approved
-  behavior test fail. If the slice needs unittest blocks, integer literals,
-  equality, calls, returns, and assert handling all at once, the test is too
-  broad; pick a smaller test.
+- Start with the smallest useful `eval` slice that can make exactly one
+  approved behavior test fail.
+- After `tests/ut/backends/pure_/lang/eval.d`, target
+  `tests/ut/backends/pure_/lang/logic.d` as the first parsed-module test
+  module. Start with `logicalNot`, then plain `&&` and `||` cases before
+  call-based or short-circuit cases.
+- If the slice needs unittest blocks, integer literals, equality, calls,
+  returns, and assert handling all at once, the test is too broad; pick a
+  smaller test.
 - Add locals, branches, and broader expression support only when a test forces
   the next slice.
 - Keep unsupported behavior explicit and diagnostic rather than silently
@@ -47,6 +52,10 @@ Lua-specific bytecode shape.
 - For `pure_` language-surface tests, treat CTFE as the canonical oracle for
   supported behaviour unless the completed DMD codegen backend demonstrates
   that compiled D code behaves differently.
+- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
+  backend `pure_` language modules run against CTFE, so choose post-`eval`
+  targets by required D language features, not by file length or coverage
+  counts.
 - Verify each new slice before expanding scope: red test, minimal
   implementation, green suite, then the next slice.
 - Do not add unsupported-diagnostic paths unless a test verifies the exact

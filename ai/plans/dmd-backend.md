@@ -50,6 +50,13 @@ Do not start these slices until the current backend roadmap has enough
 tree-walking, IR, and bytecode coverage to compare against, unless the slice is
 explicitly pulled forward for benchmarking.
 
+When a codegen backend is ready to join the shared backend language matrix,
+follow the same module order as the active latency backends: finish the
+existing `eval.d` behavior first, then target
+`tests/ut/backends/pure_/lang/logic.d` as the first parsed-module target.
+Start with `logicalNot`, then plain `&&` and `||` cases before call-based or
+short-circuit cases.
+
 1. `SharedLib.eval`
 2. `SharedLib.runParsedTests` / `runParsedTestSummary`
 3. `SharedLib.evalRepl`

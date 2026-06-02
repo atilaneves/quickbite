@@ -61,9 +61,10 @@ language features.
 After the existing eval tests are done, do not jump to an entire broad
 language file. Identify the next similarly simple test by counting the
 required language features in the fixture and choosing the smallest
-delta from the tree walker's current support. The next source may be
-`expressions.d`, `integral_types.d`, `logic.d`, or another file, but
-the file matters less than the feature count of the individual test.
+delta from the tree walker's current support. The target module after
+`eval.d` is `tests/ut/backends/pure_/lang/logic.d`, starting with the
+simplest individual tests such as `logicalNot`, then plain `&&` and
+`||` cases before call-based or short-circuit cases.
 
 Do not pick a CTFE-only test at random just because it currently lacks
 `TreeWalker`. Before migrating one test, inspect the fixture and choose
@@ -133,6 +134,11 @@ support together, the chosen test is too broad for the first PR.
 - Add tree-walker-specific tests only for walker-native contracts:
   unsupported node diagnostics and environment scoping invariants.
 - Never remove or weaken an existing test to satisfy the walker.
+- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
+  backend `pure_` language modules run against CTFE, so choose post-`eval`
+  targets by required D language features. `logic.d` is the first target
+  module because its early tests need fewer features than `integral_types.d`,
+  `expressions.d`, `diagnostics.d`, or broader modules.
 - After each slice, run `dub test -- --random` to catch regressions.
 
 ## Assumptions
