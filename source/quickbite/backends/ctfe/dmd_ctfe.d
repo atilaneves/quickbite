@@ -13,11 +13,11 @@ public class Ctfe: imported!"quickbite.backends".Backend {
     }
 
     public override Value evalRepl(
-        in imported!"quickbite.frontend.repl".ReplCell cell,
+        in imported!"quickbite.frontend.cell".EvalCell cell,
     ) {
-        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.frontend.cell: EvalCellKind;
 
-        final switch (cell.kind) with (ReplCellKind) {
+        final switch (cell.kind) with (EvalCellKind) {
             case incomplete:
                 throw new Exception("Incomplete REPL cell reached CTFE backend.");
             case noDisplay:
@@ -28,8 +28,6 @@ public class Ctfe: imported!"quickbite.backends".Backend {
                 return Value.void_;
             case expression:
                 return evalReplSource(cell.source);
-            case typeExpression:
-                return evalReplTypeSource(cell.source);
         }
     }
 
@@ -96,7 +94,7 @@ private string diagnosticMessage() {
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {
-    import quickbite.frontend.compiler: parseEvalFunction;
+    import quickbite.frontend.cell: parseEvalFunction;
 
     return callExpression(parseEvalFunction(str));
 }

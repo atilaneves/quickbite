@@ -123,6 +123,21 @@ requested numeric conversion. Avoid adding broad cast fallback paths
 that return guessed `long` values or silently unwrap arbitrary
 expression wrappers.
 
+For arithmetic slices, keep operations on `quickbite.lang.Value` once
+the operands have been evaluated. Do not extract integer bits with
+`cast(int)` helpers for subtraction, multiplication, division, or
+future operators; that bypasses scalar preservation and makes the
+first integer test silently constrain later numeric support.
+
+Do not add a separate eval-source parser that splits on the last
+newline, synthesizes a local result variable, or creates its own
+function wrapper. Route tiny eval cells through common `frontend.cell`
+classification/parsing code so declarations, statements, and the final
+expression are classified by DMD-backed frontend code instead of local
+string heuristics. Keep that common cell API backend-facing only:
+REPL-only concepts such as type-display cells belong in
+`frontend.repl`, not in the cell type consumed by backends.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.

@@ -4,17 +4,17 @@ private:
 
 public class TreeWalker: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
-    import quickbite.frontend.repl: ReplCell;
+    import quickbite.frontend.cell: EvalCell;
     import quickbite.backends: TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.frontend.compiler: parseEvalFunction;
+        import quickbite.frontend.cell: parseEvalFunction;
 
         return evalFunction(parseEvalFunction(expr));
     }
 
-    public override Value evalRepl(in ReplCell cell) {
+    public override Value evalRepl(in EvalCell cell) {
         assert(0);
     }
 
@@ -52,46 +52,64 @@ private imported!"quickbite.lang".Value evalExpression(
         return evalExpression(add.e1) + evalExpression(add.e2);
 
     if (auto sub = expression.isMinExp)
-        return Value(integerBits(sub.e1) - integerBits(sub.e2));
+        return evalExpression(sub.e1) - evalExpression(sub.e2);
 
     if (auto mul = expression.isMulExp)
-        return Value(integerBits(mul.e1) * integerBits(mul.e2));
+        return evalExpression(mul.e1) * evalExpression(mul.e2);
 
     if (auto div = expression.isDivExp)
-        return Value(integerBits(div.e1) / integerBits(div.e2));
+        return evalExpression(div.e1) / evalExpression(div.e2);
+
+    if (auto neg = expression.isNegExp)
+        return -evalExpression(neg.e1);
 
     assert(0);
-}
-
-private int integerBits(imported!"dmd.expression".Expression expression)
-in (expression.isIntegerExp !is null)
-{
-    return cast(int) expression.isIntegerExp.getInteger;
 }
 
 private imported!"quickbite.lang".Value castValue(
     imported!"dmd.expression".CastExp cast_,
 ) {
-    import quickbite.frontend.dmd_values:
-        castIntegerValue,
-        castSignedIntegerValue;
+    import dmd.astenums: TY;
 
     const type = cast_.to.toBasetype;
     if (type is null)
         return evalExpression(cast_.e1);
 
-    if (auto integer = cast_.e1.isIntegerExp)
-        return castIntegerValue(integer, type.ty);
-
-    if (auto neg = cast_.e1.isNegExp) {
-        if (auto integer = neg.e1.isIntegerExp)
-            return castSignedIntegerValue(
-                -cast(long) integer.getInteger,
-                type.ty,
-            );
+    const value = evalExpression(cast_.e1);
+    switch (type.ty) with (TY) {
+        case Tbool:
+            return value.castTo!bool;
+        case Tint8:
+            return value.castTo!byte;
+        case Tuns8:
+            return value.castTo!ubyte;
+        case Tchar:
+            return value.castTo!char;
+        case Tint16:
+            return value.castTo!short;
+        case Tuns16:
+            return value.castTo!ushort;
+        case Twchar:
+            return value.castTo!wchar;
+        case Tint32:
+            return value.castTo!int;
+        case Tuns32:
+            return value.castTo!uint;
+        case Tdchar:
+            return value.castTo!dchar;
+        case Tint64:
+            return value.castTo!long;
+        case Tuns64:
+            return value.castTo!ulong;
+        case Tfloat32:
+            return value.castTo!float;
+        case Tfloat64:
+            return value.castTo!double;
+        case Tfloat80:
+            return value.castTo!real;
+        default:
+            assert(0);
     }
-
-    assert(0);
 }
 
 private imported!"quickbite.lang".Value evalFunction(

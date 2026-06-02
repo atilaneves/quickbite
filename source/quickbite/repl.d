@@ -64,8 +64,17 @@ public struct Repl {
     private imported!"quickbite.lang".Value evalReplCell(
         in imported!"quickbite.frontend.repl".ReplCell cell,
     ) {
+        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.lang: Value;
+
         try
-            return backend.evalRepl(cell);
+        {
+            const value = backend.evalRepl(cell.evalCell);
+            if (cell.kind == ReplCellKind.typeExpression)
+                return Value.typeName(value.asCharArrayString);
+
+            return value;
+        }
         catch (Exception exception)
             throw new Exception(userDiagnostic(exception.msg));
     }

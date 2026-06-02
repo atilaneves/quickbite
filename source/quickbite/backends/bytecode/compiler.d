@@ -17,7 +17,7 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.compiler: parseEvalFunction;
+    import quickbite.frontend.cell: parseEvalFunction;
 
     return compileFunction(parseEvalFunction(source));
 }
