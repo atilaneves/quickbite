@@ -275,6 +275,35 @@ static foreach (backend; backends) {
             "unittest at <repl>(3) failed: 41 != 42";
     }
 
+    @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
+    unittest {
+        import std.algorithm.searching: canFind;
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit(q{
+            unittest {
+                assert(1 == 2);
+            }
+        });
+        repl.submit(q{
+            unittest {
+                assert(3 == 4);
+            }
+        });
+
+        void runTests() {
+            repl.submit(":t");
+        }
+
+        const message = runTests.shouldThrow.msg;
+        message.canFind("unittest at <repl>(2) failed: 1 != 2").should ==
+            true;
+        message.canFind("unittest at <repl>(7) failed: 3 != 4").should ==
+            true;
+    }
+
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
