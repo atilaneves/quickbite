@@ -15,10 +15,11 @@ Pick these items up before any other REPL follow-up. If a user asks for the
 next REPL slice or the next PR from this plan, start with the first item in
 this section, not with `Remaining follow-up`.
 
-### Next PR: `:t` for loaded unittest blocks
+### Next PR: template function definitions
 
-Add `:t` to run whatever unittest blocks have been defined by loaded files or
-accepted REPL cells.
+Support template function definitions as no-display cells. Currently
+`T identity(T)(T x) { return x; }` produces parse errors and `identity(42)`
+fails with `undefined identifier`.
 
 ## Summary
 
@@ -123,15 +124,26 @@ Completed:
   `unittest` blocks. The command reparses loaded unittest source with
   `parseModuleWithCheckActionContext` before handing it to the backend, so
   assertion failures report DMD-style context messages such as `1 != 2`.
+- Fixed `iota(5).filter!(x => x % 2 == 0).array` producing no output and no
+  error. The frontend now classifies this valid expression-shaped cell through
+  DMD statement parsing instead of accepting DMD's prototype-shaped module
+  parse as an incomplete/no-display cell, so the result displays as
+  `[0, 2, 4]`.
 
 Remaining follow-up:
-
-- Fix `iota(5).filter!(x => x % 2 == 0).array` producing no output and
-  no error. The result should display as `[0, 2, 4]`.
 
 - Support template function definitions as no-display cells. Currently
   `T identity(T)(T x) { return x; }` produces parse errors and
   `identity(42)` fails with `undefined identifier`.
+
+- Fix file-argument execution so `bin/qb tests/example.d` does not leave the
+  user inside the interactive REPL prompt. Loading or running files should
+  finish and exit unless interactive mode is explicitly requested.
+
+- Prefix interactive REPL command failures with an error label, preferably
+  styled red for terminal output. For example, after
+  `unittest { assert(1 == 2); }` and `:t`, the output should not be only
+  `1 != 2`.
 
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
