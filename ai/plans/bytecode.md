@@ -78,6 +78,10 @@ Lua-specific bytecode shape.
 - Make operands earn their shape. Avoid a generic `long` operand, ad hoc
   integer-specialized operands, or a half-built sum type unless the current test
   proves that shape is needed.
+- Do not split one language operation into one opcode per scalar type unless
+  the VM semantics genuinely differ. Prefer one opcode with a typed operand
+  domain, for example a cast opcode plus a target-type operand, before adding
+  `castInt`, `castFloat`, or similar families.
 - Do not add module-level helpers that only wrap a single call unless they make
   an active test simpler. Prefer inlining or overloading when that is clearer.
 - Keep names precise and conventional: use "variables" for variable metadata,
@@ -85,6 +89,37 @@ Lua-specific bytecode shape.
   `bytecode.bytecode`.
 - Preserve the repo's formatting style before asking for review. Formatting
   churn distracts from the design slice.
+
+## PR 114 Review Follow-up
+- [x] Explain or remove the `compileEvalSource` wrapper around eval input.
+- [x] Justify or remove import-statement skipping in bytecode statement
+  compilation.
+- [x] Refactor duplicated binary-expression compilation.
+- [x] Remove all non-module-scope `imported!"..."` usages from bytecode
+  compiler helpers.
+- [x] Make `castTarget` return the operand type expected by bytecode
+  instructions.
+- [x] Remove direct `pow` function-name special-casing from bytecode call
+  compilation.
+- [x] Remove direct `fabs` function-name special-casing from bytecode call
+  compilation.
+- [x] Decide whether integer casts need broader tests before broadening
+  support.
+- [ ] Stop inspecting eval source text in the bytecode backend; rely on a
+  frontend-provided structure instead.
+- [ ] Replace hand-written default scalar values with a type-to-D-value mapping
+  based on `T.init`.
+- [ ] Replace manual string code-unit conversion with standard library support
+  if available.
+- [ ] Include bool and character value kinds in integer-like binary operations
+  if DMD treats them that way.
+- [ ] Decide whether `incrementLocal` should remain distinct from `add`.
+- [ ] Clarify or remove the `CastTarget` enum if the current operand shape is
+  not earning its keep.
+- [ ] Remove one-off `Value.fabs` API growth or justify it with a more general
+  intrinsic-call design.
+- [ ] Remove one-off `Value.pow` API growth or justify it with a more general
+  intrinsic-call design.
 
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is
