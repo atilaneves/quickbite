@@ -2,7 +2,7 @@ module quickbite.backends.interpreter.impl;
 
 private:
 
-public class TreeWalker: imported!"quickbite.backends".Backend {
+public class Interpreter: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
     import quickbite.backends: TestRunResult, TestSummary;
@@ -21,7 +21,7 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     public override void runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        Interpreter interpreter;
+        EvalModuleInterpreter interpreter;
         foreachUnitTestDeclaration(module_, (unitTest) {
             interpreter.runTest(unitTest);
         });
@@ -285,7 +285,7 @@ private struct EvalFunctionWalker {
     }
 }
 
-private struct Interpreter {
+private struct EvalModuleInterpreter {
     import dmd.declaration: VarDeclaration;
     import quickbite.lang: Value;
 

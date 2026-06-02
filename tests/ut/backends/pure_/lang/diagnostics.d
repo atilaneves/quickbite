@@ -255,7 +255,7 @@ static foreach (backend; backends) {
 
 }
 
-static foreach (backend; backendsWith!TreeWalker) {
+static foreach (backend; backendsWith!Interpreter) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

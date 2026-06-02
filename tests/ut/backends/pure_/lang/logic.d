@@ -392,7 +392,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!TreeWalker) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -414,7 +414,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backendsWith!TreeWalker) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -455,7 +455,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backendsWith!TreeWalker) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNot." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
