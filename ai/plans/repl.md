@@ -11,24 +11,11 @@ must not treat that language behavior as unsupported just because the current
 
 ## Priority Work
 
-Pick these items up before any other REPL follow-up.
+Pick these items up before any other REPL follow-up. If a user asks for the
+next REPL slice or the next PR from this plan, start with the first item in
+this section, not with `Remaining follow-up`.
 
-### Function declared twice
-
-This doesn't work:
-
-```
-Quickbite REPL
-> int twice(int i) { return i * 2; }
-> int twice(int i) { return 42; }
-function `twice(int i)` conflicts with previous declaration at <repl>(1)
-> twice(3)
-Overlong UTF-8 sequence
-```
-
-It should print 6.
-
-### Should work with example.d
+### Next PR: `bin/qb tests/example.d`
 
 Running `bin/qb tests/example.d` should work. That's just a first
 step, a second step is adding `:t` to run whatever unittest blocks
