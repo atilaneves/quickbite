@@ -122,6 +122,10 @@ Completed:
 - Fixed file-argument execution so `bin/qb tests/example.d` exits after
   loading the file instead of entering the interactive REPL prompt when stdin
   is a terminal.
+- Added structured backend test results and used them for REPL `:t`
+  diagnostics. Failing REPL unittest blocks now report the unittest location,
+  such as `unittest at <repl>(1) failed: 1 != 2`, while existing raw backend
+  failure-message callers keep their old messages.
 
 Remaining follow-up:
 
