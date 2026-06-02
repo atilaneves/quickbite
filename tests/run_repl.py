@@ -26,12 +26,12 @@ def test_repl() -> None:
         child.sendline("1 + 2")
         child.expect_exact("> ")
         output = clean(child.before)
-        assert "3: int" in output
+        assert "3\n" in output
 
         child.sendline(UP_ARROW)
         child.expect_exact("> ")
         output = clean(child.before)
-        assert "3: int" in output
+        assert "3\n" in output
 
         child.sendline(":q")
         child.expect(pexpect.EOF)
@@ -59,7 +59,7 @@ def test_command_prints_expression_result() -> None:
     result = run_qb("-c", "1 + 2")
 
     assert result.returncode == 0
-    assert result.stdout == "3: int\n"
+    assert result.stdout == "3\n"
 
 
 def run_qb(*args: str, input: str = "") -> subprocess.CompletedProcess[str]:
