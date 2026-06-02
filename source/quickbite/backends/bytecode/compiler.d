@@ -17,11 +17,9 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     in string source,
 )
 {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.cell: parseEvalFunction;
 
-    // Eval input may contain declarations/imports before the final expression.
-    // Parse it as a function body so DMD gives the bytecode compiler an AST.
-    return compileFunction(functionDeclaration(parseModule(evalSource(source)).module_));
+    return compileFunction(parseEvalFunction(source));
 }
 
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
@@ -41,8 +39,9 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 }
 
 private struct Compiler {
-    import quickbite.backends.bytecode.instructions:
-        CastTarget, Instruction, Op, Program;
+    import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
+    import quickbite.backends.casts: CastTarget;
+    import quickbite.frontend.dmd_values: integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
@@ -344,39 +343,9 @@ private struct Compiler {
     }
 
     private size_t castTarget(CastExp cast_) {
-        import dmd.astenums: TY;
+        import quickbite.backends.casts: target = castTarget;
 
-        const type = cast_.type.toBasetype;
-        switch (type.ty) {
-            case TY.Tint8:
-                return CastTarget.byte_;
-
-            case TY.Tuns8:
-                return CastTarget.ubyte_;
-
-            case TY.Tint16:
-                return CastTarget.short_;
-
-            case TY.Tuns16:
-                return CastTarget.ushort_;
-
-            case TY.Tint32:
-                return CastTarget.int_;
-
-            case TY.Tuns32:
-                return CastTarget.uint_;
-
-            case TY.Tint64:
-                return CastTarget.long_;
-
-            case TY.Tuns64:
-                return CastTarget.ulong_;
-
-            default:
-                break;
-        }
-
-        throw new Exception("Unsupported bytecode cast.");
+        return target(cast_.type);
     }
 
     private Expression initializerExpression(
@@ -393,30 +362,6 @@ private struct Compiler {
 
         return expression;
     }
-}
-
-
-private string evalSource(in string str) {
-    import std.string: lastIndexOf;
-
-    const lastNl = str.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
-}
-
-private imported!"dmd.func".FuncDeclaration functionDeclaration(
-    imported!"dmd.dmodule".Module module_,
-) {
-    if (module_.members !is null) {
-        foreach (member; *module_.members) {
-            auto function_ = member.isFuncDeclaration;
-            if (function_ !is null && function_.ident.toString == "f")
-                return function_;
-        }
-    }
-
-    throw new Exception("Missing bytecode eval function.");
 }
 
 private imported!"quickbite.lang".Value defaultValue(
@@ -494,24 +439,6 @@ private imported!"quickbite.lang".Value defaultValue(
     }
 }
 
-
-private imported!"quickbite.lang".Value realValue(
-    imported!"dmd.expression".RealExp real_,
-) {
-    import quickbite.lang: Value;
-    import dmd.astenums: TY;
-
-    const type = real_.type.toBasetype;
-
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(real) real_.toReal);
-}
-
 private imported!"quickbite.lang".Value stringValue(
     imported!"dmd.expression".StringExp string_,
 ) {
@@ -526,57 +453,4 @@ private char[] stringChars(imported!"dmd.expression".StringExp string_) {
         values ~= cast(char) string_.getIndex(index);
 
     return values;
-}
-
-
-private imported!"quickbite.lang".Value integerValue(
-    imported!"dmd.expression".IntegerExp integer,
-)
-{
-    import quickbite.lang: Value;
-    import dmd.astenums: TY;
-
-    const bits = integer.getInteger;
-    const ty = integer.type.toBasetype.ty;
-
-    switch (ty) {
-        default:
-            assert(0, "not an integer");
-
-        case TY.Tbool:
-            return Value(bits != 0);
-
-        case TY.Tchar:
-            return Value(cast(char) bits);
-
-        case TY.Twchar:
-            return Value(cast(wchar) bits);
-
-        case TY.Tdchar:
-            return Value(cast(dchar) bits);
-
-        case TY.Tint8:
-            return Value(cast(byte) bits);
-
-        case TY.Tuns8:
-            return Value(cast(ubyte) bits);
-
-        case TY.Tint16:
-            return Value(cast(short) bits);
-
-        case TY.Tuns16:
-            return Value(cast(ushort) bits);
-
-        case TY.Tint32:
-            return Value(cast(int) bits);
-
-        case TY.Tuns32:
-            return Value(cast(uint) bits);
-
-        case TY.Tint64:
-            return Value(cast(long) bits);
-
-        case TY.Tuns64:
-            return Value(cast(ulong) bits);
-    }
 }

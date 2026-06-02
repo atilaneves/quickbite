@@ -4,7 +4,7 @@ private:
 
 public class Bytecode: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
-    import quickbite.frontend.repl: ReplCell;
+    import quickbite.frontend.cell: EvalCell;
     import quickbite.backends: TestSummary;
     import dmd.dmodule: Module;
 
@@ -15,7 +15,7 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         return eval(compileEvalSource(expr));
     }
 
-    public override Value evalRepl(in ReplCell cell) {
+    public override Value evalRepl(in EvalCell cell) {
         assert(0);
     }
 

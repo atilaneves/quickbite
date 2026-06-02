@@ -18,17 +18,6 @@ package enum Op: ubyte {
     pow,
 }
 
-package enum CastTarget: size_t {
-    byte_,
-    ubyte_,
-    short_,
-    ushort_,
-    int_,
-    uint_,
-    long_,
-    ulong_,
-}
-
 package struct Instruction {
     Op op;
     imported!"quickbite.lang".Value value;

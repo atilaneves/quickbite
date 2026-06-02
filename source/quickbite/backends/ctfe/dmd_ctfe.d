@@ -13,11 +13,11 @@ public class Ctfe: imported!"quickbite.backends".Backend {
     }
 
     public override Value evalRepl(
-        in imported!"quickbite.frontend.repl".ReplCell cell,
+        in imported!"quickbite.frontend.cell".EvalCell cell,
     ) {
-        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.frontend.cell: EvalCellKind;
 
-        final switch (cell.kind) with (ReplCellKind) {
+        final switch (cell.kind) with (EvalCellKind) {
             case incomplete:
                 throw new Exception("Incomplete REPL cell reached CTFE backend.");
             case noDisplay:
@@ -28,8 +28,6 @@ public class Ctfe: imported!"quickbite.backends".Backend {
                 return Value.void_;
             case expression:
                 return evalReplSource(cell.source);
-            case typeExpression:
-                return evalReplTypeSource(cell.source);
         }
     }
 
@@ -96,10 +94,9 @@ private string diagnosticMessage() {
 }
 
 private imported!"dmd.expression".CallExp evalCall(in string str) {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.cell: parseEvalFunction;
 
-    auto parsed = parseModule(evalSource(str));
-    return callExpression(functionDeclaration(parsed.module_, "f"));
+    return callExpression(parseEvalFunction(str));
 }
 
 private imported!"quickbite.lang".Value evalReplSource(in string source) {
@@ -119,15 +116,6 @@ private imported!"quickbite.lang".Value evalReplTypeSource(in string source) {
         throw new Exception(text("Unsupported CTFE type result: ", interpreted.op));
 
     return Value.typeName(stringChars(string_).idup);
-}
-
-private string evalSource(in string str) {
-    import std.string: lastIndexOf;
-
-    const lastNl = str.lastIndexOf('\n');
-    const prior  = lastNl < 0 ? "" : str[0 .. lastNl + 1];
-    const last   = lastNl < 0 ? str : str[lastNl + 1 .. $];
-    return "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 }
 
 private imported!"dmd.func".FuncDeclaration replFunction(in string source) {
@@ -446,58 +434,17 @@ private imported!"quickbite.lang".Value ctfeValue(
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
 
-    const value = integer.getInteger;
-    const type = integer.type is null ? null : integer.type.toBasetype;
-    if (type is null)
-        return Value(cast(long) value);
-
-    switch (type.ty) with (TY) {
-        case Tbool:
-            return Value(value != 0);
-        case Tint8:
-            return Value(cast(byte) value);
-        case Tuns8:
-            return Value(cast(ubyte) value);
-        case Tint16:
-            return Value(cast(short) value);
-        case Tuns16:
-            return Value(cast(ushort) value);
-        case Tint32:
-            return Value(cast(int) value);
-        case Tuns32:
-            return Value(cast(uint) value);
-        case Tint64:
-            return Value(cast(long) value);
-        case Tuns64:
-            return Value(cast(ulong) value);
-        case Tchar:
-            return Value(cast(char) value);
-        case Twchar:
-            return Value(cast(wchar) value);
-        case Tdchar:
-            return Value(cast(dchar) value);
-        default:
-            return Value(cast(long) value);
-    }
+    return frontendIntegerValue(integer);
 }
 
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
+    import quickbite.frontend.dmd_values: frontendRealValue = realValue;
 
-    const type = real_.type is null ? null : real_.type.toBasetype;
-    if (type !is null && type.ty == TY.Tfloat32)
-        return Value(cast(float) real_.toReal);
-
-    if (type !is null && type.ty == TY.Tfloat64)
-        return Value(cast(double) real_.toReal);
-
-    return Value(cast(real) real_.toReal);
+    return frontendRealValue(real_);
 }
 
 private imported!"quickbite.lang".Value stringValue(

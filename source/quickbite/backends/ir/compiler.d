@@ -15,6 +15,7 @@ private imported!"quickbite.backends.ir.language".Expression compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
     import quickbite.backends.ir.language: Add, Expression, Literal;
+    import quickbite.frontend.dmd_values: integerValue;
 
     if (auto integer = expression.isIntegerExp)
         return Expression(Literal(integerValue(integer)));
@@ -36,6 +37,8 @@ private imported!"quickbite.lang".Value literalValue(
     imported!"dmd.expression".Expression expression,
 )
 {
+    import quickbite.frontend.dmd_values: integerValue, realValue;
+
     if (auto integer = expression.isIntegerExp)
         return integerValue(integer);
 
@@ -43,29 +46,4 @@ private imported!"quickbite.lang".Value literalValue(
         return realValue(real_);
 
     assert(0);
-}
-
-private imported!"quickbite.lang".Value integerValue(
-    imported!"dmd.expression".IntegerExp integer,
-)
-{
-    import quickbite.lang: Value;
-
-    return Value(cast(int) integer.getInteger);
-}
-
-private imported!"quickbite.lang".Value realValue(
-    imported!"dmd.expression".RealExp real_,
-)
-{
-    import quickbite.lang: Value;
-    import dmd.astenums: TY;
-
-    assert(real_.type !is null);
-    with (TY) switch (real_.type.toBasetype.ty) {
-        case Tfloat32:
-            return Value(cast(float) real_.toReal);
-        default:
-            assert(0);
-    }
 }

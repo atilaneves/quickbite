@@ -10,11 +10,11 @@ public struct TestSummary {
 
 public interface Backend {
     import quickbite.lang: Value;
-    import quickbite.frontend.repl: ReplCell;
+    import quickbite.frontend.cell: EvalCell;
     import dmd.dmodule: Module;
 
     public Value eval(in string expr);
-    public Value evalRepl(in ReplCell cell);
+    public Value evalRepl(in EvalCell cell);
     public void runParsedTests(Module module_);
     public TestSummary runParsedTestSummary(Module module_);
 }

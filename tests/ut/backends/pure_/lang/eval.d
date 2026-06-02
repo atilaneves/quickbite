@@ -25,19 +25,21 @@ static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Bytecode, IR, TreeWalker)) {
     @("add.int.2." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("3 + 3").should == Value(6);
     }
+}
 
+static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
+static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
@@ -50,27 +52,46 @@ static foreach (backend; backendsWith!Bytecode) {
         foreach (c; cases)
             newBackend!backend.eval(c[0]).should == Value(c[1]);
     }
+}
+
+static foreach (backend; backendsWith!TreeWalker) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
+}
 
+static foreach (backend; backendsWith!TreeWalker) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
+        newBackend!backend.eval("cast(byte) -3").should ==
+            Value(cast(byte) -3);
         newBackend!backend.eval("cast(ubyte) 3").should ==
             Value(cast(ubyte) 3);
+        newBackend!backend.eval("cast(short) -3").should ==
+            Value(cast(short) -3);
+        newBackend!backend.eval("cast(ushort) 3").should ==
+            Value(cast(ushort) 3);
+        newBackend!backend.eval("3").should == Value(3);
+        newBackend!backend.eval("3u").should == Value(3u);
+        newBackend!backend.eval("3L").should == Value(3L);
+        newBackend!backend.eval("3UL").should == Value(3UL);
         newBackend!backend.eval("cast(char) 65").should ==
             Value(cast(char) 65);
         newBackend!backend.eval("1.25").should == Value(1.25);
     }
+}
 
+static foreach (backend; backendsWith!TreeWalker) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
             .should == Value(7);
     }
+}
 
+static foreach (backend; backends) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
