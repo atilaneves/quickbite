@@ -14,6 +14,7 @@ package enum Op: ubyte {
     multiply,
     divide,
     negate,
+    fabs,
 }
 
 package enum CastTarget: size_t {

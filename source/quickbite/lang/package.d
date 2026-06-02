@@ -264,6 +264,25 @@ public struct Value {
         );
     }
 
+    public Value fabs() const @safe pure {
+        import std.math: fabs;
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isFloatingPoint!T) {
+                    return Value(fabs(cast(T) value));
+                } else {
+                    throw new Exception("Unsupported fabs operand type.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
     private Value binaryInteger(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral;

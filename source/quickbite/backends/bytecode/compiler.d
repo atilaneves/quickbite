@@ -53,6 +53,9 @@ private struct Compiler {
             return;
         }
 
+        if (statement.isImportStatement !is null)
+            return;
+
         if (auto expression = statement.isExpStatement) {
             compileExpression(expression.exp);
             return;
@@ -156,6 +159,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto call = expression.isCallExp) {
+            compileCall(call);
+            return;
+        }
+
         const msg = "Unsupported expression `" ~
             expression.toChars.fromStringz.idup ~ "`";
         throw new Exception(msg);
@@ -255,6 +263,28 @@ private struct Compiler {
             Value.void_,
             cast(size_t) castTarget(cast_),
         );
+    }
+
+    private void compileCall(imported!"dmd.expression".CallExp call) {
+        if (callIdentifier(call) != "fabs")
+            throw new Exception("Unsupported bytecode call target.");
+
+        if (call.arguments is null || call.arguments.length != 1)
+            throw new Exception("Unsupported bytecode fabs argument count.");
+
+        compileExpression((*call.arguments)[0]);
+        program.instructions ~= Instruction(Op.fabs);
+    }
+
+    private string callIdentifier(imported!"dmd.expression".CallExp call) {
+        if (call.f !is null && call.f.ident !is null)
+            return call.f.ident.toString.idup;
+
+        if (auto variable = call.e1.isVarExp)
+            if (variable.var.ident !is null)
+                return variable.var.ident.toString.idup;
+
+        return "";
     }
 
     private CastTarget castTarget(imported!"dmd.expression".CastExp cast_) {

@@ -111,6 +111,13 @@ package imported!"quickbite.lang".Value eval(
 
                 stack[$ - 1] = -stack[$ - 1];
                 break;
+
+            case Op.fabs:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                stack[$ - 1] = stack[$ - 1].fabs;
+                break;
         }
     }
 
