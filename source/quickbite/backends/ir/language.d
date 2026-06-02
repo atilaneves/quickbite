@@ -6,4 +6,9 @@ package struct Literal {
     imported!"quickbite.lang".Value value;
 }
 
-package alias Expression = imported!"std.sumtype".SumType!(Literal);
+package struct Add {
+    Literal lhs;
+    Literal rhs;
+}
+
+package alias Expression = imported!"std.sumtype".SumType!(Literal, Add);
