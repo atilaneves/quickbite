@@ -14,7 +14,6 @@ package imported!"quickbite.backends.ir.language".Expression compileExpression(
 private imported!"quickbite.backends.ir.language".Expression compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
-    import dmd.astenums: TY;
     import quickbite.backends.ir.language: Add, Expression, Literal;
 
     if (auto integer = expression.isIntegerExp)
@@ -67,6 +66,6 @@ private imported!"quickbite.lang".Value realValue(
         case Tfloat32:
             return Value(cast(float) real_.toReal);
         default:
-            return Value(cast(float) real_.toReal);
+            assert(0);
     }
 }
