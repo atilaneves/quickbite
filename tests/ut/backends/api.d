@@ -116,6 +116,49 @@ static foreach (backend; backends) {
         summary.failed.should == 1;
     }
 
+    @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
+    unittest {
+        const result = runBackendSourceFixtureTestResults!backend(q{
+            unittest {
+                assert(1 == 1);
+            }
+
+            unittest {
+                assert(1 == 2);
+            }
+        });
+
+        result.cases.length.should == 2;
+        result.cases[0].name.should == "__unittest_L2_C13";
+        result.cases[1].name.should == "__unittest_L6_C13";
+    }
+
+    @("runTestResults.reportsFileBackedUnittestLocations." ~
+        backend.stringof)
+    unittest {
+        import unit_threaded.integration: Sandbox;
+
+        with (immutable Sandbox()) {
+            writeFile(
+                "structured_result_locations.d",
+                "unittest {\n" ~
+                "    assert(1 == 2);\n" ~
+                "}",
+            );
+            const fixturePath = inSandboxPath(
+                "structured_result_locations.d",
+            );
+
+            const result = runBackendFileFixtureTestResults!backend(
+                fixturePath,
+                [],
+            );
+
+            result.cases.length.should == 1;
+            result.cases[0].location.should == fixturePath ~ "(1)";
+        }
+    }
+
     @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;

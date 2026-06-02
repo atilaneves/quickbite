@@ -60,6 +60,7 @@ public class Ctfe: imported!"quickbite.backends".Backend {
                 ++result.summary.failed;
                 result.cases ~= TestCaseResult(
                     TestOutcome.failed,
+                    symbolName(unitTest),
                     locChars(unitTest.loc),
                     failure,
                 );
@@ -67,6 +68,7 @@ public class Ctfe: imported!"quickbite.backends".Backend {
                 ++result.summary.passed;
                 result.cases ~= TestCaseResult(
                     TestOutcome.passed,
+                    symbolName(unitTest),
                     locChars(unitTest.loc),
                     null,
                 );
@@ -80,6 +82,14 @@ public class Ctfe: imported!"quickbite.backends".Backend {
     ) {
         return runTestResults(module_).summary;
     }
+}
+
+private string symbolName(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) @trusted {
+    import std.string: fromStringz;
+
+    return unitTest.ident.toChars.fromStringz.idup;
 }
 
 private string locChars(imported!"dmd.location".Loc loc) @trusted {

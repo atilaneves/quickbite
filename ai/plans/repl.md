@@ -126,6 +126,13 @@ Completed:
   diagnostics. Failing REPL unittest blocks now report the unittest location,
   such as `unittest at <repl>(1) failed: 1 != 2`, while existing raw backend
   failure-message callers keep their old messages.
+- Added DMD-generated unittest symbol names to structured backend test case
+  results. The CTFE backend now reports DMD names such as
+  `__unittest_L2_C13` directly rather than inspecting unit-threaded
+  attributes.
+- Preserved actual source file names in structured backend test case locations
+  for file-backed fixtures by parsing files through a file-path-aware frontend
+  API instead of synthetic snippet names.
 - Kept source loaded from files from advancing typed REPL snippet locations.
   After `loadModuleSource("int loadedValue() { return 41; }\n")` and a typed
   `unittest { assert(1 == 2); }`, `:t` reports
@@ -136,11 +143,10 @@ Completed:
 Remaining follow-up:
 
 - Expand the structured backend test-result API so running tests reports what
-  ran and what failed, including stable unittest names when available and
-  file/line locations for both REPL snippets and source files. Keep `runTests`
-  as the throwing wrapper for callers that only need failure diagnostics, but
-  future REPL, summary, and reporting work should consume structured results
-  rather than throwing or parsing raw strings.
+  ran and what failed. Keep `runTests` as the throwing wrapper for callers that
+  only need failure diagnostics, but future REPL, summary, and reporting work
+  should consume structured results rather than throwing or parsing raw
+  strings.
 
 - File-backed code should eventually keep its own file/line identity instead
   of being appended to the synthetic REPL module.

@@ -56,14 +56,51 @@ public imported!"quickbite.backends".TestSummary runBackendSourceFixtureTestSumm
     return backend.runTestSummary(moduleResult.module_);
 }
 
+public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestResults(T)(
+    in string moduleSource,
+) {
+    return runBackendSourceFixtureTestResults!T(moduleSource, []);
+}
+
+public imported!"quickbite.backends".TestRunResult runBackendSourceFixtureTestResults(T)(
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+
+    auto moduleResult = parseModuleWithCheckActionContext(
+        moduleSource,
+        importPaths,
+    );
+    auto backend = newBackend!T;
+    return backend.runTestResults(moduleResult.module_);
+}
+
 public void runBackendFileFixtureTests(T)(
     in string filePath,
     in string[] importPaths,
 ) {
-    import std.file: readText;
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
 
-    auto moduleResult = parseModule(filePath.readText, importPaths);
+    auto moduleResult = parseModuleFileWithCheckActionContext(
+        filePath,
+        importPaths,
+    );
     auto backend = newBackend!T;
     backend.runTests(moduleResult.module_);
+}
+
+public imported!"quickbite.backends".TestRunResult
+runBackendFileFixtureTestResults(T)(
+    in string filePath,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
+
+    auto moduleResult = parseModuleFileWithCheckActionContext(
+        filePath,
+        importPaths,
+    );
+    auto backend = newBackend!T;
+    return backend.runTestResults(moduleResult.module_);
 }
