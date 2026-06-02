@@ -122,6 +122,9 @@ private struct EvalFunctionWalker {
             return;
         }
 
+        if (statement.isImportStatement !is null)
+            return;
+
         if (auto expression = statement.isExpStatement) {
             result = runExpression(expression.exp);
             return;
@@ -156,6 +159,9 @@ private struct EvalFunctionWalker {
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
+        if (auto call = expression.isCallExp)
+            return runCallExpression(call);
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
@@ -172,6 +178,28 @@ private struct EvalFunctionWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runCallExpression(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+        import std.math: mathFabs = fabs;
+
+        if (call.arguments is null || call.arguments.length != 1)
+            throw new Exception("Unsupported eval call argument count.");
+
+        with (BUILTIN) switch (isBuiltin(call.f)) {
+            case fabs:
+                return runExpression((*call.arguments)[0])
+                    .unaryFloating!mathFabs;
+
+            default:
+                break;
+        }
+
+        throw new Exception("Unsupported eval call.");
     }
 
     private Value runDeclarationExpression(

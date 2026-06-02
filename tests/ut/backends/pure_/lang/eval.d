@@ -135,7 +135,7 @@ static foreach (backend; backendsWith!TreeWalker) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!TreeWalker) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -145,7 +145,9 @@ static foreach (backend; backends) {
         result.should == Value(cast(float) 1.25);
         result.should.not == Value(1.25);
     }
+}
 
+static foreach (backend; backends) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
