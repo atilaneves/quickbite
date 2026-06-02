@@ -30,14 +30,6 @@ package enum CastTarget: size_t {
     ulong_,
 }
 
-// Temporary escape hatch for resolved external calls while bytecode has no
-// general D function-call support. These are host-implemented calls, not
-// language primitives; delete this enum once calls compile through bytecode.
-package enum NativeFunction: size_t {
-    fabs,
-    pow,
-}
-
 package struct Instruction {
     Op op;
     imported!"quickbite.lang".Value value;

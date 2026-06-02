@@ -40,7 +40,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 
 private struct Compiler {
     import quickbite.backends.bytecode.instructions:
-        CastTarget, Instruction, NativeFunction, Op, Program;
+        CastTarget, Instruction, Op, Program;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
@@ -282,81 +282,49 @@ private struct Compiler {
     }
 
     private void compileCall(CallExp call) {
-        const function_ = nativeFunction(call.f);
+        import quickbite.backends.bytecode.builtins:
+            bytecodeBuiltin,
+            bytecodeBuiltinArgumentCount,
+            bytecodeBuiltinIsImplemented;
+
+        const builtin = bytecodeBuiltin(call.f);
+        if (!bytecodeBuiltinIsImplemented(builtin))
+            throw new Exception("Unsupported bytecode builtin.");
+
         if (call.arguments is null)
-            throw new Exception("Unsupported bytecode native call arguments.");
+            throw new Exception("Unsupported bytecode builtin call arguments.");
 
-        final switch (function_) {
-            case NativeFunction.fabs:
-                if (call.arguments.length != 1)
-                    throw new Exception(
-                        "Unsupported bytecode unary native call argument count.",
-                    );
+        const expectedArgumentCount = bytecodeBuiltinArgumentCount(builtin);
+        if (call.arguments.length != expectedArgumentCount)
+            throw new Exception(
+                "Unsupported bytecode builtin call argument count.",
+            );
 
-                compileExpression((*call.arguments)[0]);
+        foreach (argument; *call.arguments)
+            compileExpression(argument);
+
+        switch (expectedArgumentCount) {
+            case 1:
                 program.instructions ~= Instruction(
                     Op.unaryNativeCall,
                     Value.void_,
-                    cast(size_t) function_,
+                    cast(size_t) builtin,
                 );
                 return;
 
-            case NativeFunction.pow:
-                if (call.arguments.length != 2)
-                    throw new Exception(
-                        "Unsupported bytecode binary native call argument count.",
-                    );
-
-                compileExpression((*call.arguments)[0]);
-                compileExpression((*call.arguments)[1]);
+            case 2:
                 program.instructions ~= Instruction(
                     Op.binaryNativeCall,
                     Value.void_,
-                    cast(size_t) function_,
+                    cast(size_t) builtin,
                 );
                 return;
-        }
-    }
-
-    private NativeFunction nativeFunction(FuncDeclaration function_) {
-        import std.algorithm: startsWith;
-
-        if (function_ is null || function_.ident is null)
-            throw new Exception("Unsupported bytecode call target.");
-
-        const name = function_.ident.toString;
-        const module_ = moduleName(function_);
-        if (module_ != "std.math" && !module_.startsWith("std.math."))
-            throw new Exception("Unsupported bytecode call target.");
-
-        switch (name) {
-            case "fabs":
-                return NativeFunction.fabs;
-
-            case "pow":
-                return NativeFunction.pow;
 
             default:
                 break;
         }
 
-        throw new Exception("Unsupported bytecode call target.");
-    }
-
-    private string moduleName(FuncDeclaration function_) {
-        import std.algorithm: reverse;
-        import std.array: join;
-        import dmd.dsymbol: Dsymbol;
-
-        Dsymbol symbol = function_;
-        string[] segments;
-        for (symbol = symbol.parent; symbol !is null; symbol = symbol.parent) {
-            if (symbol.ident !is null)
-                segments ~= symbol.ident.toString.idup;
-        }
-
-        segments.reverse;
-        return segments.join(".");
+        throw new Exception("Unsupported bytecode builtin call.");
     }
 
     private size_t castTarget(CastExp cast_) {

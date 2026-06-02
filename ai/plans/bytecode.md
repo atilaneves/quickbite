@@ -91,6 +91,17 @@ Lua-specific bytecode shape.
   churn distracts from the design slice.
 
 ## PR 123 Review Lessons
+- Do not derive eval structure by inspecting source text in any layer. Splits
+  on newlines, semicolons, braces, or keywords are parser bugs waiting to
+  happen. Ask the frontend for a structured cell, parsed module, function
+  declaration, statement, or expression instead.
+- Do not add a special `parseEvalFunction`-style API if it only synthesizes a
+  wrapper function and looks up `f`. Either reuse the existing REPL cell
+  frontend path, or expose a frontend API named for the AST/domain object the
+  backend actually needs.
+- Treat review comments like "Why does this exist?" and "?" as a demand to
+  justify ownership and abstraction. If the helper only moves the same opaque
+  operation elsewhere, delete it or inline it until a real boundary emerges.
 - Do not put new shared frontend helpers in vague catch-all modules such as
   `util.d`. If the helper is worth sharing, name the module after the domain
   concept it exposes.
@@ -100,6 +111,14 @@ Lua-specific bytecode shape.
 - Do not add or keep a special VM opcode for a language operation that is just
   existing bytecode plus typed operands. `++x` should lower through `add`
   unless VM semantics genuinely differ.
+- Do not infer bytecode call support from CTFE success. CTFE delegates execution
+  to DMD's interpreter, so `std.math.fabs`/`pow` working there does not mean the
+  bytecode VM can execute those calls without either general D call support or a
+  deliberately scoped native-call bridge.
+- Do not clone DMD builtin-detection internals such as mangle prefixes. If the
+  bytecode backend needs CTFE builtin parity, use DMD's builtin classification
+  or a project-owned semantic wrapper around it, then keep bytecode execution
+  scoped to the implemented builtin subset.
 - Do not emit untyped convenience literals such as `Value(1)` when lowering a
   typed language operation. Either derive the literal from the D type or make
   assignment/storage perform the required D conversion.
@@ -127,6 +146,10 @@ Lua-specific bytecode shape.
   support.
 - [x] Stop inspecting eval source text in the bytecode backend; rely on a
   frontend-provided structure instead.
+- [ ] Remove eval source string splitting from shared frontend code; drive eval
+  through parser-backed REPL/frontend classification instead.
+- [ ] Remove or replace `parseEvalFunction` if it remains only a wrapper-source
+  synthesizer plus `f` lookup.
 - [x] Replace hand-written default scalar values with a type-to-D-value mapping
   based on `T.init`.
 - [x] Replace manual string code-unit conversion with DMD literal slice

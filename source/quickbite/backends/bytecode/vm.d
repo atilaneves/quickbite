@@ -5,7 +5,9 @@ private:
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
-    import quickbite.backends.bytecode.instructions: CastTarget, NativeFunction, Op;
+    import quickbite.backends.bytecode.builtins:
+        BytecodeBuiltin, binaryBuiltinCall, unaryBuiltinCall;
+    import quickbite.backends.bytecode.instructions: CastTarget, Op;
     import quickbite.lang: Value;
 
     Value[] stack;
@@ -137,7 +139,7 @@ package imported!"quickbite.lang".Value eval(
                     throw new Exception("Bytecode stack underflow");
 
                 stack[$ - 1] = unaryNativeCall(
-                    cast(NativeFunction) instruction.operand,
+                    cast(BytecodeBuiltin) instruction.operand,
                     stack[$ - 1],
                 );
                 break;
@@ -151,7 +153,7 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 2;
 
                 stack ~= binaryNativeCall(
-                    cast(NativeFunction) instruction.operand,
+                    cast(BytecodeBuiltin) instruction.operand,
                     lhs,
                     rhs,
                 );
@@ -166,36 +168,20 @@ package imported!"quickbite.lang".Value eval(
 }
 
 private imported!"quickbite.lang".Value unaryNativeCall(
-    imported!"quickbite.backends.bytecode.instructions".NativeFunction function_,
+    imported!"quickbite.backends.bytecode.builtins".BytecodeBuiltin builtin,
     in imported!"quickbite.lang".Value value,
 ) {
-    final switch (function_) {
-        case typeof(function_).fabs:
-            import std.math: fabs;
+    import quickbite.backends.bytecode.builtins: unaryBuiltinCall;
 
-            return value.unaryFloating!fabs;
-
-        case typeof(function_).pow:
-            break;
-    }
-
-    throw new Exception("Unsupported bytecode unary native call.");
+    return unaryBuiltinCall(builtin, value);
 }
 
 private imported!"quickbite.lang".Value binaryNativeCall(
-    imported!"quickbite.backends.bytecode.instructions".NativeFunction function_,
+    imported!"quickbite.backends.bytecode.builtins".BytecodeBuiltin builtin,
     in imported!"quickbite.lang".Value lhs,
     in imported!"quickbite.lang".Value rhs,
 ) {
-    final switch (function_) {
-        case typeof(function_).fabs:
-            break;
+    import quickbite.backends.bytecode.builtins: binaryBuiltinCall;
 
-        case typeof(function_).pow:
-            import std.math: pow;
-
-            return lhs.binaryFloating!pow(rhs);
-    }
-
-    throw new Exception("Unsupported bytecode binary native call.");
+    return binaryBuiltinCall(builtin, lhs, rhs);
 }
