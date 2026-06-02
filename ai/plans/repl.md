@@ -136,6 +136,10 @@ Remaining follow-up:
   `T identity(T)(T x) { return x; }` produces parse errors and
   `identity(42)` fails with `undefined identifier`.
 
+- Fix file-argument execution so `bin/qb tests/example.d` does not leave the
+  user inside the interactive REPL prompt. Loading or running files should
+  finish and exit unless interactive mode is explicitly requested.
+
 - If any additional `Value` shape work is needed, keep it generic to the
   representation rather than CTFE-specific. Do not rewrite REPL input source,
   append `.array` to user expressions, or add a display-only wrapper source
