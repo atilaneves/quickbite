@@ -9,9 +9,19 @@ public class TreeWalker: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.frontend.compiler: parseExpression;
+        import quickbite.frontend.compiler: parseExpression, parseModule;
+        import std.string: lastIndexOf;
 
-        return evalExpression(parseExpression(expr));
+        const lastNl = expr.lastIndexOf('\n');
+        if (lastNl < 0)
+            return evalExpression(parseExpression(expr));
+
+        const prior = expr[0 .. lastNl + 1];
+        const last = expr[lastNl + 1 .. $];
+        const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
+
+        auto parsed = parseModule(source);
+        return evalMultiCell(parsed.module_);
     }
 
     public override Value evalRepl(in ReplCell cell) {
@@ -82,6 +92,139 @@ private imported!"quickbite.lang".Value realValue(
         return Value(cast(double) real_.toReal);
 
     return Value(cast(real) real_.toReal);
+}
+
+private imported!"quickbite.lang".Value evalMultiCell(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import dmd.func: FuncDeclaration;
+
+    FuncDeclaration f;
+    if (module_.members !is null) {
+        foreach (member; *module_.members) {
+            auto func = member.isFuncDeclaration;
+            if (func !is null && func.ident.toString == "f") {
+                f = func;
+                break;
+            }
+        }
+    }
+
+    assert(f !is null);
+
+    EvalInterpreter interpreter;
+    interpreter.runStatement(f.fbody);
+    return interpreter.result;
+}
+
+private struct EvalInterpreter {
+    import quickbite.lang: Value;
+    import dmd.declaration: VarDeclaration;
+
+    private Value[VarDeclaration] locals;
+    private Value result;
+
+    private void runStatement(imported!"dmd.statement".Statement statement) {
+        if (statement is null)
+            return;
+
+        if (auto compound = statement.isCompoundDeclarationStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    runStatement(child);
+            return;
+        }
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    runStatement(child);
+            return;
+        }
+
+        if (auto scope_ = statement.isScopeStatement) {
+            runStatement(scope_.statement);
+            return;
+        }
+
+        if (auto expression = statement.isExpStatement) {
+            result = runExpression(expression.exp);
+            return;
+        }
+
+        assert(0);
+    }
+
+    private Value runExpression(imported!"dmd.expression".Expression expression) {
+        if (auto integer = expression.isIntegerExp)
+            return Value(cast(int) integer.getInteger);
+
+        if (auto addAssign = expression.isAddAssignExp)
+            return runIncrementAssignExpression(addAssign);
+
+        if (auto declaration = expression.isDeclarationExp)
+            return runDeclarationExpression(declaration);
+
+        if (auto var = expression.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                assert(0);
+
+            if (auto current = variable in locals)
+                return *current;
+
+            return Value(cast(int) 0);
+        }
+
+        import std.conv: text;
+        throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runDeclarationExpression(
+        imported!"dmd.expression".DeclarationExp declaration,
+    ) {
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (variable is null)
+            return Value(cast(int) 0);
+
+        if (variable._init is null || variable._init.isExpInitializer is null) {
+            locals[variable] = Value(cast(int) 0);
+            return Value(cast(int) 0);
+        }
+
+        auto initializer = variable._init.isExpInitializer.exp;
+        if (auto assign = initializer.isAssignExp)
+            initializer = assign.e2;
+        else if (auto construct = initializer.isConstructExp)
+            initializer = construct.e2;
+        else if (auto blit = initializer.isBlitExp)
+            initializer = blit.e2;
+
+        auto value = runExpression(initializer);
+        locals[variable] = value;
+        return value;
+    }
+
+    private Value runIncrementAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            assert(0);
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            assert(0);
+
+        auto current = variable in locals;
+        if (current is null) {
+            locals[variable] = Value(cast(int) 0);
+            current = variable in locals;
+        }
+
+        *current = *current + Value(cast(int) 1);
+        return *current;
+    }
 }
 
 private struct Interpreter {

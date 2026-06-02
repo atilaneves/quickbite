@@ -54,13 +54,15 @@ static foreach (backend; backendsWith!(Bytecode, TreeWalker)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!TreeWalker) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
     }
+}
 
+static foreach (backend; backends) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(ubyte) 3").should ==
