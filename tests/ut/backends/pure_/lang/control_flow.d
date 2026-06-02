@@ -1299,6 +1299,27 @@ static foreach (backend; backends) {
         });
     }
 
+    @("foreachReverseUtf16String." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                wchar[] units;
+                units ~= cast(wchar) 0xD83C;
+                units ~= cast(wchar) 0xDF4C;
+                units ~= cast(wchar) 0x007A;
+
+                wstring s = units.idup;
+                dchar[] chars;
+                foreach_reverse (dchar c; s)
+                    chars ~= c;
+
+                assert(chars.length == 2);
+                assert(chars[0] == 'z');
+                assert(chars[1] == cast(dchar) 0x1F34C);
+            }
+        });
+    }
+
     @("foreachUtf8StringFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
