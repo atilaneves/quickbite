@@ -125,10 +125,16 @@ Completed:
 
 Remaining follow-up:
 
-- Prefix interactive REPL command failures with an error label, preferably
-  styled red for terminal output. For example, after
-  `unittest { assert(1 == 2); }` and `:t`, the output should not be only
-  `1 != 2`.
+- Expand the structured backend test-result API so running tests reports what
+  ran and what failed, including stable unittest names when available and
+  file/line locations for both REPL snippets and source files. Keep
+  `runParsedTests` as a compatibility wrapper until callers migrate, but
+  future REPL, summary, and reporting work should consume structured results
+  rather than throwing or parsing raw strings.
+
+- Prefix non-unittest interactive REPL command failures with an error label,
+  preferably styled red for terminal output. For example, after a command
+  failure the output should not be only the raw backend diagnostic.
 
 - For red terminal error labels, add a small DUB dependency that renders ANSI
   colour only when the output stream is a terminal. Test the actual colour in

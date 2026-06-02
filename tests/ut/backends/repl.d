@@ -258,6 +258,23 @@ static foreach (backend; backends) {
             "unittest at <repl>(1) failed: 1 != 2";
     }
 
+    @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("unittest { assert(2 == 2); }").should == Value.void_;
+        repl.submit("int value() { return 41; }").should == Value.void_;
+        repl.submit("unittest { assert(value() == 42); }").should ==
+            Value.void_;
+        void runTests() {
+            repl.submit(":t");
+        }
+        runTests.shouldThrow.msg.should ==
+            "unittest at <repl>(3) failed: 41 != 42";
+    }
+
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
