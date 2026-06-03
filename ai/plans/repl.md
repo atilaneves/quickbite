@@ -188,13 +188,18 @@ Completed:
   `[cast(wchar) 'a', cast(wchar) 'b']` and
   `[cast(dchar) 'a', cast(dchar) 'b']` render as `"ab"` instead of crashing
   while expecting `char` elements.
+- Added `-I` option to the REPL so that file arguments and later cells parse
+  with user-provided import paths. The regression runs `bin/qb` with a file
+  argument that imports a module found only through the supplied `-I` directory,
+  then evaluates code that depends on that imported module.
 
 Remaining follow-up:
 
-- No concrete `Value` display shape follow-up is currently known. If another
-  one appears, keep it generic to the representation rather than CTFE-specific.
-  Do not rewrite REPL input source, append `.array` to user expressions, or add
-  a display-only wrapper source path. Never try to materialize infinite ranges.
+- No concrete REPL follow-up is currently known. When adding CLI coverage for
+  future REPL features, prefer semantic tests that exercise user-visible D
+  behavior. Do not add tests that only assert parser/internal option state such
+  as `status`, `options`, or collected strings.
+
 ## Architecture
 
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL

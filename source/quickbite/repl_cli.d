@@ -10,6 +10,7 @@ public struct ReplOptions {
     public ReplBackendName backend;
     public bool hasCommand;
     public string command;
+    public string[] importPaths;
     public bool showHelp;
     public bool hasFile;
     public string file;
@@ -37,6 +38,9 @@ public ReplCliResult parseReplArgs(string[] args) {
             "c", "Run a D expression.", (string _, string val) {
                 result.options.hasCommand = true;
                 result.options.command = val;
+            },
+            "I", "Add import path.", (string _, string val) {
+                result.options.importPaths ~= val;
             },
             "b|backend", "Select backend (default: ctfe).", &backendName,
             "l", "Start the REPL after loading file arguments.",
@@ -69,6 +73,7 @@ private enum helpText =
     "\n" ~
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
+    "  -I <path>             Add import path\n" ~
     "  -b, --backend <name>  Select backend (default: ctfe)\n" ~
     "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";
