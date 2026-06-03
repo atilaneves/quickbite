@@ -86,3 +86,126 @@ same test identity.
 - `runTests` either delegates to `runTestSummary` or has a documented reason
   why one backend still needs a separate execution path.
 - `dub test -- --random` passes.
+
+## 2026-06-03 Handoff Notes
+
+Worktree used during the attempt:
+
+- `/home/atila/coding/d/quickbite/worktrees/test-summary-diagnostics`
+- Branch: `test-summary-diagnostics`
+- Based on `8d9606f Tighten plans`
+
+That worktree has since been deleted. The notes below summarize what was in
+its uncommitted diff.
+
+### WIP Diff From Deleted Worktree
+
+- `source/quickbite/backends/package.d`
+  - Added `TestFailure`.
+  - Added `TestFailure[] failures` to `TestSummary`.
+- `source/quickbite/backends/ctfe/dmd_ctfe.d`
+  - Derived `summary.failures` from the existing `TestRunResult.cases`.
+  - Contained an attempted CTFE diagnostic cleanup in
+    `ctfeFailureMessage`: clear `diagnostics`, clear `global.errors`, and
+    copy the diagnostic message with `.idup`. This did not fix the crash
+    described below and should be reviewed before keeping.
+- `tests/ut/backends/api/runner.d`
+  - Extended
+    `runTestSummary.countsAttributedPassingAndFailingUnittests.Ctfe` to
+    assert one failure, index `1`, name `__unittest_L7_C13`, and a message
+    containing `1 == 2`.
+
+Old `quickbite.executor` API work was intentionally abandoned after feedback
+that executor tests are going away. Any earlier edits there were reverted.
+
+### What Was Attempted
+
+1. Added the planned backend API directly:
+
+   ```d
+   public struct TestFailure {
+       public size_t index;
+       public string name;
+       public string message;
+   }
+
+   public struct TestSummary {
+       public size_t total;
+       public size_t passed;
+       public size_t failed;
+       public TestFailure[] failures;
+   }
+   ```
+
+2. Populated CTFE failures by appending a `TestFailure` in the failing branch
+   of `runTestResults`.
+
+3. Moved failure derivation out of the traversal callback and derived failures
+   from the already-existing `TestRunResult.cases` after traversal.
+
+4. Tried to avoid changing `TestSummary`'s dynamic-array layout by using:
+
+   - a pointer-plus-length representation with a `failures` property;
+   - a thread-local backing store plus a `failures` property.
+
+   These were abandoned because they made the API less honest and did not
+   resolve the observed crash.
+
+5. Tried clearing DMD CTFE diagnostic state after capturing a failure:
+
+   - copied `diagnosticMessage` with `.idup`;
+   - cleared `diagnostics.length`;
+   - reset `global.errors`.
+
+   This did not resolve the crash.
+
+### Failure Observed
+
+Focused CTFE backend tests that execute a failing unittest segfault with exit
+code `-11` / `139`, usually with no unit-threaded assertion output. Examples:
+
+```sh
+dub test --force -- \
+  ut.backends.api.runner.runTestSummary.countsAttributedPassingAndFailingUnittests.Ctfe
+
+dub test --force -- \
+  ut.backends.api.runner.runTestResults.reportsDmdUnittestSymbolNames.Ctfe
+```
+
+The same crash happened in an untouched detached baseline worktree at
+`8d9606f`:
+
+```sh
+git worktree add --detach /tmp/quickbite-baseline-test 8d9606f
+cd /tmp/quickbite-baseline-test
+dub test --force -- \
+  ut.backends.api.runner.runTestSummary.countsAttributedPassingAndFailingUnittests.Ctfe
+```
+
+That means the segfault was not specific to adding `TestSummary.failures`.
+The implementation work was blocked by an existing CTFE/focused-test crash.
+
+Debugger notes:
+
+- `gdb -batch -ex run -ex bt --args ...` could not run in the sandbox because
+  `ptrace` is not permitted.
+- `valgrind` was not installed.
+- Running `bin/ut --single ...` still segfaulted.
+
+### Important Process Note
+
+Do not run parallel `dub test` commands in this checkout. One attempt did so
+accidentally and hit a DUB artifact race. Subsequent test runs were sequential
+and used `--force` when validating the crash.
+
+### Recommended Next Step
+
+First fix or quarantine the existing CTFE focused-test crash for failing
+unittests. Once that is stable, resume the straightforward implementation:
+
+1. Keep the planned `TestFailure[] failures` field on
+   `quickbite.backends.TestSummary`.
+2. Populate it from `TestRunResult.cases` in CTFE.
+3. Extend the backend matrix only; do not spend effort on the old
+   `quickbite.executor` API unless it becomes relevant again.
+4. Re-run the focused backend summary test, then `dub test -- --random`.
