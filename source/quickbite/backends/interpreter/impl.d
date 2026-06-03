@@ -315,6 +315,14 @@ private struct EvalModuleInterpreter {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            if (isTruthy(runExpression(if_.condition)))
+                runStatement(if_.ifbody);
+            else
+                runStatement(if_.elsebody);
+            return;
+        }
+
         assert(0);
     }
 

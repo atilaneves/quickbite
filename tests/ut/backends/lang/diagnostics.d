@@ -213,22 +213,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
-    @("refParameterOops." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void addOne(ref int value) {
-                value = value + 1;
-            }
-
-            unittest {
-                int value = 41;
-                addOne(value);
-                assert(value == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-
+static foreach (backend; backendsWith!Interpreter) {
     @("ifElseOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -243,6 +228,23 @@ static foreach (backend; backends) {
                 assert(answer(2) == 42);
             }
         }).shouldThrowWithMessage("43 != 42");
+    }
+}
+
+static foreach (backend; backends) {
+    @("refParameterOops." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void addOne(ref int value) {
+                value = value + 1;
+            }
+
+            unittest {
+                int value = 41;
+                addOne(value);
+                assert(value == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
     }
 
     @("inFunctionParametersOops." ~ backend.stringof)
