@@ -507,6 +507,12 @@ private struct EvalModuleInterpreter {
         if (assert_.msg !is null && assert_.msg.isStringExp !is null)
             return assertMessage(assert_.msg);
 
+        if (assert_.msg !is null) {
+            const message = dmdAssertFailMessage(assert_.msg);
+            if (message !is null)
+                return message;
+        }
+
         if (auto integer = assert_.e1.isIntegerExp)
             if (!isBoolExpression(integer))
                 return "`assert(0)` failed";
@@ -540,6 +546,57 @@ private struct EvalModuleInterpreter {
         }
 
         return "`assert(false)` failed";
+    }
+
+    private string dmdAssertFailMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.id: Id;
+        import std.conv: text;
+
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.f is null ||
+            call.f.ident != Id._d_assert_fail ||
+            call.arguments is null ||
+            call.arguments.length != 3)
+            return null;
+
+        auto operatorLiteral = (*call.arguments)[0].isStringExp;
+        if (operatorLiteral is null)
+            return null;
+
+        const operator = invertedEqualityOperator(operatorLiteral.peekString);
+        if (operator is null)
+            return null;
+
+        auto left = (*call.arguments)[1];
+        auto right = (*call.arguments)[2];
+        const useBoolMessage =
+            isBoolExpression(left) ||
+            isBoolExpression(right) ||
+            isLogicalNotExpression(left) ||
+            isLogicalNotExpression(right) ||
+            isLogicalExpression(left) ||
+            isLogicalExpression(right);
+
+        return text(
+            equalityOperandMessage(left, useBoolMessage),
+            " ",
+            operator,
+            " ",
+            equalityOperandMessage(right, useBoolMessage),
+        );
+    }
+
+    private string invertedEqualityOperator(in char[] operator) {
+        if (operator == "==")
+            return "!=";
+
+        if (operator == "!=")
+            return "==";
+
+        return null;
     }
 
     private string equalityOperandMessage(
