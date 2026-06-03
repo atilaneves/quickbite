@@ -481,9 +481,6 @@ private struct EvalModuleInterpreter {
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
-            if (call.arguments.length > 2)
-                throw new Exception("Unsupported interpreter call arguments.");
-
             foreach (argument; *call.arguments) {
                 arguments ~= runExpression(argument);
                 argumentVariables ~= argumentVariable(argument);
@@ -552,11 +549,8 @@ private struct EvalModuleInterpreter {
         )
             throw new Exception("Unsupported interpreter call arguments.");
 
-        locals[(*function_.parameters)[0]] = arguments[0];
-        if (arguments.length == 1)
-            return;
-
-        locals[(*function_.parameters)[1]] = arguments[1];
+        foreach (index, parameter; *function_.parameters)
+            locals[parameter] = arguments[index];
     }
 
     private void writeBackRefParameters(

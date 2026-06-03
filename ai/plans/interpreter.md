@@ -25,6 +25,16 @@ the feature works. Mutate the test or the production code to confirm
 the passing result would become a failure under a meaningful change.
 Only then accept the slice as done.
 
+Run each promoted-test slice through a serial subagent. Spawn one
+subagent for exactly one promoted test, let it work in the shared PR
+worktree, review and integrate its result, then commit that slice before
+spawning the next subagent. Use one commit per promoted test, including
+test-only promotions that only required signal verification. These
+subagent tasks are usually well contained, so default workers to
+`gpt-5-mini`; still require enough reasoning budget to inspect the DMD
+AST failure, identify the missing interpreter feature, and implement the
+smallest honest handler rather than hard-coding the fixture.
+
 ## Architecture
 
 - Implement `TreeWalker.eval` first. It may parse an expression through
@@ -176,12 +186,13 @@ verify signal by mutating the relevant interpreter call/return behavior, then
 revert the mutation before accepting a test-only slice.
 
 Module-backed interpreter support remains intentionally narrow:
-zero-argument free calls, return statements, comma-expression sequencing,
-local bool declarations, unary `!`, equality failure messages, truthiness, and
+direct free-function calls with evaluated arguments, `in`/`ref` parameter
+binding, return statements, comma-expression sequencing, local bool
+declarations, unary `!`, equality failure messages, truthiness, and
 DMD-lowered logical-not and logical-and temporaries in assertion messages exist
-only because promoted logic tests required them. Logical `&&` and `||`
-short-circuiting exists only for the promoted local and zero-argument free-call
-cases. Do not generalize call parameters, methods, assignment, control flow, or
+only because promoted logic and diagnostics tests required them. Logical `&&`
+and `||` short-circuiting exists only for the promoted local and zero-argument
+free-call cases. Do not generalize methods, assignment, control flow, or
 assertion formatting until a promoted test forces that behaviour.
 
 ### Implementation Review Notes

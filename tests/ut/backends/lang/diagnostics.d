@@ -199,6 +199,33 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("tenFunctionParametersOops." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int answer(
+                int first,
+                int second,
+                int third,
+                int fourth,
+                int fifth,
+                int sixth,
+                int seventh,
+                int eighth,
+                int ninth,
+                int tenth,
+            ) {
+                return first + second + third + fourth + fifth +
+                    sixth + seventh + eighth + ninth + tenth;
+            }
+
+            unittest {
+                assert(answer(1, 2, 3, 4, 5, 6, 7, 8, 9, 11) == 42);
+            }
+        }).shouldThrowWithMessage("56 != 42");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
