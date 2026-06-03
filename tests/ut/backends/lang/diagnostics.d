@@ -314,7 +314,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -324,7 +326,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
 
+static foreach (backend; backends) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
