@@ -371,6 +371,9 @@ private struct EvalModuleInterpreter {
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
 
+        if (auto assign = expression.isAssignExp)
+            return runAssignExpression(assign);
+
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
 
@@ -441,20 +444,23 @@ private struct EvalModuleInterpreter {
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
         Value[] arguments;
+        VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
             if (call.arguments.length > 2)
                 throw new Exception("Unsupported interpreter call arguments.");
 
-            foreach (argument; *call.arguments)
+            foreach (argument; *call.arguments) {
                 arguments ~= runExpression(argument);
+                argumentVariables ~= argumentVariable(argument);
+            }
         }
 
         if (call.f !is null)
-            return runFunction(call.f, arguments);
+            return runFunction(call.f, arguments, argumentVariables);
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(function_, arguments);
+                return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported interpreter call.");
     }
@@ -462,6 +468,7 @@ private struct EvalModuleInterpreter {
     private Value runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
+        VarDeclaration[] argumentVariables,
     ) {
         auto savedLocals = locals.dup;
         const savedResult = result;
@@ -474,6 +481,7 @@ private struct EvalModuleInterpreter {
 
         runStatement(function_.fbody);
         const value = result;
+        writeBackRefParameters(function_, argumentVariables, savedLocals);
 
         locals = savedLocals;
         result = savedResult;
@@ -504,6 +512,30 @@ private struct EvalModuleInterpreter {
         locals[(*function_.parameters)[1]] = arguments[1];
     }
 
+    private void writeBackRefParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        VarDeclaration[] argumentVariables,
+        ref Value[VarDeclaration] savedLocals,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference)
+                continue;
+
+            if (index >= argumentVariables.length)
+                continue;
+
+            auto argumentVariable = argumentVariables[index];
+            if (argumentVariable is null)
+                continue;
+
+            if (auto value = parameter in locals)
+                savedLocals[argumentVariable] = *value;
+        }
+    }
+
     private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
 
@@ -518,6 +550,30 @@ private struct EvalModuleInterpreter {
         const left = runExpression(bitOr.e1).asLong;
         const right = runExpression(bitOr.e2).asLong;
         return Value(cast(int) (left | right));
+    }
+
+    private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const value = runExpression(assign.e2);
+        locals[variable] = value;
+        return value;
+    }
+
+    private VarDeclaration argumentVariable(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        auto var = argument.isVarExp;
+        if (var is null)
+            return null;
+
+        return var.var.isVarDeclaration;
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {

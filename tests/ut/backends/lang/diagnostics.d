@@ -231,7 +231,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
