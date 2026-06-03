@@ -20,7 +20,7 @@ public int main(string[] args) {
         return 0;
     }
 
-    auto repl = Repl(new Ctfe);
+    auto repl = Repl(new Ctfe, options.options.importPaths);
 
     if (options.options.hasFile) {
         foreach (file; options.options.files)

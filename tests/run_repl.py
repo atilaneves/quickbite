@@ -113,6 +113,28 @@ def test_command_can_use_several_file_arguments(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
+def test_file_argument_can_import_module_from_import_path(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    (imports / "quickbite_repl_imported.d").write_text(
+        "module quickbite_repl_imported;\n"
+        "int importedValue() { return 41; }\n",
+        encoding="utf-8",
+    )
+    file = tmp_path / "loaded.d"
+    file.write_text(
+        "import quickbite_repl_imported;\n"
+        "int loadedValue() { return importedValue() + 1; }\n",
+        encoding="utf-8",
+    )
+
+    result = run_qb("-I", str(imports), str(file), "-c", "loadedValue()")
+
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+    assert result.stderr == ""
+
+
 def test_file_argument_loads_example_fixture() -> None:
     result = run_qb("tests/example.d")
 
