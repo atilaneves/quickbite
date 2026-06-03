@@ -349,6 +349,7 @@ private struct EvalModuleInterpreter {
 
         if (
             expression.op == EXP.lessThan ||
+            expression.op == EXP.lessOrEqual ||
             expression.op == EXP.greaterThan
         ) {
             auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
@@ -419,6 +420,8 @@ private struct EvalModuleInterpreter {
 
         if (comparison.op == EXP.lessThan)
             return Value(left < right);
+        if (comparison.op == EXP.lessOrEqual)
+            return Value(left <= right);
         return Value(left > right);
     }
 
@@ -624,6 +627,9 @@ private struct EvalModuleInterpreter {
 
         if (operator == "<")
             return ">=";
+
+        if (operator == "<=")
+            return ">";
 
         return null;
     }
