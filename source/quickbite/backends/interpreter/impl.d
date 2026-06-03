@@ -333,6 +333,9 @@ private struct EvalModuleInterpreter {
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
 
+        if (expression.isNullExp !is null)
+            return Value.null_;
+
         if (auto string_ = expression.isStringExp)
             return stringValue(string_);
 
@@ -457,6 +460,12 @@ private struct EvalModuleInterpreter {
                 argumentVariables ~= argumentVariable(argument);
             }
         }
+
+        if (auto dot = call.e1.isDotVarExp)
+            if (runExpression(dot.e1) == Value.null_)
+                throw new Exception(
+                    "function call through null class reference `null`",
+                );
 
         if (call.f !is null)
             return runFunction(call.f, arguments, argumentVariables);

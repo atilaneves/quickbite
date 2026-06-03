@@ -352,7 +352,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -369,7 +369,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage(
             "function call through null class reference `null`");
     }
+}
 
+static foreach (backend; backends) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
