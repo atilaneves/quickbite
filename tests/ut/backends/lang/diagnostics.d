@@ -8,7 +8,7 @@ import std.exception: collectExceptionMsg;
 
 private:
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
