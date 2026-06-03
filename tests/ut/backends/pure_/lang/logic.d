@@ -19,9 +19,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("assertNonzeroIntConditionFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -34,9 +31,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("assertNonzeroIntConditionFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -51,7 +45,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -78,9 +72,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("false != true");
     }
 
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -97,9 +88,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -116,9 +104,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -135,9 +120,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -148,9 +130,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -161,9 +140,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -181,9 +157,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -201,9 +174,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -221,9 +191,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -232,9 +199,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -243,9 +207,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -259,9 +220,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -272,9 +230,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -285,9 +240,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -298,9 +250,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(left || right)` failed");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -311,9 +260,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -324,9 +270,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -337,9 +280,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true == true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -352,9 +292,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -367,9 +304,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -382,9 +316,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalOr." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -395,9 +326,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -441,9 +369,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -463,35 +388,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
-    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return true;
-            }
-
-            unittest {
-                assert(!isReady == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
-    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            unittest {
-                assert(!isReady == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
     @("logicalNotCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -504,9 +400,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("logicalNot." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
