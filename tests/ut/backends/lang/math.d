@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.math;
+module ut.backends.lang.math;
 
 
 import ut.backends;

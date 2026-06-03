@@ -51,11 +51,10 @@ tree-walking, IR, and bytecode coverage to compare against, unless the slice is
 explicitly pulled forward for benchmarking.
 
 When a codegen backend is ready to join the shared backend language matrix,
-follow the same module order as the active latency backends: finish the
-existing `eval.d` behavior first, then target
-`tests/ut/backends/pure_/lang/logic.d` as the first module-backed target.
-Start with `logicalNot`, then plain `&&` and `||` cases before call-based or
-short-circuit cases.
+follow the same module order as the active latency backends, documented in
+`ai/plans/backend-test-modules-order.md`. Within each module, start with the
+smallest named unittest before taking broader call-based, control-flow,
+aggregate, diagnostic, or integration cases.
 
 1. `SharedLib.eval`
 2. `SharedLib.runTests` / `runTestSummary`

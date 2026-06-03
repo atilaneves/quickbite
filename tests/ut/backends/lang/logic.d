@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.logic;
+module ut.backends.lang.logic;
 
 
 import ut.backends;

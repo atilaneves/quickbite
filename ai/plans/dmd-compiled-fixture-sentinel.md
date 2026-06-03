@@ -15,7 +15,7 @@ Add other assertion shapes later when a migrated fixture requires them.
 ## Key Changes
 
 Add a fixture helper module for backend fixture tests, for example
-`ut.backends.pure_.fixtures`.
+`ut.backends.fixtures`.
 
 The main API should be:
 
@@ -121,13 +121,13 @@ Use module-scope imports in test helper modules. Do not use selective imports
 such as:
 
 ```d
-import ut.backends.pure_.fixtures: failingFixture;
+import ut.backends.fixtures: failingFixture;
 ```
 
 Use this at most:
 
 ```d
-import ut.backends.pure_.fixtures;
+import ut.backends.fixtures;
 ```
 
 ## Tests

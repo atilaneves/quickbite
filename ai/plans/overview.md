@@ -78,7 +78,7 @@ Pipeline: delegate execution directly to DMD's built-in CTFE interpreter.
 
 Wrapped as `ExecutorBackend.dmdCtfe`. Serves as a correctness reference
 and a ceiling on what the DMD frontend alone can do.
-For `pure_` language-surface tests, CTFE is the canonical oracle for supported
+For backend language-surface tests, CTFE is the canonical oracle for supported
 behaviour unless the completed dmd codegen backend demonstrates that compiled
 D code behaves differently.
 
@@ -169,7 +169,7 @@ Do not add language-surface tests whose expected result differs from CTFE or
 compiled D behaviour. Backend-specific regression tests may cover internal
 mechanics only when they do not contradict D semantics, and they must be named
 and scoped as backend-specific implementation tests rather than placed in the
-pure language-surface matrix.
+language-surface matrix.
 
 ## Benchmarking Harness
 

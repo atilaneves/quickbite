@@ -4,6 +4,9 @@ module ut.backends.architecture;
 import ut;
 
 
+// This root-level backend test guards package boundaries rather than backend
+// behavior. Keep it outside lang, projects, and contracts packages so those
+// packages remain focused on executable backend surfaces.
 @("backendFilesDoNotImportExecutorCode")
 unittest {
     import std.algorithm: canFind;

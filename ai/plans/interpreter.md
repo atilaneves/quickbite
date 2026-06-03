@@ -56,23 +56,22 @@ Only then accept the slice as done.
 
 ## Slice Plan
 
-Promote tests in order of complexity. Start with
-`tests/ut/backends/pure_/lang/eval.d`, because those tests exercise the
-smallest backend surface: parse an expression or tiny eval cell, walk
-it, and return one `Value`. Prefer integer literals first, then simple
-arithmetic, then the next eval behavior with the fewest required D
-language features. Once the first integer literal slice is green, keep
-the eval roadmap covering all D integer scalar types (`byte`, `ubyte`,
-`short`, `ushort`, `int`, `uint`, `long`, and `ulong`) before treating
-integer scalar preservation as complete.
+Promote CTFE-backed test modules in the order documented by
+`ai/plans/backend-test-modules-order.md`. Start with
+`tests/ut/backends/lang/eval.d`, because those tests exercise the
+smallest backend surface: parse an expression or tiny eval cell, walk it, and
+return one `Value`. Prefer integer literals first, then simple arithmetic, then
+the next eval behavior with the fewest required D language features. Once the
+first integer literal slice is green, keep the eval roadmap covering all D
+integer scalar types (`byte`, `ubyte`, `short`, `ushort`, `int`, `uint`,
+`long`, and `ulong`) before treating integer scalar preservation as complete.
 
 After the existing eval tests are done, do not jump to an entire broad
 language file. Identify the next similarly simple test by counting the
-required language features in the fixture and choosing the smallest
-delta from the tree walker's current support. The target module after
-`eval.d` is `tests/ut/backends/pure_/lang/logic.d`, starting with the
-simplest individual tests such as `logicalNot`, then plain `&&` and
-`||` cases before call-based or short-circuit cases.
+required language features in the fixture and choosing the smallest delta from
+the tree walker's current support. The shared module order is only a module
+ranking; within a module, start with the smallest individual tests before
+call-based, short-circuit, aggregate, diagnostic, or integration cases.
 
 Do not pick a CTFE-only test at random just because it currently lacks
 `TreeWalker`. Before migrating one test, inspect the fixture and choose
@@ -97,7 +96,7 @@ tests stop being available.
 
 ### Eval Slice Lessons
 
-Current progress: all tests in `tests/ut/backends/pure_/lang/eval.d` are
+Current progress: all tests in `tests/ut/backends/lang/eval.d` are
 covered by `TreeWalker`, including `stringLiteralIsArray`. Keep future eval
 work focused on regressions or newly added CTFE-backed eval behaviours.
 
@@ -154,7 +153,7 @@ REPL-only concepts such as type-display cells belong in
 
 ### Logic Slice Lessons
 
-Current progress in `tests/ut/backends/pure_/lang/logic.d`:
+Current progress in `tests/ut/backends/lang/logic.d`:
 All `logicalNot*` and `logicalAnd*` tests are covered by `Interpreter`.
 `logicalOrBoolResult`, `logicalOrBoolResultFailureMessage.0`,
 `logicalOrBoolResultFailureMessage.1`, and `logicalOr` are covered by
@@ -268,10 +267,9 @@ support together, the chosen test is too broad for the first PR.
   unsupported node diagnostics and environment scoping invariants.
 - Never remove or weaken an existing test to satisfy the walker.
 - CTFE coverage reports do not rank Quickbite test modules by simplicity. All
-  backend `pure_` language modules run against CTFE, so choose post-`eval`
-  targets by required D language features. `logic.d` is the first target
-  module because its early tests need fewer features than `integral_types.d`,
-  `expressions.d`, `diagnostics.d`, or broader modules.
+  backend language modules run against CTFE, so use
+  `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
+  required D language features.
 - After each slice, run `dub test -- --random` to catch regressions.
 
 ## Assumptions

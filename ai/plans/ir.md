@@ -66,15 +66,15 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Start with the narrowest behavior already covered by the existing backend
   `eval` tests. Prefer integer literals first, then simple arithmetic, then the
   next behavior with the fewest required D language features.
-- Promote existing tests from `tests/ut/backends/pure_/lang/eval.d` first,
-  because the bytecode backend already proved that path can drive a tiny
-  backend-local compiler/language/VM slice.
+- Promote CTFE-backed test modules in the order documented by
+  `ai/plans/backend-test-modules-order.md`. Start with
+  `tests/ut/backends/lang/eval.d`, because the bytecode backend already
+  proved that path can drive a tiny backend-local compiler/language/VM slice.
 - Implement `IR.eval` first. Leave `evalRepl`, `runTests`, and
   `runTestSummary` unimplemented until an approved test specifically
   requires one of those entry points.
-- After `eval.d`, target `tests/ut/backends/pure_/lang/logic.d` as the first
-  module-backed test module. Start with the simplest individual test, such as
-  `logicalNot`, before taking call-based or short-circuit cases.
+- Within each module, start with the simplest individual test before taking
+  call-based, short-circuit, aggregate, diagnostic, or integration cases.
 - Add locals, parameters, returns, and direct calls only after `eval.d` and the
   early `logic.d` tests have forced enough support to make those features the
   next smallest step.
@@ -119,9 +119,9 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - When a behavior is already covered by CTFE, treat CTFE as the oracle for
   language-surface behavior unless compiled D code proves otherwise.
 - CTFE coverage reports do not rank Quickbite test modules by simplicity. All
-  backend `pure_` language modules run against CTFE, so choose post-`eval`
-  targets by required D language features, not by file length or coverage
-  counts.
+  backend language modules run against CTFE, so use
+  `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
+  required D language features, not by file length or coverage counts.
 - After each slice, run the focused promoted tests and then `dub test --
   --random`.
 

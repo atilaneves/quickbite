@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.eval;
+module ut.backends.lang.eval;
 
 
 import ut.backends;

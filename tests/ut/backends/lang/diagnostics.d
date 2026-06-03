@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.diagnostics;
+module ut.backends.lang.diagnostics;
 
 
 import ut.backends;

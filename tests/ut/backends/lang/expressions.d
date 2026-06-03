@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.expressions;
+module ut.backends.lang.expressions;
 
 
 import ut.backends;

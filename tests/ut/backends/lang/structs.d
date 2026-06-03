@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.structs;
+module ut.backends.lang.structs;
 
 
 import ut.backends;

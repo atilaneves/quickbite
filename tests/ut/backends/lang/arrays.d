@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.arrays;
+module ut.backends.lang.arrays;
 
 
 import ut.backends;

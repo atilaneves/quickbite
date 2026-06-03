@@ -1,4 +1,4 @@
-module ut.backends.pure_.lang.integral_types;
+module ut.backends.lang.integral_types;
 
 
 import std.conv: text;

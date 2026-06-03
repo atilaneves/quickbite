@@ -1,4 +1,4 @@
-module ut.backends.pure_.projects.cerealed;
+module ut.backends.projects.cerealed;
 
 
 import ut.backends;
