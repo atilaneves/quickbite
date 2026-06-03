@@ -350,7 +350,8 @@ private struct EvalModuleInterpreter {
         if (
             expression.op == EXP.lessThan ||
             expression.op == EXP.lessOrEqual ||
-            expression.op == EXP.greaterThan
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual
         ) {
             auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
             if (comparison is null)
@@ -422,7 +423,9 @@ private struct EvalModuleInterpreter {
             return Value(left < right);
         if (comparison.op == EXP.lessOrEqual)
             return Value(left <= right);
-        return Value(left > right);
+        if (comparison.op == EXP.greaterThan)
+            return Value(left > right);
+        return Value(left >= right);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
@@ -633,6 +636,9 @@ private struct EvalModuleInterpreter {
 
         if (operator == ">")
             return "<=";
+
+        if (operator == ">=")
+            return "<";
 
         return null;
     }
