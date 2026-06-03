@@ -4,10 +4,50 @@ This order ranks CTFE-backed backend behavior modules by the amount of D
 language surface a new backend must implement before the whole module can pass.
 Use it when choosing which existing CTFE tests to promote to a backend.
 
+This is the shared ordering companion for backend-specific plans. New backend
+plans should be able to reuse this order without changing this file.
+Backend-specific plans should reference this file by path instead of copying
+this order into their own documents.
+
 Scores are approximate and intentionally relative. A lower score means the
 module should usually be promoted before a higher-scored module. Within a
 module, still promote one named unittest, or one tightly-related family of
 unittests, at a time.
+
+## How To Use This Order
+
+Use this file to choose the next module to inspect, not to blindly promote a
+whole module. For each backend, read the backend-specific architecture plan
+first, then use this module order as the shared language-surface roadmap.
+
+Start with the earliest module whose remaining CTFE-only tests can be promoted
+honestly through the target backend's real pipeline. If a backend plan has
+entry-point slices before it can join the shared language matrix, finish those
+first, then use this order for shared behavior coverage.
+
+Within the selected module:
+
+- Pick the smallest named unittest that is not yet covered by the target
+  backend.
+- Prefer tests that require one new language feature or one small diagnostic
+  behavior.
+- Defer tests that combine calls, imports, control flow, aggregates,
+  diagnostics, pointers, delegates, exceptions, or integration behavior when a
+  smaller test remains available.
+- Promote one named unittest, or one tight family of failure-message tests, by
+  adding the target backend to that test's backend list.
+- Confirm the promoted test is red for the target backend before implementing
+  production code.
+- Make the smallest honest backend change that turns the promoted test green.
+
+`tests/ut/backends/package.d` defines `backends` as the CTFE-only baseline
+matrix. Promoting a test usually means changing only the relevant test block to
+use `backendsWith!Backend`, not adding the backend to the global `backends`
+alias and not broadening an entire file at once.
+
+Adding a backend to an existing CTFE-backed test is a backend promotion, not a
+new behavior test. Adding a new test or changing expected behavior still needs
+the normal test-approval stop.
 
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
