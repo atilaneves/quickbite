@@ -287,11 +287,14 @@ private struct EvalFunctionWalker {
 
 private struct EvalModuleInterpreter {
     import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration;
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
+    private bool[VarDeclaration] uninitializedLocals;
     private Value result;
     private bool runningCalledFunction;
+    private FuncDeclaration currentFunction;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
@@ -315,6 +318,14 @@ private struct EvalModuleInterpreter {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            if (isTruthy(runExpression(if_.condition)))
+                runStatement(if_.ifbody);
+            else
+                runStatement(if_.elsebody);
+            return;
+        }
+
         assert(0);
     }
 
@@ -324,6 +335,12 @@ private struct EvalModuleInterpreter {
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
+
+        if (expression.isNullExp !is null)
+            return Value.null_;
+
+        if (auto string_ = expression.isStringExp)
+            return stringValue(string_);
 
         if (auto assert_ = expression.isAssertExp) {
             if (!isTruthy(runExpression(assert_.e1)))
@@ -347,9 +364,14 @@ private struct EvalModuleInterpreter {
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
 
+        if (auto identity = expression.isIdentityExp)
+            return runIdentityExpression(identity);
+
         if (
             expression.op == EXP.lessThan ||
-            expression.op == EXP.greaterThan
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual
         ) {
             auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
             if (comparison is null)
@@ -357,6 +379,12 @@ private struct EvalModuleInterpreter {
 
             return runComparisonExpression(comparison);
         }
+
+        if (auto add = expression.isAddExp)
+            return runExpression(add.e1) + runExpression(add.e2);
+
+        if (auto assign = expression.isAssignExp)
+            return runAssignExpression(assign);
 
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
@@ -372,10 +400,19 @@ private struct EvalModuleInterpreter {
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
 
+        if (auto dot = expression.isDotVarExp)
+            return runDotVarExpression(dot);
+
+        if (auto typeid_ = expression.isTypeidExp)
+            return runTypeidExpression(typeid_);
+
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 assert(0);
+
+            if (variable in uninitializedLocals)
+                throw new Exception(uninitializedVariableMessage(variable));
 
             if (auto current = variable in locals)
                 return *current;
@@ -419,39 +456,125 @@ private struct EvalModuleInterpreter {
 
         if (comparison.op == EXP.lessThan)
             return Value(left < right);
-        return Value(left > right);
+        if (comparison.op == EXP.lessOrEqual)
+            return Value(left <= right);
+        if (comparison.op == EXP.greaterThan)
+            return Value(left > right);
+        return Value(left >= right);
+    }
+
+    private Value runIdentityExpression(
+        imported!"dmd.expression".IdentityExp identity,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(identity.e1);
+        const right = runExpression(identity.e2);
+        const same = left == right;
+        if (identity.op == EXP.notIdentity)
+            return Value(!same);
+
+        return Value(same);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
-        if (call.arguments !is null && call.arguments.length != 0)
-            throw new Exception("Unsupported interpreter call arguments.");
+        Value[] arguments;
+        VarDeclaration[] argumentVariables;
+        if (call.arguments !is null) {
+            foreach (argument; *call.arguments) {
+                arguments ~= runExpression(argument);
+                argumentVariables ~= argumentVariable(argument);
+            }
+        }
+
+        if (auto dot = call.e1.isDotVarExp)
+            if (runExpression(dot.e1) == Value.null_)
+                throw new Exception(
+                    "function call through null class reference `null`",
+                );
 
         if (call.f !is null)
-            return runFunction(call.f);
+            return runFunction(call.f, arguments, argumentVariables);
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(function_);
+                return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported interpreter call.");
     }
 
-    private Value runFunction(imported!"dmd.func".FuncDeclaration function_) {
+    private Value runFunction(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
+        VarDeclaration[] argumentVariables,
+    ) {
         auto savedLocals = locals.dup;
+        auto savedUninitializedLocals = uninitializedLocals.dup;
         const savedResult = result;
         const savedRunningCalledFunction = runningCalledFunction;
+        auto savedCurrentFunction = currentFunction;
 
         locals = null;
+        uninitializedLocals = null;
         result = Value(false);
         runningCalledFunction = true;
+        currentFunction = function_;
+        bindFunctionParameters(function_, arguments);
 
         runStatement(function_.fbody);
         const value = result;
+        writeBackRefParameters(function_, argumentVariables, savedLocals);
 
         locals = savedLocals;
+        uninitializedLocals = savedUninitializedLocals;
         result = savedResult;
         runningCalledFunction = savedRunningCalledFunction;
+        currentFunction = savedCurrentFunction;
         return value;
+    }
+
+    private void bindFunctionParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
+    ) {
+        if (arguments.length == 0) {
+            if (function_.parameters !is null && function_.parameters.length != 0)
+                throw new Exception("Unsupported interpreter call arguments.");
+            return;
+        }
+
+        if (
+            function_.parameters is null ||
+            function_.parameters.length != arguments.length
+        )
+            throw new Exception("Unsupported interpreter call arguments.");
+
+        foreach (index, parameter; *function_.parameters)
+            locals[parameter] = arguments[index];
+    }
+
+    private void writeBackRefParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        VarDeclaration[] argumentVariables,
+        ref Value[VarDeclaration] savedLocals,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (!parameter.isReference)
+                continue;
+
+            if (index >= argumentVariables.length)
+                continue;
+
+            auto argumentVariable = argumentVariables[index];
+            if (argumentVariable is null)
+                continue;
+
+            if (auto value = parameter in locals)
+                savedLocals[argumentVariable] = *value;
+        }
     }
 
     private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
@@ -470,8 +593,97 @@ private struct EvalModuleInterpreter {
         return Value(cast(int) (left | right));
     }
 
+    private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+        import std.conv: text;
+
+        if (runExpression(dot.e1) == Value.null_)
+            throw new Exception(text(
+                "class `",
+                receiverName(dot.e1),
+                "` is `null` and cannot be dereferenced",
+            ));
+
+        throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private Value runTypeidExpression(
+        imported!"dmd.expression".TypeidExp typeid_,
+    ) {
+        import dmd.dtemplate: isExpression;
+        import std.conv: text;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression is null)
+            throw new Exception("Unsupported interpreter typeid expression.");
+
+        const value = runExpression(expression);
+        if (value == Value.null_ || (isClassExpression(expression) &&
+            value == Value(false)))
+            throw new Exception(text(
+                "null pointer dereference evaluating typeid. `",
+                receiverName(expression),
+                "` is `null`",
+            ));
+
+        throw new Exception("Unsupported interpreter typeid expression.");
+    }
+
+    private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const value = runExpression(assign.e2);
+        locals[variable] = value;
+        uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private VarDeclaration argumentVariable(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        auto var = argument.isVarExp;
+        if (var is null)
+            return null;
+
+        return var.var.isVarDeclaration;
+    }
+
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
         return runExpression(cast_.e1);
+    }
+
+    private string receiverName(imported!"dmd.expression".Expression receiver) {
+        auto var = receiver.isVarExp;
+        if (var is null)
+            return "null";
+
+        return var.var.ident.toString.idup;
+    }
+
+    private bool isClassExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tclass;
+    }
+
+    private Value stringValue(imported!"dmd.expression".StringExp string_) {
+        return Value(stringChars(string_));
+    }
+
+    private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        char[] values;
+        foreach (index; 0 .. string_.numberOfCodeUnits)
+            values ~= cast(char) string_.getIndex(index);
+
+        return values;
     }
 
     private Value runDeclarationExpression(
@@ -480,6 +692,11 @@ private struct EvalModuleInterpreter {
         auto variable = declaration.declaration.isVarDeclaration;
         if (variable is null)
             return Value(false);
+
+        if (variable._init !is null && variable._init.isVoidInitializer !is null) {
+            uninitializedLocals[variable] = true;
+            return Value.void_;
+        }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
             locals[variable] = Value(false);
@@ -494,9 +711,30 @@ private struct EvalModuleInterpreter {
         else if (auto blit = initializer.isBlitExp)
             initializer = blit.e2;
 
+        if (initializer.isVoidInitExp !is null) {
+            uninitializedLocals[variable] = true;
+            return Value.void_;
+        }
+
         auto value = runExpression(initializer);
         locals[variable] = value;
+        uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private string uninitializedVariableMessage(VarDeclaration variable) {
+        import std.conv: text;
+
+        const functionName =
+            currentFunction is null ? "<unknown>" : currentFunction.ident.toString;
+
+        return text(
+            "cannot read uninitialized variable `.",
+            functionName,
+            ".",
+            variable.ident.toString,
+            "` in ctfe",
+        );
     }
 
     private bool isTruthy(in Value value) {
@@ -524,6 +762,9 @@ private struct EvalModuleInterpreter {
             const message = dmdAssertFailMessage(assert_.msg);
             if (message !is null)
                 return message;
+
+            if (isVariableMessage(assert_.msg))
+                return assertMessage(assert_.msg);
         }
 
         if (auto integer = assert_.e1.isIntegerExp)
@@ -534,7 +775,10 @@ private struct EvalModuleInterpreter {
             import std.conv: text;
 
             if (isLogicalExpression(not.e1))
-                return text(equalityOperandMessage(runExpression(not.e1), true), " == true");
+                return text(
+                    equalityOperandMessage(runExpression(not.e1), true, not.e1),
+                    " == true",
+                );
         }
 
         if (auto equal = assert_.e1.isEqualExp) {
@@ -554,12 +798,18 @@ private struct EvalModuleInterpreter {
                 isLogicalExpression(equal.e1) ||
                 isLogicalExpression(equal.e2);
             return text(
-                equalityOperandMessage(left, useBoolMessage),
+                equalityOperandMessage(left, useBoolMessage, equal.e1),
                 " ",
                 operator,
                 " ",
-                equalityOperandMessage(right, useBoolMessage),
+                equalityOperandMessage(right, useBoolMessage, equal.e2),
             );
+        }
+
+        if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
+            import std.conv: text;
+
+            return text(isTruthy(runExpression(assert_.e1)), " != true");
         }
 
         if (runningCalledFunction) {
@@ -607,11 +857,11 @@ private struct EvalModuleInterpreter {
         const rightValue = runExpression(right);
 
         return text(
-            equalityOperandMessage(leftValue, useBoolMessage),
+            equalityOperandMessage(leftValue, useBoolMessage, left),
             " ",
             operator,
             " ",
-            equalityOperandMessage(rightValue, useBoolMessage),
+            equalityOperandMessage(rightValue, useBoolMessage, right),
         );
     }
 
@@ -622,19 +872,56 @@ private struct EvalModuleInterpreter {
         if (operator == "!=")
             return "==";
 
+        if (operator == "<")
+            return ">=";
+
+        if (operator == "<=")
+            return ">";
+
+        if (operator == ">")
+            return "<=";
+
+        if (operator == ">=")
+            return "<";
+
         return null;
     }
 
     private string equalityOperandMessage(
         in Value value,
         in bool useBoolMessage,
+        imported!"dmd.expression".Expression expression,
     ) {
         import std.conv: text;
 
         if (useBoolMessage)
             return text(isTruthy(value));
 
+        if (isCharExpression(expression))
+            return text("'", value, "'");
+
+        if (isUnsignedLongExpression(expression))
+            return text(value.asLong);
+
         return text(value);
+    }
+
+    private bool isCharExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tchar;
+    }
+
+    private bool isUnsignedLongExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tuns64;
     }
 
     private bool isBoolValue(in Value value) {
@@ -719,7 +1006,26 @@ private struct EvalModuleInterpreter {
         if (auto literal = expression.isStringExp)
             return literal.peekString.idup;
 
+        if (expression.isVarExp !is null)
+            return runExpression(expression).asCharArrayString;
+
+        if (auto cast_ = expression.isCastExp)
+            if (cast_.e1.isVarExp !is null)
+                return runExpression(expression).asCharArrayString;
+
         assert(0);
+    }
+
+    private bool isVariableMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isVarExp !is null)
+            return true;
+
+        if (auto cast_ = expression.isCastExp)
+            return cast_.e1.isVarExp !is null;
+
+        return false;
     }
 
     private string dmdAssertFailBoolMessage(
