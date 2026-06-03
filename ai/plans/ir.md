@@ -70,6 +70,10 @@ not yet covered anywhere in the current CTFE-backed language tests.
   `ai/plans/backend-test-modules-order.md`. Start with
   `tests/ut/backends/lang/eval.d`, because the bytecode backend already
   proved that path can drive a tiny backend-local compiler/language/VM slice.
+- Before promoting a named test mentioned by this plan or a review note,
+  verify in the current checkout that its enclosing backend matrix still
+  excludes `IR`. If it already uses `backendsWith!IR`, treat the note as
+  stale and choose the next smallest current CTFE-only candidate.
 - Implement `IR.eval` first. Leave `evalRepl`, `runTests`, and
   `runTestSummary` unimplemented until an approved test specifically
   requires one of those entry points.
@@ -92,6 +96,9 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Use existing CTFE-passing tests as the acceptance matrix. The test-first step
   is to select a current test, make it fail against the IR backend, then make
   the smallest production change that makes it pass.
+- Do not trust backend progress text as an edit target without checking the
+  test file. A stale plan should trigger current-test discovery, not a broad
+  promotion.
 - Adding the IR backend to an existing CTFE-passing test is pre-approved: the
   test already exists, so do not stop for approval before making that backend
   promotion. This exception only covers adding the backend to an existing
@@ -159,8 +166,8 @@ not yet covered anywhere in the current CTFE-backed language tests.
   calls, declarations, equality, assertion handling, and test execution all
   appeared before the first tiny `eval` slice existed.
 - Do not start with `compileModule`, unit test discovery, assertion lowering,
-  function tables, or module-backed test execution. Start with the expression compiler,
-  IR language, and VM needed by one `eval` test.
+  function tables, or module-backed test execution. Start with the expression
+  compiler, IR language, and VM needed by one `eval` test.
 - Do not add several IR node kinds because they seem inevitable. Add one only
   when the promoted test fails without it.
 - Do not confuse eventual IR shape with first PR shape. The first PR should

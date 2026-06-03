@@ -43,6 +43,10 @@ Lua-specific bytecode shape.
   `ai/plans/backend-test-modules-order.md`. Within each module, start with the
   smallest named unittest that the current bytecode surface can honestly make
   red and then green.
+- Before promoting a named test mentioned by this plan or a review note,
+  verify in the current checkout that its enclosing backend matrix still
+  excludes `Bytecode`. If it already uses `backendsWith!Bytecode`, treat the
+  note as stale and choose the next smallest current CTFE-only candidate.
 - If the slice needs unittest blocks, integer literals, equality, calls,
   returns, and assert handling all at once, the test is too broad; pick a
   smaller test.
@@ -69,6 +73,9 @@ Lua-specific bytecode shape.
   required D language features, not by file length or coverage counts.
 - Verify each new slice before expanding scope: red test, minimal
   implementation, green suite, then the next slice.
+- Do not trust backend progress text as an edit target without checking the
+  test file. A stale plan should trigger current-test discovery, not a broad
+  promotion.
 - Do not add unsupported-diagnostic paths unless a test verifies the exact
   diagnostic behavior.
 

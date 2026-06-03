@@ -154,14 +154,26 @@ REPL-only concepts such as type-display cells belong in
 ### Logic Slice Lessons
 
 Current progress in `tests/ut/backends/lang/logic.d`:
-All `logicalNot*` and `logicalAnd*` tests are covered by `Interpreter`.
-`logicalOrBoolResult`, `logicalOrBoolResultFailureMessage.0`,
-`logicalOrBoolResultFailureMessage.1`, and `logicalOr` are covered by
-`Interpreter`.
+All current logic tests are covered by `Interpreter`. Before doing more logic
+work, verify the current file still has an unpromoted `backends` block. If it
+does not, leave `logic.d` alone and choose the next smallest current candidate
+from the shared module order.
 
-The next smallest slice is the plain local `logicalOrFailureMessage.0` case,
-followed by the remaining local `||` cases before broader comparison-operand
-logic. Treat each named unittest as its own promotion and commit.
+Do not trust this progress note as an edit target. Confirm the named test's
+enclosing backend matrix before promoting it; if it already uses
+`backendsWith!Interpreter`, it is historical progress, not the next slice.
+
+Current next-candidate note: after verifying `logic.d` has no CTFE-only
+`Interpreter` gaps, inspect `integral_types.d` and `api/runner.d` but do not
+promote their first remaining tests unless they are genuinely smaller than the
+diagnostics candidates. In the current checkout, `integral_types.d` combines
+aliases, enum constants, typed casts, locals, and parameterized calls, while
+`api/runner.d` quickly reaches runner summary/result behavior. The next
+plausible interpreter slice is therefore
+`diagnostics.voidFunctionReturnsToCaller`, provided its enclosing matrix still
+excludes `Interpreter` when the work starts. If that promotion is already green,
+verify signal by mutating the relevant interpreter call/return behavior, then
+revert the mutation before accepting a test-only slice.
 
 Module-backed interpreter support remains intentionally narrow:
 zero-argument free calls, return statements, comma-expression sequencing,
@@ -174,7 +186,8 @@ assertion formatting until a promoted test forces that behaviour.
 
 ### Implementation Review Notes
 
-**Finding 5 — Builtin call zero-argument check uses `is null` instead of a length guard.**
+**Finding 5 — Builtin call zero-argument check uses `is null` instead of a
+length guard.**
 `EvalFunctionWalker` tests `call.arguments is null` to detect a zero-argument
 builtin. DMD may produce a non-null empty `Expressions*` (`.length == 0`)
 rather than null for a call with no arguments, causing the check to fail and
@@ -182,7 +195,8 @@ the interpreter to throw "Unsupported eval call argument count" for a valid
 zero-argument builtin. Replace with `call.arguments is null ||
 call.arguments.length == 0`.
 
-**Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from `EvalModuleInterpreter`.**
+**Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
+`EvalModuleInterpreter`.**
 `EvalFunctionWalker` converts `StringExp` to a `char[]` array `Value` (covers
 the `stringLiteralIsArray` eval test). `EvalModuleInterpreter` has no
 `StringExp` case and would throw unsupported for any module-backed unittest
@@ -190,7 +204,8 @@ that references a string literal. Before promoting any logic or diagnostics
 test that involves string values, add a shared `StringExp` → `char[]`
 conversion or a matching case in `EvalModuleInterpreter`.
 
-**Finding 3 — Uninitialized variable reads return hardcoded types regardless of declared type.**
+**Finding 3 — Uninitialized variable reads return hardcoded types regardless of
+declared type.**
 Both walkers fall back to a hardcoded `Value` when a variable is not yet in the
 locals map: `EvalFunctionWalker` returns `Value(cast(int) 0)` and
 `EvalModuleInterpreter` returns `Value(false)`. D initialises every variable to
@@ -257,6 +272,10 @@ support together, the chosen test is too broad for the first PR.
   adding `TreeWalker` to exactly one existing test. This exception only covers
   adding the backend to an existing backend-matrix test; adding a new test or
   modifying test behaviour still requires approval before editing the test.
+- Before promoting any named test from this plan, verify in the current
+  checkout that its enclosing `static foreach` still excludes `Interpreter`.
+  If the test already uses `backendsWith!Interpreter`, do not edit it; inspect
+  the current tests and choose the next smallest CTFE-only named unittest.
 - When a promoted test is green without any implementation change,
   verify it is genuinely covered by mutating the test or the
   production code. A test that cannot be made to fail is not

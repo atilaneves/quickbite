@@ -56,6 +56,11 @@ follow the same module order as the active latency backends, documented in
 smallest named unittest before taking broader call-based, control-flow,
 aggregate, diagnostic, or integration cases.
 
+Before promoting a named test from any copied backend plan or review note,
+verify in the current checkout that its enclosing backend matrix still excludes
+the codegen backend under work. If it is already covered, treat the note as
+stale and choose the next smallest current CTFE-only candidate.
+
 1. `SharedLib.eval`
 2. `SharedLib.runTests` / `runTestSummary`
 3. `SharedLib.evalRepl`

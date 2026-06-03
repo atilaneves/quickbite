@@ -20,6 +20,12 @@ Use this file to choose the next module to inspect, not to blindly promote a
 whole module. For each backend, read the backend-specific architecture plan
 first, then use this module order as the shared language-surface roadmap.
 
+Backend-specific progress notes can go stale. Before editing a test matrix,
+search for the named candidate in the current checkout and verify its
+enclosing `static foreach` still excludes the target backend. If the candidate
+is already covered, treat the note as historical progress and choose the next
+smallest current candidate from the files, not from the stale text.
+
 Start with the earliest module whose remaining CTFE-only tests can be promoted
 honestly through the target backend's real pipeline. If a backend plan has
 entry-point slices before it can join the shared language matrix, finish those
@@ -28,7 +34,7 @@ first, then use this order for shared behavior coverage.
 Within the selected module:
 
 - Pick the smallest named unittest that is not yet covered by the target
-  backend.
+  backend in the current checkout.
 - Prefer tests that require one new language feature or one small diagnostic
   behavior.
 - Defer tests that combine calls, imports, control flow, aggregates,
