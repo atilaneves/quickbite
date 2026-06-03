@@ -333,6 +333,9 @@ private struct EvalModuleInterpreter {
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
 
+        if (auto string_ = expression.isStringExp)
+            return stringValue(string_);
+
         if (auto assert_ = expression.isAssertExp) {
             if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(assertFailureMessage(assert_));
@@ -580,6 +583,18 @@ private struct EvalModuleInterpreter {
         return runExpression(cast_.e1);
     }
 
+    private Value stringValue(imported!"dmd.expression".StringExp string_) {
+        return Value(stringChars(string_));
+    }
+
+    private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        char[] values;
+        foreach (index; 0 .. string_.numberOfCodeUnits)
+            values ~= cast(char) string_.getIndex(index);
+
+        return values;
+    }
+
     private Value runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -630,6 +645,9 @@ private struct EvalModuleInterpreter {
             const message = dmdAssertFailMessage(assert_.msg);
             if (message !is null)
                 return message;
+
+            if (isVariableMessage(assert_.msg))
+                return assertMessage(assert_.msg);
         }
 
         if (auto integer = assert_.e1.isIntegerExp)
@@ -871,7 +889,26 @@ private struct EvalModuleInterpreter {
         if (auto literal = expression.isStringExp)
             return literal.peekString.idup;
 
+        if (expression.isVarExp !is null)
+            return runExpression(expression).asCharArrayString;
+
+        if (auto cast_ = expression.isCastExp)
+            if (cast_.e1.isVarExp !is null)
+                return runExpression(expression).asCharArrayString;
+
         assert(0);
+    }
+
+    private bool isVariableMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isVarExp !is null)
+            return true;
+
+        if (auto cast_ = expression.isCastExp)
+            return cast_.e1.isVarExp !is null;
+
+        return false;
     }
 
     private string dmdAssertFailBoolMessage(

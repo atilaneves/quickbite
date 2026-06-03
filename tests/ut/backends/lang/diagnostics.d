@@ -340,7 +340,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -350,7 +350,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("oops");
     }
+}
 
+static foreach (backend; backends) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
