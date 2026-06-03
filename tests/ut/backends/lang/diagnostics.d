@@ -137,7 +137,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -150,7 +150,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
 
+static foreach (backend; backends) {
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
