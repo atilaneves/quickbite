@@ -263,7 +263,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("refSizeTParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

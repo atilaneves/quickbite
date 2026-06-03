@@ -640,7 +640,10 @@ private struct EvalModuleInterpreter {
             import std.conv: text;
 
             if (isLogicalExpression(not.e1))
-                return text(equalityOperandMessage(runExpression(not.e1), true), " == true");
+                return text(
+                    equalityOperandMessage(runExpression(not.e1), true, not.e1),
+                    " == true",
+                );
         }
 
         if (auto equal = assert_.e1.isEqualExp) {
@@ -660,11 +663,11 @@ private struct EvalModuleInterpreter {
                 isLogicalExpression(equal.e1) ||
                 isLogicalExpression(equal.e2);
             return text(
-                equalityOperandMessage(left, useBoolMessage),
+                equalityOperandMessage(left, useBoolMessage, equal.e1),
                 " ",
                 operator,
                 " ",
-                equalityOperandMessage(right, useBoolMessage),
+                equalityOperandMessage(right, useBoolMessage, equal.e2),
             );
         }
 
@@ -713,11 +716,11 @@ private struct EvalModuleInterpreter {
         const rightValue = runExpression(right);
 
         return text(
-            equalityOperandMessage(leftValue, useBoolMessage),
+            equalityOperandMessage(leftValue, useBoolMessage, left),
             " ",
             operator,
             " ",
-            equalityOperandMessage(rightValue, useBoolMessage),
+            equalityOperandMessage(rightValue, useBoolMessage, right),
         );
     }
 
@@ -746,13 +749,26 @@ private struct EvalModuleInterpreter {
     private string equalityOperandMessage(
         in Value value,
         in bool useBoolMessage,
+        imported!"dmd.expression".Expression expression,
     ) {
         import std.conv: text;
 
         if (useBoolMessage)
             return text(isTruthy(value));
 
+        if (isUnsignedLongExpression(expression))
+            return text(value.asLong);
+
         return text(value);
+    }
+
+    private bool isUnsignedLongExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tuns64;
     }
 
     private bool isBoolValue(in Value value) {
