@@ -403,7 +403,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(

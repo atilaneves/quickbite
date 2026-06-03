@@ -287,11 +287,14 @@ private struct EvalFunctionWalker {
 
 private struct EvalModuleInterpreter {
     import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration;
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
+    private bool[VarDeclaration] uninitializedLocals;
     private Value result;
     private bool runningCalledFunction;
+    private FuncDeclaration currentFunction;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         runStatement(unitTest.fbody);
@@ -408,6 +411,9 @@ private struct EvalModuleInterpreter {
             if (variable is null)
                 assert(0);
 
+            if (variable in uninitializedLocals)
+                throw new Exception(uninitializedVariableMessage(variable));
+
             if (auto current = variable in locals)
                 return *current;
 
@@ -506,12 +512,16 @@ private struct EvalModuleInterpreter {
         VarDeclaration[] argumentVariables,
     ) {
         auto savedLocals = locals.dup;
+        auto savedUninitializedLocals = uninitializedLocals.dup;
         const savedResult = result;
         const savedRunningCalledFunction = runningCalledFunction;
+        auto savedCurrentFunction = currentFunction;
 
         locals = null;
+        uninitializedLocals = null;
         result = Value(false);
         runningCalledFunction = true;
+        currentFunction = function_;
         bindFunctionParameters(function_, arguments);
 
         runStatement(function_.fbody);
@@ -519,8 +529,10 @@ private struct EvalModuleInterpreter {
         writeBackRefParameters(function_, argumentVariables, savedLocals);
 
         locals = savedLocals;
+        uninitializedLocals = savedUninitializedLocals;
         result = savedResult;
         runningCalledFunction = savedRunningCalledFunction;
+        currentFunction = savedCurrentFunction;
         return value;
     }
 
@@ -633,6 +645,7 @@ private struct EvalModuleInterpreter {
 
         const value = runExpression(assign.e2);
         locals[variable] = value;
+        uninitializedLocals.remove(variable);
         return value;
     }
 
@@ -686,6 +699,11 @@ private struct EvalModuleInterpreter {
         if (variable is null)
             return Value(false);
 
+        if (variable._init !is null && variable._init.isVoidInitializer !is null) {
+            uninitializedLocals[variable] = true;
+            return Value.void_;
+        }
+
         if (variable._init is null || variable._init.isExpInitializer is null) {
             locals[variable] = Value(false);
             return Value(false);
@@ -699,9 +717,30 @@ private struct EvalModuleInterpreter {
         else if (auto blit = initializer.isBlitExp)
             initializer = blit.e2;
 
+        if (initializer.isVoidInitExp !is null) {
+            uninitializedLocals[variable] = true;
+            return Value.void_;
+        }
+
         auto value = runExpression(initializer);
         locals[variable] = value;
+        uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private string uninitializedVariableMessage(VarDeclaration variable) {
+        import std.conv: text;
+
+        const functionName =
+            currentFunction is null ? "<unknown>" : currentFunction.ident.toString;
+
+        return text(
+            "cannot read uninitialized variable `.",
+            functionName,
+            ".",
+            variable.ident.toString,
+            "` in ctfe",
+        );
     }
 
     private bool isTruthy(in Value value) {
