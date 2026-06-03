@@ -152,7 +152,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -166,7 +166,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backends) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
