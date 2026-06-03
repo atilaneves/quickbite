@@ -360,6 +360,9 @@ private struct EvalModuleInterpreter {
             return runComparisonExpression(comparison);
         }
 
+        if (auto add = expression.isAddExp)
+            return runExpression(add.e1) + runExpression(add.e2);
+
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
 
@@ -429,20 +432,32 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
-        if (call.arguments !is null && call.arguments.length != 0)
+        Value[] arguments;
+        if (call.arguments !is null) {
+            if (call.arguments.length > 1)
+                throw new Exception("Unsupported interpreter call arguments.");
+
+            if (call.arguments.length == 1)
+                arguments ~= runExpression((*call.arguments)[0]);
+        }
+
+        if (arguments.length > 1)
             throw new Exception("Unsupported interpreter call arguments.");
 
         if (call.f !is null)
-            return runFunction(call.f);
+            return runFunction(call.f, arguments);
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(function_);
+                return runFunction(function_, arguments);
 
         throw new Exception("Unsupported interpreter call.");
     }
 
-    private Value runFunction(imported!"dmd.func".FuncDeclaration function_) {
+    private Value runFunction(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
+    ) {
         auto savedLocals = locals.dup;
         const savedResult = result;
         const savedRunningCalledFunction = runningCalledFunction;
@@ -450,6 +465,7 @@ private struct EvalModuleInterpreter {
         locals = null;
         result = Value(false);
         runningCalledFunction = true;
+        bindFunctionParameters(function_, arguments);
 
         runStatement(function_.fbody);
         const value = result;
@@ -458,6 +474,22 @@ private struct EvalModuleInterpreter {
         result = savedResult;
         runningCalledFunction = savedRunningCalledFunction;
         return value;
+    }
+
+    private void bindFunctionParameters(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
+    ) {
+        if (arguments.length == 0) {
+            if (function_.parameters !is null && function_.parameters.length != 0)
+                throw new Exception("Unsupported interpreter call arguments.");
+            return;
+        }
+
+        if (function_.parameters is null || function_.parameters.length != 1)
+            throw new Exception("Unsupported interpreter call arguments.");
+
+        locals[(*function_.parameters)[0]] = arguments[0];
     }
 
     private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {

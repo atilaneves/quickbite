@@ -196,7 +196,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -209,7 +211,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backends) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
