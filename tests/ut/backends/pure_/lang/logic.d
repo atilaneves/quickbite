@@ -84,9 +84,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
 
             unittest {
-                assert((left && right) == true);
+                assert(left && right);
             }
-        }).shouldThrowWithMessage("false != true");
+        }).shouldThrowWithMessage("`assert(left && right)` failed");
     }
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
