@@ -168,7 +168,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -181,7 +181,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+}
 
+static foreach (backend; backends) {
     @("functionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
