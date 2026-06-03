@@ -622,6 +622,9 @@ private struct EvalModuleInterpreter {
         if (operator == "!=")
             return "==";
 
+        if (operator == "<")
+            return ">=";
+
         return null;
     }
 

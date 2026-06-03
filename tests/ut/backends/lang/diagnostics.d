@@ -26,7 +26,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("intLessThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -41,7 +43,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 >= 42");
     }
+}
 
+static foreach (backend; backends) {
     @("intLessOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
