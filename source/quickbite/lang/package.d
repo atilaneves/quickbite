@@ -156,7 +156,7 @@ public struct Value {
             (const(Array) array) {
                 char[] result;
                 foreach (element; array.elements)
-                    result ~= element.asChar;
+                    result ~= element.asUtf8Character;
                 return result.idup;
             },
             (_) {
@@ -176,6 +176,29 @@ public struct Value {
             (_) {
                 throw new Exception("Expected character.");
                 return dchar.init;
+            },
+        );
+    }
+
+    private string asUtf8Character() const @safe pure {
+        import std.sumtype: match;
+        import std.utf: encode;
+
+        return data.match!(
+            (const(char) value) => [value].idup,
+            (const(wchar) value) {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) value);
+                return encoded[0 .. length].idup;
+            },
+            (const(dchar) value) {
+                char[4] encoded;
+                const length = encode(encoded, value);
+                return encoded[0 .. length].idup;
+            },
+            (_) {
+                throw new Exception("Expected character.");
+                return null;
             },
         );
     }
