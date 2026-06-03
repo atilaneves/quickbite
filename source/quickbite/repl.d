@@ -6,9 +6,15 @@ public struct Repl {
     private imported!"quickbite.frontend.repl".ReplSession session;
     private imported!"quickbite.backends".Backend backend;
     private string pendingInput;
+    private string[] importPaths;
 
-    public this(imported!"quickbite.backends".Backend backend) {
+    public this(
+        imported!"quickbite.backends".Backend backend,
+        in string[] importPaths = [],
+    ) {
         this.backend = backend;
+        this.importPaths = importPaths.dup;
+        this.session = typeof(session)(this.importPaths);
     }
 
     public imported!"quickbite.lang".Value submit(in string input) {
@@ -25,7 +31,7 @@ public struct Repl {
     public void loadModuleSource(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
-        parseModule(source);
+        parseModule(source, importPaths);
         session.loadModuleSource(source);
     }
 
@@ -35,7 +41,7 @@ public struct Repl {
 
         const source = filePath.readText;
         session.loadModuleFile(filePath, source);
-        parseModule(session.loadedModuleSource);
+        parseModule(session.loadedModuleSource, importPaths);
     }
 
     private ReplResult submitResult(in string input) {
@@ -73,7 +79,10 @@ public struct Repl {
         import quickbite.lang: Value;
 
         const result = backend.runTestResults(
-            parseModuleWithCheckActionContext(session.loadedModuleSource)
+            parseModuleWithCheckActionContext(
+                session.loadedModuleSource,
+                importPaths,
+            )
                 .module_,
         );
         const failureDiagnostic = testFailureDiagnostics(result.cases);
@@ -168,7 +177,14 @@ private bool functionReturnsString(
     if (array is null || array.nextOf is null)
         return false;
 
-    return array.nextOf.toBasetype.ty == TY.Tchar;
+    switch (array.nextOf.toBasetype.ty) with (TY) {
+        case Tchar:
+        case Twchar:
+        case Tdchar:
+            return true;
+        default:
+            return false;
+    }
 }
 
 public string[] runReplLoop(

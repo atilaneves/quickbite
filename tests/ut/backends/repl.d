@@ -186,6 +186,46 @@ static foreach (backend; backends) {
         output.should == [`["a", "b"]`];
     }
 
+    @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`string[] values = ["", "a"];`, "values", ":q"],
+        );
+
+        output.should == [`["", "a"]`];
+    }
+
+    @("repl.backend.displaysWideStringValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`"wide"w`, `"wide"d`, `"\U0001F600"d`, ":q"],
+        );
+
+        output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
+    }
+
+    @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                `[cast(wchar) 'a', cast(wchar) 'b']`,
+                `[cast(dchar) 'a', cast(dchar) 'b']`,
+                ":q",
+            ],
+        );
+
+        output.should == [`"ab"`, `"ab"`];
+    }
+
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -196,6 +236,28 @@ static foreach (backend; backends) {
         );
 
         output.should == ["[1:10, 2:20]"];
+    }
+
+    @("repl.backend.displaysEnumValues." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "enum E { a = 7, b = 8 }",
+                "E.a",
+                "[E.a, E.b]",
+                "cast(int) E.a",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "E.a",
+            "[E.a, E.b]",
+            "7",
+        ];
     }
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)

@@ -253,9 +253,23 @@ private imported!"quickbite.lang".Value ctfeValue(
 private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
+    import dmd.astenums: TY;
     import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
+    import quickbite.lang: Value;
+
+    if (
+        integer.type !is null &&
+        integer.type.ty == TY.Tenum
+    )
+        return Value.enumValue(expressionChars(integer));
 
     return frontendIntegerValue(integer);
+}
+
+private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
+    import std.string: fromStringz;
+
+    return expression.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.lang".Value realValue(
@@ -271,15 +285,25 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
-    return Value(stringChars(string_));
+    return Value.stringValue(stringChars(string_));
 }
 
 private char[] stringChars(
     imported!"dmd.expression".StringExp string_,
 ) {
+    import std.utf: encode;
+
     char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(char) string_.getIndex(index);
+    foreach (index; 0 .. string_.numberOfCodeUnits) {
+        const codeUnit = string_.getIndex(index);
+        if (string_.sz == 1) {
+            values ~= cast(char) codeUnit;
+        } else {
+            char[4] encoded;
+            const length = encode(encoded, cast(dchar) codeUnit);
+            values ~= encoded[0 .. length];
+        }
+    }
 
     return values;
 }

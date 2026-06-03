@@ -3,6 +3,12 @@ module quickbite.lang;
 private:
 
 
+private enum ArrayDisplay {
+    normal,
+    string,
+}
+
+
 public struct Value {
     private alias Data = imported!"std.sumtype".SumType!(
 
@@ -32,6 +38,7 @@ public struct Value {
         AssocArray,
         Struct,
         TypeName,
+        EnumValue,
     );
 
     private Data data = Data(Void.init);
@@ -55,6 +62,14 @@ public struct Value {
         return Value(Array(elements));
     }
 
+    public static Value stringValue(in char[] elements) @safe pure {
+        Value[] values;
+        foreach (element; elements)
+            values ~= Value(element);
+
+        return Value(Array(values, ArrayDisplay.string));
+    }
+
     public static Value assocArrayValue(
         in Value[] keys,
         in Value[] values,
@@ -64,6 +79,10 @@ public struct Value {
 
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
+    }
+
+    public static Value enumValue(in string name) @safe pure {
+        return Value(EnumValue(name));
     }
 
     private this(in Void value) @safe pure {
@@ -90,6 +109,10 @@ public struct Value {
         data = Data(value);
     }
 
+    private this(in EnumValue value) @safe pure {
+        data = Data(value);
+    }
+
     public this(T)(in T value) @safe pure
     if (
         !is(T == E[], E) &&
@@ -107,11 +130,7 @@ public struct Value {
     }
 
     public this(in string value) @safe pure {
-        Value[] elements;
-        foreach (char_; value)
-            elements ~= Value(char_);
-
-        data = Data(Array(elements));
+        data = Value.stringValue(value).data;
     }
 
     public this(T)(in T[] values) @safe pure {
@@ -135,15 +154,61 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) {
-                string result;
+                char[] result;
                 foreach (element; array.elements)
-                    result ~= element.asChar;
-                return result;
+                    result ~= element.asUtf8Character;
+                return result.idup;
             },
             (_) {
                 throw new Exception("Expected char array.");
                 return null;
             },
+        );
+    }
+
+    private dchar asDchar() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => cast(dchar) value,
+            (const(wchar) value) => cast(dchar) value,
+            (const(dchar) value) => value,
+            (_) {
+                throw new Exception("Expected character.");
+                return dchar.init;
+            },
+        );
+    }
+
+    private string asUtf8Character() const @safe pure {
+        import std.sumtype: match;
+        import std.utf: encode;
+
+        return data.match!(
+            (const(char) value) => [value].idup,
+            (const(wchar) value) {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) value);
+                return encoded[0 .. length].idup;
+            },
+            (const(dchar) value) {
+                char[4] encoded;
+                const length = encode(encoded, value);
+                return encoded[0 .. length].idup;
+            },
+            (_) {
+                throw new Exception("Expected character.");
+                return null;
+            },
+        );
+    }
+
+    private bool isChar() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => true,
+            (_) => false,
         );
     }
 
@@ -159,15 +224,6 @@ public struct Value {
         );
     }
 
-    private bool isChar() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(char) value) => true,
-            (_) => false,
-        );
-    }
-
     private string dText() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
@@ -180,6 +236,8 @@ public struct Value {
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
+                    return value.toString;
+                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.dText;
@@ -222,6 +280,8 @@ public struct Value {
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
+                    return value.toString;
+                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.toString;
@@ -429,11 +489,33 @@ private struct TypeName {
 }
 
 
+private struct EnumValue {
+    public string name;
+
+    public this(in string name) @safe pure {
+        this.name = name;
+    }
+
+    public string toString() const @safe pure {
+        return name;
+    }
+}
+
+
 private struct Array {
     public Value[] elements;
+    public ArrayDisplay display;
 
-    public this(in Value[] elements) @safe pure {
+    public this(
+        in Value[] elements,
+        in ArrayDisplay display = ArrayDisplay.normal,
+    ) @safe pure {
         this.elements = elements.dup;
+        this.display = display;
+    }
+
+    public bool opEquals(in Array other) const @safe pure {
+        return elements == other.elements;
     }
 
     public string toString() const @safe pure {
@@ -449,16 +531,24 @@ private struct Array {
     }
 
     public string dText() const @safe pure {
-        if (!isNonEmptyCharArray)
-            return toString;
-
-        return `"` ~ charArrayString ~ `"`;
+        final switch (display) with (ArrayDisplay) {
+            case normal:
+                if (!isNonEmptyCharArray)
+                    return toString;
+                return `"` ~ charArrayString ~ `"`;
+            case string:
+                return `"` ~ charArrayString ~ `"`;
+        }
     }
 
     private bool isNonEmptyCharArray() const @safe pure {
         if (elements.length == 0)
             return false;
 
+        return isCharArray;
+    }
+
+    private bool isCharArray() const @safe pure {
         foreach (element; elements)
             if (!element.isChar)
                 return false;
@@ -467,11 +557,14 @@ private struct Array {
     }
 
     private string charArrayString() const @safe pure {
-        string result;
+        if (!isCharArray)
+            return toString;
+
+        char[] result;
         foreach (element; elements)
             result ~= element.asChar;
 
-        return result;
+        return result.idup;
     }
 }
 

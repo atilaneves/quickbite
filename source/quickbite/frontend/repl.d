@@ -18,6 +18,10 @@ public struct ReplCell {
 public struct ReplSession {
     private imported!"quickbite.frontend.cell".EvalSession evalSession;
 
+    public this(in string[] importPaths) {
+        evalSession = typeof(evalSession)(importPaths);
+    }
+
     public ReplCell submit(in string input) {
         if (isTypeExpressionCell(input)) {
             auto cell = evalSession.submit(input ~ ".stringof");

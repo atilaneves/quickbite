@@ -32,10 +32,15 @@ private enum EvalHistoryTarget {
 }
 
 public struct EvalSession {
+    private string[] importPaths;
     private string localTranscript;
     private LoadedModuleSource[] loadedModuleSources;
     private string moduleTranscript;
     private uint valueCellCount;
+
+    public this(in string[] importPaths) {
+        this.importPaths = importPaths.dup;
+    }
 
     public EvalCell submit(in string input) {
         return submitImpl(input, true);
@@ -62,6 +67,7 @@ public struct EvalSession {
             return evalCellFromSource(
                 EvalCellKind.noDisplay,
                 source,
+                importPaths,
                 EvalHistoryTarget.module_,
                 input ~ "\n",
             );
@@ -78,6 +84,7 @@ public struct EvalSession {
             return evalCellFromSource(
                 EvalCellKind.noDisplay,
                 source,
+                importPaths,
                 EvalHistoryTarget.local,
                 input ~ "\n",
             );
@@ -90,6 +97,7 @@ public struct EvalSession {
         return evalCellFromSource(
             EvalCellKind.expression,
             source,
+            importPaths,
             EvalHistoryTarget.local,
             text(
                 "auto __quickbite_repl_value_",
@@ -208,13 +216,14 @@ public string withCandidateSignatures(
 private EvalCell evalCellFromSource(
     in EvalCellKind kind,
     in string source,
+    in string[] importPaths,
     in EvalHistoryTarget historyTarget,
     in string history,
 ) {
     import quickbite.frontend.compiler: parseModule;
 
     try {
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseModule(source, importPaths);
         return EvalCell(
             kind,
             source,

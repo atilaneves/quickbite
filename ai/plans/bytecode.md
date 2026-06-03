@@ -24,6 +24,17 @@ Lua-specific bytecode shape.
   and cache behavior are reproducible.
 - Keep the interpreter small and direct. Prefer a minimal dispatch loop and
   explicit frame bookkeeping over a deep abstraction stack.
+- Compute max stack depth at compile time and store it in the function table
+  entry. Allocate frames from a fixed-size pool in the VM struct (no per-call
+  heap allocation). Each frame holds: a function reference, an instruction
+  pointer, and a base pointer into the value stack. Unittest call depth is
+  shallow; a fixed array of frames is the right starting point.
+- Start the dispatch loop with `final switch` over the opcode enum. The end
+  goal is direct-threaded dispatch: computed goto (GCC/Clang labels-as-values
+  extension or equivalent C), inline assembly, or a function-pointer table —
+  whatever is measurably fastest on the target. Keep the opcode enum and
+  handler boundaries interchangeable between the two so the upgrade path
+  requires no structural change to the VM.
 
 ## Implementation Direction
 - Start with the smallest useful `eval` slice that can make exactly one
@@ -72,8 +83,12 @@ Lua-specific bytecode shape.
 - Keep modules separate from the start: backend adapter, compiler, bytecode
   program representation, and VM. Do not hide all bytecode logic in the backend
   adapter.
-- Use the existing runtime `Value` type unless a test forces a bytecode-specific
-  value representation. Do not invent int-only stack or operand types as a first
+- Use the existing runtime `Value` type as the stack slot type. Its size and GC
+  semantics are accepted costs for now. If benchmarks show slot size is a
+  bottleneck, investigate NaN-boxing for the numeric subset (collapses all
+  values to 8 bytes, type check becomes 1–2 bitwise ops); however NaN-boxing
+  may not be viable for D given the breadth of scalar types and the need to
+  represent structs. Do not invent int-only stack or operand types as a first
   step.
 - Make operands earn their shape. Avoid a generic `long` operand, ad hoc
   integer-specialized operands, or a half-built sum type unless the current test
@@ -82,6 +97,13 @@ Lua-specific bytecode shape.
   the VM semantics genuinely differ. Prefer one opcode with a typed operand
   domain, for example a cast opcode plus a target-type operand, before adding
   `castInt`, `castFloat`, or similar families.
+- Exception: for arithmetic and comparison opcodes, the compiler should select
+  a type-tagged variant at emit time using the operand types from the semantic
+  layer. This eliminates a runtime type-dispatch branch in the handler body
+  without requiring runtime specialization. This is distinct from the
+  cast-family anti-pattern — it applies only where the handler would otherwise
+  branch on type and the compiler's static knowledge makes that branch
+  unnecessary.
 - Do not add module-level helpers that only wrap a single call unless they make
   an active test simpler. Prefer inlining or overloading when that is clearer.
 - Keep names precise and conventional: use "variables" for variable metadata,
@@ -199,6 +221,47 @@ Lua-specific bytecode shape.
   native-call design.
 - [x] Remove one-off `Value.pow` API growth or justify it with a more general
   native-call design.
+
+## Peephole Optimisation
+- A one-lookahead peephole pass over the emitted instruction stream is the
+  first optimisation step after correctness is established. Valuable patterns:
+  `STORE r` immediately followed by `LOAD r` (eliminate the load), a
+  comparison with two constant operands (fold to unconditional jump), dead
+  stores to temporaries never read.
+- The pass must be optional and togglable at runtime so it can be benchmarked
+  against a large body of D code with and without. The artifact format must not
+  preclude it (do not seal or hash bytecode arrays before the pass runs).
+- Do not add the pass until a benchmark justifies it.
+
+## Exception Handling
+- Each compiled function artifact includes a handler table: a sorted array of
+  `(start_pc, end_pc, handler_pc)` triples. For unittest blocks the minimum
+  is one try-region covering the whole block body.
+- On `throw` or assert failure the VM binary-searches the handler table and
+  either jumps to the handler PC or unwinds the frame and propagates to the
+  caller.
+- D exceptions must not propagate silently through every C interpreter frame;
+  the VM owns the decision of how test failures are caught and reported.
+
+## Debug Info
+- The minimum required is bytecode-offset-to-source-line mapping, sufficient
+  for "assert failed at line N" messages. Variable name tables are useful for
+  REPL display but are not required for test pass/fail output and should not
+  be added until the REPL needs them.
+
+## Constant Pool
+- Deduplicate constants (strings, numbers) at generation time using a global
+  string intern table. D test code repeats the same string literals across
+  functions (type names, `__traits(identifier)` results); per-function
+  undeduped pools waste memory and add cache pressure.
+
+## Closures
+- D `unittest` blocks can contain lambdas that capture locals. Closure support
+  (open/closed upvalue chains) adds non-trivial complexity to both the compiler
+  and the VM, and retrofitting it onto a flat-register frame is painful.
+  Closures are out of scope for the initial implementation. The plan should be
+  revisited when a test forces closure support; at that point the frame layout
+  must account for upvalue slots from the start.
 
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is

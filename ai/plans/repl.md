@@ -168,13 +168,38 @@ Completed:
 - Fixed nested string display in CTFE-backed REPL aggregate results. Static
   string arrays such as `string[2] xs = ["a", "b"]; xs` now render as
   `["a", "b"]` instead of `[[a], [b]]`.
+- Fixed enum value display in CTFE-backed REPL results. Enum expressions such
+  as `E.a` now render as `E.a`, including inside aggregates, while explicit
+  casts such as `cast(int) E.a` still render as numeric values.
+- Fixed CTFE-backed REPL display for wide string results. Dynamic `wstring`
+  and `dstring` expression results now render as quoted strings instead of
+  character arrays.
+- Fixed non-BMP `dstring` code point display in CTFE-backed REPL results.
+  The CTFE string conversion now respects DMD's stored string code-unit width,
+  and generic `Value` string extraction preserves UTF-8 bytes instead of
+  widening each byte independently.
+- Fixed nested empty string display in CTFE-backed REPL aggregate results.
+  CTFE `StringExp` values now preserve string display provenance on their
+  array-shaped `Value`, so `string[] values = ["", "a"]; values` renders as
+  `["", "a"]` instead of `[[], "a"]`.
+- Fixed explicit wide character array display in CTFE-backed REPL results.
+  Array-shaped `Value` results containing `wchar` or `dchar` elements now
+  convert to UTF-8 through generic `Value` character-array rendering, so
+  `[cast(wchar) 'a', cast(wchar) 'b']` and
+  `[cast(dchar) 'a', cast(dchar) 'b']` render as `"ab"` instead of crashing
+  while expecting `char` elements.
+- Added `-I` option to the REPL so that file arguments and later cells parse
+  with user-provided import paths. The regression runs `bin/qb` with a file
+  argument that imports a module found only through the supplied `-I` directory,
+  then evaluates code that depends on that imported module.
 
 Remaining follow-up:
 
-- If any additional `Value` shape work is needed, keep it generic to the
-  representation rather than CTFE-specific. Do not rewrite REPL input source,
-  append `.array` to user expressions, or add a display-only wrapper source
-  path. Never try to materialize infinite ranges.
+- No concrete REPL follow-up is currently known. When adding CLI coverage for
+  future REPL features, prefer semantic tests that exercise user-visible D
+  behavior. Do not add tests that only assert parser/internal option state such
+  as `status`, `options`, or collected strings.
+
 ## Architecture
 
 - `Backend.evalRepl(ReplCell cell) -> quickbite.lang.Value` is the backend REPL
