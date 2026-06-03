@@ -394,6 +394,9 @@ private struct EvalModuleInterpreter {
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
 
+        if (auto dot = expression.isDotVarExp)
+            return runDotVarExpression(dot);
+
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
@@ -564,6 +567,19 @@ private struct EvalModuleInterpreter {
         return Value(cast(int) (left | right));
     }
 
+    private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+        import std.conv: text;
+
+        if (runExpression(dot.e1) == Value.null_)
+            throw new Exception(text(
+                "class `",
+                receiverName(dot.e1),
+                "` is `null` and cannot be dereferenced",
+            ));
+
+        throw new Exception("Unsupported interpreter field read.");
+    }
+
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
         auto var = assign.e1.isVarExp;
         if (var is null)
@@ -590,6 +606,14 @@ private struct EvalModuleInterpreter {
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
         return runExpression(cast_.e1);
+    }
+
+    private string receiverName(imported!"dmd.expression".Expression receiver) {
+        auto var = receiver.isVarExp;
+        if (var is null)
+            return "null";
+
+        return var.var.ident.toString.idup;
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
