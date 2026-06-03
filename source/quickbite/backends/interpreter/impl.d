@@ -319,6 +319,7 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.tokens: EXP;
         import quickbite.frontend.dmd_values: integerValue;
 
         if (auto integer = expression.isIntegerExp)
@@ -334,8 +335,6 @@ private struct EvalModuleInterpreter {
             return Value(!isTruthy(runExpression(not.e1)));
 
         if (auto logical = expression.isLogicalExp) {
-            import dmd.tokens: EXP;
-
             if (logical.op == EXP.andAnd)
                 return runLogicalAndExpression(logical);
             if (logical.op == EXP.orOr)
@@ -347,6 +346,20 @@ private struct EvalModuleInterpreter {
 
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
+
+        if (
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.greaterThan
+        ) {
+            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+            if (comparison is null)
+                assert(0);
+
+            return runComparisonExpression(comparison);
+        }
+
+        if (auto bitOr = expression.isOrExp)
+            return runBitwiseOrExpression(bitOr);
 
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1);
@@ -396,6 +409,19 @@ private struct EvalModuleInterpreter {
         return Value(right);
     }
 
+    private Value runComparisonExpression(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(comparison.e1).asLong;
+        const right = runExpression(comparison.e2).asLong;
+
+        if (comparison.op == EXP.lessThan)
+            return Value(left < right);
+        return Value(left > right);
+    }
+
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
         if (call.arguments !is null && call.arguments.length != 0)
             throw new Exception("Unsupported interpreter call arguments.");
@@ -436,6 +462,12 @@ private struct EvalModuleInterpreter {
         if (equal.op == EXP.notEqual)
             return Value(left != right);
         return Value(left == right);
+    }
+
+    private Value runBitwiseOrExpression(imported!"dmd.expression".OrExp bitOr) {
+        const left = runExpression(bitOr.e1).asLong;
+        const right = runExpression(bitOr.e2).asLong;
+        return Value(cast(int) (left | right));
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
@@ -488,6 +520,23 @@ private struct EvalModuleInterpreter {
                 return message;
         }
 
+        if (assert_.msg !is null) {
+            const message = dmdAssertFailMessage(assert_.msg);
+            if (message !is null)
+                return message;
+        }
+
+        if (auto integer = assert_.e1.isIntegerExp)
+            if (!isBoolExpression(integer))
+                return "`assert(0)` failed";
+
+        if (auto not = assert_.e1.isNotExp) {
+            import std.conv: text;
+
+            if (isLogicalExpression(not.e1))
+                return text(equalityOperandMessage(runExpression(not.e1), true), " == true");
+        }
+
         if (auto equal = assert_.e1.isEqualExp) {
             import dmd.tokens: EXP;
             import std.conv: text;
@@ -502,8 +551,8 @@ private struct EvalModuleInterpreter {
                 isBoolExpression(equal.e2) ||
                 isLogicalNotExpression(equal.e1) ||
                 isLogicalNotExpression(equal.e2) ||
-                isLogicalAndExpression(equal.e1) ||
-                isLogicalAndExpression(equal.e2);
+                isLogicalExpression(equal.e1) ||
+                isLogicalExpression(equal.e2);
             return text(
                 equalityOperandMessage(left, useBoolMessage),
                 " ",
@@ -521,6 +570,59 @@ private struct EvalModuleInterpreter {
         }
 
         return "`assert(false)` failed";
+    }
+
+    private string dmdAssertFailMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.id: Id;
+        import std.conv: text;
+
+        auto call = expression.isCallExp;
+        if (call is null ||
+            call.f is null ||
+            call.f.ident != Id._d_assert_fail ||
+            call.arguments is null ||
+            call.arguments.length != 3)
+            return null;
+
+        auto operatorLiteral = (*call.arguments)[0].isStringExp;
+        if (operatorLiteral is null)
+            return null;
+
+        const operator = invertedEqualityOperator(operatorLiteral.peekString);
+        if (operator is null)
+            return null;
+
+        auto left = (*call.arguments)[1];
+        auto right = (*call.arguments)[2];
+        const useBoolMessage =
+            isBoolExpression(left) ||
+            isBoolExpression(right) ||
+            isLogicalNotExpression(left) ||
+            isLogicalNotExpression(right) ||
+            isLogicalExpression(left) ||
+            isLogicalExpression(right);
+        const leftValue = runExpression(left);
+        const rightValue = runExpression(right);
+
+        return text(
+            equalityOperandMessage(leftValue, useBoolMessage),
+            " ",
+            operator,
+            " ",
+            equalityOperandMessage(rightValue, useBoolMessage),
+        );
+    }
+
+    private string invertedEqualityOperator(in char[] operator) {
+        if (operator == "==")
+            return "!=";
+
+        if (operator == "!=")
+            return "==";
+
+        return null;
     }
 
     private string equalityOperandMessage(
@@ -541,6 +643,10 @@ private struct EvalModuleInterpreter {
 
     private bool isBoolExpression(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
+
+        if (auto cast_ = expression.isCastExp)
+            if (isBoolExpression(cast_.e1))
+                return true;
 
         auto type = expression.type;
         if (auto cast_ = expression.isCastExp)
@@ -579,16 +685,14 @@ private struct EvalModuleInterpreter {
         return expression.isNotExp !is null;
     }
 
-    private bool isLogicalAndExpression(
+    private bool isLogicalExpression(
         imported!"dmd.expression".Expression expression,
     ) {
-        import dmd.tokens: EXP;
-
         while (auto cast_ = expression.isCastExp)
             expression = cast_.e1;
 
         if (auto comma = expression.isCommaExp)
-            return isLogicalAndExpression(comma.e2);
+            return isLogicalExpression(comma.e2);
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
@@ -605,13 +709,10 @@ private struct EvalModuleInterpreter {
             else if (auto blit = initializer.isBlitExp)
                 initializer = blit.e2;
 
-            return isLogicalAndExpression(initializer);
+            return isLogicalExpression(initializer);
         }
 
-        if (auto logical = expression.isLogicalExp)
-            return logical.op == EXP.andAnd;
-
-        return false;
+        return expression.isLogicalExp !is null;
     }
 
     private string assertMessage(imported!"dmd.expression".Expression expression) {

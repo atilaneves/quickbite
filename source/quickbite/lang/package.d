@@ -312,6 +312,24 @@ public struct Value {
         );
     }
 
+    public long asLong() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isIntegral!T || is(T == bool)) {
+                    return cast(long) value;
+                } else {
+                    throw new Exception("Expected integer-compatible scalar.");
+                    return 0L;
+                }
+            },
+        );
+    }
+
     public Value opBinary(string op)(in Value rhs) const @safe pure
         if (op == "+" || op == "-" || op == "*" || op == "/")
     {
