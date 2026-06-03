@@ -23,7 +23,11 @@ not yet covered anywhere in the current CTFE-backed language tests.
 - Minimum still has to be honest. Do not pick a test whose already-analysed DMD
   AST has folded away the behavior named by the test, then implement only the
   folded result. If the source expression is `1 + 2`, compiling an
-  `IntegerLiteral(3)` is not an IR implementation of addition.
+  `IntegerLiteral(3)` is not an IR implementation of addition. This does not
+  forbid consuming DMD's already-folded AST when the promoted behavior is the
+  resulting value or when folding is incidental to a larger behavior; it only
+  forbids claiming coverage for an IR operation that the selected AST no
+  longer contains.
 - Keep the first green slice deliberately embarrassing. Do not add support for
   a language construct, diagnostic path, summary path, helper abstraction, id
   table, error message, or invariant until the single promoted test fails
@@ -39,11 +43,51 @@ not yet covered anywhere in the current CTFE-backed language tests.
 ## IR Shape
 - Make the IR typed and explicit. Scalar values should use SSA-style names;
   memory effects, mutable places, and call-by-reference behavior should be
-  explicit instead of hidden in the value graph.
+  explicit instead of hidden in the value graph. Use a hybrid mutation model:
+  SSA values for scalars and pure computation; a separate typed place-reference
+  namespace for mutable memory (`ref` parameters, array elements, struct
+  fields, slices). Mutation goes through `load`/`store` on place references,
+  not through handles in a side table and not through ordinary SSA pointer
+  values. This handles D's aliasing naturally, keeps CTFE viable (a CTFE
+  interpreter evaluates load/store directly), and makes ownership analysis on
+  place references tractable in SSA. The legacy IR's `ArrayAlias` side-table is
+  the specific anti-pattern this replaces.
+- Every IR value carries an explicit type at its definition site (e.g., `i32`,
+  `i64`, `f32`, `f64`). The executor selects the operation from the
+  instruction's declared type, not from a runtime tag on the value. D language
+  types are mapped to the cheapest IR representation that preserves enough
+  D-visible scalar semantics for direct execution and final result conversion.
+  The IR does not represent D's full type hierarchy, but the VM must not need
+  DMD lookups or `quickbite.lang.Value` dispatch to recover signedness,
+  character-ness, float width, or result category. This can be represented
+  with D-aware scalar types or with LLVM-style width types plus explicit
+  signedness/category on operations, casts, comparisons, and return/result
+  metadata; choose the representation that best serves edit-to-test-result
+  latency for the current slice. Never dispatch on `value.isFloating` or an
+  equivalent runtime check — that is the legacy IR's central mistake and the
+  root cause of its inconsistent arithmetic handling.
 - Keep control flow explicit with basic blocks and terminators. Prefer a form
-  that is easy to rewrite locally and does not depend on AST shape.
+  that is easy to rewrite locally and does not depend on AST shape. Each basic
+  block carries an optional exception successor (the landing pad block). All
+  potentially throwing instructions in that block unwind to that successor;
+  lowering must split blocks when exception scope changes. Blocks that cannot
+  throw leave it empty; blocks inside a try body name the landing pad. Do not
+  attach exception handlers to ordinary branch terminators, because branches do
+  not throw. Do not encode exception scope as inline instruction counts — that
+  is the legacy IR's `TryCatch` anti-pattern and requires two-pass patching to
+  emit.
 - Make function ids, block ids, value ids, and constant references IR-native.
-  The IR should not depend on DMD declaration identity at execution time.
+  The IR should not depend on DMD declaration identity at execution time. This
+  applies equally to struct field access: field names are resolved by the
+  compiler during lowering and emitted as numeric indices into a per-type
+  layout table. IR instructions for field reads and writes carry the index, not
+  the name string. The executor never compares strings during normal execution.
+- Module-level and `static` local variables are entries in a per-module
+  variable table, identified by integer index and typed at definition time.
+  The executor allocates the table on module load. Do not use string-keyed
+  maps for static state — the legacy IR's `StaticArray`/`StaticInt` collision
+  (both keyed into the same `string → Value` map) is the specific anti-pattern
+  this avoids.
 - Keep the in-memory IR rewrite-friendly and separate from any serialized or
   cached form. If a compact binary form is added later, treat it as a separate
   layer, not the core representation.
@@ -58,9 +102,70 @@ not yet covered anywhere in the current CTFE-backed language tests.
   language module, a compiler module that lowers DMD expressions to that IR,
   and a VM module that runs only that IR. Prefer `compiler.d`, `language.d`,
   and `vm.d` for the initial module names.
-- The initial language may be linear and bytecode-like if that is all the
-  promoted `eval` test requires. Do not add SSA, basic blocks, terminators, or
-  rewrite machinery until an approved test slice forces them.
+- The IR shape is CFG + basic blocks + block parameters from the first slice.
+  A single-block function with no branches is trivially SSA — no block
+  parameters are needed until a test requires a control-flow join, but the
+  structure must accommodate them from the start. Do not build a linear
+  bytecode array; build a block list where the first block happens to have no
+  successors yet. Converting a flat bytecode IR to SSA later is a full
+  structural rewrite, not an incremental step.
+
+## Current Implementation State
+
+The existing `language.d` is a flat expression tree structurally incompatible
+with the IR shape decisions in this plan. Replace it — along with the
+corresponding `compiler.d` and `vm.d` — at the start of the next
+implementation slice. The current tests will be re-grounded on the new
+block/value structure; there is nothing in the expression tree worth
+preserving.
+
+### Target shape for the three backend-local modules
+
+**`language.d`** defines the IR data types:
+
+- `Type` enum: `i1`, `i8`, `i16`, `i32`, `i64`, `f32`, `f64`, `ptr`. D source
+  scalar and pointer values are mapped to these by the compiler; the IR does
+  not represent D's type hierarchy. `ptr` represents D pointer values, not
+  mutable places. Add a separate `Place` or `PlaceId` representation when
+  `Alloca`, `Load`, and `Store` are promoted.
+- `Value` struct: `uint id` and `Type type`. Every SSA value declares its type
+  at the single definition site. The executor never inspects a runtime tag to
+  decide which arithmetic path to take.
+- Instructions as a `SumType`. Start with `Const` (typed constant scalar,
+  raw bits + destination `Value`) and `BinaryOp` (typed binary op, operation
+  enum + lhs/rhs value ids + destination `Value`). Add `Alloca`, `Load`, and
+  `Store` when mutation tests are promoted; `Load` and `Store` consume typed
+  place references, not ordinary `ptr` SSA values. Do not store
+  `quickbite.lang.Value` inside IR instructions; convert to that public API
+  type only at backend boundaries.
+- Terminators as a `SumType`: `Branch` (unconditional jump to a target block
+  id with positional args), `CondBranch` (conditional jump with args for both
+  successors), `ReturnValue` (return a value id), `ReturnVoid`.
+- `Block` struct: `uint id`, `Value[] params` (block parameters — SSA values
+  defined on entry, supplied positionally by predecessor branch args),
+  `Instruction[] instructions`, `Terminator terminator`, and an explicit
+  optional exception successor. Do not use block id `0` as a sentinel;
+  `blocks[0]` is the entry block.
+- `Function` struct for the eval-only slice: `Block[] blocks` (`blocks[0]` is
+  the entry block; its params are the function parameters when parameters are
+  first promoted) plus return type/result metadata.
+- Add function ids, debug names, module function tables, and `StaticVar` tables
+  only when direct calls, module-backed tests, or static variables are the
+  promoted red behavior. Module-level and `static` local variables must be
+  identified by integer index and typed at definition time when they are added.
+  No string keys.
+
+**`compiler.d`** lowers a DMD expression to a `Function` containing a single
+`Block`. `eval("42")` emits `Const` + `ReturnValue`. `eval("1 + 2")` emits
+two `Const` instructions + `BinaryOp(add, i32)` + `ReturnValue`. The
+single-block case requires no block parameters and no `Branch`/`CondBranch`;
+it still ends with a `ReturnValue` or `ReturnVoid` terminator. The structure is
+correct for CFG+SSA and accommodates joins as soon as a test requires one.
+
+**`vm.d`** walks `Block.instructions` in order and evaluates the `Terminator`.
+For the initial single-block case this degenerates to a linear walk ending at
+`ReturnValue`. The block-dispatch loop that handles `Branch` and `CondBranch`
+is added when a test requires control flow.
 
 ## Slice Plan
 - Start with the narrowest behavior already covered by the existing backend
@@ -86,8 +191,11 @@ not yet covered anywhere in the current CTFE-backed language tests.
   current `control_flow.d` coverage as the source of truth for what must work.
 - Add arrays, structs, mutation, and reference-like behaviors only when the
   existing CTFE tests in `arrays.d` and `structs.d` force those slices.
-- Add exceptions and diagnostics last, because they require the IR to model
-  control flow and failure propagation explicitly.
+- Add minimal mechanically-derived unsupported-feature diagnostics as soon as a
+  promoted test reaches an unsupported AST or IR shape. Defer rich language
+  diagnostics, assertion formatting, exception diagnostics, and source-location
+  polish until `diagnostics.d`, exceptions, or another specific promoted test
+  requires them.
 - Keep each slice small enough that one promoted test or one small family of
   tests can verify it. If a behavior needs more than one independent change,
   split it into multiple slices.
@@ -118,8 +226,10 @@ not yet covered anywhere in the current CTFE-backed language tests.
   define the target behavior.
 - Before implementing, inspect the DMD AST that reaches the IR compiler for the
   chosen test. The selected test must force the intended IR operation after
-  semantic analysis. If DMD constant-folds the operation away, choose or approve
-  a runtime-shaped fixture that prevents folding.
+  semantic analysis when the promoted behavior is that operation. If DMD
+  constant-folds the operation away, choose or approve a runtime-shaped fixture
+  that prevents folding. Already-folded AST nodes are acceptable for tests whose
+  behavior is the resulting value rather than the folded-away operation.
 - Prefer public backend behavior tests over implementation-detail tests.
   Add IR-specific tests only for IR-native contracts such as operand typing,
   block/CFG invariants, or explicitly unsupported features.
@@ -137,6 +247,17 @@ not yet covered anywhere in the current CTFE-backed language tests.
   source text from the existing DMD module. The backend entry point already
   receives a semantically analysed `Module`; reparsing loses the point of the
   pipeline and hides problems in the real IR input.
+- The positive rule for module-backed execution: `runTests`, `runTestResults`,
+  and `runTestSummary` consume the semantically analysed DMD `Module` they
+  receive. They do not construct a source string, do not call `parseModule`,
+  and do not wrap code in a synthetic function. The legacy `IrExecutor.eval`
+  in `quickbite.executors.ir` demonstrates the anti-pattern; the new backend
+  must not copy it.
+- The positive rule for `Backend.eval(string)`: parse and semantically analyse
+  the expression through the frontend expression path, then lower that DMD AST
+  to IR. This mirrors the bytecode backend's starting path. Do not implement
+  `eval` by reparsing a synthetic function such as
+  `auto f() { return expr; }`.
 - Do not keep helper code whose only purpose is to support that reparsing path,
   such as converting a DMD `Module` back into source text for the IR backend.
 - Do not paper over failures from `checkaction=context` assert lowering with a
@@ -145,17 +266,23 @@ not yet covered anywhere in the current CTFE-backed language tests.
   the existing DMD AST shape deliberately or choose the next smallest approved
   slice that can run from the existing DMD module without reparsing.
 - Do not let the first IR promotion depend on a private backend escape hatch.
-  The first green test should prove that the IR backend can consume the same
-  module pipeline used by the rest of Quickbite.
+  The first green `eval` test should prove that the IR backend consumes the
+  frontend expression pipeline used by bytecode. The first module-backed
+  promotion should prove that `runTests`, `runTestResults`, or
+  `runTestSummary` consumes the same module pipeline used by the rest of
+  Quickbite.
 
 ## Do Not Repeat From Failed PR 103
 - `Backend.eval` is now the correct first entry point, but do not implement it
   by reparsing a synthetic function such as `auto f() { return expr; }`.
   Compile the expression through the same frontend expression path used by the
   bytecode backend.
-- Do not treat DMD constant folding as successful IR lowering. If the source
-  behavior is addition, the compiler must lower an addition-shaped AST to
-  addition-shaped IR; returning the folded integer literal is cheating.
+- Do not treat DMD constant folding as successful IR lowering for the operation
+  being promoted. If the source behavior under test is addition, the compiler
+  must lower an addition-shaped AST to addition-shaped IR; returning the folded
+  integer literal is cheating. For tests whose behavior is the resulting value,
+  consuming an already-folded AST is acceptable and may reduce edit-to-test
+  latency.
 - Do not define IR types that overclaim what the compiler has checked. A
   function that accepts any DMD integer expression must not return an
   `IntegerLiteral` unless it first proves the expression is actually a literal.
@@ -175,20 +302,10 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Follow-Up From PR #122 Review
 
-1. **`integerValue` casts unconditionally to `int`** (`compiler.d`): dispatch on
-   `integer.type.toBasetype.ty` and produce the correctly-typed `Value`, the
-   same way `realValue` already switches on `TY`. Address before integer-type
-   tests are promoted.
-
-2. **Missing function attributes** (`compiler.d`, `vm.d`, `language.d`): add
-   `@safe pure nothrow` (and `@nogc` where applicable) to all IR backend
-   module-scope functions and structs. Verify DMD AST methods to determine
-   whether `@trusted` wrappers are needed for the compiler functions.
-
-3. **No top-level `RealExp` branch in `compileExpression`** (`compiler.d`):
-   `eval("3.75f")` would assert, and a DMD version that constant-folds
-   `1.5f + 2.25f` to a `RealExp` would silently break the float add test. Add
-   a top-level `isRealExp` branch mirroring the existing `isIntegerExp` branch.
+- **Function attributes** (`compiler.d`, `vm.d`, `language.d`): add
+  `@safe pure nothrow` (and `@nogc` where applicable) to all module-scope
+  functions and structs in the replacement modules. Verify DMD AST methods to
+  determine whether `@trusted` wrappers are needed for the compiler functions.
 
 ## Assumptions
 - AST-first lowering is acceptable; direct parser-to-IR generation is out of

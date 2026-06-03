@@ -15,26 +15,33 @@ Lua-specific bytecode shape.
 - Keep the bytecode format compact and rigid, with a small set of opcodes and
   typed operand kinds such as function reference, local slot, constant index,
   comparison kind, and jump target.
-- Make the compiled artifact self-contained: code stream, constant pool,
-  function table, frame metadata, and debug or line info live together but are
-  logically separate.
+- Make the compiled artifact closed over the code selected for the current
+  unittest slice, not over every transitive dependency. Code stream, constant
+  pool, function table, frame metadata, and debug or line info live together but
+  are logically separate. Function references may point to local bytecode,
+  cached dependency bytecode, or native-call bridge entries through
+  bytecode-native ids.
 - Keep the frontend and VM boundary hard. AST and semantic lookup belong in the
   compiler layer; the VM should consume only bytecode-native ids and metadata.
 - Make bytecode deterministic to emit and easy to disassemble so test failures
   and cache behavior are reproducible.
 - Keep the interpreter small and direct. Prefer a minimal dispatch loop and
   explicit frame bookkeeping over a deep abstraction stack.
-- Compute max stack depth at compile time and store it in the function table
-  entry. Allocate frames from a fixed-size pool in the VM struct (no per-call
-  heap allocation). Each frame holds: a function reference, an instruction
-  pointer, and a base pointer into the value stack. Unittest call depth is
-  shallow; a fixed array of frames is the right starting point.
+- Compute max value-stack depth at compile time and store it in the function
+  table entry. Allocate call frames from VM-owned storage, using
+  `std.experimental.allocator` to avoid per-call GC allocation. Inline storage
+  for the common shallow unittest case is fine, but the policy must either grow
+  through the allocator or report a deterministic bytecode call-stack
+  exhaustion diagnostic. Each frame holds: a function reference, an instruction
+  pointer, and a base pointer into the value stack.
 - Start the dispatch loop with `final switch` over the opcode enum. The end
   goal is direct-threaded dispatch: computed goto (GCC/Clang labels-as-values
   extension or equivalent C), inline assembly, or a function-pointer table —
-  whatever is measurably fastest on the target. Keep the opcode enum and
-  handler boundaries interchangeable between the two so the upgrade path
-  requires no structural change to the VM.
+  whatever is viable in D and measurably fastest on the target. The direct
+  threading experiment must name the chosen route and keep the `final switch`
+  interpreter as the portable fallback. Keep the opcode enum and handler
+  boundaries interchangeable between the two so the upgrade path requires no
+  structural change to the VM.
 
 ## Implementation Direction
 - Start with the smallest useful `eval` slice that can make exactly one
@@ -90,13 +97,16 @@ Lua-specific bytecode shape.
 - Keep modules separate from the start: backend adapter, compiler, bytecode
   program representation, and VM. Do not hide all bytecode logic in the backend
   adapter.
-- Use the existing runtime `Value` type as the stack slot type. Its size and GC
-  semantics are accepted costs for now. If benchmarks show slot size is a
-  bottleneck, investigate NaN-boxing for the numeric subset (collapses all
-  values to 8 bytes, type check becomes 1–2 bitwise ops); however NaN-boxing
-  may not be viable for D given the breadth of scalar types and the need to
-  represent structs. Do not invent int-only stack or operand types as a first
-  step.
+- Use the existing runtime `Value` type as the first implementation stack slot
+  type. Its size and GC semantics are accepted costs for now. Architecturally,
+  VM stack slots are private execution values that convert to and from
+  `quickbite.lang.Value` at backend/API boundaries; the private slot type may
+  initially alias `Value`. If benchmarks show slot size or copying hurts
+  edit-to-test-result latency, investigate a narrower VM slot representation
+  such as NaN-boxing for the numeric subset (collapses all values to 8 bytes,
+  type check becomes 1–2 bitwise ops); however NaN-boxing may not be viable for
+  D given the breadth of scalar types and the need to represent structs. Do not
+  invent int-only stack or operand types as a first step.
 - Make operands earn their shape. Avoid a generic `long` operand, ad hoc
   integer-specialized operands, or a half-built sum type unless the current test
   proves that shape is needed.
@@ -230,20 +240,34 @@ Lua-specific bytecode shape.
   native-call design.
 
 ## Peephole Optimisation
-- A one-lookahead peephole pass over the emitted instruction stream is the
-  first optimisation step after correctness is established. Valuable patterns:
-  `STORE r` immediately followed by `LOAD r` (eliminate the load), a
-  comparison with two constant operands (fold to unconditional jump), dead
-  stores to temporaries never read.
+- Optional bytecode-level optimisations, such as peephole passes over the
+  emitted instruction stream, are the first optimisation step after correctness
+  is established.
 - The pass must be optional and togglable at runtime so it can be benchmarked
   against a large body of D code with and without. The artifact format must not
   preclude it (do not seal or hash bytecode arrays before the pass runs).
 - Do not add the pass until a benchmark justifies it.
 
+## Builtins and Native Calls
+- CTFE builtin support exists only for feature parity with DMD CTFE. Keep it
+  narrow, mechanically tied to DMD builtin classification, and scoped to the
+  implemented builtin subset. Do not let CTFE builtin handling become the
+  general native-call mechanism.
+- The native-code bridge is a separate VM subsystem for code that should not be
+  re-emitted as bytecode. It needs typed bridge entries, cached resolution,
+  VM-slot/native argument and return marshalling, ownership and lifetime rules
+  for aggregate values, GC interaction policy, and explicit D exception
+  propagation into VM unwinding.
+
 ## Exception Handling
-- Each compiled function artifact includes a handler table: a sorted array of
-  `(start_pc, end_pc, handler_pc)` triples. For unittest blocks the minimum
-  is one try-region covering the whole block body.
+- Each compiled function artifact includes a handler table. For unittest blocks
+  the minimum is a sorted array of `(start_pc, end_pc, handler_pc)` triples with
+  one try-region covering the whole block body.
+- Once bytecode supports D `try`/`catch`/`finally`, handler entries become typed
+  records instead of bare triples. They must include the handler kind, optional
+  caught class/type id, optional catch-binding local slot, catch ordering, and
+  enough continuation metadata for `finally` to resume the pending action:
+  throw, return, break/continue/goto, or normal fallthrough.
 - On `throw` or assert failure the VM binary-searches the handler table and
   either jumps to the handler PC or unwinds the frame and propagates to the
   caller.
@@ -257,18 +281,23 @@ Lua-specific bytecode shape.
   be added until the REPL needs them.
 
 ## Constant Pool
-- Deduplicate constants (strings, numbers) at generation time using a global
-  string intern table. D test code repeats the same string literals across
-  functions (type names, `__traits(identifier)` results); per-function
-  undeduped pools waste memory and add cache pressure.
+- Deduplicate constants (strings, numbers) at generation time using an intern
+  table scoped to the VM session, compilation batch, or artifact cache
+  generation. The table must have allocator-owned lifetime and an explicit
+  reset or invalidation path. D test code repeats the same string literals
+  across functions (type names, `__traits(identifier)` results); per-function
+  undeduped pools waste memory and add cache pressure. If cross-artifact
+  interning is needed for cached dependency bytecode, tie the intern table to
+  the same cache key and lifetime as the dependency artifact.
 
 ## Closures
 - D `unittest` blocks can contain lambdas that capture locals. Closure support
   (open/closed upvalue chains) adds non-trivial complexity to both the compiler
-  and the VM, and retrofitting it onto a flat-register frame is painful.
-  Closures are out of scope for the initial implementation. The plan should be
-  revisited when a test forces closure support; at that point the frame layout
-  must account for upvalue slots from the start.
+  and the VM, and retrofitting captured variable storage after locals are
+  assumed to be plain frame slots is painful. Closures are out of scope for the
+  initial implementation. The plan should be revisited when a test forces
+  closure support; at that point the frame layout must account for explicit
+  environment or upvalue storage from the start.
 
 ## Assumptions
 - Direct parser-to-bytecode generation is out of scope; AST-first lowering is

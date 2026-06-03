@@ -33,7 +33,10 @@ in this repo unless instructed otherwise.
 Strict TDD: failing test → dumbest passing code → green suite. No refactoring
 until all tests pass. Ask for feedback after the refactoring step.
 
-Stop and wait for approval before adding or modifying any test.
+Stop and wait for approval before adding or modifying any test. Promoting an
+already-existing CTFE-backed backend-matrix test to another backend is
+pre-approved; adding a new test or changing test behaviour still requires
+approval.
 
 Test behaviours, not implementations.
 

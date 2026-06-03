@@ -22,9 +22,511 @@ history acceptance. Backends execute complete `ReplCell` values and return
 
 ## To do
 
-- Add `-I` option to the REPL so that it can be passed import
-  paths. This will allow a user to use module names and directory
-  structures like regular compiled D code.
+- Silently skip comment-only lines instead of erroring. The REPL
+  already skips blank and whitespace-only lines
+  (`repl/main.d:45–46`); a `//`-comment line is invisible to DMD but
+  is not whitespace, so it falls through to the statement path and
+  produces `Error: found 'End of File' instead of statement`. In piped
+  mode the error also terminates the session, dropping all subsequent
+  lines. Python and GHCi both silently ignore comment input. The fix
+  should extend the skip guard and apply consistently to `runReplLoop`.
+
+  Offending code (`repl/main.d:45–46`):
+
+  ```d
+  if (line.strip.length == 0)
+      continue;
+  ```
+
+  Reproducer:
+
+  ```sh
+  printf '// just a comment\n1 + 2\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  Error: found `End of File` instead of statement
+  ```
+
+  Expected:
+
+  ```text
+  3
+  ```
+
+- Continue past errors in piped mode instead of exiting on the first
+  failure. The interactive REPL uses `FailureMode.continue_` and keeps
+  running after an error; the piped path uses `FailureMode.exit` and
+  terminates immediately, silently dropping all remaining input. Python
+  and GHCi both continue past per-line errors in non-interactive mode.
+  The two modes should be consistent.
+
+  Offending code (`repl/main.d:48–49`):
+
+  ```d
+  if (!submit(repl, line, FailureMode.exit))
+      return 1;
+  ```
+
+  Reproducer:
+
+  ```sh
+  printf '1 + 1\n2 + 2\nbad_var\n4 + 4\n5 + 5\n' | bin/qb
+  ```
+
+  Current output (lines after the error are dropped):
+
+  ```text
+  2
+  4
+  Error: undefined identifier `bad_var`
+  ```
+
+  Expected:
+
+  ```text
+  2
+  4
+  Error: undefined identifier `bad_var`
+  8
+  10
+  ```
+
+- Clear buffered incomplete input after a buffered cell completes with a
+  diagnostic. A failed multiline declaration such as a function with an
+  undefined identifier must not append later submissions to the rejected
+  source.
+
+  Offending input:
+
+  ```text
+  int dup() {
+  return unknown;
+  }
+  42
+  ```
+
+- Define command handling while input is pending. Commands such as `:q` must
+  not silently abandon a buffered D cell in the binary path unless the API path
+  models the same explicit command behavior.
+
+  Offending input:
+
+  ```text
+  int f() {
+  :q
+  return 42;
+  }
+  f()
+  ```
+
+- Generalise incomplete-input detection beyond function declarations. Partial
+  structs, enums, templates, and other declarations should buffer until they
+  are complete instead of becoming hard syntax errors.
+
+  Offending code (`source/quickbite/frontend/cell.d:549-553`):
+
+  ```d
+  result = moduleResult.diagnostics.hasErrors &&
+      moduleResult.module_.members !is null &&
+      moduleResult.module_.members.length != 0 &&
+      allFunctionDeclarations(moduleResult.module_.members) &&
+      hasDiagnosticAtEnd(input);
+  ```
+
+  Reproducer:
+
+  ```text
+  struct S {
+  int x;
+  }
+  S(42)
+  ```
+
+  Current output:
+
+  ```text
+  Error: `}` expected following members in `struct` declaration
+  ```
+
+- Require type-expression classification to consume the whole input. A cell
+  that starts with a type expression but has trailing tokens must not be
+  rewritten through the `.stringof` type-display path.
+
+  Offending code (`source/quickbite/frontend/repl.d:93-97`):
+
+  ```d
+  const expression = parser.parseExpression;
+  result = expression !is null &&
+      expression.isTypeExp !is null &&
+      parser.token.value != TOK.semicolon &&
+      global.errors == 0;
+  ```
+
+  Reproducer:
+
+  ```sh
+  bin/qb -c 'typeof(1) + 2'
+  ```
+
+  Current output:
+
+  ```text
+  Error: CTFE internal error: non-constant value `int`
+  `(int) + 2` cannot be interpreted at compile time
+  ```
+
+- Recognise standalone `mixin(…)` as an expression cell. `isExpressionCell`
+  (`source/quickbite/frontend/cell.d:425`) appends `";\0"` and calls
+  `parseStatement`; `mixin("…");` parses as a `MixinStatement`, not an
+  `ExpStatement`, so the check fails and the cell falls through to the
+  statement path, which errors. The assigned form works because the mixin
+  is not the outermost statement. DMD handles mixin expressions in CTFE
+  without issue.
+
+  Offending code (`source/quickbite/frontend/cell.d:453–458`):
+
+  ```d
+  const statement = parser.parseStatement(0);
+  const expression = statement is null ? null : statement.isExpStatement;
+  result = expression !is null &&
+      expression.exp !is null &&
+      expression.exp.isDeclarationExp is null &&
+      parser.token.value == TOK.endOfFile &&
+      global.errors == 0;
+  ```
+
+  Reproducer:
+
+  ```sh
+  printf 'mixin("1 + 2")\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  Error: found `End of File` when expecting `;` following mixin
+  ```
+
+  Expected:
+
+  ```text
+  3
+  ```
+
+- Extend type-expression display to cover type aliases and user-defined
+  types, not only primitive type keywords. `isTypeExpressionCell`
+  (`source/quickbite/frontend/repl.d`) checks `expression.isTypeExp`,
+  which returns null for an `IdentifierExp`; type aliases such as
+  `string` (`alias string = immutable(char)[];`) parse as identifiers,
+  not as `TypeExp` nodes, so they fall through to the regular
+  expression path and fail with "type is not an expression". All
+  primitive type keywords (`int`, `bool`, `long`, etc.) work because
+  the parser produces a `TypeExp` for them. DMD handles
+  `pragma(msg, string)` without issue. The same failure affects any
+  user-defined alias.
+
+  Reproducer:
+
+  ```sh
+  printf 'string\n' | bin/qb
+  printf 'alias MyInt = int;\nMyInt\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  Error: type `string` is not an expression
+  ```
+
+  Expected:
+
+  ```text
+  string
+  ```
+
+- Suppress `pragma(msg, …)` output during cell classification and
+  ensure it fires exactly once (during evaluation) on stderr. Currently
+  `parseModule` is called twice per cell — once in
+  `isModuleDeclarationCell` (`source/quickbite/frontend/cell.d:512`)
+  and once in `evalCellFromSource` (`source/quickbite/frontend/cell.d:226`)
+  — so `pragma(msg)` output appears twice and lands on stdout, which
+  corrupts piped output. DMD fires it exactly once and writes to
+  stderr.
+
+  Offending code — both call sites invoke `parseModule` without
+  suppressing pragmas:
+
+  ```d
+  // cell.d:512 — classification
+  auto moduleResult = parseModule(
+      text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
+      input,
+  );
+
+  // cell.d:226 — evaluation
+  auto moduleResult = parseModule(source, importPaths);
+  ```
+
+  Reproducer:
+
+  ```sh
+  printf 'pragma(msg, "hello");\n42\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  hello
+  hello
+  42
+  ```
+
+  Expected:
+
+  ```text
+  hello
+  42
+  ```
+
+- Fix `std.format.format` in the REPL: it throws a
+  `FormatException("Orphan format arguments")` even for well-formed
+  calls, while DMD evaluates the same call at compile time without
+  issue. The exception suggests the argument tuple fed to `format`'s
+  template is being built with an unexpected shape inside the REPL
+  wrapper — the `%s` placeholder fails to consume its argument.
+
+  Reproducer:
+
+  ```sh
+  printf 'import std.format : format;\nformat("hello %s", 42)\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  Error: uncaught CTFE exception `std.format.FormatException("Orphan format arguments: args[0..1]")`
+  ```
+
+  DMD CTFE:
+
+  ```d
+  import std.format : format;
+  enum s = format("hello %s", 42);  // "hello 42" — no error
+  ```
+
+- Drop the trailing `null` from lazy-range struct display. DMD
+  `pragma(msg)` omits the function-pointer field (which holds the
+  lambda and has no compile-time representation); the REPL's `Value`
+  display path includes it as `null`. This is a display deviation from
+  the canonical DMD output the plan Goal commits to matching.
+
+  Reproducer:
+
+  ```sh
+  printf 'import std.algorithm : map;\n[1,2,3].map!(x => x*2)\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  MapResult([1, 2, 3], null)
+  ```
+
+  DMD `pragma(msg)` output:
+
+  ```text
+  MapResult([1, 2, 3])
+  ```
+
+- Collapse duplicate import-path lines in failed-import diagnostics.
+  DMD emits `import path[N] = …` once, after the error. The REPL
+  currently prints it twice and before the error message because
+  `withoutConsecutiveDuplicateLines` (`source/quickbite/repl.d:228`)
+  deduplicates on the raw DMD text where the two identical lines are
+  separated by a non-identical "Expected … in one of the following
+  import paths:" line; after the surrounding lines are stripped the
+  duplicates become adjacent but deduplication has already run.
+
+  Offending code (`source/quickbite/repl.d:228`):
+
+  ```d
+  private string withoutConsecutiveDuplicateLines(in string diagnostic)
+  @safe pure {
+      // deduplication runs on the raw diagnostic before any stripping
+      // ...
+  }
+  ```
+
+  Reproducer:
+
+  ```sh
+  printf 'import mymodule;\n' | bin/qb
+  ```
+
+  Current output:
+
+  ```text
+  import path[0] = /usr/include/dlang/dmd
+  import path[0] = /usr/include/dlang/dmd
+  Error: unable to read module `mymodule`
+  ```
+
+  Expected (matches DMD):
+
+  ```text
+  Error: unable to read module `mymodule`
+  ```
+
+- Make `:t` with no loaded tests produce a clean REPL result. It should not
+  leak DMD import-path diagnostics or report that `<repl>` cannot be found.
+
+  Offending command:
+
+  ```sh
+  bin/qb -c ':t'
+  ```
+
+  Current output includes:
+
+  ```text
+  import path[0] = /usr/include/dlang/dmd
+  Error: cannot find input file `<repl>`
+  ```
+
+- Route all `loadModuleFile` errors through the REPL CLI diagnostic
+  path. Currently any exception thrown from `repl.loadModuleFile` —
+  whether from `readText` (missing file), `parseModule` (duplicate
+  symbol), or elsewhere — escapes the uncaught-exception handler in
+  `main.d` and prints a raw D stack trace. The duplicate-file case
+  additionally leaks unsanitised `snippet_N` names because the
+  exception bypasses `userDiagnostic`.
+
+  Offending code (`repl/main.d:25–28`) — no try-catch around file loading:
+
+  ```d
+  if (options.options.hasFile) {
+      foreach (file; options.options.files)
+          repl.loadModuleFile(file);  // any exception escapes here
+  }
+  ```
+
+  Reproducers:
+
+  ```sh
+  bin/qb /tmp/does-not-exist.d          # missing file
+  bin/qb /tmp/test.d /tmp/test.d        # duplicate load
+  ```
+
+  Current output (duplicate load):
+
+  ```text
+  object.Exception@source/quickbite/frontend/compiler.d(348):
+  function `snippet_1.answer()` conflicts with previous declaration …
+  ----------------
+  … (full D stack trace) …
+  ```
+
+  Expected: a concise `Error:` diagnostic, no stack trace, no
+  synthetic names.
+
+- Add an intentional diagnostic or placeholder for CTFE results that Quickbite
+  cannot display yet. Do not expose backend conversion internals such as
+  `Unsupported CTFE eval result: function_`; something like
+  `<undisplayable>` is enough until the value model supports the result.
+
+  Offending command:
+
+  ```sh
+  bin/qb -c 'delegate int(){ return 42; }'
+  ```
+
+  Current output:
+
+  ```text
+  Error: Unsupported CTFE eval result: function_
+  ```
+
+- Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return
+  user-meaningful values instead of internal synthetic names. DMD CTFE
+  reflects the real source context; the REPL currently leaks wrapper
+  internals because `userDiagnostic` sanitises exception text but the
+  same substitution is never applied to `Value` results.
+
+  Offending code (`source/quickbite/repl.d:210-226`) — sanitisation
+  only fires on error message strings, not on evaluated values:
+
+  ```d
+  private string userDiagnostic(in string diagnostic) @safe pure {
+      string result;
+      size_t index;
+      while (index < diagnostic.length) {
+          const replacement = syntheticNameReplacement(diagnostic[index .. $]);
+          // ...
+      }
+      return withoutConsecutiveDuplicateLines(result);
+  }
+  ```
+
+  Reproducer:
+
+  ```text
+  __FILE__
+  __FUNCTION__
+  __MODULE__
+  ```
+
+  Current output:
+
+  ```text
+  "snippet_0.d"
+  "snippet_1.f"
+  "snippet_2"
+  ```
+
+  Expected (approximate):
+
+  ```text
+  "<repl>"
+  "<repl>"
+  "<repl>"
+  ```
+
+- Rename the REPL wrapper function away from `f` so that user-defined
+  functions at module scope cannot collide with it. Any fixed single name
+  just shifts the reserved name. The fix must use an unspeakable synthetic
+  name — e.g. an ever-incrementing counter suffix like
+  `__quickbite_repl_eval_0__` — and sanitise it in error messages the same
+  way `snippet_N` is sanitised today. Compare Python (`eval`/`exec` into a
+  namespace dict — no wrapper needed) and GHCi (direct evaluation — no
+  wrapper needed); in both cases the user namespace is never polluted by a
+  synthetic function name.
+
+  Offending code (`source/quickbite/frontend/cell.d:630`):
+
+  ```d
+  private string evalSource(
+      in string moduleTranscript,
+      in string localTranscript,
+  ) {
+      return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
+  }
+  ```
+
+  Reproducer:
+
+  ```text
+  int f() { return 1; }
+  f()
+  ```
+
+  Current output:
+
+  ```text
+  Error: function `f()` conflicts with previous declaration at <repl>(1)
+  ```
 
 ## Architecture
 
