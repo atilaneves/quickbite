@@ -434,15 +434,12 @@ private struct EvalModuleInterpreter {
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
         Value[] arguments;
         if (call.arguments !is null) {
-            if (call.arguments.length > 1)
+            if (call.arguments.length > 2)
                 throw new Exception("Unsupported interpreter call arguments.");
 
-            if (call.arguments.length == 1)
-                arguments ~= runExpression((*call.arguments)[0]);
+            foreach (argument; *call.arguments)
+                arguments ~= runExpression(argument);
         }
-
-        if (arguments.length > 1)
-            throw new Exception("Unsupported interpreter call arguments.");
 
         if (call.f !is null)
             return runFunction(call.f, arguments);
@@ -486,10 +483,17 @@ private struct EvalModuleInterpreter {
             return;
         }
 
-        if (function_.parameters is null || function_.parameters.length != 1)
+        if (
+            function_.parameters is null ||
+            function_.parameters.length != arguments.length
+        )
             throw new Exception("Unsupported interpreter call arguments.");
 
         locals[(*function_.parameters)[0]] = arguments[0];
+        if (arguments.length == 1)
+            return;
+
+        locals[(*function_.parameters)[1]] = arguments[1];
     }
 
     private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
