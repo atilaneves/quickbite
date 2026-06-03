@@ -361,6 +361,9 @@ private struct EvalModuleInterpreter {
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
 
+        if (auto identity = expression.isIdentityExp)
+            return runIdentityExpression(identity);
+
         if (
             expression.op == EXP.lessThan ||
             expression.op == EXP.lessOrEqual ||
@@ -396,6 +399,9 @@ private struct EvalModuleInterpreter {
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
+
+        if (auto typeid_ = expression.isTypeidExp)
+            return runTypeidExpression(typeid_);
 
         if (auto var = expression.isVarExp) {
             auto variable = var.var.isVarDeclaration;
@@ -449,6 +455,20 @@ private struct EvalModuleInterpreter {
         if (comparison.op == EXP.greaterThan)
             return Value(left > right);
         return Value(left >= right);
+    }
+
+    private Value runIdentityExpression(
+        imported!"dmd.expression".IdentityExp identity,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(identity.e1);
+        const right = runExpression(identity.e2);
+        const same = left == right;
+        if (identity.op == EXP.notIdentity)
+            return Value(!same);
+
+        return Value(same);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
@@ -580,6 +600,28 @@ private struct EvalModuleInterpreter {
         throw new Exception("Unsupported interpreter field read.");
     }
 
+    private Value runTypeidExpression(
+        imported!"dmd.expression".TypeidExp typeid_,
+    ) {
+        import dmd.dtemplate: isExpression;
+        import std.conv: text;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression is null)
+            throw new Exception("Unsupported interpreter typeid expression.");
+
+        const value = runExpression(expression);
+        if (value == Value.null_ || (isClassExpression(expression) &&
+            value == Value(false)))
+            throw new Exception(text(
+                "null pointer dereference evaluating typeid. `",
+                receiverName(expression),
+                "` is `null`",
+            ));
+
+        throw new Exception("Unsupported interpreter typeid expression.");
+    }
+
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
         auto var = assign.e1.isVarExp;
         if (var is null)
@@ -614,6 +656,15 @@ private struct EvalModuleInterpreter {
             return "null";
 
         return var.var.ident.toString.idup;
+    }
+
+    private bool isClassExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tclass;
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
