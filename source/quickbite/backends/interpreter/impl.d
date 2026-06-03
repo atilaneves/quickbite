@@ -671,6 +671,12 @@ private struct EvalModuleInterpreter {
             );
         }
 
+        if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
+            import std.conv: text;
+
+            return text(isTruthy(runExpression(assert_.e1)), " != true");
+        }
+
         if (runningCalledFunction) {
             if (auto integer = assert_.e1.isIntegerExp) {
                 if (integer.toInteger == 0)
