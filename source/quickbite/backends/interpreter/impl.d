@@ -762,10 +762,22 @@ private struct EvalModuleInterpreter {
         if (useBoolMessage)
             return text(isTruthy(value));
 
+        if (isCharExpression(expression))
+            return text("'", value, "'");
+
         if (isUnsignedLongExpression(expression))
             return text(value.asLong);
 
         return text(value);
+    }
+
+    private bool isCharExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        const type = expression.type is null ? null : expression.type.toBasetype;
+        return type !is null && type.ty == TY.Tchar;
     }
 
     private bool isUnsignedLongExpression(
