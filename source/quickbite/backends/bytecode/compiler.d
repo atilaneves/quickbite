@@ -596,6 +596,11 @@ private struct Compiler {
                 compileAssertComparison(comparison, Op.lessOrEqual);
                 return;
             }
+
+            if (comparison.op == EXP.greaterThan) {
+                compileAssertComparison(comparison, Op.greaterThan);
+                return;
+            }
         }
 
         if (auto not = assert_.e1.isNotExp) {

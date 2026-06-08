@@ -397,6 +397,8 @@ private bool comparisonHolds(
             return lhs.asLong < rhs.asLong;
         case Op.lessOrEqual:
             return lhs.asLong <= rhs.asLong;
+        case Op.greaterThan:
+            return lhs.asLong > rhs.asLong;
         case Op.literal:
         case Op.call:
         case Op.jump:
@@ -412,7 +414,6 @@ private bool comparisonHolds(
         case Op.multiply:
         case Op.divide:
         case Op.bitOr:
-        case Op.greaterThan:
         case Op.not_:
         case Op.negate:
         case Op.unaryNativeCall:
@@ -439,6 +440,8 @@ private string inverseComparisonOperator(
             return ">=";
         case Op.lessOrEqual:
             return ">";
+        case Op.greaterThan:
+            return "<=";
         case Op.literal:
         case Op.call:
         case Op.jump:
@@ -454,7 +457,6 @@ private string inverseComparisonOperator(
         case Op.multiply:
         case Op.divide:
         case Op.bitOr:
-        case Op.greaterThan:
         case Op.not_:
         case Op.negate:
         case Op.unaryNativeCall:
