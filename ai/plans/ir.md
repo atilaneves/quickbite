@@ -117,9 +117,12 @@ The first CFG/value reset is complete for the already-promoted eval slices.
 terminators, blocks, and functions. Functions carry their SSA value count so
 the VM can size its value storage once before execution. `compiler.d` lowers
 integer literals, float literals, and simple `AddExp`, `MinExp`, `MulExp`, and
-`DivExp` expressions into a single entry block, and `vm.d` executes that block
-directly before converting the returned IR value to `quickbite.lang.Value` at
-the backend boundary.
+`DivExp`, `CastExp`, and unary `NegExp` expressions into a single entry block,
+and `vm.d` executes that block directly before converting the returned IR value
+to `quickbite.lang.Value` at the backend boundary. Scalar IR types are
+D-aware enough to preserve signedness, character-ness, and float width at the
+backend boundary without storing `quickbite.lang.Value` in IR instructions or
+VM registers.
 
 The currently covered IR backend eval tests are:
 
@@ -129,35 +132,35 @@ The currently covered IR backend eval tests are:
 - `add.int.2.IR`
 - `add.float.IR`
 - `arithmetic.IR`
+- `preservesScalarValueTypes.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, confirm it is red after
 promotion, inspect the DMD AST that reaches the IR compiler, then add only the
 IR shape and VM support required by that behavior. As of this update, the next
-likely candidate in `tests/ut/backends/lang/eval.d` is
-`preservesScalarValueTypes`, but verify the current checkout before editing
-because backend progress notes can go stale. `multiCell` appears earlier in
-the file, but it requires statement/local-state support rather than just
-expression lowering.
+likely expression-only candidate in `tests/ut/backends/lang/eval.d` is
+`stringLiteralIsArray`, but verify the current checkout before editing because
+backend progress notes can go stale. `multiCell` and the intervening scalar
+cast/floating tests appear earlier in the file, but they require
+statement/local-state support rather than just expression lowering.
 
 ### Next Slice Handoff
 
 Start with `tests/ut/backends/lang/eval.d`. Verify that
-`preservesScalarValueTypes` still excludes `IR`; if it already includes `IR`,
-treat this handoff as stale and choose the next smallest eval behavior that
-still excludes `IR`.
+`stringLiteralIsArray` still excludes `IR`; if it already includes `IR`, treat
+this handoff as stale and choose the next smallest eval behavior that still
+excludes `IR`.
 
-If `preservesScalarValueTypes` still excludes `IR`, the next TDD slice is:
+If `stringLiteralIsArray` still excludes `IR`, the next TDD slice is:
 
-1. Promote only the existing `preservesScalarValueTypes` backend matrix to
-   include `IR`.
-2. Run `ut.backends.lang.eval.preservesScalarValueTypes.IR` and confirm it is
-   red.
-3. Inspect the DMD AST that reaches `quickbite.backends.ir.compiler` for each
-   scalar expression that fails first; the lowered IR must reflect the AST
-   shape actually present after semantic analysis.
-4. Add the smallest production support for the first unsupported scalar type,
-   cast, unary, or literal shape that the promoted matrix requires.
+1. Promote only the existing `stringLiteralIsArray` backend matrix to include
+   `IR`.
+2. Run `ut.backends.lang.eval.stringLiteralIsArray.IR` and confirm it is red.
+3. Inspect the DMD AST that reaches `quickbite.backends.ir.compiler`; the
+   lowered IR must reflect the AST shape actually present after semantic
+   analysis.
+4. Add the smallest production support for the unsupported string literal
+   shape that the promoted matrix requires.
 5. Run the focused promoted test and then `dub test -- --random`.
 
 Do not store `quickbite.lang.Value` in IR instructions or VM registers for
@@ -168,11 +171,12 @@ not from a runtime-tagged public `Value`.
 
 **`language.d`** defines the IR data types:
 
-- `Type` enum: `i1`, `i8`, `i16`, `i32`, `i64`, `f32`, `f64`, `ptr`. D source
-  scalar and pointer values are mapped to these by the compiler; the IR does
-  not represent D's type hierarchy. `ptr` represents D pointer values, not
-  mutable places. Add a separate `Place` or `PlaceId` representation when
-  `Alloca`, `Load`, and `Store` are promoted.
+- `Type` enum: D-aware scalar categories for the currently promoted scalar
+  eval tests, plus `ptr`. The IR still does not represent D's full type
+  hierarchy, but it preserves enough scalar metadata for casts and final result
+  conversion without runtime `quickbite.lang.Value` dispatch. `ptr` represents
+  D pointer values, not mutable places. Add a separate `Place` or `PlaceId`
+  representation when `Alloca`, `Load`, and `Store` are promoted.
 - `Value` struct: `uint id` and `Type type`. Every SSA value declares its type
   at the single definition site. The executor never inspects a runtime tag to
   decide which arithmetic path to take.

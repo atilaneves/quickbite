@@ -3,13 +3,19 @@ module quickbite.backends.ir.language;
 private:
 
 package enum Type {
-    i1,
-    i8,
-    i16,
-    i32,
-    i64,
-    f32,
-    f64,
+    bool_,
+    byte_,
+    ubyte_,
+    char_,
+    short_,
+    ushort_,
+    int_,
+    uint_,
+    long_,
+    ulong_,
+    float_,
+    double_,
+    real_,
     ptr,
 }
 
@@ -25,8 +31,25 @@ package enum BinaryOperation {
     div,
 }
 
+package enum UnaryOperation {
+    neg,
+}
+
 package struct Const {
     public ulong bits;
+    public Value destination;
+}
+
+package struct Cast {
+    public uint source;
+    public Type sourceType;
+    public Value destination;
+}
+
+package struct UnaryOp {
+    public UnaryOperation operation;
+    public Type type;
+    public uint source;
     public Value destination;
 }
 
@@ -38,7 +61,12 @@ package struct BinaryOp {
     public Value destination;
 }
 
-package alias Instruction = imported!"std.sumtype".SumType!(Const, BinaryOp);
+package alias Instruction = imported!"std.sumtype".SumType!(
+    Const,
+    Cast,
+    UnaryOp,
+    BinaryOp,
+);
 
 package struct Branch {
     public uint target;
