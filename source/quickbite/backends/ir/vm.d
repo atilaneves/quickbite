@@ -49,10 +49,40 @@ package imported!"quickbite.lang".Value eval(
                                 assert(0);
                         }
                         break;
+                    case i32:
+                        final switch (cast_.targetType) with (Type) {
+                            case i8:
+                                valueBits[cast_.destination.id] =
+                                    cast(byte) cast(int) valueBits[
+                                        cast_.source
+                                    ];
+                                break;
+                            case i16:
+                                valueBits[cast_.destination.id] =
+                                    cast(short) cast(int) valueBits[
+                                        cast_.source
+                                    ];
+                                break;
+                            case i32:
+                                valueBits[cast_.destination.id] =
+                                    cast(int) valueBits[cast_.source];
+                                break;
+                            case i64:
+                                valueBits[cast_.destination.id] =
+                                    cast(long) cast(int) valueBits[
+                                        cast_.source
+                                    ];
+                                break;
+                            case i1:
+                            case f32:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
                     case i1:
                     case i8:
                     case i16:
-                    case i32:
                     case i64:
                     case f32:
                     case ptr:

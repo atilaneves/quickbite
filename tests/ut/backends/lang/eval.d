@@ -91,7 +91,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
