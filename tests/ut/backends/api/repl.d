@@ -399,6 +399,18 @@ static foreach (backend; backends) {
         output.should == [`"hello"`];
     }
 
+    @("repl.backend.specialTokenValuesHideWrapperInternals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["__FILE__", "__FUNCTION__", "__MODULE__", ":q"],
+        );
+
+        output.should == [`"<repl>"`, `"<repl>"`, `"<repl>"`];
+    }
+
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

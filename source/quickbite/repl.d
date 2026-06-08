@@ -134,9 +134,9 @@ private struct ReplResult {
     public string toString() const @safe pure {
         final switch (display) with (ReplDisplay) {
             case value:
-                return this.value.toString;
+                return this.value.toString.userDiagnostic;
             case string:
-                return `"` ~ this.value.asCharArrayString ~ `"`;
+                return `"` ~ this.value.asCharArrayString.userValueString ~ `"`;
         }
     }
 }
@@ -266,6 +266,36 @@ private string userDiagnostic(in string diagnostic) @safe pure {
     }
 
     return withoutConsecutiveDuplicateLines(result);
+}
+
+private string userValueString(in string value) @safe pure {
+    return value.isSyntheticReplValueName ? "<repl>" : value.userDiagnostic;
+}
+
+private bool isSyntheticReplValueName(in string value) @safe pure nothrow {
+    import std.algorithm.searching: startsWith;
+    import std.ascii: isDigit;
+
+    if (!value.startsWith("snippet_"))
+        return false;
+
+    size_t index = "snippet_".length;
+    while (index < value.length && value[index].isDigit)
+        ++index;
+
+    if (index == "snippet_".length)
+        return false;
+
+    if (index == value.length)
+        return true;
+
+    if (value[index .. $] == ".d")
+        return true;
+
+    if (value[index .. $] == ".f")
+        return true;
+
+    return false;
 }
 
 private string withoutConsecutiveDuplicateLines(in string diagnostic)

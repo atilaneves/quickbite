@@ -250,13 +250,14 @@ history acceptance. Backends execute complete `ReplCell` values and return
   now writes only `Error: unable to read module \`mymodule\`` to stdout
   with empty stderr.
 
-## To do
-
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return
   user-meaningful values instead of internal synthetic names. DMD CTFE
   reflects the real source context; the REPL currently leaks wrapper
   internals because `userDiagnostic` sanitises exception text but the
-  same substitution is never applied to `Value` results.
+  same substitution is never applied to `Value` results. Displayed REPL
+  values now use the same synthetic-name sanitisation, with exact
+  `snippet_N`, `snippet_N.d`, and `snippet_N.f` string values shown as
+  `"<repl>"`.
 
   Offending code (`source/quickbite/repl.d:210-226`) — sanitisation
   only fires on error message strings, not on evaluated values:
@@ -296,6 +297,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   "<repl>"
   "<repl>"
   ```
+
+## To do
 
 - Rename the REPL wrapper function away from `f` so that user-defined
   functions at module scope cannot collide with it. Any fixed single name
