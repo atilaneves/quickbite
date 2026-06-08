@@ -3,7 +3,6 @@ module repl.main;
 private:
 
 public int main(string[] args) {
-    import quickbite.backends.ctfe: Ctfe;
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
     import std.stdio: stderr, stdin, writeln;
@@ -19,7 +18,10 @@ public int main(string[] args) {
         return 0;
     }
 
-    auto repl = Repl(new Ctfe, options.options.importPaths);
+    auto repl = Repl(
+        newReplBackend(options.options.backend),
+        options.options.importPaths,
+    );
 
     if (options.options.hasFile) {
         try {
@@ -54,6 +56,27 @@ public int main(string[] args) {
     }
 
     return 0;
+}
+
+private imported!"quickbite.backends".Backend newReplBackend(
+    imported!"quickbite.repl_cli".ReplBackendName backend,
+) {
+    import quickbite.backends.bytecode: Bytecode;
+    import quickbite.backends.ctfe: Ctfe;
+    import quickbite.backends.interpreter: Interpreter;
+    import quickbite.backends.ir: IR;
+    import quickbite.repl_cli: ReplBackendName;
+
+    final switch (backend) with (ReplBackendName) {
+        case ctfe:
+            return new Ctfe;
+        case bytecode:
+            return new Bytecode;
+        case ir:
+            return new IR;
+        case interpreter:
+            return new Interpreter;
+    }
 }
 
 private bool stdinIsTerminal() {

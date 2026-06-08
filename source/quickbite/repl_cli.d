@@ -4,6 +4,9 @@ private:
 
 public enum ReplBackendName {
     ctfe,
+    bytecode,
+    ir,
+    interpreter,
 }
 
 public struct ReplOptions {
@@ -56,8 +59,12 @@ public ReplCliResult parseReplArgs(string[] args) {
         return result;
     }
 
-    if (backendName != "ctfe")
-        return ReplCliResult(1, "unknown backend: " ~ backendName);
+    if (!parseBackendName(backendName, result.options.backend))
+        return ReplCliResult(
+            1,
+            "unknown backend: " ~ backendName ~ "\n" ~
+                "valid backends: " ~ validBackendNames,
+        );
 
     if (args.length > 1) {
         result.options.hasFile = true;
@@ -74,6 +81,31 @@ private enum helpText =
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
     "  -I <path>             Add import path\n" ~
-    "  -b, --backend <name>  Select backend (default: ctfe)\n" ~
+    "  -b, --backend <name>  Select backend (default: ctfe; valid: " ~
+        validBackendNames ~ ")\n" ~
     "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";
+
+private enum validBackendNames = "ctfe, bytecode, ir, interpreter";
+
+private bool parseBackendName(
+    in string input,
+    out ReplBackendName backend,
+) @safe pure nothrow {
+    switch (input) with (ReplBackendName) {
+        case "ctfe":
+            backend = ctfe;
+            return true;
+        case "bytecode":
+            backend = bytecode;
+            return true;
+        case "ir":
+            backend = ir;
+            return true;
+        case "interpreter":
+            backend = interpreter;
+            return true;
+        default:
+            return false;
+    }
+}
