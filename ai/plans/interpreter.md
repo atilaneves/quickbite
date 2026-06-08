@@ -331,6 +331,13 @@ Interpreter-only block without `@ShouldFail`. No production change was
 required. Signal was verified by temporarily mutating Interpreter addition to
 subtraction, which failed the focused test with `-1 != 8` instead of `7 != 8`.
 
+Math progress: `evaluatesRuntimeSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+extracting Interpreter builtin dispatch into
+`source/quickbite/backends/interpreter/builtins.d` and adding narrow
+module-backed handling for DMD's `BUILTIN.sqrt`, evaluating one argument and
+applying `std.math.sqrt` through the existing floating `Value` helper.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

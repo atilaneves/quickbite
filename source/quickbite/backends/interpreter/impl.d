@@ -209,29 +209,52 @@ private struct EvalFunctionWalker {
     private Value runCallExpression(
         imported!"dmd.expression".CallExp call,
     ) {
-        import dmd.builtin: isBuiltin;
-        import dmd.func: BUILTIN;
-        import std.math: mathFabs = fabs;
-        import std.math: mathPow = pow;
+        import quickbite.backends.interpreter.builtins:
+            binaryBuiltinCall,
+            interpreterBuiltinArgumentCount,
+            tryInterpreterBuiltin,
+            unaryBuiltinCall;
 
         if (call.arguments is null || call.arguments.length == 0)
             throw new Exception("Unsupported eval call argument count.");
 
-        with (BUILTIN) switch (isBuiltin(call.f)) {
-            case fabs:
-                if (call.arguments.length != 1)
-                    throw new Exception("Unsupported eval call argument count.");
-                return runExpression((*call.arguments)[0])
-                    .unaryFloating!mathFabs;
+        import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
-            case pow:
-                if (call.arguments.length != 2)
-                    throw new Exception("Unsupported eval call argument count.");
-                return runExpression((*call.arguments)[0])
-                    .binaryFloating!mathPow(runExpression((*call.arguments)[1]));
+        InterpreterBuiltin builtin;
+        if (tryInterpreterBuiltin(call.f, builtin)) {
+            with (InterpreterBuiltin) final switch (builtin) {
+                case fabs:
+                    if (
+                        call.arguments.length !=
+                        interpreterBuiltinArgumentCount(builtin)
+                    )
+                        throw new Exception(
+                            "Unsupported eval call argument count.",
+                        );
 
-            default:
-                break;
+                    return unaryBuiltinCall(
+                        builtin,
+                        runExpression((*call.arguments)[0]),
+                    );
+
+                case pow:
+                    if (
+                        call.arguments.length !=
+                        interpreterBuiltinArgumentCount(builtin)
+                    )
+                        throw new Exception(
+                            "Unsupported eval call argument count.",
+                        );
+
+                    return binaryBuiltinCall(
+                        builtin,
+                        runExpression((*call.arguments)[0]),
+                        runExpression((*call.arguments)[1]),
+                    );
+
+                case sqrt:
+                    break;
+            }
         }
 
         throw new Exception("Unsupported eval call.");
@@ -525,29 +548,36 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
-        import dmd.builtin: isBuiltin;
-        import dmd.func: BUILTIN;
-        import std.math: mathFabs = fabs;
-        import std.math: mathPow = pow;
+        import quickbite.backends.interpreter.builtins:
+            binaryBuiltinCall,
+            interpreterBuiltinArgumentCount,
+            tryInterpreterBuiltin,
+            unaryBuiltinCall;
 
         if (call.f !is null) {
-            with (BUILTIN) switch (isBuiltin(call.f)) {
-                case fabs:
-                    if (call.arguments !is null && call.arguments.length == 1)
-                        return runExpression((*call.arguments)[0])
-                            .unaryFloating!mathFabs;
-                    break;
+            import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
-                case pow:
-                    if (call.arguments !is null && call.arguments.length == 2)
-                        return runExpression((*call.arguments)[0])
-                            .binaryFloating!mathPow(
-                                runExpression((*call.arguments)[1]),
-                            );
-                    break;
+            InterpreterBuiltin builtin;
+            if (
+                tryInterpreterBuiltin(call.f, builtin) &&
+                call.arguments !is null &&
+                call.arguments.length == interpreterBuiltinArgumentCount(builtin)
+            ) {
+                with (InterpreterBuiltin) final switch (builtin) {
+                    case fabs:
+                    case sqrt:
+                        return unaryBuiltinCall(
+                            builtin,
+                            runExpression((*call.arguments)[0]),
+                        );
 
-                default:
-                    break;
+                    case pow:
+                        return binaryBuiltinCall(
+                            builtin,
+                            runExpression((*call.arguments)[0]),
+                            runExpression((*call.arguments)[1]),
+                        );
+                }
             }
         }
 
