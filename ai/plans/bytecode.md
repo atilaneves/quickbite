@@ -79,31 +79,32 @@ Lua-specific bytecode shape.
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
-  `type.byte`, `type.ubyte`, `type.short`, `type.ushort`, and `type.int`. The
-  `byte` slice added the first module-backed `Bytecode.runTests` path,
-  compiling each unittest block to bytecode and executing its directly-called
-  module functions through bytecode call frames. The `ubyte`, `short`,
-  `ushort`, and `int` slices passed without production changes. The
-  implementation is deliberately narrow: equality assertions are enough for the
-  passing behavior, while assertion-message diagnostics remain unpromoted.
+  `type.byte`, `type.ubyte`, `type.short`, `type.ushort`, `type.int`, and
+  `type.uint`. The `byte` slice added the first module-backed
+  `Bytecode.runTests` path, compiling each unittest block to bytecode and
+  executing its directly-called module functions through bytecode call frames.
+  The `ubyte`, `short`, `ushort`, `int`, and `uint` slices passed without
+  production changes. The implementation is deliberately narrow: equality
+  assertions are enough for the passing behavior, while assertion-message
+  diagnostics remain unpromoted.
 
 ## Current Next Step
 Continue in `tests/ut/backends/lang/integrals.d`, following
 `ai/plans/backend-test-modules-order.md`.
 
 Start with the first current named unittest in that module that still excludes
-`Bytecode`: `type.uint`. Do not add `Bytecode` to the module's outer
+`Bytecode`: `type.long`. Do not add `Bytecode` to the module's outer
 `static foreach (backend; backends)`, because that would promote every
 remaining integral type case and the failure-message cases at once.
 
 Promote exactly one named behavior, rebuild/list tests, and run
-`ut.backends.lang.integrals.type.uint.Bytecode` focused. Only after that
+`ut.backends.lang.integrals.type.long.Bytecode` focused. Only after that
 focused test is red should production code change. If it passes without
 production changes, keep the promotion as supported coverage and move to the
 next smallest current candidate in `integrals.d`.
 
 Expect the next few integral-width promotions to exercise the module-backed
-unittest path added for `integralType.byte`. Keep each slice to one named
+unittest path added for `type.byte`. Keep each slice to one named
 behavior; do not jump ahead to the failure-message cases, broad
 `api/runner.d` behavior, or richer assertion diagnostics until a promoted test
 forces them.
