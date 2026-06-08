@@ -105,21 +105,19 @@ Lua-specific bytecode shape.
   integral assertion-diagnostic case and taught the bytecode VM to report
   failed equality assertions from the runtime operands, producing
   `-126 != 130` for a narrowed `byte` value.
+- `tests/ut/backends/lang/integrals.d` is now complete for `Bytecode`.
+  `typeFailureMessage.ubyte.0` and `typeFailureMessage.uint.0` were promoted
+  together as the remaining integral assertion-diagnostic family. They passed
+  with the existing equality diagnostic support and did not require distinct
+  VM feature work.
 
 ## Current Next Step
-Continue in `tests/ut/backends/lang/integrals.d`, following
+Continue with the next module named by
 `ai/plans/backend-test-modules-order.md`.
 
-The module is not done until every backend-matrix test family in
-`integrals.d` either includes `Bytecode` or is explicitly recorded as blocked
-by a missing feature. The integral type behavior family is covered. The current
-remaining CTFE-only tests are assertion failure diagnostics:
-`typeFailureMessage.ubyte.0` and `typeFailureMessage.uint.0`.
-
-Promote the remaining assertion-diagnostic cases as one family if the current
-bytecode equality diagnostic support makes both green. Do not spend separate
-subagent or commit slices on `ubyte` and `uint` unless one exposes a distinct
-missing VM feature.
+Do not return to `tests/ut/backends/lang/integrals.d` unless new tests are
+added there. The module's current backend-matrix test families all include
+`Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.

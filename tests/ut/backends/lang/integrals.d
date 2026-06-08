@@ -102,7 +102,7 @@ static foreach (backend; backendsWith!Bytecode) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Bytecode) {
 
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
