@@ -250,6 +250,10 @@ Lua-specific bytecode shape.
   `Bytecode`. This was a stale coverage gap: the existing bytecode equality
   assertion diagnostic path already reported the failed function-return
   comparison as `7 != 8`.
+- `localIntReturnOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode local
+  declaration, load, function-return, and equality assertion diagnostic path
+  already reported the failed comparison as `42 != 43`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
