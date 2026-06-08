@@ -257,6 +257,13 @@ green through the existing parse-with-import-paths fixture path and narrow
 direct free-function call handling; signal was verified by temporarily
 disabling the Interpreter `call.f` dispatch.
 
+Runner progress: `runBackendFileFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-file-with-import-paths fixture path and narrow
+imported free-function call handling; signal was verified by temporarily
+disabling both Interpreter direct free-function call dispatch paths. All
+current `runner.d` backend-matrix tests now cover `Interpreter`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

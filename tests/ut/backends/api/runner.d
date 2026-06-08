@@ -239,7 +239,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {
@@ -254,7 +254,10 @@ static foreach (backend; backends) {
                 },
             );
 
-            const fixturePath = buildPath(importPath, "fixture.d");
+            const fixturePath = buildPath(
+                importPath,
+                text("fixture_", backend.stringof, ".d"),
+            );
             writeFile(
                 fixturePath,
                 q{
