@@ -287,8 +287,8 @@ string findPkgDir(in string name) {
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %10s %10s %10s",
-        "fixture", "backend", "min", "median", "stddev",
+        "%-32s %-14s %10s %10s %10s %10s",
+        "fixture", "backend", "min", "median", "stddev", "max ram",
     );
     writeln;
 }
@@ -302,12 +302,13 @@ public void printRow(
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms",
+        "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
         fixture,
         backendName,
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
+        result.ramKiB,
     );
 }
 
@@ -321,26 +322,32 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %10s %10s %10s\n\n",
+        "%-32s %-14s %10s %10s %10s %10s\n\n",
         "fixture",
         "backend",
         "min",
         "median",
         "stddev",
+        "max ram",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms\n",
+            "%-32s %-14s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
             row.fixture,
             row.backend,
             row.result.min.total!"hnsecs" / hnsecsPerMs,
             row.result.median.total!"hnsecs" / hnsecsPerMs,
             row.result.stddevHnsecs / hnsecsPerMs,
+            row.result.ramKiB,
         ));
     }
     output.put("\n");
     return output.data;
+}
+
+private double ramKiB(in Result result) {
+    return result.maxRamBytes / 1024.0;
 }
 
 public BenchmarkRun[] prepareFixtureRuns(
