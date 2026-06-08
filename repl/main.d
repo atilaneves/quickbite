@@ -38,7 +38,7 @@ public int main(string[] args) {
     }
 
     foreach (line; stdin.byLineCopy) {
-        if (line == ":q" || line == ":quit")
+        if (repl.shouldQuit(line))
             break;
 
         if (line.ignoredReplInput)
@@ -78,7 +78,7 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
             rl_free(rawLine);
 
         const line = rawLine.fromStringz.idup;
-        if (line == ":q" || line == ":quit")
+        if (repl.shouldQuit(line))
             return 0;
 
         if (line.ignoredReplInput)

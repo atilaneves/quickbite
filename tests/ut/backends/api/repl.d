@@ -130,6 +130,24 @@ static foreach (backend; backends) {
         repl.submit("42").should == Value(42);
     }
 
+    @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int answer() {").should == Value.void_;
+        void quitWhilePending() {
+            repl.submit(":q");
+        }
+        quitWhilePending.shouldThrowWithMessage(
+            "cannot run REPL command `:q` while input is pending",
+        );
+        repl.submit("return 42;").should == Value.void_;
+        repl.submit("}").should == Value.void_;
+        repl.submit("answer()").should == Value(42);
+    }
+
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

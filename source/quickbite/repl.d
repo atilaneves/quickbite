@@ -28,6 +28,10 @@ public struct Repl {
         return result.value == Value.void_ ? null : result.toString;
     }
 
+    public bool shouldQuit(in string input) const @safe pure {
+        return input.isQuitCommand && pendingInput.length == 0;
+    }
+
     public void loadModuleSource(in string source) {
         import quickbite.frontend.compiler: parseModule;
 
@@ -48,7 +52,13 @@ public struct Repl {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
-        if (input == ":t") {
+        if (input.isReplCommand) {
+            if (pendingInput.length != 0)
+                throw new Exception(commandWhilePendingDiagnostic(input));
+
+            if (input.isQuitCommand)
+                return ReplResult(Value.void_);
+
             try
                 return runLoadedTests;
             catch (Exception exception)
@@ -200,7 +210,7 @@ public string[] runReplLoop(
     string[] output;
     auto repl = Repl(backend);
     foreach (input; inputAtoms) {
-        if (input == ":q" || input == ":quit")
+        if (repl.shouldQuit(input))
             break;
 
         if (input.ignoredReplInput)
@@ -219,6 +229,18 @@ private bool ignoredReplInput(in string input) @safe pure {
 
     const stripped = input.strip;
     return stripped.length == 0 || stripped.startsWith("//");
+}
+
+private bool isReplCommand(in string input) @safe pure {
+    return input.isQuitCommand || input == ":t";
+}
+
+private bool isQuitCommand(in string input) @safe pure {
+    return input == ":q" || input == ":quit";
+}
+
+private string commandWhilePendingDiagnostic(in string input) @safe pure {
+    return "cannot run REPL command `" ~ input ~ "` while input is pending";
 }
 
 private string userDiagnostic(in string diagnostic) @safe pure {

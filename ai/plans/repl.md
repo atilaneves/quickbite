@@ -69,11 +69,12 @@ history acceptance. Backends execute complete `ReplCell` values and return
   undefined identifier no longer appends later submissions to the rejected
   source.
 
-## To do
-
 - Define command handling while input is pending. Commands such as `:q` must
   not silently abandon a buffered D cell in the binary path unless the API path
   models the same explicit command behavior.
+  `Repl` now rejects REPL commands while a D cell is buffered, keeps the
+  buffered source intact, and exposes the valid quit-command check used by both
+  `runReplLoop` and the CLI loops.
 
   Offending input:
 
@@ -84,6 +85,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   }
   f()
   ```
+
+## To do
 
 - Generalise incomplete-input detection beyond function declarations. Partial
   structs, enums, templates, and other declarations should buffer until they

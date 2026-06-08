@@ -100,6 +100,18 @@ def test_piped_mode_continues_after_error() -> None:
     )
 
 
+def test_piped_quit_command_does_not_abandon_pending_input() -> None:
+    result = run_qb(
+        input="int answer() {\n:q\nreturn 42;\n}\nanswer()\n:q\n",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        "Error: cannot run REPL command `:q` while input is pending\n"
+        "42\n"
+    )
+
+
 def test_command_prints_expression_result() -> None:
     result = run_qb("-c", "1 + 2")
 
