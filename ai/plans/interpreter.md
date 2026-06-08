@@ -236,7 +236,7 @@ coverage still exists where previously present). This required adding module
 cast handling to
 `EvalModuleInterpreter.castValue`.
 
-Next smallest candidate is `type.ushort.<backend>`.
+Next smallest candidate is `type.int.<backend>`.
 
 ### First PR Guardrails
 

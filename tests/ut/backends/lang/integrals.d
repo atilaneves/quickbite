@@ -109,6 +109,36 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter)) {
+    static foreach (T; AliasSeq!(ushort)) {
+        @("type." ~ T.stringof ~ "." ~ backend.stringof)
+        unittest {
+            runBackendSourceFixtureTests!backend(text(
+                "alias T = ",
+                T.stringof,
+                ";",
+                q{
+                    enum expected = cast(T) 130;
+
+                    T identity(T value) {
+                        return value;
+                    }
+
+                    int input() {
+                        return 130;
+                    }
+
+                    unittest {
+                        T value = cast(T) input;
+                        assert(identity(value) == value);
+                        assert(value == expected);
+                    }
+                },
+            ));
+        }
+    }
+}
+
 static foreach (backend; backends) {
 
     static foreach (T; IntegralTypes) {
