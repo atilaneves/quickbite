@@ -20,7 +20,7 @@ private imported!"quickbite.backends.ir.language".Function compileExpression(
 }
 
 private struct Compiler {
-    import dmd.expression: Expression;
+    import dmd.expression: BinExp, Expression;
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
@@ -44,7 +44,16 @@ private struct Compiler {
             return compileReal(real_);
 
         if (auto add = expression.isAddExp)
-            return compileAdd(add);
+            return compileBinary(add, BinaryOperation.add);
+
+        if (auto sub = expression.isMinExp)
+            return compileBinary(sub, BinaryOperation.sub);
+
+        if (auto mul = expression.isMulExp)
+            return compileBinary(mul, BinaryOperation.mul);
+
+        if (auto div = expression.isDivExp)
+            return compileBinary(div, BinaryOperation.div);
 
         assert(0);
     }
@@ -76,12 +85,15 @@ private struct Compiler {
         }
     }
 
-    private Value compileAdd(imported!"dmd.expression".AddExp add) {
-        const lhs = compileExpression(add.e1);
-        const rhs = compileExpression(add.e2);
+    private Value compileBinary(
+        BinExp binary,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(binary.e1);
+        const rhs = compileExpression(binary.e2);
         const destination = nextValue(lhs.type);
         instructions ~= Instruction(BinaryOp(
-            BinaryOperation.add,
+            operation,
             lhs.type,
             lhs.id,
             rhs.id,
