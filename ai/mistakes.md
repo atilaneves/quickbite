@@ -208,3 +208,7 @@
 
 - Do not amend an existing commit unless the user explicitly asks for an
   amend. Make a new commit for follow-up changes.
+
+- For unit-threaded substring assertions, prefer
+  `"expected".should.be in actual` over `actual.canFind("expected").should ==
+  true`.
