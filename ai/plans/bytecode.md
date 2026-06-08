@@ -217,6 +217,11 @@ Lua-specific bytecode shape.
   stale coverage gap: the existing bytecode module test path already handled a
   called `void` function returning to its unittest caller before reporting the
   following failed integer equality assertion as `1 != 2`.
+- `intLessThanOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing bytecode assertion diagnostics for
+  failed `<` assertions: bytecode now tags assertion comparisons with the
+  comparison operation and reports the inverse failed relation, such as
+  `42 >= 42`, instead of a generic failed assertion string.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

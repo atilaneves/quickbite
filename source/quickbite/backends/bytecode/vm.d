@@ -279,8 +279,13 @@ private RunResult run(
                 const lhs = stack[$ - 2];
                 stack.length -= 2;
 
-                if (lhs != rhs)
-                    throw new Exception(assertCompareMessage(lhs, rhs));
+                const comparison = cast(Op) instruction.operand;
+                if (!comparisonHolds(lhs, rhs, comparison))
+                    throw new Exception(assertCompareMessage(
+                        lhs,
+                        rhs,
+                        comparison,
+                    ));
 
                 ++ip;
                 break;
@@ -353,10 +358,99 @@ private struct Frame {
 private string assertCompareMessage(
     in imported!"quickbite.lang".Value lhs,
     in imported!"quickbite.lang".Value rhs,
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
 ) @safe pure {
     import std.conv: text;
 
-    return text(compareOperandMessage(lhs), " != ", compareOperandMessage(rhs));
+    return text(
+        compareOperandMessage(lhs),
+        " ",
+        inverseComparisonOperator(comparison),
+        " ",
+        compareOperandMessage(rhs),
+    );
+}
+
+private bool comparisonHolds(
+    in imported!"quickbite.lang".Value lhs,
+    in imported!"quickbite.lang".Value rhs,
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
+) @safe pure {
+    import quickbite.backends.bytecode.instructions: Op;
+
+    final switch (comparison) {
+        case Op.equal:
+            return lhs == rhs;
+        case Op.lessThan:
+            return lhs.asLong < rhs.asLong;
+        case Op.literal:
+        case Op.call:
+        case Op.jump:
+        case Op.jumpIfFalse:
+        case Op.pop:
+        case Op.loadLocal:
+        case Op.initializeLocal:
+        case Op.storeLocal:
+        case Op.incrementLocal:
+        case Op.cast_:
+        case Op.add:
+        case Op.subtract:
+        case Op.multiply:
+        case Op.divide:
+        case Op.bitOr:
+        case Op.greaterThan:
+        case Op.not_:
+        case Op.negate:
+        case Op.unaryNativeCall:
+        case Op.binaryNativeCall:
+        case Op.assertCompare:
+        case Op.assertFalse:
+        case Op.assertTrue:
+        case Op.throw_:
+        case Op.ret:
+        case Op.halt:
+            assert(0, "Unsupported bytecode assert comparison.");
+    }
+}
+
+private string inverseComparisonOperator(
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
+) @safe pure {
+    import quickbite.backends.bytecode.instructions: Op;
+
+    final switch (comparison) {
+        case Op.equal:
+            return "!=";
+        case Op.lessThan:
+            return ">=";
+        case Op.literal:
+        case Op.call:
+        case Op.jump:
+        case Op.jumpIfFalse:
+        case Op.pop:
+        case Op.loadLocal:
+        case Op.initializeLocal:
+        case Op.storeLocal:
+        case Op.incrementLocal:
+        case Op.cast_:
+        case Op.add:
+        case Op.subtract:
+        case Op.multiply:
+        case Op.divide:
+        case Op.bitOr:
+        case Op.greaterThan:
+        case Op.not_:
+        case Op.negate:
+        case Op.unaryNativeCall:
+        case Op.binaryNativeCall:
+        case Op.assertCompare:
+        case Op.assertFalse:
+        case Op.assertTrue:
+        case Op.throw_:
+        case Op.ret:
+        case Op.halt:
+            assert(0, "Unsupported bytecode assert comparison.");
+    }
 }
 
 private string assertFalseMessage(

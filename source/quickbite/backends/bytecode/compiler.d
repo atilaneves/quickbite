@@ -285,6 +285,16 @@ private struct Compiler {
         program.instructions ~= Instruction(op);
     }
 
+    private void compileAssertComparison(BinExp expression, in Op op) {
+        compileExpression(expression.e1);
+        compileExpression(expression.e2);
+        program.instructions ~= Instruction(
+            Op.assertCompare,
+            Value.void_,
+            op,
+        );
+    }
+
     private void compileComparisonExpression(CmpExp expression) {
         import dmd.tokens: EXP;
 
@@ -563,8 +573,18 @@ private struct Compiler {
             return;
 
         if (auto equal = assert_.e1.isEqualExp) {
-            compileBinaryExpression(equal, Op.assertCompare);
+            compileAssertComparison(equal, Op.equal);
             return;
+        }
+
+        if (isComparisonExpression(assert_.e1)) {
+            import dmd.tokens: EXP;
+
+            auto lessThan = castComparisonExpression(assert_.e1);
+            if (lessThan.op == EXP.lessThan) {
+                compileAssertComparison(lessThan, Op.lessThan);
+                return;
+            }
         }
 
         if (auto not = assert_.e1.isNotExp) {
@@ -606,7 +626,11 @@ private struct Compiler {
 
         compileExpression((*call.arguments)[1]);
         compileExpression((*call.arguments)[2]);
-        program.instructions ~= Instruction(Op.assertCompare);
+        program.instructions ~= Instruction(
+            Op.assertCompare,
+            Value.void_,
+            Op.equal,
+        );
         return true;
     }
 
