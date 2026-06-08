@@ -6,7 +6,7 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -24,7 +24,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("intLessThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

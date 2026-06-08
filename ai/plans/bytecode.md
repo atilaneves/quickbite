@@ -212,6 +212,11 @@ Lua-specific bytecode shape.
   inside logical expressions, so bytecode now lowers the required integer `<`
   and `>` comparisons to bool results while preserving bool equality assertion
   diagnostics such as `true != false` and `false != true`.
+- `voidFunctionReturnsToCaller` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: the existing bytecode module test path already handled a
+  called `void` function returning to its unittest caller before reporting the
+  following failed integer equality assertion as `1 != 2`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
