@@ -27,6 +27,7 @@ private struct Machine {
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
+        AssertCompare,
         AssertTrue,
         Cast,
         Call,
@@ -90,6 +91,7 @@ private struct Machine {
             (const Cast cast_) => execute(cast_),
             (const Call call) => execute(call),
             (const AssertTrue assert_) => execute(assert_),
+            (const AssertCompare assert_) => execute(assert_),
             (const Load load) => execute(load),
             (const UnaryOp unary) => execute(unary),
             (const UnaryIntrinsicOp intrinsic) => execute(intrinsic),
@@ -130,7 +132,31 @@ private struct Machine {
     }
 
     private void execute(const AssertTrue assert_) {
-        assert(scalarValues[assert_.condition] != 0);
+        if (scalarValues[assert_.condition] == 0) {
+            import quickbite.unittest_assertions:
+                AssertionMessageMode,
+                failedAssertionMessage;
+
+            throw new Exception(failedAssertionMessage(
+                AssertionMessageMode.context,
+            ));
+        }
+    }
+
+    private void execute(const AssertCompare assert_) {
+        if (compare(assert_))
+            return;
+
+        import quickbite.unittest_assertions:
+            AssertionMessageMode,
+            failedAssertionMessage;
+
+        throw new Exception(failedAssertionMessage(
+            AssertionMessageMode.context,
+            assertionInteger(assert_.type, assert_.resultKind, assert_.lhs),
+            assertionInteger(assert_.type, assert_.resultKind, assert_.rhs),
+            comparisonOperator(assert_.operation),
+        ));
     }
 
     private void castF64(const Cast cast_) {
@@ -432,6 +458,70 @@ private struct Machine {
             case f32:
             case f64:
             case ptr:
+                assert(0);
+        }
+    }
+
+    private bool compare(const AssertCompare assert_) {
+        final switch (assert_.operation) with (BinaryOperation) {
+            case equal:
+                return assertionInteger(
+                    assert_.type,
+                    assert_.resultKind,
+                    assert_.lhs,
+                ) == assertionInteger(
+                    assert_.type,
+                    assert_.resultKind,
+                    assert_.rhs,
+                );
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case pow:
+                assert(0);
+        }
+    }
+
+    private long assertionInteger(
+        in Type type,
+        in ResultKind kind,
+        in uint value,
+    ) {
+        final switch (type) with (Type) {
+            case i8:
+                return kind == ResultKind.ubyte_ ?
+                    cast(long) cast(ubyte) scalarValues[value] :
+                    cast(long) cast(byte) scalarValues[value];
+            case i16:
+                return kind == ResultKind.ushort_ ?
+                    cast(long) cast(ushort) scalarValues[value] :
+                    cast(long) cast(short) scalarValues[value];
+            case i32:
+                return kind == ResultKind.uint_ ?
+                    cast(long) cast(uint) scalarValues[value] :
+                    cast(long) cast(int) scalarValues[value];
+            case i64:
+                return kind == ResultKind.ulong_ ?
+                    cast(long) cast(ulong) scalarValues[value] :
+                    cast(long) scalarValues[value];
+            case i1:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private string comparisonOperator(in BinaryOperation operation) @safe pure {
+        final switch (operation) with (BinaryOperation) {
+            case equal:
+                return "==";
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case pow:
                 assert(0);
         }
     }

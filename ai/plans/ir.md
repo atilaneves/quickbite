@@ -185,6 +185,7 @@ The currently covered IR backend eval tests are:
 - `type.uint.IR`
 - `type.long.IR`
 - `type.ulong.IR`
+- `typeFailureMessage.byte.0.IR`
 
 All tests in `tests/ut/backends/lang/eval.d` now include `IR`, so `eval.d` is
 complete for the current backend matrix. The main integral type matrix in
@@ -193,6 +194,9 @@ widths. That promotion added module-backed unittest execution for IR, direct
 calls to source-backed fixture functions with scalar parameters, comma
 expression lowering for DMD's lowered assert shape, assert-true execution,
 typed integer equality, and signedness-preserving integer casts/local storage.
+The promoted `typeFailureMessage.byte.0.IR` test added contextual
+`assert(lhs == rhs)` diagnostics for integer equality failures and verifies the
+signed byte message `-126 != 130`.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:

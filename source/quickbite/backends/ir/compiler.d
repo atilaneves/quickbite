@@ -50,6 +50,7 @@ private struct Compiler {
         BinaryOp,
         BinaryOperation,
         Block,
+        AssertCompare,
         AssertTrue,
         Cast,
         Call,
@@ -263,11 +264,33 @@ private struct Compiler {
     }
 
     private Value compileAssert(imported!"dmd.expression".AssertExp assert_) {
+        if (auto equal = assert_.e1.isEqualExp)
+            return compileAssertCompare(equal, BinaryOperation.equal);
+
         const condition = compileExpression(assert_.e1);
         instructions ~= Instruction(
             AssertTrue(condition.id),
         );
         return condition;
+    }
+
+    private Value compileAssertCompare(
+        BinExp expression,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(expression.e1);
+        const rhs = compileExpression(expression.e2);
+        const result = compileBinaryExpression(lhs, rhs, operation);
+        instructions ~= Instruction(
+            AssertCompare(
+                operation,
+                lhs.type,
+                lhs.resultKind,
+                lhs.id,
+                rhs.id,
+            ),
+        );
+        return result;
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -495,6 +518,14 @@ private struct Compiler {
     ) {
         const lhs = compileExpression(lhsExpression);
         const rhs = compileExpression(rhsExpression);
+        return compileBinaryExpression(lhs, rhs, operation);
+    }
+
+    private Value compileBinaryExpression(
+        in Value lhs,
+        in Value rhs,
+        in BinaryOperation operation,
+    ) {
         const result = nextValue(lhs.type, lhs.resultKind);
         instructions ~= Instruction(
             BinaryOp(

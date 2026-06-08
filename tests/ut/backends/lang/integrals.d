@@ -48,8 +48,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
-
+static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -70,6 +69,9 @@ static foreach (backend; backendsWith!Bytecode) {
             }
         }).shouldThrowWithMessage("-126 != 130");
     }
+}
+
+static foreach (backend; backendsWith!Bytecode) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

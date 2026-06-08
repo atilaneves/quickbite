@@ -101,6 +101,14 @@ package struct AssertTrue {
     public uint condition;
 }
 
+package struct AssertCompare {
+    public BinaryOperation operation;
+    public Type type;
+    public ResultKind resultKind;
+    public uint lhs;
+    public uint rhs;
+}
+
 package struct Load {
     public uint local;
     public Value result;
@@ -121,6 +129,7 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     Cast,
     Call,
     AssertTrue,
+    AssertCompare,
     Load,
     Store,
 );
