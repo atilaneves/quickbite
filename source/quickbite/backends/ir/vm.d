@@ -47,6 +47,57 @@ package imported!"quickbite.lang".Value eval(
                                 assert(0);
                         }
                         break;
+                    case subtract:
+                        final switch (binary.type) with (Type) {
+                            case i32:
+                                valueBits[binary.destination.id] =
+                                    cast(int) valueBits[binary.lhs] -
+                                    cast(int) valueBits[binary.rhs];
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i64:
+                            case f32:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
+                    case multiply:
+                        final switch (binary.type) with (Type) {
+                            case i32:
+                                valueBits[binary.destination.id] =
+                                    cast(int) valueBits[binary.lhs] *
+                                    cast(int) valueBits[binary.rhs];
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i64:
+                            case f32:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
+                    case divide:
+                        final switch (binary.type) with (Type) {
+                            case i32:
+                                valueBits[binary.destination.id] =
+                                    cast(int) valueBits[binary.lhs] /
+                                    cast(int) valueBits[binary.rhs];
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i64:
+                            case f32:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
                 }
             },
         );
