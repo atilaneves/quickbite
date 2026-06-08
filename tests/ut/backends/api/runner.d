@@ -7,7 +7,7 @@ import std.conv: text;
 import std.path: buildPath;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTests.runsAttributedUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

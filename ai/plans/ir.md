@@ -203,10 +203,16 @@ The promoted `typeFailureMessage.ubyte.0.IR` test reuses that diagnostic path
 for unsigned byte assertion formatting and verifies the `130 != 129` message.
 The promoted `typeFailureMessage.uint.0.IR` test reuses the same unsigned
 integer assertion diagnostic path and verifies the `130 != 131` message.
+The promoted `runTests.runsAttributedUnittests.IR` test added no new runner
+entry point: `IR.runTests` already discovers and executes attributed unittest
+blocks. The slice added narrow compiler recognition for DMD's generated
+equality assertion-message call so a folded `assert(1 == 2)` still lowers its
+message operands to the existing IR `AssertCompare` diagnostic path and
+reports `1 != 2`.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
-`tests/ut/backends/lang/integrals.d`. Pick the smallest current CTFE-backed
+`tests/ut/backends/api/runner.d`. Pick the smallest current CTFE-backed
 behavior in that module that still excludes `IR`, promote the existing backend
 matrix, and run the focused test. If it is red, verify it is red for the
 expected missing behavior. If it is green, verify the greenness by temporarily
@@ -218,10 +224,9 @@ notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/integrals.d`, the next module after
-`eval.d` in `ai/plans/backend-test-modules-order.md`. Verify in the current
-checkout which backend matrices still exclude `IR`, then choose the smallest
-honest promotion from that module.
+Continue in `tests/ut/backends/api/runner.d`. Verify in the current checkout
+which backend matrices still exclude `IR`, then choose the smallest honest
+promotion from that module.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

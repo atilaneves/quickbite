@@ -268,6 +268,10 @@ private struct Compiler {
         if (auto equal = assert_.e1.isEqualExp)
             return compileAssertCompare(equal, BinaryOperation.equal);
 
+        const result = compileDmdAssertFailEqualMessage(assert_.msg);
+        if (result.hasValue)
+            return result.value;
+
         const condition = compileExpression(assert_.e1);
         instructions ~= Instruction(
             AssertTrue(condition.id),
@@ -275,12 +279,45 @@ private struct Compiler {
         return condition;
     }
 
+    private OptionalValue compileDmdAssertFailEqualMessage(Expression message) {
+        if (message is null)
+            return OptionalValue.init;
+
+        auto call = message.isCallExp;
+        if (call is null || call.arguments is null)
+            return OptionalValue.init;
+
+        if (call.arguments.length != 3)
+            return OptionalValue.init;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null || operator.peekString != "==")
+            return OptionalValue.init;
+
+        return OptionalValue(
+            compileAssertCompare(
+                (*call.arguments)[1],
+                (*call.arguments)[2],
+                BinaryOperation.equal,
+            ),
+            true,
+        );
+    }
+
     private Value compileAssertCompare(
         BinExp expression,
         in BinaryOperation operation,
     ) {
-        const lhs = compileExpression(expression.e1);
-        const rhs = compileExpression(expression.e2);
+        return compileAssertCompare(expression.e1, expression.e2, operation);
+    }
+
+    private Value compileAssertCompare(
+        Expression lhsExpression,
+        Expression rhsExpression,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(lhsExpression);
+        const rhs = compileExpression(rhsExpression);
         const result = compileBinaryExpression(lhs, rhs, operation);
         instructions ~= Instruction(
             AssertCompare(
