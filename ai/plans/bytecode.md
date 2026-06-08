@@ -153,6 +153,14 @@ Lua-specific bytecode shape.
   `backend.runTests` on each module, and the existing `Bytecode.runTests` path
   plus its `throw`-expression support already ran both modules and propagated
   the second module's thrown message without production changes.
+- `runBackendSourceFixtureTests.withImportPaths` and
+  `runBackendFileFixtureTests.withImportPaths` in
+  `tests/ut/backends/api/runner.d` now cover `Bytecode`. This was a stale
+  coverage gap: DMD semantic analysis resolves the imported module function as
+  a `FuncDeclaration` with a populated `fbody`, so the existing `compileCall`
+  path emitted the ordinary `Op.call` and the VM executed the call frame and
+  returned `int` without production changes. The import-path plumbing already
+  flowed through the shared fixture parse helpers.
 
 ## Current Next Step
 Continue with the next module named by
