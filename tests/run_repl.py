@@ -22,15 +22,15 @@ def test_repl() -> None:
     child = pexpect.spawn(repl, timeout=TIMEOUT, encoding="utf-8")
     try:
         child.expect_exact("Quickbite REPL")
-        child.expect_exact("> ")
+        child.expect_exact("[   0.0 ms] > ")
 
         child.sendline("1 + 2")
-        child.expect_exact("> ")
+        child.expect(r"\[\s+\d+\.\d ms\] > ")
         output = clean(child.before)
         assert "3\n" in output
 
         child.sendline(UP_ARROW)
-        child.expect_exact("> ")
+        child.expect(r"\[\s+\d+\.\d ms\] > ")
         output = clean(child.before)
         assert "3\n" in output
 
@@ -60,16 +60,16 @@ def test_interactive_error_label_is_red() -> None:
     child = pexpect.spawn(qb_path(), timeout=TIMEOUT, encoding="utf-8")
     try:
         child.expect_exact("Quickbite REPL")
-        child.expect_exact("> ")
+        child.expect_exact("[   0.0 ms] > ")
 
         child.sendline("unittest { assert(1 == 2); }")
-        child.expect_exact("> ")
+        child.expect(r"\[\s+\d+\.\d ms\] > ")
 
         child.sendline(":t")
         child.expect_exact(
             "\x1b[31mError:\x1b[0m unittest at <repl>(1) failed: 1 != 2",
         )
-        child.expect_exact("> ")
+        child.expect(r"\[\s+\d+\.\d ms\] > ")
 
         child.sendline(":q")
         child.expect(pexpect.EOF)
@@ -216,10 +216,10 @@ def test_live_flag_keeps_repl_open_after_file_arguments(tmp_path: Path) -> None:
     )
     try:
         child.expect_exact("Quickbite REPL")
-        child.expect_exact("> ")
+        child.expect_exact("[   0.0 ms] > ")
 
         child.sendline("loadedValue()")
-        child.expect_exact("> ")
+        child.expect(r"\[\s+\d+\.\d ms\] > ")
         output = clean(child.before)
         assert "42\n" in output
 
