@@ -13,7 +13,7 @@ package enum Type {
     ptr,
 }
 
-package enum ResultType {
+package enum ResultKind {
     bool_,
     byte_,
     ubyte_,
@@ -32,7 +32,7 @@ package enum ResultType {
 package struct Value {
     public uint id;
     public Type type;
-    public ResultType resultType;
+    public ResultKind resultKind;
 }
 
 package enum BinaryOperation {
@@ -50,12 +50,12 @@ package enum UnaryOperation {
 
 package struct Const {
     public ulong bits;
-    public Value destination;
+    public Value result;
 }
 
 package struct StringConst {
-    public char[] elements;
-    public Value destination;
+    public string elements;
+    public Value result;
 }
 
 package struct BinaryOp {
@@ -63,26 +63,26 @@ package struct BinaryOp {
     public Type type;
     public uint lhs;
     public uint rhs;
-    public Value destination;
+    public Value result;
 }
 
 package struct UnaryOp {
     public UnaryOperation operation;
     public Type type;
     public uint source;
-    public Value destination;
+    public Value result;
 }
 
 package struct Cast {
     public Type sourceType;
     public Type targetType;
     public uint source;
-    public Value destination;
+    public Value result;
 }
 
 package struct Load {
     public uint local;
-    public Value destination;
+    public Value result;
 }
 
 package struct Store {
@@ -139,7 +139,7 @@ package struct Block {
 
 package struct Function {
     public Block[] blocks;
-    public ResultType returnType;
+    public ResultKind returnType;
     public uint valueCount;
     public uint localCount;
 }

@@ -216,13 +216,13 @@ support yet.
   not represent D's type hierarchy. `ptr` represents D pointer values, not
   mutable places. Add a separate `Place` or `PlaceId` representation when
   `Alloca`, `Load`, and `Store` are promoted.
-- `Value` struct: `uint id`, `Type type`, and `ResultType resultType`. Every
+- `Value` struct: `uint id`, `Type type`, and `ResultKind resultKind`. Every
   SSA value declares its operation type at the single definition site. The
   executor never inspects a runtime tag to decide which arithmetic path to
-  take; the result category is used only for D-visible boundary conversion.
+  take; the result kind is used only for D-visible boundary conversion.
 - Instructions as a `SumType`. Start with `Const` (typed constant scalar,
-  raw bits + destination `Value`) and `BinaryOp` (typed binary op, operation
-  enum + lhs/rhs value ids + destination `Value`). Add `Alloca`, `Load`, and
+  raw bits + result `Value`) and `BinaryOp` (typed binary op, operation enum
+  + lhs/rhs value ids + result `Value`). Add `Alloca`, `Load`, and
   `Store` when mutation tests are promoted; `Load` and `Store` consume typed
   place references, not ordinary `ptr` SSA values. Do not store
   `quickbite.lang.Value` inside IR instructions; convert to that public API

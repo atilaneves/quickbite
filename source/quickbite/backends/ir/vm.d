@@ -5,303 +5,355 @@ private:
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.ir.language".Function function_,
 ) {
+    Machine machine;
+    machine.init(function_.valueCount, function_.localCount);
+    foreach (instruction; function_.blocks[0].instructions)
+        machine.execute(instruction);
+
+    return machine.result(function_);
+}
+
+private struct Machine {
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
         Cast,
         Const,
+        Function,
+        Instruction,
         Load,
-        ResultType,
+        ResultKind,
         ReturnValue,
         StringConst,
         Store,
+        Type,
         UnaryOp,
-        UnaryOperation,
-        Type;
+        UnaryOperation;
     import quickbite.lang: Value;
     import std.sumtype: match;
 
-    // Raw scalar storage; each instruction's IR type decides how to interpret
-    // these bits.
-    ulong[] valueBits;
-    valueBits.length = function_.valueCount;
-    string[] valueStrings;
-    valueStrings.length = function_.valueCount;
-    ulong[] localBits;
-    localBits.length = function_.localCount;
-    foreach (instruction; function_.blocks[0].instructions) {
+    private ulong[] scalarValues;
+    private string[] stringValues;
+    private ulong[] localScalarValues;
+
+    private void init(in uint valueCount, in uint localCount) {
+        scalarValues.length = valueCount;
+        stringValues.length = valueCount;
+        localScalarValues.length = localCount;
+    }
+
+    private void execute(const Instruction instruction) {
         instruction.match!(
-            (const Const const_) {
-                valueBits[const_.destination.id] = const_.bits;
-            },
-            (const StringConst const_) {
-                valueStrings[const_.destination.id] = const_.elements.idup;
-            },
-            (const Cast cast_) {
-                final switch (cast_.sourceType) with (Type) {
-                    case f64:
-                        final switch (cast_.targetType) with (Type) {
-                            case i32:
-                                valueBits[cast_.destination.id] =
-                                    cast(int) doubleFromBits(
-                                        valueBits[cast_.source],
-                                    );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i64:
-                            case f32:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case i32:
-                        final switch (cast_.targetType) with (Type) {
-                            case i8:
-                                valueBits[cast_.destination.id] =
-                                    cast(byte) cast(int) valueBits[
-                                        cast_.source
-                                    ];
-                                break;
-                            case i16:
-                                valueBits[cast_.destination.id] =
-                                    cast(short) cast(int) valueBits[
-                                        cast_.source
-                                    ];
-                                break;
-                            case i32:
-                                valueBits[cast_.destination.id] =
-                                    cast(int) valueBits[cast_.source];
-                                break;
-                            case i64:
-                                valueBits[cast_.destination.id] =
-                                    cast(long) cast(int) valueBits[
-                                        cast_.source
-                                    ];
-                                break;
-                            case i1:
-                            case f32:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case i1:
-                    case i8:
-                    case i16:
-                    case i64:
-                    case f32:
-                    case ptr:
-                        assert(0);
-                }
-            },
-            (const Load load) {
-                valueBits[load.destination.id] = localBits[load.local];
-            },
-            (const UnaryOp unary) {
-                final switch (unary.operation) with (UnaryOperation) {
-                    case negate:
-                        final switch (unary.type) with (Type) {
-                            case f64:
-                                valueBits[unary.destination.id] = doubleBits(
-                                    -doubleFromBits(valueBits[unary.source]),
-                                );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i32:
-                            case i64:
-                            case f32:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case fabs:
-                        import std.math: fabs;
+            (const Const const_) => execute(const_),
+            (const StringConst const_) => execute(const_),
+            (const Cast cast_) => execute(cast_),
+            (const Load load) => execute(load),
+            (const UnaryOp unary) => execute(unary),
+            (const Store store) => execute(store),
+            (const BinaryOp binary) => execute(binary),
+        );
+    }
 
-                        final switch (unary.type) with (Type) {
-                            case f32:
-                                valueBits[unary.destination.id] = floatBits(
-                                    fabs(floatFromBits(valueBits[unary.source])),
-                                );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i32:
-                            case i64:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                }
-            },
-            (const Store store) {
-                final switch (store.type) with (Type) {
-                    case i32:
-                        localBits[store.local] = valueBits[store.value];
-                        break;
-                    case f64:
-                        localBits[store.local] = valueBits[store.value];
-                        break;
-                    case f32:
-                        localBits[store.local] = valueBits[store.value];
-                        break;
-                    case i1:
-                    case i8:
-                    case i16:
-                    case i64:
-                    case ptr:
-                        assert(0);
-                }
-            },
-            (const BinaryOp binary) {
-                final switch (binary.operation) with (BinaryOperation) {
-                    case add:
-                        final switch (binary.type) with (Type) {
-                            case i32:
-                                valueBits[binary.destination.id] =
-                                    cast(int) valueBits[binary.lhs] +
-                                    cast(int) valueBits[binary.rhs];
-                                break;
-                            case f32:
-                                valueBits[binary.destination.id] = floatBits(
-                                    floatFromBits(valueBits[binary.lhs]) +
-                                    floatFromBits(valueBits[binary.rhs]),
-                                );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i64:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case subtract:
-                        final switch (binary.type) with (Type) {
-                            case i32:
-                                valueBits[binary.destination.id] =
-                                    cast(int) valueBits[binary.lhs] -
-                                    cast(int) valueBits[binary.rhs];
-                                break;
-                            case f64:
-                                valueBits[binary.destination.id] = doubleBits(
-                                    doubleFromBits(valueBits[binary.lhs]) -
-                                    doubleFromBits(valueBits[binary.rhs]),
-                                );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i64:
-                            case f32:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case multiply:
-                        final switch (binary.type) with (Type) {
-                            case i32:
-                                valueBits[binary.destination.id] =
-                                    cast(int) valueBits[binary.lhs] *
-                                    cast(int) valueBits[binary.rhs];
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i64:
-                            case f32:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case divide:
-                        final switch (binary.type) with (Type) {
-                            case i32:
-                                valueBits[binary.destination.id] =
-                                    cast(int) valueBits[binary.lhs] /
-                                    cast(int) valueBits[binary.rhs];
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i64:
-                            case f32:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                    case pow:
-                        import std.math: pow;
+    private void execute(const Const const_) {
+        scalarValues[const_.result.id] = const_.bits;
+    }
 
-                        final switch (binary.type) with (Type) {
-                            case f32:
-                                valueBits[binary.destination.id] = floatBits(
-                                    pow(
-                                        floatFromBits(valueBits[binary.lhs]),
-                                        floatFromBits(valueBits[binary.rhs]),
-                                    ),
-                                );
-                                break;
-                            case i1:
-                            case i8:
-                            case i16:
-                            case i32:
-                            case i64:
-                            case f64:
-                            case ptr:
-                                assert(0);
-                        }
-                        break;
-                }
+    private void execute(const StringConst const_) {
+        stringValues[const_.result.id] = const_.elements;
+    }
+
+    private void execute(const Cast cast_) {
+        final switch (cast_.sourceType) with (Type) {
+            case f64:
+                castF64(cast_);
+                break;
+            case i32:
+                castI32(cast_);
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void castF64(const Cast cast_) {
+        final switch (cast_.targetType) with (Type) {
+            case i32:
+                scalarValues[cast_.result.id] =
+                    cast(int) doubleFromBits(scalarValues[cast_.source]);
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void castI32(const Cast cast_) {
+        const source = cast(int) scalarValues[cast_.source];
+        final switch (cast_.targetType) with (Type) {
+            case i8:
+                scalarValues[cast_.result.id] = cast(byte) source;
+                break;
+            case i16:
+                scalarValues[cast_.result.id] = cast(short) source;
+                break;
+            case i32:
+                scalarValues[cast_.result.id] = source;
+                break;
+            case i64:
+                scalarValues[cast_.result.id] = cast(long) source;
+                break;
+            case i1:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void execute(const Load load) {
+        scalarValues[load.result.id] = localScalarValues[load.local];
+    }
+
+    private void execute(const UnaryOp unary) {
+        final switch (unary.operation) with (UnaryOperation) {
+            case negate:
+                executeNegate(unary);
+                break;
+            case fabs:
+                executeFabs(unary);
+                break;
+        }
+    }
+
+    private void executeNegate(const UnaryOp unary) {
+        final switch (unary.type) with (Type) {
+            case f64:
+                scalarValues[unary.result.id] =
+                    doubleBits(-doubleFromBits(scalarValues[unary.source]));
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i32:
+            case i64:
+            case f32:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeFabs(const UnaryOp unary) {
+        import std.math: fabs;
+
+        final switch (unary.type) with (Type) {
+            case f32:
+                scalarValues[unary.result.id] =
+                    floatBits(fabs(floatFromBits(scalarValues[unary.source])));
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i32:
+            case i64:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void execute(const Store store) {
+        final switch (store.type) with (Type) {
+            case i32:
+            case f64:
+            case f32:
+                localScalarValues[store.local] = scalarValues[store.value];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void execute(const BinaryOp binary) {
+        final switch (binary.operation) with (BinaryOperation) {
+            case add:
+                executeAdd(binary);
+                break;
+            case subtract:
+                executeSubtract(binary);
+                break;
+            case multiply:
+                executeMultiply(binary);
+                break;
+            case divide:
+                executeDivide(binary);
+                break;
+            case pow:
+                executePow(binary);
+                break;
+        }
+    }
+
+    private void executeAdd(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] +
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case f32:
+                scalarValues[binary.result.id] = floatBits(
+                    floatFromBits(scalarValues[binary.lhs]) +
+                    floatFromBits(scalarValues[binary.rhs]),
+                );
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeSubtract(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] -
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case f64:
+                scalarValues[binary.result.id] = doubleBits(
+                    doubleFromBits(scalarValues[binary.lhs]) -
+                    doubleFromBits(scalarValues[binary.rhs]),
+                );
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeMultiply(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] *
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeDivide(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] /
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executePow(const BinaryOp binary) {
+        import std.math: pow;
+
+        final switch (binary.type) with (Type) {
+            case f32:
+                scalarValues[binary.result.id] = floatBits(
+                    pow(
+                        floatFromBits(scalarValues[binary.lhs]),
+                        floatFromBits(scalarValues[binary.rhs]),
+                    ),
+                );
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i32:
+            case i64:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private Value result(in Function function_) {
+        return function_.blocks[0].terminator.match!(
+            (const ReturnValue return_) {
+                return result(function_.returnType, return_.value);
+            },
+            (_) {
+                assert(0);
+                return Value.void_;
             },
         );
     }
 
-    return function_.blocks[0].terminator.match!(
-        (const ReturnValue return_) {
-            final switch (function_.returnType) with (ResultType) {
-                case bool_:
-                    return Value(cast(bool) valueBits[return_.value]);
-                case byte_:
-                    return Value(cast(byte) valueBits[return_.value]);
-                case ubyte_:
-                    return Value(cast(ubyte) valueBits[return_.value]);
-                case short_:
-                    return Value(cast(short) valueBits[return_.value]);
-                case ushort_:
-                    return Value(cast(ushort) valueBits[return_.value]);
-                case int_:
-                    return Value(cast(int) valueBits[return_.value]);
-                case uint_:
-                    return Value(cast(uint) valueBits[return_.value]);
-                case long_:
-                    return Value(cast(long) valueBits[return_.value]);
-                case ulong_:
-                    return Value(cast(ulong) valueBits[return_.value]);
-                case char_:
-                    return Value(cast(char) valueBits[return_.value]);
-                case float_:
-                    return Value(floatFromBits(valueBits[return_.value]));
-                case double_:
-                    return Value(doubleFromBits(valueBits[return_.value]));
-                case string_:
-                    return Value(valueStrings[return_.value]);
-            }
-        },
-        (_) {
-            assert(0);
-            return Value.void_;
-        },
-    );
+    private Value result(in ResultKind kind, in uint valueId) {
+        final switch (kind) with (ResultKind) {
+            case bool_:
+                return Value(cast(bool) scalarValues[valueId]);
+            case byte_:
+                return Value(cast(byte) scalarValues[valueId]);
+            case ubyte_:
+                return Value(cast(ubyte) scalarValues[valueId]);
+            case short_:
+                return Value(cast(short) scalarValues[valueId]);
+            case ushort_:
+                return Value(cast(ushort) scalarValues[valueId]);
+            case int_:
+                return Value(cast(int) scalarValues[valueId]);
+            case uint_:
+                return Value(cast(uint) scalarValues[valueId]);
+            case long_:
+                return Value(cast(long) scalarValues[valueId]);
+            case ulong_:
+                return Value(cast(ulong) scalarValues[valueId]);
+            case char_:
+                return Value(cast(char) scalarValues[valueId]);
+            case float_:
+                return Value(floatFromBits(scalarValues[valueId]));
+            case double_:
+                return Value(doubleFromBits(scalarValues[valueId]));
+            case string_:
+                return Value(stringValues[valueId]);
+        }
+    }
 }
 
 // @trusted: reads the bytes of a local float as a same-sized uint for IR raw

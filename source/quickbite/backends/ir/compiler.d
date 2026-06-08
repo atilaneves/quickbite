@@ -49,7 +49,7 @@ private struct Compiler {
         Function,
         Instruction,
         Load,
-        ResultType,
+        ResultKind,
         ReturnValue,
         StringConst,
         Store,
@@ -126,7 +126,7 @@ private struct Compiler {
             return compileString(string_);
 
         if (auto call = expression.isCallExp)
-            return compileCall(call);
+            return compileIntrinsicCall(call);
 
         if (auto negate = expression.isNegExp)
             return compileUnaryExpression(negate.e1, UnaryOperation.negate);
@@ -146,7 +146,7 @@ private struct Compiler {
         assert(0);
     }
 
-    private Value compileCall(imported!"dmd.expression".CallExp call) {
+    private Value compileIntrinsicCall(imported!"dmd.expression".CallExp call) {
         assert(call.f !is null);
         assert(call.arguments !is null);
 
@@ -171,28 +171,28 @@ private struct Compiler {
 
     private void compileVariableDeclaration(VarDeclaration variable) {
         const value = variable._init is null ?
-            compileIntegerLiteral(
-                0,
-                valueType(variable.type),
-                resultType(variable.type),
-            ) :
+            compileDefaultValue(variable.type) :
             compileInitializer(variable._init);
-        instructions ~= Instruction(Store(
-            localIndex(variable),
-            value.type,
-            value.id,
-        ));
-        localValues[variable] = Value(0, value.type, value.resultType);
+        instructions ~= Instruction(
+            Store(
+                localIndex(variable),
+                value.type,
+                value.id,
+            ),
+        );
+        localValues[variable] = Value(0, value.type, value.resultKind);
     }
 
     private Value compileVariableLoad(VarDeclaration variable) {
         const local = localValue(variable);
-        const destination = nextValue(local.type, local.resultType);
-        instructions ~= Instruction(Load(
-            localIndex(variable),
-            destination,
-        ));
-        return destination;
+        const result = nextValue(local.type, local.resultKind);
+        instructions ~= Instruction(
+            Load(
+                localIndex(variable),
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value compileInitializer(
@@ -206,14 +206,16 @@ private struct Compiler {
 
     private Value compileCast(imported!"dmd.expression".CastExp cast_) {
         const source = compileExpression(cast_.e1);
-        const destination = nextValue(valueType(cast_.to), resultType(cast_.to));
-        instructions ~= Instruction(Cast(
-            source.type,
-            destination.type,
-            source.id,
-            destination,
-        ));
-        return destination;
+        const result = nextValue(valueType(cast_.to), resultKind(cast_.to));
+        instructions ~= Instruction(
+            Cast(
+                source.type,
+                result.type,
+                source.id,
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value compilePreIncrement(imported!"dmd.expression".PreExp increment) {
@@ -225,20 +227,24 @@ private struct Compiler {
 
         const lhs = compileVariableLoad(declaration);
         const rhs = compileIntegerLiteral(1);
-        const destination = nextValue(lhs.type, lhs.resultType);
-        instructions ~= Instruction(BinaryOp(
-            BinaryOperation.add,
-            lhs.type,
-            lhs.id,
-            rhs.id,
-            destination,
-        ));
-        instructions ~= Instruction(Store(
-            localIndex(declaration),
-            destination.type,
-            destination.id,
-        ));
-        return destination;
+        const result = nextValue(lhs.type, lhs.resultKind);
+        instructions ~= Instruction(
+            BinaryOp(
+                BinaryOperation.add,
+                lhs.type,
+                lhs.id,
+                rhs.id,
+                result,
+            ),
+        );
+        instructions ~= Instruction(
+            Store(
+                localIndex(declaration),
+                result.type,
+                result.id,
+            ),
+        );
+        return result;
     }
 
     private Value compileAddAssign(AddAssignExp addAssign) {
@@ -250,20 +256,24 @@ private struct Compiler {
 
         const lhs = compileVariableLoad(declaration);
         const rhs = compileExpression(addAssign.e2);
-        const destination = nextValue(lhs.type, lhs.resultType);
-        instructions ~= Instruction(BinaryOp(
-            BinaryOperation.add,
-            lhs.type,
-            lhs.id,
-            rhs.id,
-            destination,
-        ));
-        instructions ~= Instruction(Store(
-            localIndex(declaration),
-            destination.type,
-            destination.id,
-        ));
-        return destination;
+        const result = nextValue(lhs.type, lhs.resultKind);
+        instructions ~= Instruction(
+            BinaryOp(
+                BinaryOperation.add,
+                lhs.type,
+                lhs.id,
+                rhs.id,
+                result,
+            ),
+        );
+        instructions ~= Instruction(
+            Store(
+                localIndex(declaration),
+                result.type,
+                result.id,
+            ),
+        );
+        return result;
     }
 
     private Value compileInteger(
@@ -272,21 +282,27 @@ private struct Compiler {
         return compileIntegerLiteral(
             integer.getInteger,
             valueType(integer.type),
-            resultType(integer.type),
+            resultKind(integer.type),
         );
     }
 
     private Value compileIntegerLiteral(
         in ulong bits,
         in Type type = Type.i32,
-        in ResultType resultType = ResultType.int_,
+        in ResultKind resultKind = ResultKind.int_,
     ) {
-        const destination = nextValue(type, resultType);
-        instructions ~= Instruction(Const(
-            bits,
-            destination,
-        ));
-        return destination;
+        const result = nextValue(type, resultKind);
+        instructions ~= Instruction(
+            Const(
+                bits,
+                result,
+            ),
+        );
+        return result;
+    }
+
+    private Value compileDefaultValue(imported!"dmd.mtype".Type type) {
+        return compileIntegerLiteral(0, valueType(type), resultKind(type));
     }
 
     private Value compileReal(imported!"dmd.expression".RealExp real_) {
@@ -294,31 +310,37 @@ private struct Compiler {
 
         switch (real_.type.toBasetype.ty) with (TY) {
             case Tfloat32:
-                const destination = nextValue(Type.f32, ResultType.float_);
-                instructions ~= Instruction(Const(
-                    floatBits(cast(float) real_.toReal),
-                    destination,
-                ));
-                return destination;
+                const result = nextValue(Type.f32, ResultKind.float_);
+                instructions ~= Instruction(
+                    Const(
+                        floatBits(cast(float) real_.toReal),
+                        result,
+                    ),
+                );
+                return result;
             case Tfloat64:
-                const destination = nextValue(Type.f64, ResultType.double_);
-                instructions ~= Instruction(Const(
-                    doubleBits(cast(double) real_.toReal),
-                    destination,
-                ));
-                return destination;
+                const result = nextValue(Type.f64, ResultKind.double_);
+                instructions ~= Instruction(
+                    Const(
+                        doubleBits(cast(double) real_.toReal),
+                        result,
+                    ),
+                );
+                return result;
             default:
                 assert(0);
         }
     }
 
     private Value compileString(imported!"dmd.expression".StringExp string_) {
-        const destination = nextValue(Type.ptr, ResultType.string_);
-        instructions ~= Instruction(StringConst(
-            stringChars(string_),
-            destination,
-        ));
-        return destination;
+        const result = nextValue(Type.ptr, ResultKind.string_);
+        instructions ~= Instruction(
+            StringConst(
+                stringChars(string_).idup,
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value compileUnaryExpression(
@@ -326,14 +348,16 @@ private struct Compiler {
         in UnaryOperation operation,
     ) {
         const source = compileExpression(expression);
-        const destination = nextValue(source.type, source.resultType);
-        instructions ~= Instruction(UnaryOp(
-            operation,
-            source.type,
-            source.id,
-            destination,
-        ));
-        return destination;
+        const result = nextValue(source.type, source.resultKind);
+        instructions ~= Instruction(
+            UnaryOp(
+                operation,
+                source.type,
+                source.id,
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value compileBinaryExpression(
@@ -350,22 +374,24 @@ private struct Compiler {
     ) {
         const lhs = compileExpression(lhsExpression);
         const rhs = compileExpression(rhsExpression);
-        const destination = nextValue(lhs.type, lhs.resultType);
-        instructions ~= Instruction(BinaryOp(
-            operation,
-            lhs.type,
-            lhs.id,
-            rhs.id,
-            destination,
-        ));
-        return destination;
+        const result = nextValue(lhs.type, lhs.resultKind);
+        instructions ~= Instruction(
+            BinaryOp(
+                operation,
+                lhs.type,
+                lhs.id,
+                rhs.id,
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value nextValue(
         in Type type,
-        in ResultType resultType = ResultType.int_,
+        in ResultKind resultKind = ResultKind.int_,
     ) @safe @nogc nothrow pure {
-        const result = Value(nextValueId, type, resultType);
+        const result = Value(nextValueId, type, resultKind);
         ++nextValueId;
         return result;
     }
@@ -383,7 +409,7 @@ private struct Compiler {
         if (auto existing = variable in localValues)
             return *existing;
 
-        return Value(0, valueType(variable.type), resultType(variable.type));
+        return Value(0, valueType(variable.type), resultKind(variable.type));
     }
 
     private Function function_(in Value result) {
@@ -398,7 +424,7 @@ private struct Compiler {
                     0,
                 ),
             ],
-            result.resultType,
+            result.resultKind,
             nextValueId,
             cast(uint) locals.length,
         );
@@ -478,37 +504,37 @@ private ref auto callArguments(
     return *call.arguments;
 }
 
-private imported!"quickbite.backends.ir.language".ResultType resultType(
+private imported!"quickbite.backends.ir.language".ResultKind resultKind(
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.ir.language: ResultType;
+    import quickbite.backends.ir.language: ResultKind;
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
-            return ResultType.bool_;
+            return ResultKind.bool_;
         case Tint8:
-            return ResultType.byte_;
+            return ResultKind.byte_;
         case Tuns8:
-            return ResultType.ubyte_;
+            return ResultKind.ubyte_;
         case Tchar:
-            return ResultType.char_;
+            return ResultKind.char_;
         case Tint16:
-            return ResultType.short_;
+            return ResultKind.short_;
         case Tuns16:
-            return ResultType.ushort_;
+            return ResultKind.ushort_;
         case Tint32:
-            return ResultType.int_;
+            return ResultKind.int_;
         case Tuns32:
-            return ResultType.uint_;
+            return ResultKind.uint_;
         case Tint64:
-            return ResultType.long_;
+            return ResultKind.long_;
         case Tuns64:
-            return ResultType.ulong_;
+            return ResultKind.ulong_;
         case Tfloat32:
-            return ResultType.float_;
+            return ResultKind.float_;
         case Tfloat64:
-            return ResultType.double_;
+            return ResultKind.double_;
         default:
             assert(0);
     }
