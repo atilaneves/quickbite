@@ -1,4 +1,4 @@
-module quickbite.frontend.dmd_values;
+module quickbite.frontend.dmd.values;
 
 private:
 
@@ -223,7 +223,7 @@ public imported!"quickbite.lang".Value defaultValue(
 private imported!"quickbite.lang".Value scalarDefaultValue(
     imported!"dmd.astenums".TY type,
 )() {
-    import quickbite.frontend.dmd_types: dmdScalarType;
+    import quickbite.frontend.dmd.types: dmdScalarType;
     import quickbite.lang: Value;
 
     alias T = dmdScalarType!type;

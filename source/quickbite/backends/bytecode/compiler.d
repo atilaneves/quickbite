@@ -41,7 +41,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 private struct Compiler {
     import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
     import quickbite.backends.casts: CastTarget;
-    import quickbite.frontend.dmd_values: defaultValue, integerValue, realValue;
+    import quickbite.frontend.dmd.values: defaultValue, integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;

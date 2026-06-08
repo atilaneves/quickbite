@@ -47,7 +47,7 @@ private imported!"quickbite.lang".Value evalFunction(
 
 private struct EvalFunctionWalker {
     import quickbite.lang: Value;
-    import quickbite.frontend.dmd_values: defaultValue;
+    import quickbite.frontend.dmd.values: defaultValue;
     import dmd.declaration: VarDeclaration;
 
     private Value[VarDeclaration] locals;
@@ -94,7 +94,7 @@ private struct EvalFunctionWalker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
-        import quickbite.frontend.dmd_values: integerValue, realValue;
+        import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
@@ -244,7 +244,7 @@ private struct EvalFunctionWalker {
 private struct EvalModuleInterpreter {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
-    import quickbite.frontend.dmd_values: defaultValue;
+    import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
@@ -288,7 +288,7 @@ private struct EvalModuleInterpreter {
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         import dmd.tokens: EXP;
-        import quickbite.frontend.dmd_values: integerValue;
+        import quickbite.frontend.dmd.values: integerValue;
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);

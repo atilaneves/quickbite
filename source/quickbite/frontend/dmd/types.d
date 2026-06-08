@@ -1,4 +1,4 @@
-module quickbite.frontend.dmd_types;
+module quickbite.frontend.dmd.types;
 
 private:
 

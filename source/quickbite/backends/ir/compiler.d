@@ -15,7 +15,7 @@ private imported!"quickbite.backends.ir.language".Expression compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
     import quickbite.backends.ir.language: Add, Expression, Literal;
-    import quickbite.frontend.dmd_values: integerValue;
+    import quickbite.frontend.dmd.values: integerValue;
 
     if (auto integer = expression.isIntegerExp)
         return Expression(Literal(integerValue(integer)));
@@ -37,7 +37,7 @@ private imported!"quickbite.lang".Value literalValue(
     imported!"dmd.expression".Expression expression,
 )
 {
-    import quickbite.frontend.dmd_values: integerValue, realValue;
+    import quickbite.frontend.dmd.values: integerValue, realValue;
 
     if (auto integer = expression.isIntegerExp)
         return integerValue(integer);

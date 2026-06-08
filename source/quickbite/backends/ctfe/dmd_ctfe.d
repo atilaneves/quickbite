@@ -254,7 +254,7 @@ private imported!"quickbite.lang".Value integerValue(
     imported!"dmd.expression".IntegerExp integer,
 ) {
     import dmd.astenums: TY;
-    import quickbite.frontend.dmd_values: frontendIntegerValue = integerValue;
+    import quickbite.frontend.dmd.values: frontendIntegerValue = integerValue;
     import quickbite.lang: Value;
 
     if (
@@ -275,7 +275,7 @@ private string expressionChars(imported!"dmd.expression".Expression expression) 
 private imported!"quickbite.lang".Value realValue(
     imported!"dmd.expression".RealExp real_,
 ) {
-    import quickbite.frontend.dmd_values: frontendRealValue = realValue;
+    import quickbite.frontend.dmd.values: frontendRealValue = realValue;
 
     return frontendRealValue(real_);
 }
