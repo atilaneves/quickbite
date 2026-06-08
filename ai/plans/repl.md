@@ -220,6 +220,12 @@ history acceptance. Backends execute complete `ReplCell` values and return
   helper, returning status 1 with no D stack trace for both the
   missing-file and duplicate-load cases.
 
+- Renamed the REPL wrapper function from fixed `f` to an unspeakable
+  `__quickbite_repl_eval_N__` name. The session advances the suffix for
+  accepted cells, so user-defined module-scope `f` declarations no longer
+  collide with evaluation wrappers, and REPL diagnostics sanitize the
+  synthetic wrapper name back to `<repl>`.
+
 - Display a `<undisplayable>` placeholder for CTFE results Quickbite cannot
   represent yet instead of exposing backend internals. `ctfeValue` no longer
   throws `Unsupported CTFE eval result: …` for kinds such as a delegate
@@ -296,42 +302,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   "<repl>"
   "<repl>"
   "<repl>"
-  ```
-
-## To do
-
-- Rename the REPL wrapper function away from `f` so that user-defined
-  functions at module scope cannot collide with it. Any fixed single name
-  just shifts the reserved name. The fix must use an unspeakable synthetic
-  name — e.g. an ever-incrementing counter suffix like
-  `__quickbite_repl_eval_0__` — and sanitise it in error messages the same
-  way `snippet_N` is sanitised today. Compare Python (`eval`/`exec` into a
-  namespace dict — no wrapper needed) and GHCi (direct evaluation — no
-  wrapper needed); in both cases the user namespace is never polluted by a
-  synthetic function name.
-
-  Offending code (`source/quickbite/frontend/cell.d:630`):
-
-  ```d
-  private string evalSource(
-      in string moduleTranscript,
-      in string localTranscript,
-  ) {
-      return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
-  }
-  ```
-
-  Reproducer:
-
-  ```text
-  int f() { return 1; }
-  f()
-  ```
-
-  Current output:
-
-  ```text
-  Error: function `f()` conflicts with previous declaration at <repl>(1)
   ```
 
 ## Architecture

@@ -98,6 +98,18 @@ static foreach (backend; backends) {
         output.should == ["42"];
     }
 
+    @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["int f() { return 41; }", "f() + 1", ":q"],
+        );
+
+        output.should == ["42"];
+    }
+
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -714,6 +726,18 @@ static foreach (backend; backends) {
         }
         syntaxError.shouldThrow.msg.should ==
             "expression expected, not `End of File`";
+    }
+
+    @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        void failWithFunctionName() {
+            repl.submit(`assert(false, __FUNCTION__);`);
+        }
+        failWithFunctionName.shouldThrow.msg.should == "<repl>";
     }
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)

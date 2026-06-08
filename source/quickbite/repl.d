@@ -276,6 +276,9 @@ private bool isSyntheticReplValueName(in string value) @safe pure nothrow {
     import std.algorithm.searching: startsWith;
     import std.ascii: isDigit;
 
+    if (value.isSyntheticEvalFunctionName)
+        return true;
+
     if (!value.startsWith("snippet_"))
         return false;
 
@@ -295,7 +298,7 @@ private bool isSyntheticReplValueName(in string value) @safe pure nothrow {
     if (value[index .. $] == ".f")
         return true;
 
-    return false;
+    return value.isSyntheticEvalFunctionName;
 }
 
 private string withoutConsecutiveDuplicateLines(in string diagnostic)
@@ -336,6 +339,10 @@ private SyntheticNameReplacement syntheticNameReplacement(in string input)
     import std.algorithm.searching: startsWith;
     import std.ascii: isDigit;
 
+    const evalFunctionReplacement = syntheticEvalFunctionNameReplacement(input);
+    if (evalFunctionReplacement.consumed != 0)
+        return evalFunctionReplacement;
+
     if (!input.startsWith("snippet_"))
         return SyntheticNameReplacement.init;
 
@@ -356,4 +363,34 @@ private SyntheticNameReplacement syntheticNameReplacement(in string input)
         return SyntheticNameReplacement(index + 1, "");
 
     return SyntheticNameReplacement.init;
+}
+
+private bool isSyntheticEvalFunctionName(in string value)
+@safe pure nothrow {
+    return syntheticEvalFunctionNameReplacement(value).consumed == value.length;
+}
+
+private SyntheticNameReplacement syntheticEvalFunctionNameReplacement(
+    in string input,
+) @safe pure nothrow {
+    import std.algorithm.searching: startsWith;
+    import std.ascii: isDigit;
+
+    enum prefix = "__quickbite_repl_eval_";
+    enum suffix = "__";
+
+    if (!input.startsWith(prefix))
+        return SyntheticNameReplacement.init;
+
+    size_t index = prefix.length;
+    while (index < input.length && input[index].isDigit)
+        ++index;
+
+    if (index == prefix.length)
+        return SyntheticNameReplacement.init;
+
+    if (!input[index .. $].startsWith(suffix))
+        return SyntheticNameReplacement.init;
+
+    return SyntheticNameReplacement(index + suffix.length, "<repl>");
 }
