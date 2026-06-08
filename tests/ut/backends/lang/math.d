@@ -4,8 +4,6 @@ module ut.backends.lang.math;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("evaluatesRuntimePowDoubleInputs." ~ backend.stringof)
     unittest {

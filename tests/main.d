@@ -20,6 +20,7 @@ int main(string[] args) {
         "ut.backends.api.repl",
         "ut.backends.interpreter",
         "ut.backends.ctfe",
+        "ut.backends.runtime.cstdlib",
         "ut.value",
         "ut.compiler",
         "ut.benchmarks",
