@@ -2,12 +2,9 @@ module ut.backends.api.runner;
 
 
 import ut.backends;
-import std.algorithm.searching: canFind;
-import std.file: mkdirRecurse, write;
+import quickbite.frontend.compiler: parseModule;
 import std.path: buildPath;
 
-
-private:
 
 static foreach (backend; backends) {
     @("runTests.runsAttributedUnittests." ~ backend.stringof)
@@ -17,46 +14,48 @@ static foreach (backend; backends) {
             unittest {
                 assert(1 == 2);
             }
-        }).shouldThrow;
+        }).shouldThrowWithMessage("1 != 2");
     }
 
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
-        runBackendSourceFixtureTests!backend(q{
+        const msg = runBackendSourceFixtureTests!backend(q{
             @("quickbite regression")
             unittest {
                 throw new Exception("quickbite regression");
             }
-        }).shouldThrow.msg.canFind("quickbite regression").should == true;
+        }).shouldThrow.msg;
+        "quickbite regression".should.be in msg;
     }
 
     @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
-        import quickbite.frontend.compiler: parseModule;
 
-        const importPath = tempModuleDir("backend-retry");
-        mkdirRecurse(importPath);
-        write(
-            buildPath(importPath, "quickbite_backend_retry_import.d"),
-            q{
-                module quickbite_backend_retry_import;
-                enum quickbiteRetryAnswer = 42;
-            },
-        );
-        const source = q{
-            import quickbite_backend_retry_import;
-            unittest {
-                assert(quickbiteRetryAnswer == 42);
-            }
-        };
+        with(immutable Sandbox()) {
+            const importPath = "imports";
+            writeFile(
+                buildPath(importPath, "quickbite_backend_retry_import.d"),
+                q{
+                    module quickbite_backend_retry_import;
+                    enum quickbiteRetryAnswer = 42;
+                },
+            );
+            const source = q{
+                import quickbite_backend_retry_import;
+                unittest {
+                    assert(quickbiteRetryAnswer == 42);
+                }
+            };
 
-        parseModule(source, []).shouldThrowWithMessage(
-            "unable to read module `quickbite_backend_retry_import`\n" ~
-            "unable to read module `quickbite_backend_retry_import`\n" ~
-            "undefined identifier `quickbiteRetryAnswer`",
-        );
+            parseModule(source, []).shouldThrowWithMessage(
+                "unable to read module `quickbite_backend_retry_import`\n" ~
+                "unable to read module `quickbite_backend_retry_import`\n" ~
+                "undefined identifier `quickbiteRetryAnswer`",
+            );
 
-        runBackendSourceFixtureTests!backend(source, [importPath]);
+            runBackendSourceFixtureTests!backend(source, [inSandboxPath(importPath)]);
+
+        }
     }
 
     @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
@@ -176,59 +175,67 @@ static foreach (backend; backends) {
         }).module_;
 
         auto backend_ = newBackend!backend;
-        runModulesTests(backend_, [module1, module2,]).shouldThrow.msg
-            .canFind("second module ran").should == true;
+        const msg = runModulesTests(backend_, [module1, module2,]).shouldThrow.msg;
+        "second module ran".should.be in msg;
     }
 
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
-        const importPath = tempModuleDir("backend-source-import-paths");
-        mkdirRecurse(importPath);
-        write(
-            buildPath(importPath, "quickbite_backend_api_import.d"),
-            q{
-                module quickbite_backend_api_import;
-                int importedValue() {
-                    return 42;
-                }
-            },
-        );
+        with(immutable Sandbox()) {
+            const importPath = "backend-source-import-paths";
+            writeFile(
+                buildPath(importPath, "quickbite_backend_api_import.d"),
+                q{
+                    module quickbite_backend_api_import;
+                    int importedValue() {
+                        return 42;
+                    }
+                },
+            );
 
-        runBackendSourceFixtureTests!backend(q{
-            import quickbite_backend_api_import;
+            runBackendSourceFixtureTests!backend(
+                q{
+                    import quickbite_backend_api_import;
 
-            unittest {
-                assert(importedValue == 42);
-            }
-        }, [importPath]);
+                    unittest {
+                        assert(importedValue == 42);
+                    }
+                },
+                [inSandboxPath(importPath)],
+            );
+        }
     }
 
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
-        const importPath = tempModuleDir("backend-file-import-paths");
-        mkdirRecurse(importPath);
-        write(
-            buildPath(importPath, "quickbite_backend_api_file_import.d"),
-            q{
-                module quickbite_backend_api_file_import;
-                int importedValue() {
-                    return 42;
-                }
-            },
-        );
+        with(immutable Sandbox()) {
+            const importPath = "backend-file-import-paths";
+            writeFile(
+                buildPath(importPath, "quickbite_backend_api_file_import.d"),
+                q{
+                    module quickbite_backend_api_file_import;
+                    int importedValue() {
+                        return 42;
+                    }
+                },
+            );
 
-        const fixturePath = buildPath(importPath, "fixture.d");
-        write(
-            fixturePath,
-            q{
-                import quickbite_backend_api_file_import;
+            const fixturePath = buildPath(importPath, "fixture.d");
+            writeFile(
+                fixturePath,
+                q{
+                    import quickbite_backend_api_file_import;
 
-                unittest {
-                    assert(importedValue == 42);
-                }
-            },
-        );
+                    unittest {
+                        assert(importedValue == 42);
+                    }
+                },
+            );
 
-        runBackendFileFixtureTests!backend(fixturePath, [importPath]);
+            runBackendFileFixtureTests!backend(
+                inSandboxPath(fixturePath),
+                [inSandboxPath(importPath)],
+            );
+        }
     }
 }
