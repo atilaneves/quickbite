@@ -251,6 +251,12 @@ green through existing `runModulesTests` iteration and Interpreter
 module-backed `runTests`; signal was verified by temporarily returning after
 the first module.
 
+Runner progress: `runBackendSourceFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths fixture path and narrow
+direct free-function call handling; signal was verified by temporarily
+disabling the Interpreter `call.f` dispatch.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
