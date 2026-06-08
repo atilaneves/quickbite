@@ -60,9 +60,9 @@ the normal test-approval stop.
 | 1 | 3.0 | `tests/ut/backends/lang/eval.d` |
 | 2 | 4.0 | `tests/ut/backends/lang/integrals.d` |
 | 3 | 4.5 | `tests/ut/backends/api/runner.d` |
-| 4 | 5.0 | `tests/ut/backends/lang/logic.d` |
-| 5 | 6.0 | `tests/ut/backends/lang/diagnostics.d` |
-| 6 | 6.0 | `tests/ut/backends/runtime/cstdlib.d` |
+| 4 | 4.5 | `tests/ut/backends/runtime/cstdlib.d` |
+| 5 | 5.0 | `tests/ut/backends/lang/logic.d` |
+| 6 | 6.0 | `tests/ut/backends/lang/diagnostics.d` |
 | 7 | 6.5 | `tests/ut/backends/lang/math.d` |
 | 8 | 7.5 | `tests/ut/backends/api/repl.d` |
 | 9 | 8.0 | `tests/ut/backends/lang/arrays.d` |
@@ -76,12 +76,17 @@ the normal test-approval stop.
 
 - `eval.d`: Direct `eval`, scalar values, literals, arithmetic, casts, simple
   multi-cell declarations, string literals, and a few `std.math` calls.
-- `integral_types.d`: All integral widths and signedness, runtime casts and
+- `integrals.d`: All integral widths and signedness, runtime casts and
   truncation, typed locals, aliases, enum constants, function parameters and
   returns, and signed/unsigned assertion formatting.
 - `api/runner.d`: Module-backed unittest execution, attributed unittests, thrown
   unittests, import paths, multiple modules, assertion failure handling,
   summary counts, DMD unittest symbols, and source/file locations.
+- `cstdlib.d`: A single `malloc`/`free` test whose only backend requirement is
+  to fail when a called function has no available body; the pointer casts,
+  indexing, and `scope(exit)` in the source are never reached. Asserts the
+  diagnostic that such a function cannot be interpreted at compile time. Gated
+  by `api/runner`'s unittest-execution surface, not by any pointer behavior.
 - `logic.d`: Boolean and non-boolean truthiness, `!`, `&&`, `||`,
   short-circuiting, comparisons inside logical expressions, operand calls, and
   assertion diagnostics.
@@ -101,7 +106,7 @@ the normal test-approval stop.
   parameters, pointers, pointer arithmetic, and string copying.
 - `structs.d`: Struct layout, default initialization, field access and writes,
   copy semantics, methods, constructors, `this` mutation, template methods,
-  `ref` fields, dynamic array fields, returns, `new Struct`, pointer field
+  `ref` parameters, dynamic array fields, returns, `new Struct`, pointer field
   access, `with`, nested structs, static array fields, destructors, and
   postblits.
 - `control_flow.d`: `if`, loops, `foreach`, `foreach_reverse`, `break`,
@@ -129,4 +134,7 @@ the normal test-approval stop.
 
 `tests/ut/backends/package.d` is promotion plumbing, not a behavior target.
 `tests/ut/backends/architecture.d` is a global architecture guard and does not
-execute the backend matrix.
+execute the backend matrix. `tests/ut/backends/ctfe.d` and
+`tests/ut/backends/interpreter.d` are backend-specific tests with hardcoded
+backend names; they do not use the `static foreach (backend; backends)` matrix
+and are not promotable shared-behavior targets.

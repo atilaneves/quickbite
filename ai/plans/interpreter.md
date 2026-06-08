@@ -180,9 +180,9 @@ enclosing backend matrix before promoting it; if it already uses
 `backendsWith!Interpreter`, it is historical progress, not the next slice.
 
 Current next-candidate note: after verifying `logic.d` has no CTFE-only
-`Interpreter` gaps, inspect `integral_types.d` and `api/runner.d` but do not
+`Interpreter` gaps, inspect `integrals.d` and `api/runner.d` but do not
 promote their first remaining tests unless they are genuinely smaller than the
-diagnostics candidates. In the current checkout, `integral_types.d` combines
+diagnostics candidates. In the current checkout, `integrals.d` combines
 aliases, enum constants, typed casts, locals, and parameterized calls, while
 `api/runner.d` quickly reaches runner summary/result behavior. The next
 plausible interpreter slice is therefore
