@@ -154,7 +154,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(

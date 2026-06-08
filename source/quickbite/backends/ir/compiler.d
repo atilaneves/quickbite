@@ -144,14 +144,25 @@ private struct Compiler {
 
     private Value compileCall(imported!"dmd.expression".CallExp call) {
         assert(call.f !is null);
-        assert(call.f.ident.toString == "fabs");
         assert(call.arguments !is null);
-        assert(call.arguments.length == 1);
 
-        return compileUnaryExpression(
-            callArguments(call)[0],
-            UnaryOperation.fabs,
-        );
+        switch (call.f.ident.toString) {
+            case "fabs":
+                assert(call.arguments.length == 1);
+                return compileUnaryExpression(
+                    callArguments(call)[0],
+                    UnaryOperation.fabs,
+                );
+            case "pow":
+                assert(call.arguments.length == 2);
+                return compileBinaryExpression(
+                    callArguments(call)[0],
+                    callArguments(call)[1],
+                    BinaryOperation.pow,
+                );
+            default:
+                assert(0);
+        }
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -316,8 +327,16 @@ private struct Compiler {
         BinExp expression,
         in BinaryOperation operation,
     ) {
-        const lhs = compileExpression(expression.e1);
-        const rhs = compileExpression(expression.e2);
+        return compileBinaryExpression(expression.e1, expression.e2, operation);
+    }
+
+    private Value compileBinaryExpression(
+        Expression lhsExpression,
+        Expression rhsExpression,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(lhsExpression);
+        const rhs = compileExpression(rhsExpression);
         const destination = nextValue(lhs.type, lhs.resultType);
         instructions ~= Instruction(BinaryOp(
             operation,

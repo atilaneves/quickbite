@@ -39,6 +39,7 @@ package enum BinaryOperation {
     subtract,
     multiply,
     divide,
+    pow,
 }
 
 package enum UnaryOperation {

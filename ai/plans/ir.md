@@ -138,7 +138,10 @@ and VM execution for `f64` negation. The promoted
 narrow call lowering for one-argument `fabs`, the backend-local
 `UnaryOperation.fabs` instruction shape, `f32` value-type mapping and local
 storage, and VM execution for `f32` `fabs` while preserving the public `float`
-result. IR values carry both an operation type (`i32`, `f32`, and so on) and a
+result. The promoted `powFloatDoesNotReturnDoubleValue.IR` test added narrow
+two-argument `pow` call lowering to a typed `BinaryOperation.pow` instruction
+and VM execution for `f32` operands while preserving the public `float` result.
+IR values carry both an operation type (`i32`, `f32`, and so on) and a
 D-visible scalar result category so the VM can keep arithmetic dispatch typed
 while preserving the public eval result type. `vm.d` executes the single entry
 block directly before converting the returned IR value to `quickbite.lang.Value`
@@ -167,6 +170,7 @@ The currently covered IR backend eval tests are:
 - `floatingSubtractionUsesNumericValues.IR`
 - `floatingUnaryMinusUsesNumericValue.IR`
 - `fabsFloatPreservesReturnType.IR`
+- `powFloatDoesNotReturnDoubleValue.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing

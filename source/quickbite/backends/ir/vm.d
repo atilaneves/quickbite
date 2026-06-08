@@ -233,6 +233,28 @@ package imported!"quickbite.lang".Value eval(
                                 assert(0);
                         }
                         break;
+                    case pow:
+                        import std.math: pow;
+
+                        final switch (binary.type) with (Type) {
+                            case f32:
+                                valueBits[binary.destination.id] = floatBits(
+                                    pow(
+                                        floatFromBits(valueBits[binary.lhs]),
+                                        floatFromBits(valueBits[binary.rhs]),
+                                    ),
+                                );
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i32:
+                            case i64:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
                 }
             },
         );
