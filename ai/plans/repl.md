@@ -188,8 +188,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   enum s = format("hello %s", 42);  // "hello 42" — no error
   ```
 
-## To do
-
 - Drop the trailing `null` from lazy-range struct display. DMD
   `pragma(msg)` omits the function-pointer field (which holds the
   lambda and has no compile-time representation); the REPL's `Value`
@@ -213,6 +211,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   ```text
   MapResult([1, 2, 3])
   ```
+
+## To do
 
 - Collapse duplicate import-path lines in failed-import diagnostics.
   DMD emits `import path[N] = …` once, after the error. The REPL

@@ -229,7 +229,7 @@ static foreach (backend; backends) {
             ],
         );
 
-        output.should == ["MapResult([1, 2, 3], null)"];
+        output.should == ["MapResult([1, 2, 3])"];
     }
 
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
