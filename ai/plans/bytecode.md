@@ -135,6 +135,11 @@ Lua-specific bytecode shape.
   `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
   coverage gap after the summary API slice: the existing bytecode summary path
   already counted all-passing unittest declarations correctly.
+- `runTestSummary.countsAssertErrorsAsFailures` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap after the summary API and narrow throw-expression slices: the
+  existing summary path already counts thrown `AssertError` instances as
+  failures.
 
 ## Current Next Step
 Continue with the next module named by
