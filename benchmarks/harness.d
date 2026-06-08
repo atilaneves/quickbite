@@ -8,6 +8,7 @@ public struct Result {
     // Sample standard deviation in hnsecs; floating-point because Duration
     // cannot represent a sub-integer-hnsec spread.
     public double stddevHnsecs;
+    public size_t maxRamBytes;
 }
 
 public Result measure(
@@ -21,6 +22,7 @@ public Result measure(
     import std.math: sqrt;
 
     auto timings = new Duration[](iterations);
+    size_t maxRamBytes;
 
     foreach (i; 0 .. warmup)
         runTests();
@@ -33,9 +35,13 @@ public Result measure(
 
     foreach (i; 0 .. iterations) {
         GC.collect;
+        const baselineRam = GC.stats.usedSize;
         const start = MonoTime.currTime;
         runTests();
         timings[i] = MonoTime.currTime - start;
+        const usedRam = GC.stats.usedSize;
+        if (usedRam > baselineRam && usedRam - baselineRam > maxRamBytes)
+            maxRamBytes = usedRam - baselineRam;
     }
 
     double sum = 0;
@@ -58,5 +64,5 @@ public Result measure(
             (timings[iterations / 2 - 1].total!"hnsecs"
              + timings[iterations / 2].total!"hnsecs") / 2,
         );
-    return Result(timings[0], median, stddev);
+    return Result(timings[0], median, stddev, maxRamBytes);
 }
