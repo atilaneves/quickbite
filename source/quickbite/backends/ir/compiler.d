@@ -51,6 +51,7 @@ private struct Compiler {
         Load,
         ResultType,
         ReturnValue,
+        StringConst,
         Store,
         Terminator,
         Type,
@@ -120,6 +121,9 @@ private struct Compiler {
 
         if (auto real_ = expression.isRealExp)
             return compileReal(real_);
+
+        if (auto string_ = expression.isStringExp)
+            return compileString(string_);
 
         if (auto call = expression.isCallExp)
             return compileCall(call);
@@ -306,6 +310,15 @@ private struct Compiler {
             default:
                 assert(0);
         }
+    }
+
+    private Value compileString(imported!"dmd.expression".StringExp string_) {
+        const destination = nextValue(Type.ptr, ResultType.string_);
+        instructions ~= Instruction(StringConst(
+            stringChars(string_),
+            destination,
+        ));
+        return destination;
     }
 
     private Value compileUnaryExpression(
@@ -499,4 +512,12 @@ private imported!"quickbite.backends.ir.language".ResultType resultType(
         default:
             assert(0);
     }
+}
+
+private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+    char[] values;
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        values ~= cast(char) string_.getIndex(index);
+
+    return values;
 }

@@ -141,6 +141,10 @@ storage, and VM execution for `f32` `fabs` while preserving the public `float`
 result. The promoted `powFloatDoesNotReturnDoubleValue.IR` test added narrow
 two-argument `pow` call lowering to a typed `BinaryOperation.pow` instruction
 and VM execution for `f32` operands while preserving the public `float` result.
+The promoted `stringLiteralIsArray.IR` test added a backend-local
+`StringConst` instruction, narrow compiler lowering for DMD `StringExp`, a
+`string_` result category, and VM string result storage used only for final
+conversion to `quickbite.lang.Value`.
 IR values carry both an operation type (`i32`, `f32`, and so on) and a
 D-visible scalar result category so the VM can keep arithmetic dispatch typed
 while preserving the public eval result type. `vm.d` executes the single entry
@@ -171,23 +175,29 @@ The currently covered IR backend eval tests are:
 - `floatingUnaryMinusUsesNumericValue.IR`
 - `fabsFloatPreservesReturnType.IR`
 - `powFloatDoesNotReturnDoubleValue.IR`
+- `stringLiteralIsArray.IR`
 
-The next implementation slice should pick the next smallest current
-CTFE-backed eval behavior that still excludes `IR`, promote the existing
-backend matrix, and run the focused test. If it is red, verify it is red for
-the expected missing behavior. If it is green, verify the greenness by
-temporarily mutating the promoted test or relevant production code, confirming
-the focused test fails, and restoring the mutation. Inspect the DMD AST that
-reaches the IR compiler, then add only the IR shape and VM support required by
-that behavior. Verify the current checkout before editing because backend
-progress notes can go stale.
+All tests in `tests/ut/backends/lang/eval.d` now include `IR`, so `eval.d` is
+complete for the current backend matrix.
+
+The next implementation slice should move to the next module in
+`ai/plans/backend-test-modules-order.md`:
+`tests/ut/backends/lang/integrals.d`. Pick the smallest current CTFE-backed
+behavior in that module that still excludes `IR`, promote the existing backend
+matrix, and run the focused test. If it is red, verify it is red for the
+expected missing behavior. If it is green, verify the greenness by temporarily
+mutating the promoted test or relevant production code, confirming the focused
+test fails, and restoring the mutation. Inspect the DMD AST that reaches the
+IR compiler, then add only the IR shape and VM support required by that
+behavior. Verify the current checkout before editing because backend progress
+notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/eval.d`. Verify that
-`floatingSubtractionUsesNumericValues` includes `IR`; if it does not, treat
-this handoff as stale and restore the completed promotion before moving on.
-Then choose the next smallest eval behavior that still excludes `IR`.
+Start with `tests/ut/backends/lang/integrals.d`, the next module after
+`eval.d` in `ai/plans/backend-test-modules-order.md`. Verify in the current
+checkout which backend matrices still exclude `IR`, then choose the smallest
+honest promotion from that module.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

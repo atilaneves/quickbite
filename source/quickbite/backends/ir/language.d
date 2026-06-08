@@ -26,6 +26,7 @@ package enum ResultType {
     char_,
     float_,
     double_,
+    string_,
 }
 
 package struct Value {
@@ -49,6 +50,11 @@ package enum UnaryOperation {
 
 package struct Const {
     public ulong bits;
+    public Value destination;
+}
+
+package struct StringConst {
+    public char[] elements;
     public Value destination;
 }
 
@@ -87,6 +93,7 @@ package struct Store {
 
 package alias Instruction = imported!"std.sumtype".SumType!(
     Const,
+    StringConst,
     BinaryOp,
     UnaryOp,
     Cast,

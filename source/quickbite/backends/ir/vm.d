@@ -13,6 +13,7 @@ package imported!"quickbite.lang".Value eval(
         Load,
         ResultType,
         ReturnValue,
+        StringConst,
         Store,
         UnaryOp,
         UnaryOperation,
@@ -24,12 +25,17 @@ package imported!"quickbite.lang".Value eval(
     // these bits.
     ulong[] valueBits;
     valueBits.length = function_.valueCount;
+    string[] valueStrings;
+    valueStrings.length = function_.valueCount;
     ulong[] localBits;
     localBits.length = function_.localCount;
     foreach (instruction; function_.blocks[0].instructions) {
         instruction.match!(
             (const Const const_) {
                 valueBits[const_.destination.id] = const_.bits;
+            },
+            (const StringConst const_) {
+                valueStrings[const_.destination.id] = const_.elements.idup;
             },
             (const Cast cast_) {
                 final switch (cast_.sourceType) with (Type) {
@@ -287,6 +293,8 @@ package imported!"quickbite.lang".Value eval(
                     return Value(floatFromBits(valueBits[return_.value]));
                 case double_:
                     return Value(doubleFromBits(valueBits[return_.value]));
+                case string_:
+                    return Value(valueStrings[return_.value]);
             }
         },
         (_) {
