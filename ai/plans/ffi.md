@@ -1,4 +1,4 @@
-# Design: Native Dub Dependency Integration for a D Bytecode VM
+# Design: Native Dependency Integration for Quickbite Backends
 
 ## 1. Goal
 
@@ -8,18 +8,22 @@ The goal is to minimize the latency of the normal development loop:
 edit project code -> run unittests -> get result
 ```
 
-The bytecode VM exists to avoid the cost of repeatedly compiling and
-linking the project under test to native code. However, real D
-projects usually depend on dub packages, Phobos, druntime, C
-libraries, OS services, and other native facilities. Reimplementing or
-emulating those dependencies inside the VM would be both expensive and
-semantically fragile.
+Quickbite backends exist to avoid the cost of repeatedly compiling and
+linking the project under test through the normal native toolchain.
+Some backends interpret an internal representation, some walk analysed
+DMD trees, and later backends may execute generated native code.
+
+However, real D projects usually depend on dub packages, Phobos,
+druntime, C libraries, OS services, and other native facilities.
+Reimplementing or emulating those dependencies inside every backend
+would be both expensive and semantically fragile.
 
 The intended design is therefore a mixed-mode execution model:
 
 ```text
-project-under-test code: bytecode
-dub dependencies: native code, compiled and cached ahead of time
+project-under-test code: backend-specific artifact
+dub D dependencies: native code, compiled and cached ahead of time
+runtime/native environment: discovered, validated, and recorded ahead of time
 interop boundary: generated wrapper thunks
 runtime: same process, same druntime, same GC, same OS access
 ```
@@ -33,10 +37,10 @@ This design does not attempt to:
 
 ```text
 - load arbitrary .o files directly;
-- implement a D linker inside the VM;
+- implement a D linker inside every backend;
 - emulate filesystem, sockets, threads, GC, TLS, or druntime behavior;
 - make dependency execution hermetic by default;
-- call arbitrary extern(D) functions directly from bytecode;
+- call arbitrary extern(D) functions directly from backend code;
 - make all dub dependency code native purely because it came from a dub package.
 ```
 
@@ -50,15 +54,20 @@ and a hot project execution path.
 ```text
 Cold path, rarely run:
   dub resolve
-  compile dependencies native
+  discover compiler/runtime/native library availability
+  compile D dependencies native
   generate dependency/native wrappers
-  link/load native dependency image
-  cache manifests and metadata
+  link/write native dependency image
+  cache manifests, environment records, and metadata
 
 Hot path, per edit:
+  check cached dependency image and native environment freshness
+  start the Quickbite host process
+  load cached native dependency image
+  initialize generated wrapper table
   parse/sema changed project modules
-  bytecode-compile project-under-test
-  execute VM unittests
+  emit or prepare the backend-specific test artifact
+  execute selected unittests through the active backend
   call cached native dependency image when needed
 ```
 
@@ -71,14 +80,19 @@ dub remove
 dependency source changes
 compiler/version flag changes
 ABI-affecting configuration changes
+runtime library changes
+native package-manager library changes
+pkg-config or linker flag changes
+loader search-path changes
 ```
 
-The hot path should not invoke dub, compile dependencies, generate
-wrappers, link native code, or resolve native symbols by name.
+The hot path should not invoke dub, compile dependencies, query
+package managers, run `pkg-config`, generate wrappers, link native
+code, or resolve native symbols by name.
 
-## 4. Native dependency image
+## 4. Native dependency image and environment
 
-Dub dependencies are compiled into a cached native image.
+Dub D dependencies are compiled into a cached native image.
 
 Possible forms:
 
@@ -89,8 +103,31 @@ quickbite_deps_<hash>.dll
 linked native object bundle
 ```
 
-The preferred model is a shared library loaded by a persistent
-Quickbite host process.
+The preferred model is a shared library loaded by the Quickbite host
+process.
+
+Not every native input is compiled by Quickbite. Phobos, druntime,
+libc, compiler support libraries, and libraries installed by the
+system package manager are part of the native environment. Quickbite
+should discover and record them during preparation, then treat their
+recorded ABI and loader data as part of the cached execution surface.
+
+The environment manifest should include:
+
+```text
+druntime and Phobos library identity and load path
+C runtime identity
+compiler support libraries
+external native library names, SONAMEs, and resolved paths
+pkg-config versions and emitted cflags/libs, where used
+linker search paths and rpath/runpath settings
+loader-affecting environment settings
+package-manager package names and versions, where cheaply available
+```
+
+This manifest is not a promise of hermeticity. It is a freshness and
+diagnostic record so the hot path can detect obvious stale native
+state without rediscovering the world.
 
 The cache key should include at least:
 
@@ -103,13 +140,23 @@ compiler flags
 version identifiers
 debug/release mode
 static import path configuration
+druntime and Phobos ABI identity
+C runtime identity
+external native library ABI/load identity
+pkg-config outputs used for compilation or loading
+linker and loader search-path configuration
+callable identity set and lowering manifest
 wrapper ABI version
 Quickbite dependency ABI version
 ```
 
-The cache key should not include ordinary project source files under
-edit, except where template instantiations or generated wrappers
-depend on project-specific code.
+The dependency image cache key should not include ordinary project
+source files under edit. Mixed template instantiations are separate:
+if Quickbite caches a native instantiation that depends on project
+code, that artifact needs its own cache key covering the instantiated
+callable identity, template arguments, project type and symbol
+identities, compile-time values, relevant `version` and `debug`
+context, and the wrapper lowering contract.
 
 The output directory may look like:
 
@@ -121,6 +168,7 @@ The output directory may look like:
       wrappers.d
       wrappers.o
       wrapper_manifest.qb
+      native_environment.qb
       abi_manifest.qb
       dependency_summary.qb
       build_manifest.qb
@@ -128,7 +176,7 @@ The output directory may look like:
 
 ## 5. Same-process execution
 
-Dependencies live in the same process as the VM.
+Dependencies live in the same process as the active backend.
 
 This gives dependency code normal access to:
 
@@ -141,6 +189,7 @@ module constructors
 filesystem
 sockets
 C libraries
+package-manager installed native libraries
 threads
 environment variables
 process APIs
@@ -149,109 +198,94 @@ process APIs
 This matches ordinary compiled D execution much more closely than a
 sandboxed or emulated dependency model.
 
+The host must load dependency images through platform- and
+druntime-supported mechanisms that run native library constructors,
+D module constructors, TLS setup, and runtime registration before any
+wrapper thunk is called. Generated wrapper table initialization happens
+after dependency image initialization succeeds.
+
+The MVP should treat dependency image unloading and destructor behavior
+as process-exit cleanup only. Explicit unloading, reloading, and
+destructor sequencing are later extensions.
+
 The host process contains:
 
 ```text
 quickbite-host executable
   ├─ druntime / Phobos
-  ├─ bytecode VM
+  ├─ libc / platform libraries
+  ├─ external native libraries
+  ├─ active Quickbite backend
   ├─ dependency native image
   ├─ generated wrapper table
-  └─ bytecode for project-under-test
+  └─ backend artifact for project-under-test
 ```
 
 The main runtime transition is:
 
 ```text
-bytecode VM
+backend execution engine
   -> generated native wrapper thunk
       -> real compiled D dependency function
 ```
 
-## 6. Persistent daemon
+## 6. Process model
 
-For lowest edit-test latency, the preferred runtime is a persistent
-daemon.
-
-The daemon keeps resident:
-
-```text
-druntime
-loaded native dependency image
-wrapper table
-dependency metadata
-possibly dmd frontend state
-test discovery cache
-VM infrastructure
-```
-
-Per edit, the daemon receives changed project code or a test request,
-invalidates affected project modules, emits bytecode, resets VM state,
-and runs tests.
-
-This avoids repeated process startup, dependency loading, module
-construction, and wrapper table initialization.
-
-There should be at least two modes:
-
-```text
-fast mode:
-  persistent process
-  dependency module constructors run once
-  native globals persist between test runs
-
-strict mode:
-  fresh process or stronger reset behavior
-  closer to normal dub test isolation
-```
-
-Fast mode is the default for quick feedback. Strict mode is used when
-native global state or module constructor behavior affects
-correctness.
+The current design assumes an ordinary Quickbite host process for each
+`quickbite test` invocation. A persistent host daemon is a future
+latency aspiration only.
 
 ## 7. Wrapper-based native calls
 
-The VM should not call arbitrary dependency functions directly.
+Backends should not call arbitrary dependency functions directly.
 
 Instead, dependency calls go through generated wrapper thunks. The
-wrapper is responsible for converting VM values into D values, calling
-the real dependency function, catching exceptions, and converting the
-result back into VM representation.
+wrapper is responsible for converting backend values into D values,
+calling the real dependency function, catching exceptions, and
+converting the result back into the backend representation.
 
 Generic wrapper shape:
 
 ```d
 extern(C)
-VMValue qb_dep_37(VMContext* ctx, VMValue* args, size_t nargs)
+QBValue qb_dep_37(QBContext* ctx, QBValue* args, size_t nargs)
 {
     try
     {
         auto path = args[0].toDString();
         auto result = package.foo.readConfig(path);
-        return VMValue.from(ctx, result);
+        return QBValue.from(ctx, result);
     }
-    catch (Throwable t)
+    catch (Exception e)
     {
-        return ctx.throwNative(t);
+        return ctx.throwNative(e);
+    }
+    catch (Error e)
+    {
+        return ctx.failNative(e);
     }
 }
 ```
 
-Bytecode uses numeric IDs:
+Each backend maps call sites to numeric wrapper IDs in its own
+representation:
 
 ```text
-CALL_DEP 37, argc=1
+bytecode:     CALL_DEP 37, argc=1
+IR:           NativeCall id=37, argc=1
+tree walker:  dispatch wrapper id 37 from the analysed call
+codegen:      call generated stub or import entry for wrapper id 37
 ```
 
 Runtime call path:
 
 ```d
-auto thunk = ctx.depThunks[37];
+auto thunk = ctx.nativeThunks[37];
 auto result = thunk(ctx, args.ptr, args.length);
 ```
 
-There should be no string lookup, symbol lookup, reflection, or
-signature decoding in the hot path.
+There should be no per-wrapper string lookup, symbol lookup,
+reflection, or signature decoding in the hot path.
 
 ## 8. Generic versus specialized thunks
 
@@ -259,8 +293,8 @@ Two wrapper tiers are useful.
 
 ### 8.1 Generic wrappers
 
-Generic wrappers use boxed `VMValue` arguments and return a boxed
-`VMValue`.
+Generic wrappers use boxed `QBValue` arguments and return a boxed
+`QBValue`.
 
 They are appropriate for:
 
@@ -286,16 +320,18 @@ Example:
 
 ```d
 extern(C)
-int qb_dep_91_i32_i32_to_i32(VMContext* ctx, int a, int b)
+int qb_dep_91_i32_i32_to_i32(QBContext* ctx, int a, int b)
 {
     return dep.fastAdd(a, b);
 }
 ```
 
-Bytecode may use specialized instructions:
+Backends may use specialized call forms:
 
 ```text
-CALL_DEP_I32_I32_TO_I32 91
+bytecode: CALL_DEP_I32_I32_TO_I32 91
+IR:       NativeCallI32I32ToI32 id=91
+codegen:  direct call to qb_dep_91_i32_i32_to_i32
 ```
 
 Specialized wrappers are useful for:
@@ -332,7 +368,8 @@ auto ys = dep.processAll(xs);
 or:
 
 ```text
-compile processOne to bytecode if its source/body is available and simple
+execute processOne in the active backend if its source/body is available
+and simple
 ```
 
 The compiler should detect dependency calls inside loops and classify
@@ -342,7 +379,7 @@ Possible policies:
 
 ```text
 small dependency function + body available:
-  bytecode-compile or inline
+  execute through the active backend or inline
 
 small dependency function + body unavailable:
   specialized native thunk
@@ -364,20 +401,20 @@ Bad rule:
 if module belongs to dub dependency:
     execute native
 else:
-    execute bytecode
+    execute through the active backend
 ```
 
 Better rule:
 
 ```text
-if concrete function body should be executed by VM:
-    compile to bytecode
+if concrete function body should be executed by the active backend:
+    lower, interpret, or compile it through that backend
 
 elif concrete function has cached native implementation:
     call wrapper thunk
 
 elif function is template-instantiated with project code:
-    compile instantiated body to bytecode or cache separately by instantiation hash
+    handle the instantiation through the active backend or cache it separately
 
 else:
     unsupported or native fallback
@@ -393,8 +430,12 @@ auto ys = xs.map!(x => x + 1);
 
 This is not merely a precompiled dependency call. The instantiated
 body contains project code via the lambda. It should usually be
-handled as bytecode or as a separately cached specialization, not as a
-simple call into precompiled dependency code.
+handled by the active backend or as a separately cached specialization,
+not as a simple call into precompiled dependency code.
+
+Separately cached specializations are not part of the ordinary
+dependency image. They are project-sensitive artifacts with their own
+freshness rules.
 
 By contrast:
 
@@ -406,7 +447,7 @@ can reasonably be a native dependency call.
 
 ## 11. Value representation across the boundary
 
-Values crossing the VM/native boundary fall into three categories.
+Values crossing the backend/native boundary fall into three categories.
 
 ### 11.1 Plain ABI values
 
@@ -437,15 +478,22 @@ simple structs
 Example rules:
 
 ```text
-VM string -> native string valid for duration of call, or GC-owned copy
-native string -> VM-owned copy, unless explicitly borrowed
-VM array -> native slice with clear ownership/lifetime
-native array -> VM-owned copy or native handle, depending on type
+backend string -> native string valid for duration of call, or GC-owned copy
+native string -> backend-owned copy, unless explicitly borrowed
+backend array -> native slice with clear ownership/lifetime
+native array -> backend-owned copy or native handle, depending on type
 ```
+
+Mutable aliases are separate from ordinary array/string bridging. The
+MVP should treat basic dynamic arrays as copy/owned values or immutable
+borrows only. It may reject mutable slices, pointers, `ref` returns, and
+any native API that can retain or write through a backend-owned
+reference. Later support needs an explicit borrow, writeback, pinning,
+and rooting contract before those calls are accepted.
 
 ### 11.3 Opaque native values
 
-The VM should not inspect complex native values such as:
+Backends should not inspect complex native values such as:
 
 ```text
 File
@@ -479,13 +527,13 @@ auto f = File("foo.txt", "r");
 auto line = f.readln();
 ```
 
-The VM represents `f` as an opaque handle. `readln` becomes another
-native wrapper call that receives the handle.
+The active backend represents `f` as an opaque handle. `readln`
+becomes another native wrapper call that receives the handle.
 
 ## 12. Exceptions
 
 Native D code may throw. Exceptions should not initially unwind
-through arbitrary VM interpreter frames.
+through arbitrary backend interpreter frames.
 
 Wrapper boundary rule:
 
@@ -493,46 +541,55 @@ Wrapper boundary rule:
 try
 {
     auto r = realDependencyFunction(...);
-    return VMValue.from(ctx, r);
+    return QBValue.from(ctx, r);
 }
-catch (Throwable t)
+catch (Exception e)
 {
-    return ctx.throwNative(t);
+    return ctx.throwNative(e);
+}
+catch (Error e)
+{
+    return ctx.failNative(e);
 }
 ```
 
-The VM then maps the native throwable into its own exception state.
+The active backend then maps the native exception into its own
+exception state. Native `Error` values are different: they indicate
+assertion failure, runtime failure, or another fatal condition. Wrappers
+may catch them to attach diagnostics, but should not turn them into
+ordinary backend pending exceptions.
 
 Initial support:
 
 ```text
-native exception -> VM pending exception
-VM handles or reports it
+native Exception -> backend pending exception
+native Error -> fatal native failure
+backend handles or reports normal exceptions
 ```
 
 Later support:
 
 ```text
-bytecode exception -> native D Throwable when native code calls back into bytecode
+backend exception -> native D Throwable when native code calls back into backend
 ```
 
 The second direction is harder and can be deferred.
 
 ## 13. GC and lifetime
 
-Because the VM and native dependencies share one D runtime, native GC
-allocation works normally.
+Because the Quickbite host and native dependencies share one D
+runtime, native GC allocation works normally.
 
-However, VM storage must not hide GC references from the collector.
+However, backend storage must not hide GC references from the collector.
 
-If VM values can contain D GC pointers, then one of the following must
-be true:
+If backend values can contain D GC pointers, then one of the following
+must be true:
 
 ```text
-VM frames are allocated in GC-scanned memory
+backend frames are allocated in GC-scanned memory
 GC references are stored in GC-managed objects
-VM registers/stacks are registered as roots
-VM avoids raw GC pointers in unscanned malloc memory
+backend registers/stacks are registered as roots
+backend avoids raw GC pointers in unscanned malloc memory
 ```
 
 This applies to:
@@ -546,11 +603,11 @@ closures
 native handles pointing to GC objects
 ```
 
-A conservative initial design should copy simple data into VM-owned
+A conservative initial design should copy simple data into backend-owned
 representations and use GC-visible handle tables for native
 references.
 
-## 14. Native callbacks into bytecode
+## 14. Native callbacks into backend code
 
 Some dependency APIs accept callbacks:
 
@@ -565,19 +622,23 @@ This requires a reverse bridge:
 ```text
 native dependency
   -> callback trampoline
-      -> VM invokes bytecode closure
+      -> backend invokes project closure
 ```
 
 Initial implementation may reject callbacks/delegates crossing into
 native dependency code.
 
 Eventually, callback support requires generated native trampolines and
-a bytecode closure registry.
+a backend closure registry keyed by callback ID. D delegates carry both
+a function pointer and a context pointer, so the bridge must define the
+delegate context lifetime, keep backend closure state GC-visible, and
+reject callbacks that may outlive the current test or backend execution
+context unless a durable owner is provided.
 
 The hard cases are template-heavy D APIs where the callback is part of
 the instantiated dependency code. These may be better handled by
-bytecode-compiling the instantiated template body instead of using
-native callbacks.
+executing the instantiated template body through the active backend
+instead of using native callbacks.
 
 ## 15. Build pipeline
 
@@ -593,14 +654,15 @@ performs the cold dependency work:
 
 ```text
 1. run or query dub dependency resolution
-2. compute dependency cache key
-3. check for existing dependency image
-4. compile dub dependencies natively if needed
-5. analyze reachable dependency call boundaries
-6. generate wrapper source
-7. compile wrappers
-8. link dependency image
-9. write wrapper and ABI manifests
+2. discover compiler runtime, Phobos, druntime, libc, and native libraries
+3. compute dependency and native-environment cache key
+4. check for existing dependency image and environment manifest
+5. compile dub D dependencies natively if needed
+6. analyze reachable dependency call boundaries
+7. generate wrapper source
+8. compile wrappers
+9. link dependency image against recorded native inputs
+10. write wrapper, ABI, and native environment manifests
 ```
 
 ### 15.2 Test command
@@ -614,12 +676,14 @@ quickbite test
 performs the hot path:
 
 ```text
-1. check dependency image freshness
-2. connect to daemon or start host
-3. parse/sema changed project modules
-4. emit bytecode
-5. run selected unittests in VM
-6. report result
+1. check dependency image and native environment freshness
+2. start the Quickbite host process
+3. load and initialize the cached dependency image
+4. initialize the generated wrapper table
+5. parse/sema changed project modules
+6. prepare the backend-specific execution artifact
+7. run selected unittests through the active backend
+8. report result
 ```
 
 If dependencies are stale, `quickbite test` may either:
@@ -636,34 +700,79 @@ least clearly reported.
 ## 16. Wrapper manifest
 
 The dependency preparation phase emits a wrapper manifest mapping
-semantic symbols to numeric IDs.
+concrete callable instances to numeric IDs. Source-level names are
+diagnostic metadata only; they are not stable enough to key wrapper
+selection.
+
+Each wrapper record should include:
+
+```text
+numeric wrapper ID
+frontend symbol identity, or native mangled symbol if the frontend cannot
+  provide a stable identity
+module and fully qualified diagnostic name
+overload signature after semantic analysis
+instantiated template arguments, where applicable
+ABI, calling convention, linkage, and mangling
+dependency image and native environment hash
+parameter and return lowering
+ownership and lifetime policy
+wrapper kind
+wrapper thunk symbol
+```
+
+This matters for overloads, templates, aliases, UFCS, `version` and
+`debug` conditions, module-private symbols, and extern linkage. All of
+that resolution happens during preparation. The hot path consumes the
+numeric ID and already-lowered argument contract.
+
+Wrapper generation must obey normal D visibility rules. A wrapper may
+target a callable visible from the generated wrapper module. Reaching a
+`private` or `package` symbol requires deliberately generating the
+wrapper inside the defining module or package, or using a
+dependency-authored exported registration surface. Source-level names
+are diagnostic metadata; they do not imply access bypass.
 
 Example:
 
 ```text
 wrapper 37:
-  symbol: package.foo.readConfig
+  diagnosticName: package.foo.readConfig
+  symbolIdentity: frontend-symbol:<opaque-id>
+  overload: readConfig(string)
   kind: generic
-  args: [string]
-  return: Config
+  abi: extern(D)
+  parameters: [string -> borrowed native string]
+  return: Config -> native handle
   thunk: qb_dep_37
+  image: libquickbite_deps_<hash>.so
 
 wrapper 91:
-  symbol: dep.fastAdd
+  diagnosticName: dep.fastAdd
+  symbolIdentity: _D3dep7fastAddFiiZi
+  overload: fastAdd(int, int)
   kind: specialized
-  args: [int, int]
-  return: int
+  abi: extern(D)
+  parameters: [int -> i32, int -> i32]
+  return: int -> i32
   thunk: qb_dep_91_i32_i32_to_i32
+  image: libquickbite_deps_<hash>.so
 ```
 
-The bytecode compiler uses this manifest to emit:
+Backends use this manifest according to their execution model:
 
 ```text
-CALL_DEP 37
-CALL_DEP_I32_I32_TO_I32 91
+bytecode: CALL_DEP 37
+IR:       NativeCall id=37
+walker:   dispatch wrapper id 37
+codegen:  call generated wrapper stub
 ```
 
-The runtime uses the same manifest to initialize the thunk table.
+The runtime uses the same manifest to initialize the thunk table. A
+fresh host process should not perform one lookup per wrapper. The
+dependency image should expose one generated registration entry point
+or one generated table symbol that returns the complete thunk table in
+wrapper-ID order.
 
 ## 17. Hot-path invariant
 
@@ -671,21 +780,22 @@ The hot edit-test path must avoid:
 
 ```text
 dub invocation
+package-manager queries
+pkg-config queries
 dependency native compilation
 dependency linking
 wrapper generation
-symbol lookup by name
-dependency module construction
-full process startup, in daemon mode
+per-wrapper symbol lookup by name
 ```
 
 The hot path should be approximately:
 
 ```text
 changed D source
+  -> load cached dependency image and generated thunk table
   -> dmd frontend parse/sema
-  -> bytecode emit
-  -> VM run
+  -> active backend preparation
+  -> active backend execution
   -> cached native calls by integer ID
 ```
 
@@ -698,26 +808,30 @@ The first useful implementation should support:
 ```text
 same-process native host
 dependency shared library cache
+native environment manifest for druntime, Phobos, libc, and native libraries
+loader/link path validation
 generated generic wrappers
 numeric wrapper IDs
-bytecode project modules
+at least one backend-integrated project execution path
 scalars: int, long, bool, float, double
 strings
 basic dynamic arrays
 opaque native handles
-native Throwable -> VM exception state
-persistent daemon
+native Exception -> backend exception state
+fatal native Error diagnostics
 explicit dependency prepare step
 ```
 
 The MVP may reject:
 
 ```text
-callbacks from native into bytecode
+callbacks from native into backend-managed code
 delegates crossing the boundary
 complex structs by value
 ref/out parameters
-native code calling bytecode functions
+ref returns
+mutable slices or pointers crossing the boundary
+native code calling backend-managed functions
 direct extern(D) ABI calls without wrappers
 template instantiations requiring native/project mixed code
 ```
@@ -729,12 +843,13 @@ After the MVP:
 ```text
 specialized unboxed wrappers
 profiling-based wrapper promotion
-bytecode compilation of small dependency functions
+backend-local execution of small dependency functions
 loop-aware native call avoidance
 struct field bridging
 ref/out support
+mutable borrow/writeback and alias lifetime policies
 delegate/callback trampolines
-native-to-bytecode calls
+native-to-backend calls
 strict isolation mode
 dependency image unloading/reloading
 incremental wrapper generation
@@ -743,8 +858,9 @@ cached native template specializations
 
 ## 20. Summary
 
-The design should treat dub dependencies as stable native
-infrastructure and project code as volatile bytecode.
+The design should treat dub dependencies and the external native
+environment as stable native infrastructure, and project code as
+volatile backend input.
 
 The main principle is:
 
@@ -752,10 +868,12 @@ The main principle is:
 pay dependency cost rarely;
 pay project compilation cost cheaply;
 make native calls cheap and pre-indexed;
-avoid native/VM crossings in tight loops;
-do not put dub, linking, or wrapper generation in the edit-test path.
+avoid native/backend crossings in tight loops;
+do not put dub, package-manager queries, linking, or wrapper generation
+in the edit-test path.
 ```
 
 This yields a mixed-mode execution system where dependency code runs
-normally as native D code, while edited project code can be recompiled
-to bytecode quickly enough to improve the unit-test feedback loop.
+normally as native D code, while edited project code can be interpreted,
+lowered, or code-generated quickly enough to improve the unit-test
+feedback loop.
