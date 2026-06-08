@@ -54,7 +54,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
@@ -62,7 +62,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(byte) -3").should ==
@@ -83,7 +83,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
@@ -91,7 +91,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
@@ -113,7 +113,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -125,7 +125,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
@@ -135,7 +135,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -147,7 +147,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
