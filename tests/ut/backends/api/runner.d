@@ -120,7 +120,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -135,7 +135,9 @@ static foreach (backend; backends) {
         summary.passed.should == 0;
         summary.failed.should == 1;
     }
+}
 
+static foreach (backend; backends) {
     @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{

@@ -230,6 +230,11 @@ Runner progress: `runTestSummary.countsAllPassingUnittests` in
 green through existing summary counting; signal was verified by temporarily
 mutating the Interpreter summary pass counter.
 
+Runner progress: `runTestSummary.countsAssertErrorsAsFailures` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing throw-statement and summary failure counting; signal was
+verified by temporarily mutating the Interpreter throw-statement handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
