@@ -2,6 +2,33 @@ module quickbite.frontend.dmd.types;
 
 private:
 
+public bool isIntegralExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (expression is null || expression.type is null)
+        return false;
+
+    return isIntegralType(expression.type);
+}
+
+public bool isIntegralType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    auto basetype = type.toBasetype;
+    if (basetype is null)
+        return false;
+
+    with (TY) switch (basetype.ty) {
+        case Tbool:
+        case Tchar:
+        case Twchar:
+        case Tdchar:
+            return false;
+        default:
+            return basetype.isIntegral;
+    }
+}
+
 public template dmdScalarType(imported!"dmd.astenums".TY type) {
     import dmd.astenums: TY;
 

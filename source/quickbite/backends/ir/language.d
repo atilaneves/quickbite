@@ -41,6 +41,7 @@ package enum BinaryOperation {
     multiply,
     divide,
     pow,
+    equal,
 }
 
 package enum UnaryOperation {
@@ -90,6 +91,24 @@ package struct Cast {
     public Value result;
 }
 
+package struct Call {
+    public uint functionIndex;
+    public uint[] arguments;
+    public Value result;
+}
+
+package struct AssertTrue {
+    public uint condition;
+}
+
+package struct AssertCompare {
+    public BinaryOperation operation;
+    public Type type;
+    public ResultKind resultKind;
+    public uint lhs;
+    public uint rhs;
+}
+
 package struct Load {
     public uint local;
     public Value result;
@@ -108,6 +127,9 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     UnaryOp,
     UnaryIntrinsicOp,
     Cast,
+    Call,
+    AssertTrue,
+    AssertCompare,
     Load,
     Store,
 );
@@ -153,4 +175,6 @@ package struct Function {
     public ResultKind returnType;
     public uint valueCount;
     public uint localCount;
+    public uint parameterCount;
+    public Function[] functions;
 }

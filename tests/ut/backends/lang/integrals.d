@@ -18,7 +18,7 @@ private alias IntegralTypes = AliasSeq!(
 );
 
 
-static foreach (backend; AliasSeq!(Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     static foreach (T; IntegralTypes) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {
@@ -48,38 +48,7 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
-
-    static foreach (T; IntegralTypes) {
-        @("type." ~ T.stringof ~ "." ~ backend.stringof)
-        unittest {
-            runBackendSourceFixtureTests!backend(text(
-               "alias T = ", T.stringof, `;`,
-                q{
-                    enum expected = cast(T) 130;
-
-                    T identity(T value) {
-                        return value;
-                    }
-
-                    int input() {
-                        return 130;
-                    }
-
-                    unittest {
-                        T value = cast(T) input;
-                        assert(identity(value) == value);
-                        assert(value == expected);
-                    }
-                },
-            ));
-        }
-    }
-
-}
-
-static foreach (backend; backendsWith!Bytecode) {
-
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -102,8 +71,7 @@ static foreach (backend; backendsWith!Bytecode) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
-
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -124,7 +92,9 @@ static foreach (backend; backendsWith!Bytecode) {
             }
         }).shouldThrowWithMessage("130 != 129");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

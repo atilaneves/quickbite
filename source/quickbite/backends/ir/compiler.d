@@ -20,31 +20,40 @@ package imported!"quickbite.backends.ir.language".Function compileEvalSource(
     return compileFunction(parseEvalSource(source).function_);
 }
 
+package imported!"quickbite.backends.ir.language".Function compileUnitTest(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) {
+    Compiler compiler;
+    return compiler.compileEntryFunction(unitTest);
+}
+
 private imported!"quickbite.backends.ir.language".Function compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
     Compiler compiler;
     const result = compiler.compileExpression(expression);
-    return compiler.function_(result);
+    return compiler.makeFunction(result);
 }
 
 private imported!"quickbite.backends.ir.language".Function compileFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     Compiler compiler;
-    const result = compiler.compileStatement(function_.fbody);
-    assert(result.hasValue);
-    return compiler.function_(result.value);
+    return compiler.compileEntryFunction(function_);
 }
 
 private struct Compiler {
     import dmd.expression: AddAssignExp, BinExp, Expression;
     import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration;
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
         Block,
+        AssertCompare,
+        AssertTrue,
         Cast,
+        Call,
         Const,
         Function,
         Instruction,
@@ -64,7 +73,32 @@ private struct Compiler {
     private Instruction[] instructions;
     private uint[VarDeclaration] locals;
     private Value[VarDeclaration] localValues;
+    private FuncDeclaration[] functions;
+    private uint[FuncDeclaration] functionIndices;
+    private Function[] compiledFunctions;
     private uint nextValueId;
+
+    private Function compileEntryFunction(FuncDeclaration function_) {
+        auto entry = compileFunctionBody(function_);
+
+        // Compiling discovered functions can discover more callees.
+        for (size_t i = 0; i < functions.length; ++i)
+            compiledFunctions ~= compileFunctionBody(functions[i]);
+
+        return entry.withFunctions(compiledFunctions);
+    }
+
+    private Function compileFunctionBody(FuncDeclaration function_) {
+        instructions = null;
+        locals = null;
+        localValues = null;
+        nextValueId = 0;
+        registerParameters(function_);
+
+        const result = compileStatement(function_.fbody);
+        assert(result.hasValue);
+        return makeFunction(result.value, parameterCount(function_));
+    }
 
     private OptionalValue compileStatement(
         imported!"dmd.statement".Statement statement,
@@ -92,7 +126,11 @@ private struct Compiler {
         if (statement.isImportStatement)
             return OptionalValue.init;
 
-        assert(0);
+        import std.conv: text;
+
+        throw new Exception(
+            text("Unsupported IR statement: ", statement.stmt),
+        );
     }
 
     private Value compileExpression(Expression expression) {
@@ -111,6 +149,18 @@ private struct Compiler {
             assert(declaration !is null);
             return compileVariableLoad(declaration);
         }
+
+        if (auto assert_ = expression.isAssertExp) {
+            return compileAssert(assert_);
+        }
+
+        if (auto comma = expression.isCommaExp) {
+            compileExpression(comma.e1);
+            return compileExpression(comma.e2);
+        }
+
+        if (auto equal = expression.isEqualExp)
+            return compileBinaryExpression(equal, BinaryOperation.equal);
 
         if (auto cast_ = expression.isCastExp)
             return compileCast(cast_);
@@ -145,10 +195,18 @@ private struct Compiler {
         if (auto divide = expression.isDivExp)
             return compileBinaryExpression(divide, BinaryOperation.divide);
 
-        assert(0);
+        import std.string: fromStringz;
+
+        throw new Exception(
+            "Unsupported IR expression `" ~ expression.toChars.fromStringz.idup ~ "`",
+        );
     }
 
     private Value compileIntrinsicCall(imported!"dmd.expression".CallExp call) {
+        if (auto function_ = callFunction(call))
+            if (!isImplementedBuiltin(function_) && function_.fbody !is null)
+                return compileCall(call, function_);
+
         assert(call.f !is null);
         assert(call.arguments !is null);
 
@@ -170,6 +228,70 @@ private struct Compiler {
             default:
                 assert(0);
         }
+    }
+
+    private bool isImplementedBuiltin(FuncDeclaration function_) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+
+        with (BUILTIN) switch (isBuiltin(function_)) {
+            case fabs:
+            case pow:
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private Value compileCall(
+        imported!"dmd.expression".CallExp call,
+        FuncDeclaration function_,
+    ) {
+        uint[] arguments;
+        if (call.arguments !is null)
+            foreach (argument; *call.arguments)
+                arguments ~= compileExpression(argument).id;
+
+        const result = nextValue(valueType(call.type), resultKind(call.type));
+        instructions ~= Instruction(
+            Call(
+                functionIndex(function_),
+                arguments,
+                result,
+            ),
+        );
+        return result;
+    }
+
+    private Value compileAssert(imported!"dmd.expression".AssertExp assert_) {
+        if (auto equal = assert_.e1.isEqualExp)
+            return compileAssertCompare(equal, BinaryOperation.equal);
+
+        const condition = compileExpression(assert_.e1);
+        instructions ~= Instruction(
+            AssertTrue(condition.id),
+        );
+        return condition;
+    }
+
+    private Value compileAssertCompare(
+        BinExp expression,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(expression.e1);
+        const rhs = compileExpression(expression.e2);
+        const result = compileBinaryExpression(lhs, rhs, operation);
+        instructions ~= Instruction(
+            AssertCompare(
+                operation,
+                lhs.type,
+                lhs.resultKind,
+                lhs.id,
+                rhs.id,
+            ),
+        );
+        return result;
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -397,6 +519,14 @@ private struct Compiler {
     ) {
         const lhs = compileExpression(lhsExpression);
         const rhs = compileExpression(rhsExpression);
+        return compileBinaryExpression(lhs, rhs, operation);
+    }
+
+    private Value compileBinaryExpression(
+        in Value lhs,
+        in Value rhs,
+        in BinaryOperation operation,
+    ) {
         const result = nextValue(lhs.type, lhs.resultKind);
         instructions ~= Instruction(
             BinaryOp(
@@ -428,6 +558,46 @@ private struct Compiler {
         return index;
     }
 
+    private uint functionIndex(FuncDeclaration function_) {
+        if (auto existing = function_ in functionIndices)
+            return *existing;
+
+        const index = cast(uint) functions.length;
+        functions ~= function_;
+        functionIndices[function_] = index;
+        return index;
+    }
+
+    private FuncDeclaration callFunction(imported!"dmd.expression".CallExp call) {
+        if (call.f !is null)
+            return call.f;
+
+        if (auto variable = call.e1.isVarExp)
+            return variable.var.isFuncDeclaration;
+
+        return null;
+    }
+
+    private uint parameterCount(FuncDeclaration function_) {
+        return function_.parameters is null ?
+            0 :
+            cast(uint) function_.parameters.length;
+    }
+
+    private void registerParameters(FuncDeclaration function_) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (parameter; *function_.parameters) {
+            localIndex(parameter);
+            localValues[parameter] = Value(
+                0,
+                valueType(parameter.type),
+                resultKind(parameter.type),
+            );
+        }
+    }
+
     private Value localValue(VarDeclaration variable) {
         if (auto existing = variable in localValues)
             return *existing;
@@ -435,7 +605,7 @@ private struct Compiler {
         return Value(0, valueType(variable.type), resultKind(variable.type));
     }
 
-    private Function function_(in Value result) {
+    private Function makeFunction(in Value result, in uint parameterCount = 0) {
         return Function(
             [
                 Block(
@@ -450,8 +620,18 @@ private struct Compiler {
             result.resultKind,
             nextValueId,
             cast(uint) locals.length,
+            parameterCount,
+            [],
         );
     }
+}
+
+private imported!"quickbite.backends.ir.language".Function withFunctions(
+    imported!"quickbite.backends.ir.language".Function function_,
+    imported!"quickbite.backends.ir.language".Function[] functions,
+) @safe pure {
+    function_.functions = functions;
+    return function_;
 }
 
 private struct OptionalValue {
