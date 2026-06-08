@@ -205,11 +205,11 @@ that behaviour.
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
 `EvalModuleInterpreter`.**
 `EvalFunctionWalker` converts `StringExp` to a `char[]` array `Value` (covers
-the `stringLiteralIsArray` eval test). `EvalModuleInterpreter` has no
-`StringExp` case and would throw unsupported for any module-backed unittest
-that references a string literal. Before promoting any logic or diagnostics
-test that involves string values, add a shared `StringExp` → `char[]`
-conversion or a matching case in `EvalModuleInterpreter`.
+the `stringLiteralIsArray` eval test). Before promoting any logic or
+diagnostics test that involves string values, verify module-backed string
+literal signal with the containing module's first follow-up PR. If that
+promotion is already green, verify signal by mutating the relevant interpreter
+handler, then revert the mutation before accepting a test-only slice.
 
 **Finding 2 — Completed: top-level eval uses one expression walker.**
 `Interpreter.eval()` now parses eval source into the common eval function
