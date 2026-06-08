@@ -21,7 +21,8 @@ private alias IntegralTypes = AliasSeq!(
 static foreach (backend; AliasSeq!(Bytecode)) {
     static foreach (T; IntegralTypes) {
         static if (is(T == byte) || is(T == ubyte) || is(T == short) ||
-            is(T == ushort) || is(T == int) || is(T == uint))
+            is(T == ushort) || is(T == int) || is(T == uint) ||
+            is(T == long))
         @("type." ~ T.stringof ~ "." ~ Bytecode.stringof)
         unittest {
             runBackendSourceFixtureTests!Bytecode(text(

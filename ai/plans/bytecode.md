@@ -83,22 +83,22 @@ Lua-specific bytecode shape.
   `type.uint`. The `byte` slice added the first module-backed
   `Bytecode.runTests` path, compiling each unittest block to bytecode and
   executing its directly-called module functions through bytecode call frames.
-  The `ubyte`, `short`, `ushort`, `int`, and `uint` slices passed without
-  production changes. The implementation is deliberately narrow: equality
-  assertions are enough for the passing behavior, while assertion-message
-  diagnostics remain unpromoted.
+  The `ubyte`, `short`, `ushort`, `int`, `uint`, and `long` slices passed
+  without production changes. The implementation is deliberately narrow:
+  equality assertions are enough for the passing behavior, while
+  assertion-message diagnostics remain unpromoted.
 
 ## Current Next Step
 Continue in `tests/ut/backends/lang/integrals.d`, following
 `ai/plans/backend-test-modules-order.md`.
 
 Start with the first current named unittest in that module that still excludes
-`Bytecode`: `type.long`. Do not add `Bytecode` to the module's outer
+`Bytecode`: `type.ulong`. Do not add `Bytecode` to the module's outer
 `static foreach (backend; backends)`, because that would promote every
 remaining integral type case and the failure-message cases at once.
 
 Promote exactly one named behavior, rebuild/list tests, and run
-`ut.backends.lang.integrals.type.long.Bytecode` focused. Only after that
+`ut.backends.lang.integrals.type.ulong.Bytecode` focused. Only after that
 focused test is red should production code change. If it passes without
 production changes, keep the promotion as supported coverage and move to the
 next smallest current candidate in `integrals.d`.
