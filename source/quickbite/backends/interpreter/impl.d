@@ -34,7 +34,20 @@ public class Interpreter: imported!"quickbite.backends".Backend {
     }
 
     public override TestSummary runTestSummary(Module module_) {
-        assert(0);
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestSummary summary;
+        EvalModuleInterpreter interpreter;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++summary.total;
+            try {
+                interpreter.runTest(unitTest);
+                ++summary.passed;
+            } catch (Exception) {
+                ++summary.failed;
+            }
+        });
+        return summary;
     }
 
 }

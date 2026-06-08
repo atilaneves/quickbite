@@ -219,6 +219,12 @@ green through the existing parse-with-import-paths runner path and folded
 integer assert handling; signal was verified by temporarily mutating the module
 interpreter integer expression handler.
 
+Runner progress:
+`runTestSummary.countsAttributedPassingAndFailingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow summary counting over attributed unittests, with pass/fail totals
+derived by running each unittest and continuing after assertion failures.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
