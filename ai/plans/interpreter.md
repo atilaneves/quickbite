@@ -270,6 +270,30 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+### Math Slice Lessons
+
+Math progress: `evaluatesRuntimePowDoubleInputs` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. Three production
+changes were required:
+
+1. **`RealExp` in `EvalModuleInterpreter`** — The module interpreter's
+   `runExpression` lacked a `RealExp` branch (floating-point literals such
+   as `2.0`). Added `realValue` dispatch mirroring the existing
+   `EvalFunctionWalker` handler.
+
+2. **`pow` builtin dispatch in `EvalModuleInterpreter`** — The module
+   `runCallExpression` had no builtin check before calling `runFunction`.
+   Added an inline `isBuiltin`/`BUILTIN.pow`/`BUILTIN.fabs` switch at the
+   top of `runCallExpression`, mirroring the pattern already in
+   `EvalFunctionWalker.runCallExpression`.
+
+3. **Floating-point ordering comparisons** — `runComparisonExpression`
+   used `asLong` for both operands, which throws for `double` values.
+   Added `asReal() const @safe pure` to `quickbite.lang.Value` (returns
+   the stored value widened to `real`, covering both integer and
+   floating-point scalars), then switched `runComparisonExpression` to use
+   `asReal` instead of `asLong`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

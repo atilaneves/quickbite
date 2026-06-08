@@ -373,10 +373,13 @@ private struct EvalModuleInterpreter {
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         import dmd.tokens: EXP;
-        import quickbite.frontend.dmd.values: integerValue;
+        import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
+
+        if (auto real_ = expression.isRealExp)
+            return realValue(real_);
 
         if (expression.isNullExp !is null)
             return Value.null_;
@@ -495,8 +498,8 @@ private struct EvalModuleInterpreter {
     ) {
         import dmd.tokens: EXP;
 
-        const left = runExpression(comparison.e1).asLong;
-        const right = runExpression(comparison.e2).asLong;
+        const left = runExpression(comparison.e1).asReal;
+        const right = runExpression(comparison.e2).asReal;
 
         if (comparison.op == EXP.lessThan)
             return Value(left < right);
@@ -522,6 +525,32 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+        import std.math: mathFabs = fabs;
+        import std.math: mathPow = pow;
+
+        if (call.f !is null) {
+            with (BUILTIN) switch (isBuiltin(call.f)) {
+                case fabs:
+                    if (call.arguments !is null && call.arguments.length == 1)
+                        return runExpression((*call.arguments)[0])
+                            .unaryFloating!mathFabs;
+                    break;
+
+                case pow:
+                    if (call.arguments !is null && call.arguments.length == 2)
+                        return runExpression((*call.arguments)[0])
+                            .binaryFloating!mathPow(
+                                runExpression((*call.arguments)[1]),
+                            );
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
