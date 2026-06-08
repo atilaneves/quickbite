@@ -323,6 +323,14 @@ Interpreter-only block without `@ShouldFail`. No production change was
 required. Signal was verified by temporarily mutating Interpreter addition to
 subtraction, which failed the focused test with `-2 != 7` instead of `6 != 7`.
 
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter addition to
+subtraction, which failed the focused test with `-1 != 8` instead of `7 != 8`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

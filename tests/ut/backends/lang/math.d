@@ -173,7 +173,27 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double pow(double base, double exponent) {
+                return base + exponent;
+            }
+
+            unittest {
+                double base = 3.0;
+                double exponent = 4.0;
+                assert(pow(base, exponent) == 8.0);
+            }
+        }).shouldThrowWithMessage("7 != 8");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesRuntimeSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
