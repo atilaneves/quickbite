@@ -163,12 +163,14 @@ Lua-specific bytecode shape.
   flowed through the shared fixture parse helpers.
 
 ## Current Next Step
-Continue with the next module named by
-`ai/plans/backend-test-modules-order.md`.
+`tests/ut/backends/api/runner.d` is now complete for `Bytecode`. Every
+backend-matrix test block in the module includes `Bytecode`. Continue with the
+next module named by `ai/plans/backend-test-modules-order.md`
+(`tests/ut/backends/runtime/cstdlib.d`).
 
-Do not return to `tests/ut/backends/lang/integrals.d` unless new tests are
-added there. The module's current backend-matrix test families all include
-`Bytecode`.
+Do not return to `tests/ut/backends/lang/integrals.d` or
+`tests/ut/backends/api/runner.d` unless new tests are added there. Their
+current backend-matrix test families all include `Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
