@@ -315,6 +315,14 @@ verified by temporarily mutating the module interpreter's `call.f` dispatch
 to return the first `pow` argument instead of executing the user-defined
 function, which failed the focused test with `2 != 6`.
 
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter addition to
+subtraction, which failed the focused test with `-2 != 7` instead of `6 != 7`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

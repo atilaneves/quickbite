@@ -133,7 +133,27 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double pow(double base, double exponent) {
+                return base + exponent;
+            }
+
+            unittest {
+                double base = 2.0;
+                double exponent = 4.0;
+                assert(pow(base, exponent) == 7.0);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
+}
+
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
