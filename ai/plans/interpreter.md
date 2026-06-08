@@ -116,11 +116,13 @@ work focused on regressions or newly added CTFE-backed eval behaviours.
 
 When promoting one eval test, isolate that test in its own `static
 foreach` backend block if the surrounding block contains later eval
-tests. Do not change a broad block from `backends` to
-`backendsWith!Interpreter` unless every test in that block is part of
-the current slice. When integrating worker commits, check that earlier
-Interpreter promotions remain present; a later worker must not move a
-previously promoted test back to CTFE-only coverage.
+tests. If the test is now expected to run on both CTFE and Interpreter,
+change `backends` to `backendsWith!Interpreter` (or equivalent) so it
+is explicitly visible in the module matrix. Avoid creating ad-hoc
+`AliasSeq!(Interpreter)` blocks for promoted shared-surface tests.
+When integrating worker commits, check that earlier Interpreter
+promotions remain present; a later worker must not move a previously
+promoted test back to CTFE-only coverage.
 
 If a promoted test is already green because of an earlier slice, verify
 signal by temporarily mutating the production handler that should cover
@@ -263,9 +265,12 @@ support together, the chosen test is too broad for the first PR.
   implement the minimum handler that makes it green. Start with one
   existing `eval` test. Existing CTFE-passing tests are pre-approved
   for promotion to the tree-walking backend; do not stop to ask before
-  adding `Interpreter` to exactly one existing test. This exception only covers
-  adding the backend to an existing backend-matrix test; adding a new test or
-  modifying test behaviour still requires approval before editing the test.
+  changing that test's matrix to include Interpreter. For tests that should
+  stay on both CTFE and Interpreter, prefer `backendsWith!Interpreter` (or
+  equivalent) over adding a separate `AliasSeq!(Interpreter)` block.
+  This exception only covers adding the backend to an existing backend-
+  matrix test; adding a new test or modifying test behaviour still
+  requires approval before editing the test.
 - Before promoting any named test from this plan, verify in the current
   checkout that its enclosing `static foreach` still excludes `Interpreter`.
   If the test already uses `backendsWith!Interpreter`, do not edit it; inspect
