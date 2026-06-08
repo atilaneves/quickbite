@@ -62,6 +62,28 @@ private RunResult run(
                 ip = function_.entry;
                 break;
 
+            case Op.jump:
+                ip = instruction.operand;
+                break;
+
+            case Op.jumpIfFalse:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (stack[$ - 1].castTo!bool == Value(false))
+                    ip = instruction.operand;
+                else
+                    ++ip;
+                break;
+
+            case Op.pop:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                stack.length -= 1;
+                ++ip;
+                break;
+
             case Op.loadLocal:
                 if (instruction.operand >= locals.length)
                     throw new Exception("Bytecode local out of bounds");
@@ -245,8 +267,14 @@ private RunResult run(
 
                 const value = stack[$ - 1];
                 stack.length -= 1;
-                if (value.asLong == 0)
+                if (value.asLong == 0) {
+                    if (instruction.value != Value.void_)
+                        throw new Exception(
+                            instruction.value.asCharArrayString,
+                        );
+
                     throw new Exception("Unittest assertion failed.");
+                }
 
                 ++ip;
                 break;

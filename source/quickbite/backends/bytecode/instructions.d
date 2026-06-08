@@ -5,6 +5,9 @@ private:
 package enum Op: ubyte {
     literal,
     call,
+    jump,
+    jumpIfFalse,
+    pop,
     loadLocal,
     initializeLocal,
     storeLocal,

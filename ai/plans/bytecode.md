@@ -181,10 +181,23 @@ Lua-specific bytecode shape.
   cover `Bytecode`. The promotion exposed missing DMD `NotExp` lowering, so
   bytecode now lowers logical not to a unary opcode using VM truthiness and
   reports failed bool equality assertions as `true`/`false`.
+- `logicalAnd`, `logicalAndFailureMessage.0`,
+  `logicalAndFailureMessage.1`, `logicalAndCall`,
+  `logicalAndCallFailureMessage.0`, `logicalAndCallFailureMessage.1`,
+  `logicalAndShortCircuit`, `logicalAndShortCircuitFailureMessage.0`,
+  `logicalAndShortCircuitFailureMessage.1`,
+  `logicalAndCallShortCircuit`,
+  `logicalAndCallShortCircuitFailureMessage.0`, and
+  `logicalAndCallShortCircuitFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion
+  exposed missing DMD `LogicalExp` `&&` lowering, so bytecode now emits narrow
+  jump/pop control flow for short-circuit evaluation, normalizes both paths to
+  bool, and preserves plain assertion text for failed truth assertions.
 
 ## Current Next Step
 Continue `tests/ut/backends/lang/logic.d` with the next distinct CTFE-only
-behavior family after logical not: logical AND.
+behavior family after logical AND: logical OR or logical AND comparison
+operands.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
 `tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`

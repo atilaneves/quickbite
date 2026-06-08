@@ -58,7 +58,8 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression, PreExp;
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
+        LogicalExp, PreExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -188,6 +189,13 @@ private struct Compiler {
             return;
         }
 
+        if (auto logical = expression.isLogicalExp) {
+            if (isAndAnd(logical)) {
+                compileAndAnd(logical);
+                return;
+            }
+        }
+
         if (auto increment = expression.isPreExp) {
             compilePreIncrement(increment);
             return;
@@ -265,6 +273,26 @@ private struct Compiler {
         compileExpression(expression.e1);
         compileExpression(expression.e2);
         program.instructions ~= Instruction(op);
+    }
+
+    private void compileAndAnd(LogicalExp expression) {
+        compileExpression(expression.e1);
+        const falseJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+
+        compileExpression(expression.e2);
+        emitBoolCast;
+        const endJump = emitJump(Op.jump);
+
+        patchJump(falseJump);
+        emitBoolCast;
+        patchJump(endJump);
+    }
+
+    private bool isAndAnd(LogicalExp expression) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.andAnd;
     }
 
     private size_t localIndex(VarDeclaration variable) {
@@ -354,11 +382,29 @@ private struct Compiler {
     private void compileCast(CastExp cast_) {
         compileExpression(cast_.e1);
 
+        emitCast(castTarget(cast_));
+    }
+
+    private void emitBoolCast() {
+        emitCast(CastTarget.bool_);
+    }
+
+    private void emitCast(in CastTarget target) {
         program.instructions ~= Instruction(
             Op.cast_,
             Value.void_,
-            castTarget(cast_),
+            target,
         );
+    }
+
+    private size_t emitJump(in Op op) {
+        program.instructions ~= Instruction(op);
+        return program.instructions.length - 1;
+    }
+
+    private void patchJump(in size_t instructionIndex) {
+        program.instructions[instructionIndex].operand =
+            program.instructions.length;
     }
 
     private void compileCall(CallExp call) {
@@ -456,7 +502,10 @@ private struct Compiler {
         }
 
         compileExpression(assert_.e1);
-        program.instructions ~= Instruction(Op.assertTrue);
+        program.instructions ~= Instruction(
+            Op.assertTrue,
+            assertMessageValue(assert_),
+        );
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
@@ -487,6 +536,21 @@ private struct Compiler {
         compileExpression((*call.arguments)[2]);
         program.instructions ~= Instruction(Op.assertCompare);
         return true;
+    }
+
+    private Value assertMessageValue(AssertExp assert_) {
+        import std.string: fromStringz;
+
+        if (assert_.msg !is null) {
+            auto string_ = assert_.msg.isStringExp;
+            if (string_ !is null)
+                return stringValue(string_);
+        }
+
+        const message = "`assert(" ~
+            assert_.e1.toChars.fromStringz.idup ~
+            ")` failed";
+        return Value(message.dup);
     }
 
     private size_t functionIndex(FuncDeclaration function_) {
@@ -523,7 +587,7 @@ private struct Compiler {
             localIndex(parameter);
     }
 
-    private size_t castTarget(CastExp cast_) {
+    private CastTarget castTarget(CastExp cast_) {
         import quickbite.backends.casts: target = castTarget;
 
         return target(cast_.type);

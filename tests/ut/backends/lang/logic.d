@@ -43,7 +43,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -163,6 +163,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -298,6 +301,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
