@@ -6,11 +6,16 @@ package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.ir.language".Function function_,
 ) {
     Machine machine;
-    machine.init(function_.valueCount, function_.localCount);
-    foreach (instruction; function_.blocks[0].instructions)
-        machine.execute(instruction);
+    machine.init(function_);
+    machine.execute(function_, []);
 
     return machine.result(function_);
+}
+
+package void execute(in imported!"quickbite.backends.ir.language".Function function_) {
+    Machine machine;
+    machine.init(function_);
+    machine.execute(function_, []);
 }
 
 private struct Machine {
@@ -22,7 +27,9 @@ private struct Machine {
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
+        AssertTrue,
         Cast,
+        Call,
         Const,
         Function,
         Instruction,
@@ -42,11 +49,38 @@ private struct Machine {
     private ulong[] scalarValues;
     private string[] stringValues;
     private ulong[] localScalarValues;
+    private const(Function)[] functions;
 
-    private void init(in uint valueCount, in uint localCount) {
-        scalarValues.length = valueCount;
-        stringValues.length = valueCount;
-        localScalarValues.length = localCount;
+    private void init(in Function function_) {
+        functions = function_.functions;
+        reserveStorage(function_);
+        foreach (child; function_.functions)
+            reserveStorage(child);
+    }
+
+    private void reserveStorage(in Function function_) {
+        if (scalarValues.length < function_.valueCount)
+            scalarValues.length = function_.valueCount;
+        if (stringValues.length < function_.valueCount)
+            stringValues.length = function_.valueCount;
+        if (localScalarValues.length < function_.localCount)
+            localScalarValues.length = function_.localCount;
+    }
+
+    private ulong execute(in Function function_, in uint[] arguments) {
+        foreach (i, argument; arguments)
+            localScalarValues[i] = scalarValues[argument];
+
+        foreach (instruction; function_.blocks[0].instructions)
+            execute(instruction);
+
+        return function_.blocks[0].terminator.match!(
+            (const ReturnValue return_) => scalarValues[return_.value],
+            (_) {
+                assert(0);
+                return ulong.init;
+            },
+        );
     }
 
     private void execute(const Instruction instruction) {
@@ -54,6 +88,8 @@ private struct Machine {
             (const Const const_) => execute(const_),
             (const StringConst const_) => execute(const_),
             (const Cast cast_) => execute(cast_),
+            (const Call call) => execute(call),
+            (const AssertTrue assert_) => execute(assert_),
             (const Load load) => execute(load),
             (const UnaryOp unary) => execute(unary),
             (const UnaryIntrinsicOp intrinsic) => execute(intrinsic),
@@ -76,16 +112,25 @@ private struct Machine {
                 castF64(cast_);
                 break;
             case i32:
-                castI32(cast_);
-                break;
-            case i1:
             case i8:
             case i16:
             case i64:
+                castInteger(cast_);
+                break;
+            case i1:
             case f32:
             case ptr:
                 assert(0);
         }
+    }
+
+    private void execute(const Call call) {
+        scalarValues[call.result.id] =
+            execute(functions[call.functionIndex], call.arguments);
+    }
+
+    private void execute(const AssertTrue assert_) {
+        assert(scalarValues[assert_.condition] != 0);
     }
 
     private void castF64(const Cast cast_) {
@@ -105,20 +150,32 @@ private struct Machine {
         }
     }
 
-    private void castI32(const Cast cast_) {
-        const source = cast(int) scalarValues[cast_.source];
+    private void castInteger(const Cast cast_) {
+        const source = scalarValues[cast_.source];
         final switch (cast_.targetType) with (Type) {
             case i8:
-                scalarValues[cast_.result.id] = cast(byte) source;
+                scalarValues[cast_.result.id] =
+                    cast_.result.resultKind == ResultKind.ubyte_ ?
+                    cast(ubyte) source :
+                    cast(byte) source;
                 break;
             case i16:
-                scalarValues[cast_.result.id] = cast(short) source;
+                scalarValues[cast_.result.id] =
+                    cast_.result.resultKind == ResultKind.ushort_ ?
+                    cast(ushort) source :
+                    cast(short) source;
                 break;
             case i32:
-                scalarValues[cast_.result.id] = source;
+                scalarValues[cast_.result.id] =
+                    cast_.result.resultKind == ResultKind.uint_ ?
+                    cast(uint) source :
+                    cast(int) source;
                 break;
             case i64:
-                scalarValues[cast_.result.id] = cast(long) source;
+                scalarValues[cast_.result.id] =
+                    cast_.result.resultKind == ResultKind.ulong_ ?
+                    cast(ulong) source :
+                    cast(long) source;
                 break;
             case i1:
             case f32:
@@ -188,14 +245,14 @@ private struct Machine {
     private void execute(const Store store) {
         final switch (store.type) with (Type) {
             case i32:
+            case i8:
+            case i16:
+            case i64:
             case f64:
             case f32:
                 localScalarValues[store.local] = scalarValues[store.value];
                 break;
             case i1:
-            case i8:
-            case i16:
-            case i64:
             case ptr:
                 assert(0);
         }
@@ -217,6 +274,9 @@ private struct Machine {
                 break;
             case pow:
                 executePow(binary);
+                break;
+            case equal:
+                executeEqual(binary);
                 break;
         }
     }
@@ -320,6 +380,56 @@ private struct Machine {
             case i16:
             case i32:
             case i64:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeEqual(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i8:
+                if (binary.result.resultKind == ResultKind.ubyte_)
+                    scalarValues[binary.result.id] =
+                        cast(ubyte) scalarValues[binary.lhs] ==
+                        cast(ubyte) scalarValues[binary.rhs];
+                else
+                    scalarValues[binary.result.id] =
+                        cast(byte) scalarValues[binary.lhs] ==
+                        cast(byte) scalarValues[binary.rhs];
+                break;
+            case i16:
+                if (binary.result.resultKind == ResultKind.ushort_)
+                    scalarValues[binary.result.id] =
+                        cast(ushort) scalarValues[binary.lhs] ==
+                        cast(ushort) scalarValues[binary.rhs];
+                else
+                    scalarValues[binary.result.id] =
+                        cast(short) scalarValues[binary.lhs] ==
+                        cast(short) scalarValues[binary.rhs];
+                break;
+            case i32:
+                if (binary.result.resultKind == ResultKind.uint_)
+                    scalarValues[binary.result.id] =
+                        cast(uint) scalarValues[binary.lhs] ==
+                        cast(uint) scalarValues[binary.rhs];
+                else
+                    scalarValues[binary.result.id] =
+                        cast(int) scalarValues[binary.lhs] ==
+                        cast(int) scalarValues[binary.rhs];
+                break;
+            case i64:
+                if (binary.result.resultKind == ResultKind.ulong_)
+                    scalarValues[binary.result.id] =
+                        cast(ulong) scalarValues[binary.lhs] ==
+                        cast(ulong) scalarValues[binary.rhs];
+                else
+                    scalarValues[binary.result.id] =
+                        cast(long) scalarValues[binary.lhs] ==
+                        cast(long) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case f32:
             case f64:
             case ptr:
                 assert(0);

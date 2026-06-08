@@ -177,9 +177,22 @@ The currently covered IR backend eval tests are:
 - `fabsFloatPreservesReturnType.IR`
 - `powFloatDoesNotReturnDoubleValue.IR`
 - `stringLiteralIsArray.IR`
+- `type.byte.IR`
+- `type.ubyte.IR`
+- `type.short.IR`
+- `type.ushort.IR`
+- `type.int.IR`
+- `type.uint.IR`
+- `type.long.IR`
+- `type.ulong.IR`
 
 All tests in `tests/ut/backends/lang/eval.d` now include `IR`, so `eval.d` is
-complete for the current backend matrix.
+complete for the current backend matrix. The main integral type matrix in
+`tests/ut/backends/lang/integrals.d` now includes `IR` for all D integer
+widths. That promotion added module-backed unittest execution for IR, direct
+calls to source-backed fixture functions with scalar parameters, comma
+expression lowering for DMD's lowered assert shape, assert-true execution,
+typed integer equality, and signedness-preserving integer casts/local storage.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
