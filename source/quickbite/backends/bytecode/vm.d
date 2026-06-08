@@ -30,6 +30,7 @@ private RunResult run(
     import quickbite.lang: Value;
 
     Value[] stack;
+    size_t[] refStack;
     Value[] locals;
     Frame[] frames;
     size_t ip;
@@ -48,6 +49,7 @@ private RunResult run(
 
                 const function_ = program.functions[instruction.operand];
                 Value[] calleeLocals;
+                RefArgument[] refArguments;
                 calleeLocals.length = function_.parameterCount;
                 foreach_reverse (index; 0 .. function_.parameterCount) {
                     if (stack.length < 1)
@@ -55,9 +57,17 @@ private RunResult run(
 
                     calleeLocals[index] = stack[$ - 1];
                     stack.length -= 1;
+
+                    if (function_.refParameters[index]) {
+                        if (refStack.length < 1)
+                            throw new Exception("Bytecode ref stack underflow");
+
+                        refArguments ~= RefArgument(index, refStack[$ - 1]);
+                        refStack.length -= 1;
+                    }
                 }
 
-                frames ~= Frame(ip + 1, locals);
+                frames ~= Frame(ip + 1, locals, refArguments);
                 locals = calleeLocals;
                 ip = function_.entry;
                 break;
@@ -89,6 +99,15 @@ private RunResult run(
                     throw new Exception("Bytecode local out of bounds");
 
                 stack ~= locals[instruction.operand];
+                ++ip;
+                break;
+
+            case Op.loadLocalReference:
+                if (instruction.operand >= locals.length)
+                    throw new Exception("Bytecode local out of bounds");
+
+                stack ~= locals[instruction.operand];
+                refStack ~= instruction.operand;
                 ++ip;
                 break;
 
@@ -369,6 +388,16 @@ private RunResult run(
 
                 auto frame = frames[$ - 1];
                 frames.length -= 1;
+                foreach (refArgument; frame.refArguments) {
+                    if (refArgument.parameterIndex >= locals.length)
+                        throw new Exception("Bytecode local out of bounds");
+
+                    if (refArgument.callerLocalIndex >= frame.locals.length)
+                        throw new Exception("Bytecode local out of bounds");
+
+                    frame.locals[refArgument.callerLocalIndex] =
+                        locals[refArgument.parameterIndex];
+                }
                 locals = frame.locals;
                 ip = frame.returnIp;
                 break;
@@ -389,6 +418,12 @@ private struct RunResult {
 private struct Frame {
     size_t returnIp;
     imported!"quickbite.lang".Value[] locals;
+    RefArgument[] refArguments;
+}
+
+private struct RefArgument {
+    size_t parameterIndex;
+    size_t callerLocalIndex;
 }
 
 private string assertCompareMessage(
@@ -433,6 +468,7 @@ private bool comparisonHolds(
         case Op.jumpIfFalse:
         case Op.pop:
         case Op.loadLocal:
+        case Op.loadLocalReference:
         case Op.initializeLocal:
         case Op.storeLocal:
         case Op.incrementLocal:
@@ -480,6 +516,7 @@ private string inverseComparisonOperator(
         case Op.jumpIfFalse:
         case Op.pop:
         case Op.loadLocal:
+        case Op.loadLocalReference:
         case Op.initializeLocal:
         case Op.storeLocal:
         case Op.incrementLocal:

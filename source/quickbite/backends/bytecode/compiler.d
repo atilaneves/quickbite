@@ -58,8 +58,8 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, Expression,
-        LogicalExp, PreExp;
+        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
+        Expression, LogicalExp, PreExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -230,6 +230,11 @@ private struct Compiler {
 
         if (auto addAssign = expression.isAddAssignExp) {
             compileAddAssign(addAssign);
+            return;
+        }
+
+        if (auto assignment = expression.isAssignExp) {
+            compileAssign(assignment);
             return;
         }
 
@@ -489,6 +494,25 @@ private struct Compiler {
         );
     }
 
+    private void compileAssign(
+        AssignExp assignment,
+    ) {
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception("Unsupported bytecode assignment target.");
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception("Unsupported bytecode assignment target.");
+
+        compileExpression(assignment.e2);
+        program.instructions ~= Instruction(
+            Op.storeLocal,
+            Value.void_,
+            localIndex(declaration),
+        );
+    }
+
     private void compileCast(CastExp cast_) {
         compileExpression(cast_.e1);
 
@@ -529,8 +553,8 @@ private struct Compiler {
                 throw new Exception(noAvailableSourceMessage(function_));
 
             if (call.arguments !is null)
-                foreach (argument; *call.arguments)
-                    compileExpression(argument);
+                foreach (index, argument; *call.arguments)
+                    compileCallArgument(function_, index, argument);
 
             program.instructions ~= Instruction(
                 Op.call,
@@ -711,8 +735,37 @@ private struct Compiler {
         const index = functions.length;
         functions ~= function_;
         functionIndices[function_] = index;
-        program.functions ~= Function(0, parameterCount(function_));
+        program.functions ~= Function(
+            0,
+            parameterCount(function_),
+            refParameters(function_),
+        );
         return index;
+    }
+
+    private void compileCallArgument(
+        FuncDeclaration function_,
+        in size_t index,
+        Expression argument,
+    ) {
+        if (!parameterIsRef(function_, index)) {
+            compileExpression(argument);
+            return;
+        }
+
+        auto variable = argument.isVarExp;
+        if (variable is null)
+            throw new Exception("Unsupported bytecode ref argument.");
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception("Unsupported bytecode ref argument.");
+
+        program.instructions ~= Instruction(
+            Op.loadLocalReference,
+            Value.void_,
+            localIndex(declaration),
+        );
     }
 
     private FuncDeclaration callFunction(CallExp call) {
@@ -730,12 +783,40 @@ private struct Compiler {
         return function_.parameters is null ? 0 : function_.parameters.length;
     }
 
+    private bool[] refParameters(FuncDeclaration function_) {
+        bool[] result;
+        if (function_.parameters is null)
+            return result;
+
+        foreach (parameter; *function_.parameters)
+            result ~= declarationIsRef(parameter);
+
+        return result;
+    }
+
+    private bool parameterIsRef(
+        FuncDeclaration function_,
+        in size_t index,
+    ) {
+        if (function_.parameters is null || index >= function_.parameters.length)
+            return false;
+
+        return declarationIsRef((*function_.parameters)[index]);
+    }
+
     private void registerParameters(FuncDeclaration function_) {
         if (function_.parameters is null)
             return;
 
         foreach (parameter; *function_.parameters)
             localIndex(parameter);
+    }
+
+    private bool declarationIsRef(VarDeclaration parameter) {
+        import dmd.astenums: STC;
+
+        enum refLike = STC.ref_ | STC.out_;
+        return (parameter.storage_class & refLike) != STC.none;
     }
 
     private CastTarget castTarget(CastExp cast_) {

@@ -274,6 +274,12 @@ Lua-specific bytecode shape.
   `Bytecode`. The promotion exposed missing DMD `IfStatement` lowering in the
   bytecode compiler, so bytecode now emits narrow branch control flow using the
   existing jump opcodes and reports the selected branch result as `43 != 42`.
+- `refParameterOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing local assignment lowering and
+  scalar local `ref` argument writeback. Bytecode now lowers simple local
+  assignment, records local reference arguments for calls, writes ref parameter
+  locals back to caller locals on return, and reports the final failed
+  comparison as `42 != 43`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

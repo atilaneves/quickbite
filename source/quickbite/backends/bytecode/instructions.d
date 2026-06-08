@@ -9,6 +9,7 @@ package enum Op: ubyte {
     jumpIfFalse,
     pop,
     loadLocal,
+    loadLocalReference,
     initializeLocal,
     storeLocal,
     incrementLocal,
@@ -46,6 +47,7 @@ package struct Function {
     // Offset in Program.instructions where this function's bytecode starts.
     size_t entry;
     size_t parameterCount;
+    bool[] refParameters;
 }
 
 package struct Program {
