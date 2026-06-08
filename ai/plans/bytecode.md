@@ -50,6 +50,20 @@ Lua-specific bytecode shape.
   `ai/plans/backend-test-modules-order.md`. Within each module, start with the
   smallest named unittest that the current bytecode surface can honestly make
   red and then green.
+- Treat the selected module, not a single template instantiation, as the unit
+  of migration. Before editing, inventory every backend-matrix unittest in the
+  module and classify each test family as already covered by `Bytecode`,
+  blocked by an expected missing feature, or ready to promote.
+- Do not count repeated instantiations of the same parametrized unittest, such
+  as one `static foreach` body over several integral types, as independent
+  migration slices when one instantiation already proves the behavior. Promote
+  the whole test family when it is already green, then move to the next distinct
+  named behavior in the module.
+- When orchestrating subagents, assign work by remaining named test behavior or
+  test family in the selected module. A worker should not spend a full slice on
+  another type-width variant of a behavior that has already passed for
+  `Bytecode` unless that variant is expected to expose a different missing VM
+  feature.
 - Before promoting a named test mentioned by this plan or a review note,
   verify in the current checkout that its enclosing backend matrix still
   excludes `Bytecode`. If it already uses `backendsWith!Bytecode`, treat the
@@ -79,11 +93,13 @@ Lua-specific bytecode shape.
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
-  every integral type behavior test from `type.byte` through `type.ulong`. The
-  `byte` slice added the first module-backed `Bytecode.runTests` path,
-  compiling each unittest block to bytecode and executing its directly-called
-  module functions through bytecode call frames. The remaining type-width
-  slices passed without production changes. The implementation is deliberately
+  every integral type behavior test from `type.byte` through `type.ulong`.
+  These are one parametrized behavior family, not eight meaningful migration
+  slices. The `byte` slice added the first module-backed `Bytecode.runTests`
+  path, compiling each unittest block to bytecode and executing its
+  directly-called module functions through bytecode call frames. The remaining
+  type-width variants passed without production changes and should have been
+  promoted together once that was known. The implementation is deliberately
   narrow: equality assertions are enough for the passing behavior, while
   assertion-message diagnostics remain unpromoted.
 
@@ -91,16 +107,20 @@ Lua-specific bytecode shape.
 Continue in `tests/ut/backends/lang/integrals.d`, following
 `ai/plans/backend-test-modules-order.md`.
 
-The integral type behavior tests are covered. The first current named unittest
-in that module that still excludes `Bytecode` is
-`typeFailureMessage.byte.0`. Do not add `Bytecode` to the module's outer
-`static foreach (backend; backends)`, because that would promote every
-remaining failure-message case at once.
+The module is not done until every backend-matrix test family in
+`integrals.d` either includes `Bytecode` or is explicitly recorded as blocked
+by a missing feature. The integral type behavior family is covered. The current
+remaining CTFE-only test family is assertion failure diagnostics:
+`typeFailureMessage.byte.0`, `typeFailureMessage.ubyte.0`, and
+`typeFailureMessage.uint.0`.
 
-Promote exactly one named behavior, rebuild/list tests, and run
+Promote the assertion-diagnostic family deliberately. Start with
+`typeFailureMessage.byte.0`, rebuild/list tests, and run
 `ut.backends.lang.integrals.typeFailureMessage.byte.0.Bytecode` focused. Only
-after that focused test is red should production code change. This slice is
-expected to exercise richer assertion diagnostics.
+after that focused test is red should production code change. Once it is green,
+check whether `ubyte` and `uint` exercise the same implemented behavior; if
+they do, promote them together instead of spending one subagent/commit on each
+type-width variant.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
