@@ -236,7 +236,7 @@ coverage still exists where previously present). This required adding module
 cast handling to
 `EvalModuleInterpreter.castValue`.
 
-Next smallest candidate is `typeFailureMessage.ubyte.0.<backend>`.
+Next smallest candidate is `typeFailureMessage.uint.0.<backend>`.
 
 ### First PR Guardrails
 

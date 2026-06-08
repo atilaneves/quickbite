@@ -282,6 +282,29 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("typeFailureMessage.ubyte.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias T = ubyte;
+
+            T identity(T value) {
+                return value;
+            }
+
+            int input() {
+                return 130;
+            }
+
+            unittest {
+                T value = cast(T) input;
+                assert(identity(value) == value);
+                assert(value == 129);
+            }
+        }).shouldThrowWithMessage("130 != 129");
+    }
+}
+
 static foreach (backend; backends) {
 
     static foreach (T; IntegralTypes) {
