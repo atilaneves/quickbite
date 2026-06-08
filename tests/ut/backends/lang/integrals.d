@@ -48,7 +48,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -71,7 +71,7 @@ static foreach (backend; backendsWith!(Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -94,7 +94,7 @@ static foreach (backend; backendsWith!(Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

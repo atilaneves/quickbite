@@ -989,6 +989,7 @@ private struct EvalModuleInterpreter {
         in bool useBoolMessage,
         imported!"dmd.expression".Expression expression,
     ) {
+        import quickbite.frontend.dmd.types: isIntegralExpression;
         import std.conv: text;
 
         if (useBoolMessage)
@@ -998,6 +999,9 @@ private struct EvalModuleInterpreter {
             return text("'", value, "'");
 
         if (isUnsignedLongExpression(expression))
+            return text(value.asLong);
+
+        if (isIntegralExpression(expression))
             return text(value.asLong);
 
         return text(value);
