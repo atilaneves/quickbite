@@ -247,6 +247,11 @@ passed without new production code. Existing IR structured results already
 record source locations for file-backed unittest declarations; a temporary
 expected line-number mutation confirmed the promoted test observes the
 reported location.
+The promoted `runModulesTests.runsBothModules.IR` test passed without new
+production code. Existing IR module-backed unittest execution already runs both
+parsed modules and reports the exception thrown from the second module; a
+temporary expected-message mutation confirmed the promoted test observes the
+second module's failure.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
@@ -264,9 +269,9 @@ progress notes can go stale.
 
 Continue in `tests/ut/backends/api/runner.d`. Verify in the current checkout
 which backend matrices still exclude `IR`, then choose the smallest honest
-promotion from that module. `runTests.importPathsRetryAfterFailure.IR` is now
-covered; the next remaining matrices begin with the `runTestSummary` and
-structured-result runner coverage.
+promotion from that module. `runModulesTests.runsBothModules.IR` is now
+covered; continue with the next remaining current backend matrix in that
+module that still excludes `IR`.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
