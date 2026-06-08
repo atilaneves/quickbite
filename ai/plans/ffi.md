@@ -31,6 +31,13 @@ runtime: same process, same druntime, same GC, same OS access
 Dependency-side work may be expensive, but it must be moved out of the
 hot edit-test path.
 
+Starting point. The irreducible reason this document exists is **not** the
+dub-dependency native image described in §3–§20, but the body-less native
+leaf that every non-trivial library bottoms out in (libc, druntime, Phobos).
+The implementation therefore starts there. See §21 for the reframing and the
+shared body-less resolver, and §22 for the first test. §3–§20 describe the
+later dub-dependency-image design and are deferred.
+
 ## 2. Non-goals
 
 This design does not attempt to:
@@ -877,3 +884,141 @@ This yields a mixed-mode execution system where dependency code runs
 normally as native D code, while edited project code can be interpreted,
 lowered, or code-generated quickly enough to improve the unit-test
 feedback loop.
+
+## 21. Implementation reframing: start at the body-less leaf
+
+Sections §3–§20 describe the long-term design: compiling dub D dependencies
+into a cached native image and calling them through a wrapper manifest. That
+is a real future cost centre, but it is **not** where this work starts and
+**not** the irreducible reason this document exists.
+
+The irreducible reason is the **body-less leaf**. Every non-trivial library
+eventually calls a function for which there is no D body to execute — libc,
+druntime, Phobos, or any native library installed by a package manager.
+Reading a file, allocating memory, or formatting a float all bottom out in
+such a call. `fd.fbody is null` is the mechanical signal: the function is
+assumed to be precompiled native code that is **already resident** in the
+host process (Quickbite is itself a D program, so libc/druntime/Phobos are
+already mapped in). Resolution is `dlsym(RTLD_DEFAULT, mangledName)`; a null
+result is a fail-closed diagnostic — the deferred dub-dependency case.
+
+Available D code (templates, ranges, project source) is **not** the problem;
+every backend already handles it by lowering, interpreting, or compiling. The
+leaf is the problem. Two distinct native populations:
+
+```text
+already-resident (libc, druntime, Phobos): bind by symbol, no load,
+  no module-ctor problem — this is where we start
+newly-compiled (dub-dependency image, §3–§5): needs load + module-ctor +
+  init — deferred
+```
+
+### 21.1 Shared, backend-neutral resolver
+
+The body-less resolver is shared infrastructure, not per-backend code and not
+a backend choice (proposed module `quickbite.native`). It contains:
+
+```text
+- the frontend native-call descriptor: linkage, symbol name (mangling),
+  parameter and return ABI types — derived from the resolved
+  FuncDeclaration, kept behind the quickbite interface so no dmd.* type
+  leaks into a public quickbite.* API
+- the single body-less chokepoint every backend routes a body-less call
+  through
+- the execution-mode gate (§21.2)
+- dlsym(RTLD_DEFAULT, ...) resolution against the resident process
+- the typed call plus scalar/pointer marshalling
+```
+
+Per-backend code is limited to: (a) recognizing a body-less call and
+delegating to the chokepoint, and (b) converting between the backend's value
+representation and the ABI. No backend is privileged; whichever backend
+reaches CTFE parity first can adopt it.
+
+### 21.2 The mode gate (also the future CTFE-drop-in seam)
+
+Quickbite is also intended to become a faster drop-in CTFE engine for D, so
+the same body-less chokepoint must be **mode-parameterized** from the start:
+
+```text
+runtime mode: fbody is null  ->  dlsym + native call
+CTFE mode:    fbody is null  ->  reject unless the function is a pure
+              builtin (dmd.builtin whitelist), faithful to DMD CTFE
+```
+
+The CTFE-mode rejection is driven by the builtin/purity classification the
+other backends already copy from `dmd.builtin` (`isBuiltin`, the `BUILTIN`
+enum). Routing both modes through one chokepoint keeps the runtime/CTFE fork
+in exactly one place.
+
+### 21.3 Oracles
+
+```text
+CTFE mode (failure case): CTFE is the oracle. DMD CTFE throws when malloc is
+  called at compile time; a CTFE-faithful backend must reproduce that throw.
+  AGENTS.md's "CTFE is the canonical oracle" rule holds here unchanged.
+runtime mode (success case): compiled native D is the oracle. CTFE cannot
+  call malloc, so it cannot oracle the success path; the truth is the
+  compiled-D result (dmd_codegen / known value). This is the first place the
+  success oracle is compiled D rather than CTFE.
+```
+
+The two oracles deliberately diverge on the same source: CTFE throws,
+compiled D returns a non-null pointer. That divergence is the content of the
+first test.
+
+## 22. Increment 1: malloc in two modes (first test)
+
+The first test pins the mode seam in place from day one.
+
+Source under test:
+
+```d
+unittest {
+    import core.stdc.stdlib: malloc, free;
+    auto p = cast(ubyte*) malloc(8);
+    p[7] = 0xff;
+    p[7].should == 0xff;
+    free(p);
+}
+```
+
+`malloc`/`free` are `extern(C)`, body-less, not pure, and absent from DMD's
+`BUILTIN` whitelist — the cleanest probe of the seam. `free(p)` also exercises
+passing an opaque pointer **back** into a native call.
+
+Expectations:
+
+```text
+CTFE mode, all backends:  rejected — the call throws / fails to interpret,
+  exactly as DMD CTFE does. Oracle: CTFE. Already true for the Ctfe backend,
+  so this half is green from day one and is the invariant every backend's
+  future CTFE mode is held to.
+runtime mode:             succeeds — malloc returns non-null, free accepts
+  it. Oracle: compiled native D. This is the red test that drives the work.
+```
+
+What Increment 1 forces into existence (all in `quickbite.native` unless
+noted):
+
+```text
+- an execution-mode parameter (CTFE vs runtime) reaching the chokepoint
+- the single body-less chokepoint that consults mode (§21.2)
+- the frontend native-call descriptor (linkage, symbol, ABI types)
+- dlsym(RTLD_DEFAULT, "malloc" / "free")
+- an opaque-pointer Value case in quickbite.lang (a machine word, NOT
+  GC-scanned, since malloc memory is C heap) and `!is null`
+- marshalling: size_t in, void* out, void* in
+```
+
+Explicitly still rejected after Increment 1 (scope guard):
+
+```text
+runtime mode: anything but extern(C) scalar/pointer signatures of this shape
+  — arrays, strings, structs, extern(D), exceptions, GC-returning calls
+CTFE mode: every body-less call that is not a pure builtin
+```
+
+This is the malloc rung of the ladder. The next rungs (file read, then
+GC-returning calls needing the handle-table/arena from §13) build on the same
+chokepoint.
