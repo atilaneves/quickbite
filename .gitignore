@@ -26,3 +26,6 @@ tmp
 .codex
 .claude
 worktrees
+.ninja*
+*.ninja
+compile_commands.json
