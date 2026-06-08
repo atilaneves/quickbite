@@ -14,6 +14,11 @@ package imported!"quickbite.lang".Value eval(
 }
 
 private struct Machine {
+    import quickbite.backends.ir.bits:
+        doubleBits,
+        doubleFromBits,
+        floatBits,
+        floatFromBits;
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
@@ -27,6 +32,8 @@ private struct Machine {
         StringConst,
         Store,
         Type,
+        UnaryIntrinsicOp,
+        UnaryIntrinsicOperation,
         UnaryOp,
         UnaryOperation;
     import quickbite.lang: Value;
@@ -49,6 +56,7 @@ private struct Machine {
             (const Cast cast_) => execute(cast_),
             (const Load load) => execute(load),
             (const UnaryOp unary) => execute(unary),
+            (const UnaryIntrinsicOp intrinsic) => execute(intrinsic),
             (const Store store) => execute(store),
             (const BinaryOp binary) => execute(binary),
         );
@@ -129,9 +137,6 @@ private struct Machine {
             case negate:
                 executeNegate(unary);
                 break;
-            case fabs:
-                executeFabs(unary);
-                break;
         }
     }
 
@@ -152,13 +157,22 @@ private struct Machine {
         }
     }
 
-    private void executeFabs(const UnaryOp unary) {
+    private void execute(const UnaryIntrinsicOp intrinsic) {
+        final switch (intrinsic.operation) with (UnaryIntrinsicOperation) {
+            case fabs:
+                executeFabs(intrinsic);
+                break;
+        }
+    }
+
+    private void executeFabs(const UnaryIntrinsicOp intrinsic) {
         import std.math: fabs;
 
-        final switch (unary.type) with (Type) {
+        final switch (intrinsic.type) with (Type) {
             case f32:
-                scalarValues[unary.result.id] =
-                    floatBits(fabs(floatFromBits(scalarValues[unary.source])));
+                scalarValues[intrinsic.result.id] = floatBits(
+                    fabs(floatFromBits(scalarValues[intrinsic.source])),
+                );
                 break;
             case i1:
             case i8:
@@ -354,37 +368,4 @@ private struct Machine {
                 return Value(stringValues[valueId]);
         }
     }
-}
-
-// @trusted: reads the bytes of a local float as a same-sized uint for IR raw
-// scalar storage. The pointer is used only for this immediate read and never
-// escapes.
-private ulong floatBits(in float value) @trusted pure nothrow {
-    static assert(float.sizeof == uint.sizeof);
-    return *cast(uint*) &value;
-}
-
-// @trusted: reads the bytes of a local uint as a same-sized float after
-// retrieving an f32 value from IR raw scalar storage. The pointer is used only
-// for this immediate read and never escapes.
-private float floatFromBits(in ulong value) @trusted pure nothrow {
-    static assert(float.sizeof == uint.sizeof);
-    const bits = cast(uint) value;
-    return *cast(float*) &bits;
-}
-
-// @trusted: reads the bytes of a local double as a same-sized ulong for IR raw
-// scalar storage. The pointer is used only for this immediate read and never
-// escapes.
-private ulong doubleBits(in double value) @trusted pure nothrow {
-    static assert(double.sizeof == ulong.sizeof);
-    return *cast(ulong*) &value;
-}
-
-// @trusted: reads the bytes of a local ulong as a same-sized double after
-// retrieving an f64 value from IR raw scalar storage. The pointer is used only
-// for this immediate read and never escapes.
-private double doubleFromBits(in ulong bits) @trusted pure nothrow {
-    static assert(double.sizeof == ulong.sizeof);
-    return *cast(double*) &bits;
 }

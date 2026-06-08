@@ -45,6 +45,9 @@ package enum BinaryOperation {
 
 package enum UnaryOperation {
     negate,
+}
+
+package enum UnaryIntrinsicOperation {
     fabs,
 }
 
@@ -73,6 +76,13 @@ package struct UnaryOp {
     public Value result;
 }
 
+package struct UnaryIntrinsicOp {
+    public UnaryIntrinsicOperation operation;
+    public Type type;
+    public uint source;
+    public Value result;
+}
+
 package struct Cast {
     public Type sourceType;
     public Type targetType;
@@ -96,6 +106,7 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     StringConst,
     BinaryOp,
     UnaryOp,
+    UnaryIntrinsicOp,
     Cast,
     Load,
     Store,

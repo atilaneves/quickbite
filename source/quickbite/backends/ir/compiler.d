@@ -55,6 +55,8 @@ private struct Compiler {
         Store,
         Terminator,
         Type,
+        UnaryIntrinsicOp,
+        UnaryIntrinsicOperation,
         UnaryOp,
         UnaryOperation,
         Value;
@@ -150,18 +152,19 @@ private struct Compiler {
         assert(call.f !is null);
         assert(call.arguments !is null);
 
+        auto ref arguments = *call.arguments;
         switch (call.f.ident.toString) {
             case "fabs":
-                assert(call.arguments.length == 1);
-                return compileUnaryExpression(
-                    callArguments(call)[0],
-                    UnaryOperation.fabs,
+                assert(arguments.length == 1);
+                return compileUnaryIntrinsic(
+                    arguments[0],
+                    UnaryIntrinsicOperation.fabs,
                 );
             case "pow":
-                assert(call.arguments.length == 2);
+                assert(arguments.length == 2);
                 return compileBinaryExpression(
-                    callArguments(call)[0],
-                    callArguments(call)[1],
+                    arguments[0],
+                    arguments[1],
                     BinaryOperation.pow,
                 );
             default:
@@ -310,33 +313,36 @@ private struct Compiler {
 
         switch (real_.type.toBasetype.ty) with (TY) {
             case Tfloat32:
-                const result = nextValue(Type.f32, ResultKind.float_);
-                instructions ~= Instruction(
-                    Const(
-                        floatBits(cast(float) real_.toReal),
-                        result,
-                    ),
-                );
-                return result;
+                return compileRealLiteral!Tfloat32(real_.toReal);
             case Tfloat64:
-                const result = nextValue(Type.f64, ResultKind.double_);
-                instructions ~= Instruction(
-                    Const(
-                        doubleBits(cast(double) real_.toReal),
-                        result,
-                    ),
-                );
-                return result;
+                return compileRealLiteral!Tfloat64(real_.toReal);
             default:
                 assert(0);
         }
+    }
+
+    private Value compileRealLiteral(imported!"dmd.astenums".TY type)(
+        in real value,
+    ) {
+        import quickbite.backends.ir.bits: floatingBits;
+        import quickbite.frontend.dmd.types: dmdScalarType;
+
+        alias Scalar = dmdScalarType!type;
+        const result = nextValue(valueType!type, resultKind!type);
+        instructions ~= Instruction(
+            Const(
+                floatingBits(cast(Scalar) value),
+                result,
+            ),
+        );
+        return result;
     }
 
     private Value compileString(imported!"dmd.expression".StringExp string_) {
         const result = nextValue(Type.ptr, ResultKind.string_);
         instructions ~= Instruction(
             StringConst(
-                stringChars(string_).idup,
+                string_.peekString.idup,
                 result,
             ),
         );
@@ -351,6 +357,23 @@ private struct Compiler {
         const result = nextValue(source.type, source.resultKind);
         instructions ~= Instruction(
             UnaryOp(
+                operation,
+                source.type,
+                source.id,
+                result,
+            ),
+        );
+        return result;
+    }
+
+    private Value compileUnaryIntrinsic(
+        Expression expression,
+        in UnaryIntrinsicOperation operation,
+    ) {
+        const source = compileExpression(expression);
+        const result = nextValue(source.type, source.resultKind);
+        instructions ~= Instruction(
+            UnaryIntrinsicOp(
                 operation,
                 source.type,
                 source.id,
@@ -451,99 +474,133 @@ private imported!"dmd.expression".Expression initializerExpression(
     return expression;
 }
 
-// @trusted: reads the bytes of a local float as a same-sized uint for IR raw
-// scalar storage. The pointer is used only for this immediate read and never
-// escapes.
-private ulong floatBits(in float value) @trusted pure nothrow {
-    static assert(float.sizeof == uint.sizeof);
-    return *cast(uint*) &value;
-}
-
-// @trusted: reads the bytes of a local double as a same-sized ulong for IR raw
-// scalar storage. The pointer is used only for this immediate read and never
-// escapes.
-private ulong doubleBits(in double value) @trusted pure nothrow {
-    static assert(double.sizeof == ulong.sizeof);
-    return *cast(ulong*) &value;
-}
-
 private imported!"quickbite.backends.ir.language".Type valueType(
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.ir.language: Type;
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
-            return Type.i1;
+            return valueType!Tbool;
         case Tint8:
+            return valueType!Tint8;
         case Tuns8:
+            return valueType!Tuns8;
         case Tchar:
-            return Type.i8;
+            return valueType!Tchar;
         case Tint16:
+            return valueType!Tint16;
         case Tuns16:
-            return Type.i16;
+            return valueType!Tuns16;
         case Tint32:
+            return valueType!Tint32;
         case Tuns32:
-            return Type.i32;
+            return valueType!Tuns32;
         case Tint64:
+            return valueType!Tint64;
         case Tuns64:
-            return Type.i64;
+            return valueType!Tuns64;
         case Tfloat32:
-            return Type.f32;
+            return valueType!Tfloat32;
         case Tfloat64:
-            return Type.f64;
+            return valueType!Tfloat64;
         default:
             assert(0);
     }
 }
 
-private ref auto callArguments(
-    imported!"dmd.expression".CallExp call,
-) @trusted pure {
-    return *call.arguments;
+private imported!"quickbite.backends.ir.language".Type valueType(
+    imported!"dmd.astenums".TY type,
+)() {
+    import dmd.astenums: TY;
+    import quickbite.backends.ir.language: Type;
+    import quickbite.frontend.dmd.types: dmdScalarType;
+
+    alias Scalar = dmdScalarType!type;
+    static if (type == TY.Tbool)
+        return Type.i1;
+    else static if (type == TY.Tfloat32)
+        return Type.f32;
+    else static if (type == TY.Tfloat64)
+        return Type.f64;
+    else static if (Scalar.sizeof == ubyte.sizeof)
+        return Type.i8;
+    else static if (Scalar.sizeof == ushort.sizeof)
+        return Type.i16;
+    else static if (Scalar.sizeof == uint.sizeof)
+        return Type.i32;
+    else static if (Scalar.sizeof == ulong.sizeof)
+        return Type.i64;
+    else
+        static assert(false, "Unsupported IR scalar type.");
 }
 
 private imported!"quickbite.backends.ir.language".ResultKind resultKind(
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.ir.language: ResultKind;
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
-            return ResultKind.bool_;
+            return resultKind!Tbool;
         case Tint8:
-            return ResultKind.byte_;
+            return resultKind!Tint8;
         case Tuns8:
-            return ResultKind.ubyte_;
+            return resultKind!Tuns8;
         case Tchar:
-            return ResultKind.char_;
+            return resultKind!Tchar;
         case Tint16:
-            return ResultKind.short_;
+            return resultKind!Tint16;
         case Tuns16:
-            return ResultKind.ushort_;
+            return resultKind!Tuns16;
         case Tint32:
-            return ResultKind.int_;
+            return resultKind!Tint32;
         case Tuns32:
-            return ResultKind.uint_;
+            return resultKind!Tuns32;
         case Tint64:
-            return ResultKind.long_;
+            return resultKind!Tint64;
         case Tuns64:
-            return ResultKind.ulong_;
+            return resultKind!Tuns64;
         case Tfloat32:
-            return ResultKind.float_;
+            return resultKind!Tfloat32;
         case Tfloat64:
-            return ResultKind.double_;
+            return resultKind!Tfloat64;
         default:
             assert(0);
     }
 }
 
-private char[] stringChars(imported!"dmd.expression".StringExp string_) {
-    char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(char) string_.getIndex(index);
+private imported!"quickbite.backends.ir.language".ResultKind resultKind(
+    imported!"dmd.astenums".TY type,
+)() {
+    import quickbite.backends.ir.language: ResultKind;
+    import quickbite.frontend.dmd.types: dmdScalarType;
 
-    return values;
+    alias Scalar = dmdScalarType!type;
+    static if (is(Scalar == bool))
+        return ResultKind.bool_;
+    else static if (is(Scalar == byte))
+        return ResultKind.byte_;
+    else static if (is(Scalar == ubyte))
+        return ResultKind.ubyte_;
+    else static if (is(Scalar == char))
+        return ResultKind.char_;
+    else static if (is(Scalar == short))
+        return ResultKind.short_;
+    else static if (is(Scalar == ushort))
+        return ResultKind.ushort_;
+    else static if (is(Scalar == int))
+        return ResultKind.int_;
+    else static if (is(Scalar == uint))
+        return ResultKind.uint_;
+    else static if (is(Scalar == long))
+        return ResultKind.long_;
+    else static if (is(Scalar == ulong))
+        return ResultKind.ulong_;
+    else static if (is(Scalar == float))
+        return ResultKind.float_;
+    else static if (is(Scalar == double))
+        return ResultKind.double_;
+    else
+        static assert(false, "Unsupported IR result type.");
 }

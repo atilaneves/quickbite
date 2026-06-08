@@ -136,11 +136,12 @@ store the raw `double` result bits. The promoted
 and VM execution for `f64` negation. The promoted
 `fabsFloatPreservesReturnType.IR` test added no-op import statement handling,
 narrow call lowering for one-argument `fabs`, the backend-local
-`UnaryOperation.fabs` instruction shape, `f32` value-type mapping and local
-storage, and VM execution for `f32` `fabs` while preserving the public `float`
-result. The promoted `powFloatDoesNotReturnDoubleValue.IR` test added narrow
-two-argument `pow` call lowering to a typed `BinaryOperation.pow` instruction
-and VM execution for `f32` operands while preserving the public `float` result.
+`UnaryIntrinsicOperation.fabs` instruction shape, `f32` value-type mapping and
+local storage, and VM execution for `f32` `fabs` while preserving the public
+`float` result. The promoted `powFloatDoesNotReturnDoubleValue.IR` test added
+narrow two-argument `pow` call lowering to a typed `BinaryOperation.pow`
+instruction and VM execution for `f32` operands while preserving the public
+`float` result.
 The promoted `stringLiteralIsArray.IR` test added a backend-local
 `StringConst` instruction, narrow compiler lowering for DMD `StringExp`, a
 `string_` result category, and VM string result storage used only for final
