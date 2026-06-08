@@ -501,7 +501,25 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.41421 >= 1.414");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 2.0;
+                double result = sqrt(input);
+                assert(result < 1.414);
+            }
+        }).shouldThrowWithMessage("1.41421 >= 1.414");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesRuntimeFabsDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
