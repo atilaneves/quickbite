@@ -76,6 +76,10 @@ first integer literal slice is green, keep the eval roadmap covering all D
 integer scalar types (`byte`, `ubyte`, `short`, `ushort`, `int`, `uint`,
 `long`, and `ulong`) before treating integer scalar preservation as complete.
 
+Only migrate or promote tests from one test module per PR. Within that
+module, keep each promoted test as its own subagent slice and commit, but do
+not add interpreter coverage in a second test module until a follow-up PR.
+
 After the existing eval tests are done, do not jump to an entire broad
 language file. Identify the next similarly simple test by counting the
 required language features in the fixture and choosing the smallest delta from
@@ -188,62 +192,41 @@ revert the mutation before accepting a test-only slice.
 Module-backed interpreter support remains intentionally narrow:
 direct free-function calls with evaluated arguments, `in`/`ref` parameter
 binding, return statements, comma-expression sequencing, local bool
-declarations, unary `!`, equality failure messages, truthiness, and
-DMD-lowered logical-not and logical-and temporaries in assertion messages exist
-only because promoted logic and diagnostics tests required them. Logical `&&`
-and `||` short-circuiting exists only for the promoted local and zero-argument
-free-call cases. Do not generalize methods, assignment, control flow, or
-assertion formatting until a promoted test forces that behaviour.
+declarations, typed scalar default values, unary `!`, equality failure
+messages, truthiness, and DMD-lowered logical-not and logical-and temporaries
+in assertion messages exist only because promoted logic and diagnostics tests
+required them. Logical `&&` and `||` short-circuiting exists only for the
+promoted local and zero-argument free-call cases. Do not generalize methods,
+assignment, control flow, or assertion formatting until a promoted test forces
+that behaviour.
 
 ### Implementation Review Notes
-
-**Finding 5 — Builtin call zero-argument check uses `is null` instead of a
-length guard.**
-`EvalFunctionWalker` tests `call.arguments is null` to detect a zero-argument
-builtin. DMD may produce a non-null empty `Expressions*` (`.length == 0`)
-rather than null for a call with no arguments, causing the check to fail and
-the interpreter to throw "Unsupported eval call argument count" for a valid
-zero-argument builtin. Replace with `call.arguments is null ||
-call.arguments.length == 0`.
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
 `EvalModuleInterpreter`.**
 `EvalFunctionWalker` converts `StringExp` to a `char[]` array `Value` (covers
-the `stringLiteralIsArray` eval test). `EvalModuleInterpreter` has no
-`StringExp` case and would throw unsupported for any module-backed unittest
-that references a string literal. Before promoting any logic or diagnostics
-test that involves string values, add a shared `StringExp` → `char[]`
-conversion or a matching case in `EvalModuleInterpreter`.
+the `stringLiteralIsArray` eval test). Before promoting any logic or
+diagnostics test that involves string values, verify module-backed string
+literal signal with the containing module's first follow-up PR. If that
+promotion is already green, verify signal by mutating the relevant interpreter
+handler, then revert the mutation before accepting a test-only slice.
 
-**Finding 3 — Uninitialized variable reads return hardcoded types regardless of
-declared type.**
-Both walkers fall back to a hardcoded `Value` when a variable is not yet in the
-locals map: `EvalFunctionWalker` returns `Value(cast(int) 0)` and
-`EvalModuleInterpreter` returns `Value(false)`. D initialises every variable to
-its type's default (`double` → `double.nan`, `int` → `0`, etc.), so the
-hardcoded fallbacks are wrong for any type other than `int`/`bool`
-respectively. The two walkers also disagree with each other. The fix is to
-derive the default `Value` from the variable's declared type rather than
-hard-coding a scalar.
+**Finding 2 — Completed: top-level eval uses one expression walker.**
+`Interpreter.eval()` now parses eval source into the common eval function
+wrapper and runs it through `EvalFunctionWalker`. The stale standalone
+`evalExpression()` helper has been removed, so top-level eval no longer has a
+second, narrower expression dispatch table that can diverge from multiline
+eval coverage.
 
-**Finding 2 — Two expression evaluators with divergent coverage.**
-`evalExpression()` (called by the top-level `eval()` path) handles a narrow
-set of node types and throws on the rest. `EvalFunctionWalker.runExpression()`
-handles a broader set (strings, declarations, prefix increment, calls).
-Any node type supported by `runExpression` but absent from `evalExpression`
-silently fails on the simpler path with no indication that the function-wrapper
-path should have been taken instead. The two evaluators should either share a
-single dispatch table or `evalExpression` should be removed in favour of always
-routing through `EvalFunctionWalker`.
-
-**Finding 1 — Mixed `assert(0)` vs `Exception` for unsupported nodes.**
-The plan requires an explicit unsupported diagnostic rather than crashing.
-`impl.d` throws `Exception("Unsupported …")` on some paths but uses `assert(0)`
-on several reachable internal paths (lines 70, 138, 174, 247, 251, 317, 355,
-529). The unimplemented Backend stubs (`evalRepl`, `runTestResults`,
-`runTestSummary`) also use `assert(0)`. Replace reachable `assert(0)` with
-explicit unsupported diagnostics; keep `assert(0)` only for internal
-invariants that can never be triggered by a supported AST input.
+**Finding 1 — Eval unsupported statements report diagnostics.**
+`EvalFunctionWalker.runStatement` now throws
+`"Unsupported eval statement: <kind>"` instead of reaching `assert(0)` for the
+first eval-backed unsupported statement shape covered by `eval.d`. Remaining
+`assert(0)` calls are outside this eval-only PR: unimplemented Backend API
+stubs (`evalRepl`, `runTestResults`, `runTestSummary`), eval expression
+invariants that still need a reachable `eval.d` signal, and module-backed
+interpreter paths that belong to a follow-up PR for their containing test
+module.
 
 ### First PR Guardrails
 

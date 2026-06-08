@@ -37,53 +37,6 @@ public class Interpreter: imported!"quickbite.backends".Backend {
 
 }
 
-private imported!"quickbite.lang".Value evalExpression(
-    imported!"dmd.expression".Expression expression,
-) {
-    import quickbite.lang: Value;
-    import quickbite.frontend.dmd_values: integerValue, realValue;
-
-    if (auto integer = expression.isIntegerExp)
-        return integerValue(integer);
-
-    if (auto real_ = expression.isRealExp)
-        return realValue(real_);
-
-    if (auto cast_ = expression.isCastExp)
-        return castValue(cast_);
-
-    if (auto add = expression.isAddExp)
-        return evalExpression(add.e1) + evalExpression(add.e2);
-
-    if (auto sub = expression.isMinExp)
-        return evalExpression(sub.e1) - evalExpression(sub.e2);
-
-    if (auto mul = expression.isMulExp)
-        return evalExpression(mul.e1) * evalExpression(mul.e2);
-
-    if (auto div = expression.isDivExp)
-        return evalExpression(div.e1) / evalExpression(div.e2);
-
-    if (auto neg = expression.isNegExp)
-        return -evalExpression(neg.e1);
-
-    assert(0);
-}
-
-private imported!"quickbite.lang".Value castValue(
-    imported!"dmd.expression".CastExp cast_,
-) {
-    import quickbite.backends.casts:
-        backendCastTarget = castTarget,
-        backendCastValue = castValue;
-
-    auto type = cast_.to.toBasetype;
-    if (type is null)
-        return evalExpression(cast_.e1);
-
-    return backendCastValue(evalExpression(cast_.e1), backendCastTarget(type));
-}
-
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
@@ -94,6 +47,7 @@ private imported!"quickbite.lang".Value evalFunction(
 
 private struct EvalFunctionWalker {
     import quickbite.lang: Value;
+    import quickbite.frontend.dmd.values: defaultValue;
     import dmd.declaration: VarDeclaration;
 
     private Value[VarDeclaration] locals;
@@ -135,11 +89,12 @@ private struct EvalFunctionWalker {
             return;
         }
 
-        assert(0);
+        import std.conv: text;
+        throw new Exception(text("Unsupported eval statement: ", statement.stmt));
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
-        import quickbite.frontend.dmd_values: integerValue, realValue;
+        import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
@@ -176,7 +131,7 @@ private struct EvalFunctionWalker {
             if (auto current = variable in locals)
                 return *current;
 
-            return Value(cast(int) 0);
+            return defaultValue(variable);
         }
 
         import std.conv: text;
@@ -191,7 +146,7 @@ private struct EvalFunctionWalker {
         import std.math: mathFabs = fabs;
         import std.math: mathPow = pow;
 
-        if (call.arguments is null)
+        if (call.arguments is null || call.arguments.length == 0)
             throw new Exception("Unsupported eval call argument count.");
 
         with (BUILTIN) switch (isBuiltin(call.f)) {
@@ -222,8 +177,9 @@ private struct EvalFunctionWalker {
             return Value(cast(int) 0);
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            locals[variable] = Value(cast(int) 0);
-            return Value(cast(int) 0);
+            const value = defaultValue(variable);
+            locals[variable] = value;
+            return value;
         }
 
         auto initializer = variable._init.isExpInitializer.exp;
@@ -252,7 +208,7 @@ private struct EvalFunctionWalker {
 
         auto current = variable in locals;
         if (current is null) {
-            locals[variable] = Value(cast(int) 0);
+            locals[variable] = defaultValue(variable);
             current = variable in locals;
         }
 
@@ -288,6 +244,7 @@ private struct EvalFunctionWalker {
 private struct EvalModuleInterpreter {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
+    import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
@@ -331,7 +288,7 @@ private struct EvalModuleInterpreter {
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
         import dmd.tokens: EXP;
-        import quickbite.frontend.dmd_values: integerValue;
+        import quickbite.frontend.dmd.values: integerValue;
 
         if (auto integer = expression.isIntegerExp)
             return integerValue(integer);
@@ -417,7 +374,7 @@ private struct EvalModuleInterpreter {
             if (auto current = variable in locals)
                 return *current;
 
-            return Value(false);
+            return defaultValue(variable);
         }
 
         import std.conv: text;
@@ -699,8 +656,9 @@ private struct EvalModuleInterpreter {
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            locals[variable] = Value(false);
-            return Value(false);
+            const value = defaultValue(variable);
+            locals[variable] = value;
+            return value;
         }
 
         auto initializer = variable._init.isExpInitializer.exp;

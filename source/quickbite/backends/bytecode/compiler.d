@@ -53,7 +53,7 @@ private struct Compiler {
         Op,
         Program;
     import quickbite.backends.casts: CastTarget;
-    import quickbite.frontend.dmd_values: integerValue, realValue;
+    import quickbite.frontend.dmd.values: defaultValue, integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
@@ -496,81 +496,6 @@ private struct Compiler {
             return blit.e2;
 
         return expression;
-    }
-}
-
-private imported!"quickbite.lang".Value defaultValue(
-    imported!"dmd.declaration".VarDeclaration variable,
-) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
-
-    const type = variable.type.toBasetype;
-    with (TY) final switch (type.ty) {
-        case Tbool:
-            return Value(false);
-        case Tint8:
-            return Value(cast(byte) 0);
-        case Tuns8:
-            return Value(cast(ubyte) 0);
-        case Tint16:
-            return Value(cast(short) 0);
-        case Tuns16:
-            return Value(cast(ushort) 0);
-        case Tint32:
-            return Value(0);
-        case Tuns32:
-            return Value(0u);
-        case Tint64:
-            return Value(0L);
-        case Tuns64:
-            return Value(0UL);
-        case Tfloat32:
-            return Value(0.0f);
-        case Tfloat64:
-            return Value(0.0);
-        case Tfloat80:
-            return Value(0.0L);
-        case Tchar:
-            return Value(char.init);
-        case Twchar:
-            return Value(wchar.init);
-        case Tdchar:
-            return Value(dchar.init);
-        case Tvoid:
-        case Tint128:
-        case Tuns128:
-        case Timaginary32:
-        case Timaginary64:
-        case Timaginary80:
-        case Tcomplex32:
-        case Tcomplex64:
-        case Tcomplex80:
-        case Tpointer:
-        case Tfunction:
-        case Tarray:
-        case Tsarray:
-        case Taarray:
-        case Tclass:
-        case Tident:
-        case Tinstance:
-        case Ttypeof:
-        case Ttuple:
-        case Tslice:
-        case Treturn:
-        case Terror:
-        case Tnull:
-        case Tvector:
-        case Ttraits:
-        case Tmixin:
-        case Tnoreturn:
-        case Ttag:
-        case Tstruct:
-        case Tenum:
-        case Tdelegate:
-        case Treference:
-        case Tnone:
-            throw new Exception("Unsupported bytecode default value.");
     }
 }
 

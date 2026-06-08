@@ -113,6 +113,13 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
+static foreach (backend; backendsWith!Interpreter) {
+    @("defaultUintPreservesScalarType." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("uint value;\nvalue").should == Value(0u);
+    }
+}
+
 static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
@@ -157,6 +164,18 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
         result.should == Value(cast(float) 8.0);
         result.should.not == Value(8.0);
     }
+}
+
+@("zeroArgumentCallReportsArgumentCount.Interpreter")
+unittest {
+    newBackend!Interpreter.eval("int zero() { return 0; }\nzero")
+        .shouldThrowWithMessage("Unsupported eval call argument count.");
+}
+
+@("ifStatementReportsUnsupportedEvalStatement.Interpreter")
+unittest {
+    newBackend!Interpreter.eval("bool input = true;\nif (input) {}\n0")
+        .shouldThrowWithMessage("Unsupported eval statement: If");
 }
 
 static foreach (backend; backendsWith!(Bytecode, Interpreter)) {

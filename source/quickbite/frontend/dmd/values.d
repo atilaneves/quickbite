@@ -1,4 +1,4 @@
-module quickbite.frontend.dmd_values;
+module quickbite.frontend.dmd.values;
 
 private:
 
@@ -139,4 +139,93 @@ public imported!"quickbite.lang".Value realValue(
         default:
             assert(0);
     }
+}
+
+public imported!"quickbite.lang".Value defaultValue(
+    imported!"dmd.declaration".VarDeclaration variable,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    if (variable.type is null)
+        throw new Exception("Unsupported DMD default value.");
+
+    const type = variable.type.toBasetype;
+    with (TY) final switch (type.ty) {
+        case Tbool:
+            return scalarDefaultValue!Tbool;
+        case Tint8:
+            return scalarDefaultValue!Tint8;
+        case Tuns8:
+            return scalarDefaultValue!Tuns8;
+        case Tint16:
+            return scalarDefaultValue!Tint16;
+        case Tuns16:
+            return scalarDefaultValue!Tuns16;
+        case Tint32:
+            return scalarDefaultValue!Tint32;
+        case Tuns32:
+            return scalarDefaultValue!Tuns32;
+        case Tint64:
+            return scalarDefaultValue!Tint64;
+        case Tuns64:
+            return scalarDefaultValue!Tuns64;
+        case Tfloat32:
+            return scalarDefaultValue!Tfloat32;
+        case Tfloat64:
+            return scalarDefaultValue!Tfloat64;
+        case Tfloat80:
+            return scalarDefaultValue!Tfloat80;
+        case Tchar:
+            return scalarDefaultValue!Tchar;
+        case Twchar:
+            return scalarDefaultValue!Twchar;
+        case Tdchar:
+            return scalarDefaultValue!Tdchar;
+        case Tpointer:
+        case Tclass:
+        case Tnull:
+            return Value.null_;
+        case Tvoid:
+        case Tint128:
+        case Tuns128:
+        case Timaginary32:
+        case Timaginary64:
+        case Timaginary80:
+        case Tcomplex32:
+        case Tcomplex64:
+        case Tcomplex80:
+        case Tfunction:
+        case Tarray:
+        case Tsarray:
+        case Taarray:
+        case Tident:
+        case Tinstance:
+        case Ttypeof:
+        case Ttuple:
+        case Tslice:
+        case Treturn:
+        case Terror:
+        case Tvector:
+        case Ttraits:
+        case Tmixin:
+        case Tnoreturn:
+        case Ttag:
+        case Tstruct:
+        case Tenum:
+        case Tdelegate:
+        case Treference:
+        case Tnone:
+            throw new Exception("Unsupported DMD default value.");
+    }
+}
+
+private imported!"quickbite.lang".Value scalarDefaultValue(
+    imported!"dmd.astenums".TY type,
+)() {
+    import quickbite.frontend.dmd.types: dmdScalarType;
+    import quickbite.lang: Value;
+
+    alias T = dmdScalarType!type;
+    return Value(T.init);
 }
