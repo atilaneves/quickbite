@@ -225,6 +225,10 @@ minimal IR `runTestSummary` entry point. It enumerates module unittest
 declarations, compiles and executes each one through the existing IR unittest
 path, and records only aggregate total/passed/failed counts. Structured
 `runTestResults` remains unimplemented.
+The promoted `runTestSummary.countsAllPassingUnittests.IR` test passed without
+new production code. Existing IR summary execution already counts multiple
+passing unittest declarations and reports zero failures; a temporary expected
+failure-count mutation confirmed the promoted test observes the summary result.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
