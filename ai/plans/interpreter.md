@@ -236,7 +236,7 @@ coverage still exists where previously present). This required adding module
 cast handling to
 `EvalModuleInterpreter.castValue`.
 
-Next smallest candidate is `typeFailureMessage.uint.0.<backend>`.
+Current integrals module is now fully promoted for this module slice.
 
 ### First PR Guardrails
 
