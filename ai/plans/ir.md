@@ -229,6 +229,13 @@ The promoted `runTestSummary.countsAllPassingUnittests.IR` test passed without
 new production code. Existing IR summary execution already counts multiple
 passing unittest declarations and reports zero failures; a temporary expected
 failure-count mutation confirmed the promoted test observes the summary result.
+The promoted `runTestSummary.countsAssertErrorsAsFailures.IR` test passed
+without new production code. Existing narrow throw lowering already accepts
+`throw new AssertError("literal")`, emits the same message-carrying
+`ThrowException` instruction used by the `Exception` fixture, and
+`runTestSummary` records the thrown unittest as one failure; a temporary
+expected failure-count mutation confirmed the promoted test observes the
+summary result.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:

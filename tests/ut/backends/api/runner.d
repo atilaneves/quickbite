@@ -122,7 +122,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
