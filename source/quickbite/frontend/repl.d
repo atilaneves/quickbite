@@ -93,7 +93,7 @@ private bool isTypeExpressionCell(in string input) {
         const expression = parser.parseExpression;
         result = expression !is null &&
             expression.isTypeExp !is null &&
-            parser.token.value != TOK.semicolon &&
+            parser.token.value == TOK.endOfFile &&
             global.errors == 0;
     });
 

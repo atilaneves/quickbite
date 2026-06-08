@@ -115,8 +115,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   Error: `}` expected following members in `struct` declaration
   ```
 
-## To do
-
 - Require type-expression classification to consume the whole input. A cell
   that starts with a type expression but has trailing tokens must not be
   rewritten through the `.stringof` type-display path.
@@ -143,6 +141,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   Error: CTFE internal error: non-constant value `int`
   `(int) + 2` cannot be interpreted at compile time
   ```
+
+## To do
 
 - Recognise standalone `mixin(…)` as an expression cell. `isExpressionCell`
   (`source/quickbite/frontend/cell.d:425`) appends `";\0"` and calls

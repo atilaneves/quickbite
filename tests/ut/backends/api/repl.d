@@ -6,6 +6,15 @@ import ut.backends;
 
 private:
 
+@("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([]);
+
+    session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
+}
+
 static foreach (backend; backends) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
