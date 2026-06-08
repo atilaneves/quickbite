@@ -58,7 +58,7 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, Expression,
         LogicalExp, PreExp;
     import dmd.statement: Statement;
 
@@ -252,6 +252,11 @@ private struct Compiler {
             return;
         }
 
+        if (isComparisonExpression(expression)) {
+            compileComparisonExpression(castComparisonExpression(expression));
+            return;
+        }
+
         if (auto not = expression.isNotExp) {
             compileExpression(not.e1);
             program.instructions ~= Instruction(Op.not_);
@@ -278,6 +283,26 @@ private struct Compiler {
         compileExpression(expression.e1);
         compileExpression(expression.e2);
         program.instructions ~= Instruction(op);
+    }
+
+    private void compileComparisonExpression(CmpExp expression) {
+        import dmd.tokens: EXP;
+
+        if (expression.op == EXP.lessThan) {
+            compileBinaryExpression(expression, Op.lessThan);
+            return;
+        }
+
+        if (expression.op == EXP.greaterThan) {
+            compileBinaryExpression(expression, Op.greaterThan);
+            return;
+        }
+
+        import std.conv: text;
+        throw new Exception(text(
+            "Unsupported bytecode comparison: ",
+            expression.op,
+        ));
     }
 
     private void compileAndAnd(LogicalExp expression) {
@@ -319,6 +344,21 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.orOr;
+    }
+
+    private bool isComparisonExpression(Expression expression) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.lessThan ||
+            expression.op == EXP.greaterThan;
+    }
+
+    private CmpExp castComparisonExpression(Expression expression) {
+        auto comparison = cast(CmpExp) expression;
+        if (comparison is null)
+            throw new Exception("Unsupported bytecode comparison expression.");
+
+        return comparison;
     }
 
     private size_t localIndex(VarDeclaration variable) {

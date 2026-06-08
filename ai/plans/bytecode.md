@@ -204,15 +204,23 @@ Lua-specific bytecode shape.
   jump/pop control flow for short-circuit evaluation, normalizes both paths to
   bool, and reports failed `assert(!condition)` diagnostics such as
   `true == true`.
+- `logicalAndComparisonOperands`,
+  `logicalAndComparisonOperandsFailureMessage.0`, and
+  `logicalAndComparisonOperandsFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`, completing the module.
+  The promotion exposed missing DMD `CmpExp` lowering for comparison operands
+  inside logical expressions, so bytecode now lowers the required integer `<`
+  and `>` comparisons to bool results while preserving bool equality assertion
+  diagnostics such as `true != false` and `false != true`.
 
 ## Current Next Step
-Continue `tests/ut/backends/lang/logic.d` with the remaining CTFE-only logic
-family: `logicalAndComparisonOperands*`.
+Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
+`ai/plans/backend-test-modules-order.md`.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
-`tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`
-unless new tests are added there. Their current backend-matrix test families
-all include `Bytecode`.
+`tests/ut/backends/api/runner.d`, `tests/ut/backends/runtime/cstdlib.d`, or
+`tests/ut/backends/lang/logic.d` unless new tests are added there. Their
+current backend-matrix test families all include `Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.

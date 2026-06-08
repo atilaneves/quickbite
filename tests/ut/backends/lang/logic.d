@@ -267,7 +267,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

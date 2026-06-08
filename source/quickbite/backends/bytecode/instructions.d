@@ -19,6 +19,8 @@ package enum Op: ubyte {
     multiply,
     divide,
     bitOr,
+    lessThan,
+    greaterThan,
     not_,
     negate,
     unaryNativeCall,
