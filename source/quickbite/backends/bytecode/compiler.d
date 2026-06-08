@@ -22,6 +22,14 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     return compileFunction(parseEvalSource(source).function_);
 }
 
+package imported!"quickbite.backends.bytecode.instructions".Program compileUnitTest(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) {
+    Compiler compiler;
+    compiler.compileUnitTest(unitTest);
+    return compiler.program;
+}
+
 private imported!"quickbite.backends.bytecode.instructions".Program compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
@@ -39,20 +47,61 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
 }
 
 private struct Compiler {
-    import quickbite.backends.bytecode.instructions: Instruction, Op, Program;
+    import quickbite.backends.bytecode.instructions:
+        Function,
+        Instruction,
+        Op,
+        Program;
     import quickbite.backends.casts: CastTarget;
     import quickbite.frontend.dmd_values: integerValue, realValue;
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, BinExp, CallExp, CastExp, Expression, PreExp;
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression, PreExp;
     import dmd.statement: Statement;
 
     private Program program;
     private size_t[VarDeclaration] locals;
+    // Functions discovered from calls while compiling the unittest body. Their
+    // bodies are emitted after the unittest entry code, using the same index as
+    // the bytecode function table in Program.functions.
+    private FuncDeclaration[] functions;
+    private size_t[FuncDeclaration] functionIndices;
+
+    private void compileUnitTest(FuncDeclaration unitTest) {
+        compileFunctionBody(unitTest);
+        program.instructions ~= Instruction(Op.halt);
+
+        // Compiling one deferred function can discover more called functions,
+        // so keep checking the current queue length while draining it.
+        for (size_t i = 0; i < functions.length; ++i)
+            compileQueuedFunction(i);
+    }
+
+    private void compileFunctionBody(FuncDeclaration function_) {
+        locals = null;
+        registerParameters(function_);
+        compileStatement(function_.fbody);
+    }
+
+    private void compileQueuedFunction(in size_t index) {
+        // `index` selects both the deferred DMD function and the matching
+        // bytecode function table entry whose instruction offset is filled in.
+        program.functions[index].entry = program.instructions.length;
+        compileFunctionBody(functions[index]);
+        program.instructions ~= Instruction(Op.ret);
+    }
 
     private void compileStatement(Statement statement) {
+        if (statement is null)
+            return;
+
+        if (auto scope_ = statement.isScopeStatement) {
+            compileStatement(scope_.statement);
+            return;
+        }
+
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements)
@@ -73,6 +122,7 @@ private struct Compiler {
 
         if (auto return_ = statement.isReturnStatement) {
             compileExpression(return_.exp);
+            program.instructions ~= Instruction(Op.ret);
             return;
         }
 
@@ -114,6 +164,22 @@ private struct Compiler {
                 throw new Exception("Unsupported bytecode variable.");
 
             compileVariableLoad(declaration);
+            return;
+        }
+
+        if (auto assert_ = expression.isAssertExp) {
+            compileAssert(assert_);
+            return;
+        }
+
+        if (auto comma = expression.isCommaExp) {
+            compileExpression(comma.e1);
+            compileExpression(comma.e2);
+            return;
+        }
+
+        if (auto equal = expression.isEqualExp) {
+            compileBinaryExpression(equal, Op.equal);
             return;
         }
 
@@ -284,6 +350,35 @@ private struct Compiler {
             bytecodeBuiltin,
             bytecodeBuiltinArgumentCount;
 
+        auto function_ = callFunction(call);
+        if (isImplementedBuiltin(function_)) {
+            compileBuiltinCall(call);
+            return;
+        }
+
+        if (function_ !is null) {
+            if (function_.fbody !is null) {
+                if (call.arguments !is null)
+                    foreach (argument; *call.arguments)
+                        compileExpression(argument);
+
+                program.instructions ~= Instruction(
+                    Op.call,
+                    Value.void_,
+                    functionIndex(function_),
+                );
+                return;
+            }
+        }
+
+        compileBuiltinCall(call);
+    }
+
+    private void compileBuiltinCall(CallExp call) {
+        import quickbite.backends.bytecode.builtins:
+            bytecodeBuiltin,
+            bytecodeBuiltinArgumentCount;
+
         const builtin = bytecodeBuiltin(call.f);
         if (call.arguments is null)
             throw new Exception("Unsupported bytecode builtin call arguments.");
@@ -319,6 +414,67 @@ private struct Compiler {
         }
 
         throw new Exception("Unsupported bytecode builtin call.");
+    }
+
+    private bool isImplementedBuiltin(FuncDeclaration function_) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+
+        if (function_ is null)
+            return false;
+
+        with (BUILTIN) switch (isBuiltin(function_)) {
+            case fabs:
+            case pow:
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private void compileAssert(AssertExp assert_) {
+        if (auto equal = assert_.e1.isEqualExp) {
+            compileBinaryExpression(equal, Op.assertCompare);
+            return;
+        }
+
+        compileExpression(assert_.e1);
+        program.instructions ~= Instruction(Op.assertTrue);
+    }
+
+    private size_t functionIndex(FuncDeclaration function_) {
+        if (auto existing = function_ in functionIndices)
+            return *existing;
+
+        const index = functions.length;
+        functions ~= function_;
+        functionIndices[function_] = index;
+        program.functions ~= Function(0, parameterCount(function_));
+        return index;
+    }
+
+    private FuncDeclaration callFunction(CallExp call) {
+        if (call.f !is null)
+            return call.f;
+
+        if (auto variable = call.e1.isVarExp)
+            if (auto function_ = variable.var.isFuncDeclaration)
+                return function_;
+
+        return null;
+    }
+
+    private size_t parameterCount(FuncDeclaration function_) {
+        return function_.parameters is null ? 0 : function_.parameters.length;
+    }
+
+    private void registerParameters(FuncDeclaration function_) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (parameter; *function_.parameters)
+            localIndex(parameter);
     }
 
     private size_t castTarget(CastExp cast_) {
