@@ -93,10 +93,13 @@ code.
 
 # Testing
 
-Run `dub test -- --random` after every editing session. We're using
-`--random` because in this project the tests run serially. If there's
-a test failure, first check with `--seed` (using the seed in the
-output to the last `dub test --random`) to investigate the cause of
+Run `dub test -- --random` after every editing session. If the sandbox blocks
+`dub test`, request escalation for `dub test` instead of trying alternate test
+runners. Do not substitute `ut`, `./ut`, or `bin/ut` for the required
+`dub test -- --random` command unless the user explicitly asks for a focused
+unit-threaded run. We're using `--random` because in this project the tests run
+serially. If there's a test failure, first check with `--seed` (using the seed
+in the output to the last `dub test --random`) to investigate the cause of
 failure in that particular ordering.
 
 Run `ci.sh` before creating a PR. If the benchmarks fail to run
