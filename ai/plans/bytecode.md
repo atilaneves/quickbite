@@ -270,6 +270,10 @@ Lua-specific bytecode shape.
   `Bytecode`. This was a stale coverage gap: the existing bytecode single
   parameter binding, integer addition, return, and equality assertion
   diagnostic path already reported the failed comparison as `42 != 43`.
+- `ifElseOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing DMD `IfStatement` lowering in the
+  bytecode compiler, so bytecode now emits narrow branch control flow using the
+  existing jump opcodes and reports the selected branch result as `43 != 42`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

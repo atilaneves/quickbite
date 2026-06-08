@@ -244,7 +244,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("ifElseOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -260,7 +260,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

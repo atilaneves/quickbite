@@ -127,6 +127,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            compileIfStatement(if_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             compileThrow(throw_);
             return;
@@ -134,6 +139,23 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
+    }
+
+    private void compileIfStatement(
+        imported!"dmd.statement".IfStatement if_,
+    ) {
+        compileExpression(if_.condition);
+        const falseJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+
+        compileStatement(if_.ifbody);
+        const endJump = emitJump(Op.jump);
+
+        patchJump(falseJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileStatement(if_.elsebody);
+
+        patchJump(endJump);
     }
 
     private void compileExpression(
