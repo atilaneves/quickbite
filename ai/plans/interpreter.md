@@ -367,6 +367,14 @@ Interpreter-only block without `@ShouldFail`. No production change was
 required. Signal was verified by temporarily mutating Interpreter `sqrt` to
 call `fabs`, which failed the focused test with `16 != 5` instead of `4 != 5`.
 
+Math progress: `evaluatesDifferentRuntimeSqrtInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `36 != 7` instead of `6 != 7`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

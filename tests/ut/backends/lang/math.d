@@ -334,6 +334,19 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
             }
         }).shouldThrowWithMessage("4 != 5");
     }
+
+    @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 36.0;
+                assert(sqrt(input) == 7.0);
+            }
+        }).shouldThrowWithMessage("6 != 7");
+    }
 }
 
 static foreach (backend; backends) {
