@@ -214,7 +214,7 @@ private RunResult run(
                 stack.length -= 2;
 
                 if (lhs != rhs)
-                    throw new Exception("Unittest assertion failed.");
+                    throw new Exception(assertCompareMessage(lhs, rhs));
 
                 ++ip;
                 break;
@@ -257,4 +257,13 @@ private struct RunResult {
 private struct Frame {
     size_t returnIp;
     imported!"quickbite.lang".Value[] locals;
+}
+
+private string assertCompareMessage(
+    in imported!"quickbite.lang".Value lhs,
+    in imported!"quickbite.lang".Value rhs,
+) @safe pure {
+    import std.conv: text;
+
+    return text(lhs.asLong, " != ", rhs.asLong);
 }

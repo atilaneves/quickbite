@@ -100,8 +100,11 @@ Lua-specific bytecode shape.
   directly-called module functions through bytecode call frames. The remaining
   type-width variants passed without production changes and should have been
   promoted together once that was known. The implementation is deliberately
-  narrow: equality assertions are enough for the passing behavior, while
-  assertion-message diagnostics remain unpromoted.
+  narrow: equality assertions are enough for the passing behavior.
+- `typeFailureMessage.byte.0` now covers `Bytecode`. This promoted the first
+  integral assertion-diagnostic case and taught the bytecode VM to report
+  failed equality assertions from the runtime operands, producing
+  `-126 != 130` for a narrowed `byte` value.
 
 ## Current Next Step
 Continue in `tests/ut/backends/lang/integrals.d`, following
@@ -110,17 +113,13 @@ Continue in `tests/ut/backends/lang/integrals.d`, following
 The module is not done until every backend-matrix test family in
 `integrals.d` either includes `Bytecode` or is explicitly recorded as blocked
 by a missing feature. The integral type behavior family is covered. The current
-remaining CTFE-only test family is assertion failure diagnostics:
-`typeFailureMessage.byte.0`, `typeFailureMessage.ubyte.0`, and
-`typeFailureMessage.uint.0`.
+remaining CTFE-only tests are assertion failure diagnostics:
+`typeFailureMessage.ubyte.0` and `typeFailureMessage.uint.0`.
 
-Promote the assertion-diagnostic family deliberately. Start with
-`typeFailureMessage.byte.0`, rebuild/list tests, and run
-`ut.backends.lang.integrals.typeFailureMessage.byte.0.Bytecode` focused. Only
-after that focused test is red should production code change. Once it is green,
-check whether `ubyte` and `uint` exercise the same implemented behavior; if
-they do, promote them together instead of spending one subagent/commit on each
-type-width variant.
+Promote the remaining assertion-diagnostic cases as one family if the current
+bytecode equality diagnostic support makes both green. Do not spend separate
+subagent or commit slices on `ubyte` and `uint` unless one exposes a distinct
+missing VM feature.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
