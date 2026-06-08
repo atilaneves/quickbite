@@ -234,6 +234,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto bitOr = expression.isOrExp) {
+            compileBinaryExpression(bitOr, Op.bitOr);
+            return;
+        }
+
         if (auto negate = expression.isNegExp) {
             compileExpression(negate.e1);
             program.instructions ~= Instruction(Op.negate);

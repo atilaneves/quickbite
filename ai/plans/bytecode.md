@@ -169,12 +169,17 @@ Lua-specific bytecode shape.
   available source code `` instead of the generic unsupported-call-target
   message. The pointer casts, indexing, and `scope(exit)` in the source are
   never reached, matching the CTFE and tree-walker oracles.
+- `assertNonzeroIntCondition`, `assertNonzeroIntConditionFailureMessage.0`,
+  and `assertNonzeroIntConditionFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion exposed
+  missing bitwise-or expression support for `40 | mask()`, so bytecode now
+  lowers DMD `OrExp` to a narrow `bitOr` opcode and preserves the existing
+  assertion truthiness and equality diagnostics.
 
 ## Current Next Step
-`tests/ut/backends/runtime/cstdlib.d` is now complete for `Bytecode`. Its
-single `malloc` test block includes `Bytecode`. Continue with the next module
-named by `ai/plans/backend-test-modules-order.md`
-(`tests/ut/backends/lang/logic.d`).
+Continue `tests/ut/backends/lang/logic.d` with the next distinct CTFE-only
+behavior family after `assertNonzeroIntCondition`: the
+`logicalNotCallFailureMessage.*` tests.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
 `tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`

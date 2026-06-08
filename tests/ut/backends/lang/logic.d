@@ -4,7 +4,7 @@ module ut.backends.lang.logic;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -41,7 +41,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -15,6 +15,7 @@ package enum Op: ubyte {
     subtract,
     multiply,
     divide,
+    bitOr,
     negate,
     unaryNativeCall,
     binaryNativeCall,

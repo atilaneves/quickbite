@@ -170,6 +170,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.bitOr:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong | rhs.asLong);
+                ++ip;
+                break;
+
             case Op.negate:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
