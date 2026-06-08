@@ -465,7 +465,25 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.41421 <= 1.415");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 2.0;
+                double result = sqrt(input);
+                assert(result > 1.415);
+            }
+        }).shouldThrowWithMessage("1.41421 <= 1.415");
+    }
+}
+
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
