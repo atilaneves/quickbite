@@ -214,6 +214,11 @@ same runner entry point and adds narrow backend-local lowering for
 `throw new Exception("literal")` in a unittest body. The IR now carries a
 `ThrowException` instruction with the literal message and the VM throws that
 message directly; this is not general exception construction or catch support.
+The promoted `runTests.importPathsRetryAfterFailure.IR` test passed without new
+production code. Existing frontend import-path retry handling and IR
+module-backed unittest execution already rerun successfully after an initial
+parse failure without import paths; a temporary assertion mutation confirmed
+the imported enum value reaches the IR assertion path.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
@@ -231,7 +236,9 @@ progress notes can go stale.
 
 Continue in `tests/ut/backends/api/runner.d`. Verify in the current checkout
 which backend matrices still exclude `IR`, then choose the smallest honest
-promotion from that module.
+promotion from that module. `runTests.importPathsRetryAfterFailure.IR` is now
+covered; the next remaining matrices begin with the `runTestSummary` and
+structured-result runner coverage.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
