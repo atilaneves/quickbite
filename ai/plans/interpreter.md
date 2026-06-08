@@ -398,6 +398,11 @@ required. Signal was verified by temporarily mutating Interpreter `sqrt` to
 call `fabs`, which failed the focused test with `6.25 != 3.5` instead of
 `2.5 != 3.5`.
 
+Math progress: `evaluatesRuntimeNonPerfectSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`sqrt` to call `fabs`, which failed the focused test with `2 >= 1.415`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
