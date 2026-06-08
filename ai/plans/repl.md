@@ -220,6 +220,12 @@ history acceptance. Backends execute complete `ReplCell` values and return
   helper, returning status 1 with no D stack trace for both the
   missing-file and duplicate-load cases.
 
+- Renamed the REPL wrapper function from fixed `f` to an unspeakable
+  `__quickbite_repl_eval_N__` name. The session advances the suffix for
+  accepted cells, so user-defined module-scope `f` declarations no longer
+  collide with evaluation wrappers, and REPL diagnostics sanitize the
+  synthetic wrapper name back to `<repl>`.
+
 - Display a `<undisplayable>` placeholder for CTFE results Quickbite cannot
   represent yet instead of exposing backend internals. `ctfeValue` no longer
   throws `Unsupported CTFE eval result: …` for kinds such as a delegate
@@ -250,13 +256,14 @@ history acceptance. Backends execute complete `ReplCell` values and return
   now writes only `Error: unable to read module \`mymodule\`` to stdout
   with empty stderr.
 
-## To do
-
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return
   user-meaningful values instead of internal synthetic names. DMD CTFE
   reflects the real source context; the REPL currently leaks wrapper
   internals because `userDiagnostic` sanitises exception text but the
-  same substitution is never applied to `Value` results.
+  same substitution is never applied to `Value` results. Displayed REPL
+  values now use the same synthetic-name sanitisation, with exact
+  `snippet_N`, `snippet_N.d`, and `snippet_N.f` string values shown as
+  `"<repl>"`.
 
   Offending code (`source/quickbite/repl.d:210-226`) — sanitisation
   only fires on error message strings, not on evaluated values:
@@ -295,40 +302,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   "<repl>"
   "<repl>"
   "<repl>"
-  ```
-
-- Rename the REPL wrapper function away from `f` so that user-defined
-  functions at module scope cannot collide with it. Any fixed single name
-  just shifts the reserved name. The fix must use an unspeakable synthetic
-  name — e.g. an ever-incrementing counter suffix like
-  `__quickbite_repl_eval_0__` — and sanitise it in error messages the same
-  way `snippet_N` is sanitised today. Compare Python (`eval`/`exec` into a
-  namespace dict — no wrapper needed) and GHCi (direct evaluation — no
-  wrapper needed); in both cases the user namespace is never polluted by a
-  synthetic function name.
-
-  Offending code (`source/quickbite/frontend/cell.d:630`):
-
-  ```d
-  private string evalSource(
-      in string moduleTranscript,
-      in string localTranscript,
-  ) {
-      return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
-  }
-  ```
-
-  Reproducer:
-
-  ```text
-  int f() { return 1; }
-  f()
-  ```
-
-  Current output:
-
-  ```text
-  Error: function `f()` conflicts with previous declaration at <repl>(1)
   ```
 
 ## Architecture
