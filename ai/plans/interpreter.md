@@ -202,6 +202,68 @@ promoted local and zero-argument free-call cases. Do not generalize methods,
 assignment, control flow, or assertion formatting until a promoted test forces
 that behaviour.
 
+Runner progress: `runTests.runsAttributedUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+the narrow assertion-message fix for DMD-lowered equality assertions where the
+generated boolean helper would otherwise report `true != true` instead of the
+original integer operands.
+
+Runner progress: `runTests.runsAttributedThrowingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow module-backed `throw new Exception("...")` support for string-literal
+messages.
+
+Runner progress: `runTests.importPathsRetryAfterFailure` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths runner path and folded
+integer assert handling; signal was verified by temporarily mutating the module
+interpreter integer expression handler.
+
+Runner progress:
+`runTestSummary.countsAttributedPassingAndFailingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow summary counting over attributed unittests, with pass/fail totals
+derived by running each unittest and continuing after assertion failures.
+
+Runner progress: `runTestSummary.countsAllPassingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing summary counting; signal was verified by temporarily
+mutating the Interpreter summary pass counter.
+
+Runner progress: `runTestSummary.countsAssertErrorsAsFailures` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing throw-statement and summary failure counting; signal was
+verified by temporarily mutating the Interpreter throw-statement handler.
+
+Runner progress: `runTestResults.reportsDmdUnittestSymbolNames` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow structured result cases with DMD unittest symbol names and pass/fail
+summary counts; file-backed locations remain for the next runner slice.
+
+Runner progress: `runTestResults.reportsFileBackedUnittestLocations` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+filling structured result locations from each DMD unittest declaration's
+source location.
+
+Runner progress: `runModulesTests.runsBothModules` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing `runModulesTests` iteration and Interpreter
+module-backed `runTests`; signal was verified by temporarily returning after
+the first module.
+
+Runner progress: `runBackendSourceFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths fixture path and narrow
+direct free-function call handling; signal was verified by temporarily
+disabling the Interpreter `call.f` dispatch.
+
+Runner progress: `runBackendFileFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-file-with-import-paths fixture path and narrow
+imported free-function call handling; signal was verified by temporarily
+disabling both Interpreter direct free-function call dispatch paths. All
+current `runner.d` backend-matrix tests now cover `Interpreter`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

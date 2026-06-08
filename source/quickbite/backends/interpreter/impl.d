@@ -7,7 +7,11 @@ private:
 public class Interpreter: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestRunResult, TestSummary;
+    import quickbite.backends:
+        TestCaseResult,
+        TestOutcome,
+        TestRunResult,
+        TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -30,13 +34,69 @@ public class Interpreter: imported!"quickbite.backends".Backend {
     }
 
     public override TestRunResult runTestResults(Module module_) {
-        assert(0);
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestRunResult result;
+        EvalModuleInterpreter interpreter;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++result.summary.total;
+            try {
+                interpreter.runTest(unitTest);
+                ++result.summary.passed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.passed,
+                    symbolName(unitTest),
+                    locChars(unitTest.loc),
+                    null,
+                );
+            } catch (Exception e) {
+                ++result.summary.failed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.failed,
+                    symbolName(unitTest),
+                    locChars(unitTest.loc),
+                    e.msg,
+                );
+            }
+        });
+        return result;
     }
 
     public override TestSummary runTestSummary(Module module_) {
-        assert(0);
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestSummary summary;
+        EvalModuleInterpreter interpreter;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++summary.total;
+            try {
+                interpreter.runTest(unitTest);
+                ++summary.passed;
+            } catch (Exception) {
+                ++summary.failed;
+            }
+        });
+        return summary;
     }
 
+}
+
+private string symbolName(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) @trusted {
+    import std.string: fromStringz;
+
+    // `ident.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return unitTest.ident.toChars.fromStringz.idup;
+}
+
+private string locChars(imported!"dmd.location".Loc loc) @trusted {
+    import std.string: fromStringz;
+
+    // `loc.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return loc.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.lang".Value evalFunction(
@@ -285,6 +345,9 @@ private struct EvalModuleInterpreter {
                 runStatement(if_.elsebody);
             return;
         }
+
+        if (auto throw_ = statement.isThrowStatement)
+            throw new Exception(thrownExceptionMessage(throw_.exp));
 
         assert(0);
     }
@@ -656,6 +719,20 @@ private struct EvalModuleInterpreter {
         return values;
     }
 
+    private string thrownExceptionMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto new_ = expression is null ? null : expression.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            return "Unittest assertion failed.";
+
+        auto message = (*new_.arguments)[0].isStringExp;
+        if (message is null)
+            return "Unittest assertion failed.";
+
+        return stringChars(message).idup;
+    }
+
     private Value runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -752,30 +829,8 @@ private struct EvalModuleInterpreter {
                 );
         }
 
-        if (auto equal = assert_.e1.isEqualExp) {
-            import dmd.tokens: EXP;
-            import std.conv: text;
-
-            const operator = equal.op == EXP.notEqual ? "==" : "!=";
-            const left = runExpression(equal.e1);
-            const right = runExpression(equal.e2);
-            const useBoolMessage =
-                isBoolValue(left) ||
-                isBoolValue(right) ||
-                isBoolExpression(equal.e1) ||
-                isBoolExpression(equal.e2) ||
-                isLogicalNotExpression(equal.e1) ||
-                isLogicalNotExpression(equal.e2) ||
-                isLogicalExpression(equal.e1) ||
-                isLogicalExpression(equal.e2);
-            return text(
-                equalityOperandMessage(left, useBoolMessage, equal.e1),
-                " ",
-                operator,
-                " ",
-                equalityOperandMessage(right, useBoolMessage, equal.e2),
-            );
-        }
+        if (auto equal = assert_.e1.isEqualExp)
+            return equalFailureMessage(equal);
 
         if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
             import std.conv: text;
@@ -791,6 +846,33 @@ private struct EvalModuleInterpreter {
         }
 
         return "`assert(false)` failed";
+    }
+
+    private string equalFailureMessage(
+        imported!"dmd.expression".EqualExp equal,
+    ) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const operator = equal.op == EXP.notEqual ? "==" : "!=";
+        const left = runExpression(equal.e1);
+        const right = runExpression(equal.e2);
+        const useBoolMessage =
+            isBoolValue(left) ||
+            isBoolValue(right) ||
+            isBoolExpression(equal.e1) ||
+            isBoolExpression(equal.e2) ||
+            isLogicalNotExpression(equal.e1) ||
+            isLogicalNotExpression(equal.e2) ||
+            isLogicalExpression(equal.e1) ||
+            isLogicalExpression(equal.e2);
+        return text(
+            equalityOperandMessage(left, useBoolMessage, equal.e1),
+            " ",
+            operator,
+            " ",
+            equalityOperandMessage(right, useBoolMessage, equal.e2),
+        );
     }
 
     private string dmdAssertFailMessage(
@@ -1033,10 +1115,20 @@ private struct EvalModuleInterpreter {
         if (left is null || right is null)
             return null;
 
+        const inverseOperator = operatorText == "==" ? "!=" : "==";
+        if (left.toInteger > 1 || right.toInteger > 1)
+            return text(
+                left.toInteger,
+                " ",
+                inverseOperator,
+                " ",
+                right.toInteger,
+            );
+
         return text(
             left.toInteger != 0,
             " ",
-            operatorText == "==" ? "!=" : "==",
+            inverseOperator,
             " ",
             right.toInteger != 0,
         );
