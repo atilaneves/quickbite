@@ -225,6 +225,11 @@ Runner progress:
 narrow summary counting over attributed unittests, with pass/fail totals
 derived by running each unittest and continuing after assertion failures.
 
+Runner progress: `runTestSummary.countsAllPassingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing summary counting; signal was verified by temporarily
+mutating the Interpreter summary pass counter.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

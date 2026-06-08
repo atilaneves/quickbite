@@ -100,7 +100,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTestSummary.countsAllPassingUnittests." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -118,7 +118,9 @@ static foreach (backend; backends) {
         summary.passed.should == 2;
         summary.failed.should == 0;
     }
+}
 
+static foreach (backend; backends) {
     @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
