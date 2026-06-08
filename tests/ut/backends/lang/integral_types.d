@@ -46,6 +46,33 @@ static foreach (backend; backends) {
                 },
             ));
         }
+
+        static if (is(T == byte))
+        @("integralType." ~ T.stringof ~ "." ~ Bytecode.stringof)
+        unittest {
+            runBackendSourceFixtureTests!Bytecode(text(
+                "alias T = ",
+                T.stringof,
+                ";",
+                q{
+                    enum expected = cast(T) 130;
+
+                    T identity(T value) {
+                        return value;
+                    }
+
+                    int input() {
+                        return 130;
+                    }
+
+                    unittest {
+                        T value = cast(T) input;
+                        assert(identity(value) == value);
+                        assert(value == expected);
+                    }
+                },
+            ));
+        }
     }
 
     @("integralTypeFailureMessage.byte.0." ~ backend.stringof)

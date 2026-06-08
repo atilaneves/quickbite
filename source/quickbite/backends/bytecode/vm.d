@@ -5,6 +5,24 @@ private:
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
+    auto result = run(program);
+    if (result.stack.length != 1)
+        throw new Exception("Bytecode program did not leave exactly one value");
+
+    return result.stack[0];
+}
+
+package void execute(
+    in imported!"quickbite.backends.bytecode.instructions".Program program,
+) {
+    auto result = run(program);
+    if (result.stack.length != 0)
+        throw new Exception("Bytecode test left values on the stack");
+}
+
+private RunResult run(
+    in imported!"quickbite.backends.bytecode.instructions".Program program,
+) {
     import quickbite.backends.bytecode.builtins:
         BytecodeBuiltin, binaryBuiltinCall, unaryBuiltinCall;
     import quickbite.backends.bytecode.instructions: Op;
@@ -13,11 +31,35 @@ package imported!"quickbite.lang".Value eval(
 
     Value[] stack;
     Value[] locals;
+    Frame[] frames;
+    size_t ip;
 
-    foreach (instruction; program.instructions) {
+    while (ip < program.instructions.length) {
+        const instruction = program.instructions[ip];
         final switch (instruction.op) {
             case Op.literal:
                 stack ~= instruction.value;
+                ++ip;
+                break;
+
+            case Op.call:
+                if (instruction.operand >= program.functions.length)
+                    throw new Exception("Bytecode function out of bounds");
+
+                const function_ = program.functions[instruction.operand];
+                Value[] calleeLocals;
+                calleeLocals.length = function_.parameterCount;
+                foreach_reverse (index; 0 .. function_.parameterCount) {
+                    if (stack.length < 1)
+                        throw new Exception("Bytecode stack underflow");
+
+                    calleeLocals[index] = stack[$ - 1];
+                    stack.length -= 1;
+                }
+
+                frames ~= Frame(ip + 1, locals);
+                locals = calleeLocals;
+                ip = function_.entry;
                 break;
 
             case Op.loadLocal:
@@ -25,6 +67,7 @@ package imported!"quickbite.lang".Value eval(
                     throw new Exception("Bytecode local out of bounds");
 
                 stack ~= locals[instruction.operand];
+                ++ip;
                 break;
 
             case Op.initializeLocal:
@@ -32,6 +75,7 @@ package imported!"quickbite.lang".Value eval(
                     locals.length = instruction.operand + 1;
 
                 locals[instruction.operand] = instruction.value;
+                ++ip;
                 break;
 
             case Op.storeLocal:
@@ -43,6 +87,7 @@ package imported!"quickbite.lang".Value eval(
 
                 locals[instruction.operand] = stack[$ - 1];
                 stack.length -= 1;
+                ++ip;
                 break;
 
             case Op.incrementLocal:
@@ -51,6 +96,7 @@ package imported!"quickbite.lang".Value eval(
 
                 locals[instruction.operand] = locals[instruction.operand] +
                     instruction.value;
+                ++ip;
                 break;
 
             case Op.cast_:
@@ -61,6 +107,19 @@ package imported!"quickbite.lang".Value eval(
                     stack[$ - 1],
                     cast(CastTarget) instruction.operand,
                 );
+                ++ip;
+                break;
+
+            case Op.equal:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs == rhs);
+                ++ip;
                 break;
 
             case Op.add:
@@ -72,6 +131,7 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 2;
 
                 stack ~= lhs + rhs;
+                ++ip;
                 break;
 
             case Op.subtract:
@@ -83,6 +143,7 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 2;
 
                 stack ~= lhs - rhs;
+                ++ip;
                 break;
 
             case Op.multiply:
@@ -94,6 +155,7 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 2;
 
                 stack ~= lhs * rhs;
+                ++ip;
                 break;
 
             case Op.divide:
@@ -105,6 +167,7 @@ package imported!"quickbite.lang".Value eval(
                 stack.length -= 2;
 
                 stack ~= lhs / rhs;
+                ++ip;
                 break;
 
             case Op.negate:
@@ -112,6 +175,7 @@ package imported!"quickbite.lang".Value eval(
                     throw new Exception("Bytecode stack underflow");
 
                 stack[$ - 1] = -stack[$ - 1];
+                ++ip;
                 break;
 
             case Op.unaryNativeCall:
@@ -122,6 +186,7 @@ package imported!"quickbite.lang".Value eval(
                     cast(BytecodeBuiltin) instruction.operand,
                     stack[$ - 1],
                 );
+                ++ip;
                 break;
 
             case Op.binaryNativeCall:
@@ -137,12 +202,59 @@ package imported!"quickbite.lang".Value eval(
                     lhs,
                     rhs,
                 );
+                ++ip;
+                break;
+
+            case Op.assertCompare:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                if (lhs != rhs)
+                    throw new Exception("Unittest assertion failed.");
+
+                ++ip;
+                break;
+
+            case Op.assertTrue:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                const value = stack[$ - 1];
+                stack.length -= 1;
+                if (value.asLong == 0)
+                    throw new Exception("Unittest assertion failed.");
+
+                ++ip;
+                break;
+
+            case Op.ret:
+                if (frames.length == 0)
+                    return RunResult(stack);
+
+                auto frame = frames[$ - 1];
+                frames.length -= 1;
+                locals = frame.locals;
+                ip = frame.returnIp;
+                break;
+
+            case Op.halt:
+                return RunResult(stack);
                 break;
         }
     }
 
-    if (stack.length != 1)
-        throw new Exception("Bytecode program did not leave exactly one value");
+    return RunResult(stack);
+}
 
-    return stack[0];
+private struct RunResult {
+    imported!"quickbite.lang".Value[] stack;
+}
+
+private struct Frame {
+    size_t returnIp;
+    imported!"quickbite.lang".Value[] locals;
 }
