@@ -231,6 +231,10 @@ Lua-specific bytecode shape.
   existed, but assertion-specific comparison lowering did not tag failed `>`
   assertions. Bytecode now emits `Op.greaterThan` for that path and reports the
   inverse failed relation, such as `42 <= 42`.
+- `intGreaterOrEqualOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing DMD `>=` lowering in bytecode, so
+  the VM now evaluates a narrow `greaterOrEqual` opcode and formats failed
+  assertion diagnostics with the inverse operator, such as `41 < 42`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

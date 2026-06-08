@@ -313,6 +313,11 @@ private struct Compiler {
             return;
         }
 
+        if (expression.op == EXP.greaterOrEqual) {
+            compileBinaryExpression(expression, Op.greaterOrEqual);
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(text(
             "Unsupported bytecode comparison: ",
@@ -366,7 +371,8 @@ private struct Compiler {
 
         return expression.op == EXP.lessThan ||
             expression.op == EXP.lessOrEqual ||
-            expression.op == EXP.greaterThan;
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual;
     }
 
     private CmpExp castComparisonExpression(Expression expression) {
@@ -599,6 +605,11 @@ private struct Compiler {
 
             if (comparison.op == EXP.greaterThan) {
                 compileAssertComparison(comparison, Op.greaterThan);
+                return;
+            }
+
+            if (comparison.op == EXP.greaterOrEqual) {
+                compileAssertComparison(comparison, Op.greaterOrEqual);
                 return;
             }
         }

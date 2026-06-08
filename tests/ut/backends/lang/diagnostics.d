@@ -77,7 +77,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -92,7 +92,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("41 < 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -22,6 +22,7 @@ package enum Op: ubyte {
     lessThan,
     lessOrEqual,
     greaterThan,
+    greaterOrEqual,
     not_,
     negate,
     unaryNativeCall,
