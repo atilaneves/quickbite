@@ -112,13 +112,52 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Current Implementation State
 
-The first CFG/value reset is complete for the already-promoted eval slice.
-`language.d` now defines backend-local typed values, instructions,
-terminators, blocks, and functions. Functions carry their SSA value count so
-the VM can size its value storage once before execution. `compiler.d` lowers
-integer literals, `float` literals, and simple arithmetic expressions into a
-single entry block, and `vm.d` executes that block directly before converting
-the returned IR value to `quickbite.lang.Value` at the backend boundary.
+The first CFG/value reset is complete for the already-promoted eval slices.
+`language.d` now defines backend-local typed values, result categories,
+instructions, terminators, blocks, and functions. Functions carry their SSA
+value count and local count so the VM can size storage once before execution.
+`compiler.d` lowers eval source through the existing frontend eval-cell parser,
+walks the single eval function body, and supports integer literals, `float` and
+`double` literals, simple arithmetic expressions, local scalar declarations with
+expression initializers, local loads, the DMD semantic increment shape used by
+`++x`, and the narrow runtime cast shapes currently covered by
+`castsFloatingValueNumerically.IR` (`f64` to `i32`) and
+`castsRuntimeValuesToIntegerTypes.IR` (`i32` to `i8`, `i16`, `i32`, and `i64`
+storage, with result category preserving signedness). The promoted
+`defaultUintPreservesScalarType.IR` test passed without new production code:
+the existing default local initialization path already lowers `uint value` as
+an `i32` local with `uint_` result metadata, and the VM's boundary conversion
+preserves the public `uint` result. The promoted
+`floatingSubtractionUsesNumericValues.IR` test added only the VM support needed
+to execute an already-lowered `BinaryOperation.subtract` on `f64` operands and
+store the raw `double` result bits. The promoted
+`floatingUnaryMinusUsesNumericValue.IR` test added the backend-local
+`UnaryOperation.negate` instruction shape, compiler lowering for DMD `NegExp`,
+and VM execution for `f64` negation. The promoted
+`fabsFloatPreservesReturnType.IR` test added no-op import statement handling,
+narrow call lowering for one-argument `fabs`, the backend-local
+`UnaryIntrinsicOperation.fabs` instruction shape, `f32` value-type mapping and
+local storage, and VM execution for `f32` `fabs` while preserving the public
+`float` result. The promoted `powFloatDoesNotReturnDoubleValue.IR` test added
+narrow two-argument `pow` call lowering to a typed `BinaryOperation.pow`
+instruction and VM execution for `f32` operands while preserving the public
+`float` result.
+The promoted `stringLiteralIsArray.IR` test added a backend-local
+`StringConst` instruction, narrow compiler lowering for DMD `StringExp`, a
+`string_` result category, and VM string result storage used only for final
+conversion to `quickbite.lang.Value`.
+IR values carry both an operation type (`i32`, `f32`, and so on) and a
+D-visible scalar result category so the VM can keep arithmetic dispatch typed
+while preserving the public eval result type. `vm.d` executes the single entry
+block directly before converting the returned IR value to `quickbite.lang.Value`
+at the backend boundary.
+
+The current mutation support is intentionally narrow. Locals are identified by
+compiler-assigned integer indices, and `Load`/`Store` operate on those local
+slots for the promoted scalar eval slices. The compiler preserves each local's
+IR scalar type and result category for later loads, but this is not yet the
+full typed place-reference model needed for refs, fields, array elements,
+slices, or aliases.
 
 The currently covered IR backend eval tests are:
 
@@ -128,41 +167,46 @@ The currently covered IR backend eval tests are:
 - `add.int.2.IR`
 - `add.float.IR`
 - `arithmetic.IR`
+- `multiCell.IR`
+- `preservesScalarValueTypes.IR`
+- `castsFloatingValueNumerically.IR`
+- `castsRuntimeValuesToIntegerTypes.IR`
+- `defaultUintPreservesScalarType.IR`
+- `floatingSubtractionUsesNumericValues.IR`
+- `floatingUnaryMinusUsesNumericValue.IR`
+- `fabsFloatPreservesReturnType.IR`
+- `powFloatDoesNotReturnDoubleValue.IR`
+- `stringLiteralIsArray.IR`
 
-The next implementation slice should pick the next smallest current
-CTFE-backed eval behavior that still excludes `IR`, promote the existing
-backend matrix, and run the focused test. If it is red, verify it is red for
-the expected missing behavior. If it is green, verify the greenness by
-temporarily mutating the promoted test or relevant production code, confirming
-the focused test fails, and restoring the mutation. Inspect the DMD AST that
-reaches the IR compiler, then add only the IR shape and VM support required by
-that behavior. As of this update, the next likely candidate in
-`tests/ut/backends/lang/eval.d` is `multiCell`, but verify the current checkout
-before editing because backend progress notes can go stale.
+All tests in `tests/ut/backends/lang/eval.d` now include `IR`, so `eval.d` is
+complete for the current backend matrix.
+
+The next implementation slice should move to the next module in
+`ai/plans/backend-test-modules-order.md`:
+`tests/ut/backends/lang/integrals.d`. Pick the smallest current CTFE-backed
+behavior in that module that still excludes `IR`, promote the existing backend
+matrix, and run the focused test. If it is red, verify it is red for the
+expected missing behavior. If it is green, verify the greenness by temporarily
+mutating the promoted test or relevant production code, confirming the focused
+test fails, and restoring the mutation. Inspect the DMD AST that reaches the
+IR compiler, then add only the IR shape and VM support required by that
+behavior. Verify the current checkout before editing because backend progress
+notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` still
-excludes `IR`; if it already includes `IR`, treat this handoff as stale and
-choose the next smallest eval behavior that still excludes `IR`.
+Start with `tests/ut/backends/lang/integrals.d`, the next module after
+`eval.d` in `ai/plans/backend-test-modules-order.md`. Verify in the current
+checkout which backend matrices still exclude `IR`, then choose the smallest
+honest promotion from that module.
 
-If `multiCell` still excludes `IR`, the next TDD slice is:
-
-1. Promote only the existing `multiCell` backend matrix to include `IR`.
-2. Run `ut.backends.lang.eval.multiCell.IR`. If it is red, verify it is red
-   for the expected missing behavior. If it is green, verify the greenness by
-   temporarily mutating the promoted test or relevant production code,
-   confirming the focused test fails, and restoring the mutation.
-3. Inspect the DMD statement and expression shapes that reach the IR backend;
-   the lowered IR must reflect the AST shape actually present after semantic
-   analysis.
-4. Add the smallest production support required for that test's declarations,
-   increment expressions, expression sequencing, and local loads.
-5. Run the focused promoted test and then `dub test -- --random`.
-
-Do not store `quickbite.lang.Value` in IR instructions or VM registers for
-this slice. The VM should choose the arithmetic path from the instruction type,
-not from a runtime-tagged public `Value`.
+The completed cast slices promoted only existing backend matrices and added a
+backend-local `Cast` instruction plus VM support for the observed `f64` to
+`i32` runtime cast and `i32` runtime casts to the integer storage widths needed
+by `castsRuntimeValuesToIntegerTypes.IR`. They also made initialized scalar
+locals preserve their IR type/result metadata so `double input = 7.75` loads as
+`f64` instead of the earlier integer-only local shape. This is not general cast
+support yet.
 
 ### Target shape for the three backend-local modules
 
@@ -173,12 +217,13 @@ not from a runtime-tagged public `Value`.
   not represent D's type hierarchy. `ptr` represents D pointer values, not
   mutable places. Add a separate `Place` or `PlaceId` representation when
   `Alloca`, `Load`, and `Store` are promoted.
-- `Value` struct: `uint id` and `Type type`. Every SSA value declares its type
-  at the single definition site. The executor never inspects a runtime tag to
-  decide which arithmetic path to take.
+- `Value` struct: `uint id`, `Type type`, and `ResultKind resultKind`. Every
+  SSA value declares its operation type at the single definition site. The
+  executor never inspects a runtime tag to decide which arithmetic path to
+  take; the result kind is used only for D-visible boundary conversion.
 - Instructions as a `SumType`. Start with `Const` (typed constant scalar,
-  raw bits + destination `Value`) and `BinaryOp` (typed binary op, operation
-  enum + lhs/rhs value ids + destination `Value`). Add `Alloca`, `Load`, and
+  raw bits + result `Value`) and `BinaryOp` (typed binary op, operation enum
+  + lhs/rhs value ids + result `Value`). Add `Alloca`, `Load`, and
   `Store` when mutation tests are promoted; `Load` and `Store` consume typed
   place references, not ordinary `ptr` SSA values. Do not store
   `quickbite.lang.Value` inside IR instructions; convert to that public API

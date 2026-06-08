@@ -13,9 +13,26 @@ package enum Type {
     ptr,
 }
 
+package enum ResultKind {
+    bool_,
+    byte_,
+    ubyte_,
+    short_,
+    ushort_,
+    int_,
+    uint_,
+    long_,
+    ulong_,
+    char_,
+    float_,
+    double_,
+    string_,
+}
+
 package struct Value {
     public uint id;
     public Type type;
+    public ResultKind resultKind;
 }
 
 package enum BinaryOperation {
@@ -23,11 +40,25 @@ package enum BinaryOperation {
     subtract,
     multiply,
     divide,
+    pow,
+}
+
+package enum UnaryOperation {
+    negate,
+}
+
+package enum UnaryIntrinsicOperation {
+    fabs,
 }
 
 package struct Const {
     public ulong bits;
-    public Value destination;
+    public Value result;
+}
+
+package struct StringConst {
+    public string elements;
+    public Value result;
 }
 
 package struct BinaryOp {
@@ -35,10 +66,51 @@ package struct BinaryOp {
     public Type type;
     public uint lhs;
     public uint rhs;
-    public Value destination;
+    public Value result;
 }
 
-package alias Instruction = imported!"std.sumtype".SumType!(Const, BinaryOp);
+package struct UnaryOp {
+    public UnaryOperation operation;
+    public Type type;
+    public uint source;
+    public Value result;
+}
+
+package struct UnaryIntrinsicOp {
+    public UnaryIntrinsicOperation operation;
+    public Type type;
+    public uint source;
+    public Value result;
+}
+
+package struct Cast {
+    public Type sourceType;
+    public Type targetType;
+    public uint source;
+    public Value result;
+}
+
+package struct Load {
+    public uint local;
+    public Value result;
+}
+
+package struct Store {
+    public uint local;
+    public Type type;
+    public uint value;
+}
+
+package alias Instruction = imported!"std.sumtype".SumType!(
+    Const,
+    StringConst,
+    BinaryOp,
+    UnaryOp,
+    UnaryIntrinsicOp,
+    Cast,
+    Load,
+    Store,
+);
 
 package struct Branch {
     public uint target;
@@ -78,6 +150,7 @@ package struct Block {
 
 package struct Function {
     public Block[] blocks;
-    public Type returnType;
+    public ResultKind returnType;
     public uint valueCount;
+    public uint localCount;
 }

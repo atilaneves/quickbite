@@ -54,7 +54,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
@@ -62,7 +62,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("cast(byte) -3").should ==
@@ -83,7 +83,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
@@ -91,7 +91,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
@@ -113,14 +113,14 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("defaultUintPreservesScalarType." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("uint value;\nvalue").should == Value(0u);
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -132,7 +132,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
@@ -142,7 +142,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("fabsFloatPreservesReturnType." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -154,7 +154,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("powFloatDoesNotReturnDoubleValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
@@ -166,7 +166,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == Value("abc");
