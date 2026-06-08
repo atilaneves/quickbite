@@ -1,6 +1,8 @@
 module quickbite.backends.interpreter.impl;
 
+
 private:
+
 
 public class Interpreter: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
@@ -254,6 +256,7 @@ private struct EvalModuleInterpreter {
     private FuncDeclaration currentFunction;
 
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
+        log("Running test ", unitTest);
         runStatement(unitTest.fbody);
     }
 
@@ -315,8 +318,10 @@ private struct EvalModuleInterpreter {
                 return runLogicalOrExpression(logical);
         }
 
-        if (auto cast_ = expression.isCastExp)
+        if (auto cast_ = expression.isCastExp) {
+            log("cast expression: ", cast_);
             return castValue(cast_);
+        }
 
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
@@ -1027,5 +1032,12 @@ private struct EvalModuleInterpreter {
             " ",
             right.toInteger != 0,
         );
+    }
+}
+
+private void log(A...)(auto ref A args) {
+    version(unittest) {
+        import unit_threaded;
+        writelnUt(args);
     }
 }

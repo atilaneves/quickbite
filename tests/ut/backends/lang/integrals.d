@@ -6,47 +6,22 @@ import std.conv: text;
 import std.meta: AliasSeq;
 
 
-static foreach (backend; backends) {
-    alias IntegralTypes = AliasSeq!(
-        byte,
-        ubyte,
-        short,
-        ushort,
-        int,
-        uint,
-        long,
-        ulong,
-    );
+private alias IntegralTypes = AliasSeq!(
+    byte,
+    ubyte,
+    short,
+    ushort,
+    int,
+    uint,
+    long,
+    ulong,
+);
 
+
+static foreach (backend; AliasSeq!(Bytecode)) {
     static foreach (T; IntegralTypes) {
-        @("integralType." ~ T.stringof ~ "." ~ backend.stringof)
-        unittest {
-            runBackendSourceFixtureTests!backend(text(
-                "alias T = ",
-                T.stringof,
-                ";",
-                q{
-                    enum expected = cast(T) 130;
-
-                    T identity(T value) {
-                        return value;
-                    }
-
-                    int input() {
-                        return 130;
-                    }
-
-                    unittest {
-                        T value = cast(T) input;
-                        assert(identity(value) == value);
-                        assert(value == expected);
-                    }
-                },
-            ));
-        }
-
         static if (is(T == byte))
-        @("integralType." ~ T.stringof ~ "." ~ Bytecode.stringof)
+        @("type." ~ T.stringof ~ "." ~ Bytecode.stringof)
         unittest {
             runBackendSourceFixtureTests!Bytecode(text(
                 "alias T = ",
@@ -72,14 +47,43 @@ static foreach (backend; backends) {
             ));
         }
     }
+}
 
-    @("integralTypeFailureMessage.byte.0." ~ backend.stringof)
+static foreach (backend; backends) {
+
+    static foreach (T; IntegralTypes) {
+        @("type." ~ T.stringof ~ "." ~ backend.stringof)
+        unittest {
+            runBackendSourceFixtureTests!backend(text(
+               "alias T = ", T.stringof, `;`,
+                q{
+                    enum expected = cast(T) 130;
+
+                    T identity(T value) {
+                        return value;
+                    }
+
+                    int input() {
+                        return 130;
+                    }
+
+                    unittest {
+                        T value = cast(T) input;
+                        assert(identity(value) == value);
+                        assert(value == expected);
+                    }
+                },
+            ));
+        }
+    }
+
+    @("typeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             alias T = byte;
 
             T identity(T value) {
-                return value;
+                 return value;
             }
 
             int input() {
@@ -94,7 +98,7 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("-126 != 130");
     }
 
-    @("integralTypeFailureMessage.ubyte.0." ~ backend.stringof)
+    @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             alias T = ubyte;
@@ -115,7 +119,7 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("130 != 129");
     }
 
-    @("integralTypeFailureMessage.uint.0." ~ backend.stringof)
+    @("typeFailureMessage.uint.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             alias T = uint;
