@@ -70,8 +70,12 @@ public struct Repl {
             session.accept(cell);
             pendingInput = null;
             return ReplResult(value, replDisplay(cell));
-        } catch (Exception exception)
+        } catch (Exception exception) {
+            if (pendingInput.length != 0)
+                pendingInput = null;
+
             throw new Exception(userDiagnostic(exception.msg));
+        }
     }
 
     private ReplResult runLoadedTests() {

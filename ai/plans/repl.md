@@ -64,21 +64,12 @@ history acceptance. Backends execute complete `ReplCell` values and return
   10
   ```
 
-## To do
-
 - Clear buffered incomplete input after a buffered cell completes with a
   diagnostic. A failed multiline declaration such as a function with an
-  undefined identifier must not append later submissions to the rejected
+  undefined identifier no longer appends later submissions to the rejected
   source.
 
-  Offending input:
-
-  ```text
-  int dup() {
-  return unknown;
-  }
-  42
-  ```
+## To do
 
 - Define command handling while input is pending. Commands such as `:q` must
   not silently abandon a buffered D cell in the binary path unless the API path

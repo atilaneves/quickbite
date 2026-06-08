@@ -113,6 +113,23 @@ static foreach (backend; backends) {
         output.should == ["42"];
     }
 
+    @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int dup() {").should == Value.void_;
+        repl.submit("return unknown;").should == Value.void_;
+        void completeRejectedDeclaration() {
+            repl.submit("}");
+        }
+        completeRejectedDeclaration.shouldThrowWithMessage(
+            "undefined identifier `unknown`",
+        );
+        repl.submit("42").should == Value(42);
+    }
+
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
