@@ -126,7 +126,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -139,7 +139,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
