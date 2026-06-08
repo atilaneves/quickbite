@@ -259,6 +259,29 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("typeFailureMessage.byte.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias T = byte;
+
+            T identity(T value) {
+                 return value;
+            }
+
+            int input() {
+                return 130;
+            }
+
+            unittest {
+                T value = cast(T) input;
+                assert(identity(value) == value);
+                assert(value == 130);
+            }
+        }).shouldThrowWithMessage("-126 != 130");
+    }
+}
+
 static foreach (backend; backends) {
 
     static foreach (T; IntegralTypes) {
