@@ -1,12 +1,10 @@
 module ut.backends.lang.integral_types;
 
 
+import ut.backends;
 import std.conv: text;
 import std.meta: AliasSeq;
-import ut.backends;
 
-
-private:
 
 static foreach (backend; backends) {
     alias IntegralTypes = AliasSeq!(

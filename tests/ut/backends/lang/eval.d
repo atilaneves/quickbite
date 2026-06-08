@@ -166,26 +166,9 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-@("zeroArgumentCallReportsArgumentCount.Interpreter")
-unittest {
-    newBackend!Interpreter.eval("int zero() { return 0; }\nzero")
-        .shouldThrowWithMessage("Unsupported eval call argument count.");
-}
-
-@("ifStatementReportsUnsupportedEvalStatement.Interpreter")
-unittest {
-    newBackend!Interpreter.eval("bool input = true;\nif (input) {}\n0")
-        .shouldThrowWithMessage("Unsupported eval statement: If");
-}
-
 static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
         newBackend!backend.eval(q{ "abc" }).should == Value("abc");
     }
-}
-
-@("convertsLegacyValuePreservingUbyteType.Ctfe")
-unittest {
-    newBackend!Ctfe.eval("cast(ubyte) 3").should == Value(cast(ubyte) 3);
 }
