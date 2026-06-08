@@ -94,7 +94,7 @@ static foreach (backend; backendsWith!(Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!Bytecode) {
+static foreach (backend; backendsWith!(Bytecode, IR)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

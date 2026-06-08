@@ -187,6 +187,7 @@ The currently covered IR backend eval tests are:
 - `type.ulong.IR`
 - `typeFailureMessage.byte.0.IR`
 - `typeFailureMessage.ubyte.0.IR`
+- `typeFailureMessage.uint.0.IR`
 
 All tests in `tests/ut/backends/lang/eval.d` now include `IR`, so `eval.d` is
 complete for the current backend matrix. The main integral type matrix in
@@ -200,6 +201,8 @@ The promoted `typeFailureMessage.byte.0.IR` test added contextual
 signed byte message `-126 != 130`.
 The promoted `typeFailureMessage.ubyte.0.IR` test reuses that diagnostic path
 for unsigned byte assertion formatting and verifies the `130 != 129` message.
+The promoted `typeFailureMessage.uint.0.IR` test reuses the same unsigned
+integer assertion diagnostic path and verifies the `130 != 131` message.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
