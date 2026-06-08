@@ -264,6 +264,12 @@ imported free-function call handling; signal was verified by temporarily
 disabling both Interpreter direct free-function call dispatch paths. All
 current `runner.d` backend-matrix tests now cover `Interpreter`.
 
+Runtime cstdlib progress: `malloc` in
+`tests/ut/backends/runtime/cstdlib.d` now runs on `Interpreter`. The test is
+covered by the same unsupported external-source diagnostic as CTFE; the
+interpreter intentionally does not execute `malloc` or model C heap memory for
+this slice.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

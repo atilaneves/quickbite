@@ -330,6 +330,13 @@ private struct EvalModuleInterpreter {
     }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
+        if (auto compound = statement.isCompoundDeclarationStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    runStatement(child);
+            return;
+        }
+
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements)
@@ -357,6 +364,9 @@ private struct EvalModuleInterpreter {
 
         if (auto throw_ = statement.isThrowStatement)
             throw new Exception(thrownExceptionMessage(throw_.exp));
+
+        if (statement.isImportStatement !is null)
+            return;
 
         assert(0);
     }
@@ -527,14 +537,36 @@ private struct EvalModuleInterpreter {
                     "function call through null class reference `null`",
                 );
 
-        if (call.f !is null)
+        if (call.f !is null) {
+            if (hasNoAvailableSource(call.f))
+                throw new Exception(noAvailableSourceMessage(call.f));
             return runFunction(call.f, arguments, argumentVariables);
+        }
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
                 return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported interpreter call.");
+    }
+
+    private bool hasNoAvailableSource(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        return function_.fbody is null;
+    }
+
+    private string noAvailableSourceMessage(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        import std.conv: text;
+
+        return text(
+            "`",
+            function_.toChars,
+            "` cannot be interpreted at compile time, ",
+            "because it has no available source code",
+        );
     }
 
     private Value runFunction(
