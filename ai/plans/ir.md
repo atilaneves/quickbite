@@ -223,8 +223,7 @@ The promoted
 `runTestSummary.countsAttributedPassingAndFailingUnittests.IR` test added the
 minimal IR `runTestSummary` entry point. It enumerates module unittest
 declarations, compiles and executes each one through the existing IR unittest
-path, and records only aggregate total/passed/failed counts. Structured
-`runTestResults` remains unimplemented.
+path, and records only aggregate total/passed/failed counts.
 The promoted `runTestSummary.countsAllPassingUnittests.IR` test passed without
 new production code. Existing IR summary execution already counts multiple
 passing unittest declarations and reports zero failures; a temporary expected
@@ -236,6 +235,13 @@ without new production code. Existing narrow throw lowering already accepts
 `runTestSummary` records the thrown unittest as one failure; a temporary
 expected failure-count mutation confirmed the promoted test observes the
 summary result.
+The promoted `runTestResults.reportsDmdUnittestSymbolNames.IR` test added the
+minimal IR `runTestResults` entry point. It enumerates module unittest
+declarations, compiles and executes each one through the existing IR unittest
+path, records aggregate total/passed/failed counts, and appends structured
+case results with DMD-generated unittest symbol names, source locations, and
+thrown messages. The current promoted assertion checks only the symbol names;
+later structured-result runner tests should prove the remaining fields.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:

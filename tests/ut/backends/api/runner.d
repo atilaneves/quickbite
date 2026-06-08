@@ -139,7 +139,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
