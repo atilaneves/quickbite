@@ -211,15 +211,12 @@ that references a string literal. Before promoting any logic or diagnostics
 test that involves string values, add a shared `StringExp` → `char[]`
 conversion or a matching case in `EvalModuleInterpreter`.
 
-**Finding 2 — Two expression evaluators with divergent coverage.**
-`evalExpression()` (called by the top-level `eval()` path) handles a narrow
-set of node types and throws on the rest. `EvalFunctionWalker.runExpression()`
-handles a broader set (strings, declarations, prefix increment, calls).
-Any node type supported by `runExpression` but absent from `evalExpression`
-silently fails on the simpler path with no indication that the function-wrapper
-path should have been taken instead. The two evaluators should either share a
-single dispatch table or `evalExpression` should be removed in favour of always
-routing through `EvalFunctionWalker`.
+**Finding 2 — Completed: top-level eval uses one expression walker.**
+`Interpreter.eval()` now parses eval source into the common eval function
+wrapper and runs it through `EvalFunctionWalker`. The stale standalone
+`evalExpression()` helper has been removed, so top-level eval no longer has a
+second, narrower expression dispatch table that can diverge from multiline
+eval coverage.
 
 **Finding 1 — Mixed `assert(0)` vs `Exception` for unsupported nodes.**
 The plan requires an explicit unsupported diagnostic rather than crashing.

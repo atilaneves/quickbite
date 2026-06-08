@@ -37,53 +37,6 @@ public class Interpreter: imported!"quickbite.backends".Backend {
 
 }
 
-private imported!"quickbite.lang".Value evalExpression(
-    imported!"dmd.expression".Expression expression,
-) {
-    import quickbite.lang: Value;
-    import quickbite.frontend.dmd_values: integerValue, realValue;
-
-    if (auto integer = expression.isIntegerExp)
-        return integerValue(integer);
-
-    if (auto real_ = expression.isRealExp)
-        return realValue(real_);
-
-    if (auto cast_ = expression.isCastExp)
-        return castValue(cast_);
-
-    if (auto add = expression.isAddExp)
-        return evalExpression(add.e1) + evalExpression(add.e2);
-
-    if (auto sub = expression.isMinExp)
-        return evalExpression(sub.e1) - evalExpression(sub.e2);
-
-    if (auto mul = expression.isMulExp)
-        return evalExpression(mul.e1) * evalExpression(mul.e2);
-
-    if (auto div = expression.isDivExp)
-        return evalExpression(div.e1) / evalExpression(div.e2);
-
-    if (auto neg = expression.isNegExp)
-        return -evalExpression(neg.e1);
-
-    assert(0);
-}
-
-private imported!"quickbite.lang".Value castValue(
-    imported!"dmd.expression".CastExp cast_,
-) {
-    import quickbite.backends.casts:
-        backendCastTarget = castTarget,
-        backendCastValue = castValue;
-
-    auto type = cast_.to.toBasetype;
-    if (type is null)
-        return evalExpression(cast_.e1);
-
-    return backendCastValue(evalExpression(cast_.e1), backendCastTarget(type));
-}
-
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
