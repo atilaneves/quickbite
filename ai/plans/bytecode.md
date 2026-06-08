@@ -78,28 +78,34 @@ Lua-specific bytecode shape.
   supported them through its existing eval compiler, VM local/value-stack
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
+- `tests/ut/backends/lang/integral_types.d` now covers `Bytecode` for
+  `integralType.byte`. That slice added the first module-backed
+  `Bytecode.runTests` path, compiling each unittest block to bytecode and
+  executing its directly-called module functions through bytecode call frames.
+  The implementation is deliberately narrow: equality assertions are enough
+  for the passing behavior, while assertion-message diagnostics remain
+  unpromoted.
 
 ## Current Next Step
-The next module is `tests/ut/backends/lang/integral_types.d`, following
+Continue in `tests/ut/backends/lang/integral_types.d`, following
 `ai/plans/backend-test-modules-order.md`.
 
 Start with the first current named unittest in that module that still excludes
-`Bytecode`: `integralType.byte`. Do not add `Bytecode` to the module's outer
-`static foreach (backend; backends)` as a first step, because that would
-promote every integral type case and the failure-message cases at once.
+`Bytecode`: `integralType.ubyte`. Do not add `Bytecode` to the module's outer
+`static foreach (backend; backends)`, because that would promote every
+remaining integral type case and the failure-message cases at once.
 
 Promote exactly one named behavior, rebuild/list tests, and run
-`ut.backends.lang.integral_types.integralType.byte.Bytecode` focused. Only
+`ut.backends.lang.integral_types.integralType.ubyte.Bytecode` focused. Only
 after that focused test is red should production code change. If it passes
 without production changes, keep the promotion as supported coverage and move
 to the next smallest current candidate in `integral_types.d`.
 
-Expect this module to force module-backed unittest execution rather than just
-`eval`: `integral_types.d` uses `runBackendSourceFixtureTests`, while
-`Bytecode.runTests` is still outside the eval-only path. Keep the first
-implementation slice to the minimum needed for the promoted test; do not jump
-ahead to broad `api/runner.d` behavior, assertion diagnostics, or function
-tables beyond what the red test forces.
+Expect the next few integral-width promotions to exercise the module-backed
+unittest path added for `integralType.byte`. Keep each slice to one named
+behavior; do not jump ahead to the failure-message cases, broad
+`api/runner.d` behavior, or richer assertion diagnostics until a promoted test
+forces them.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
