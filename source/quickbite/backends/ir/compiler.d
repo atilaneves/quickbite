@@ -81,6 +81,7 @@ private struct Compiler {
     private Function compileEntryFunction(FuncDeclaration function_) {
         auto entry = compileFunctionBody(function_);
 
+        // Compiling discovered functions can discover more callees.
         for (size_t i = 0; i < functions.length; ++i)
             compiledFunctions ~= compileFunctionBody(functions[i]);
 
