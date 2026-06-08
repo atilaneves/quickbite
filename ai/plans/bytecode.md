@@ -131,6 +131,10 @@ Lua-specific bytecode shape.
   exposed the missing bytecode backend summary API, not missing VM semantics.
   Bytecode now compiles and executes each unittest declaration through the
   existing bytecode path and records total, passed, and failed counts.
+- `runTestSummary.countsAllPassingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap after the summary API slice: the existing bytecode summary path
+  already counted all-passing unittest declarations correctly.
 
 ## Current Next Step
 Continue with the next module named by
