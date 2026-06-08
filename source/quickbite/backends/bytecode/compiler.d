@@ -351,10 +351,6 @@ private struct Compiler {
     }
 
     private void compileCall(CallExp call) {
-        import quickbite.backends.bytecode.builtins:
-            bytecodeBuiltin,
-            bytecodeBuiltinArgumentCount;
-
         auto function_ = callFunction(call);
         if (isImplementedBuiltin(function_)) {
             compileBuiltinCall(call);
@@ -362,18 +358,19 @@ private struct Compiler {
         }
 
         if (function_ !is null) {
-            if (function_.fbody !is null) {
-                if (call.arguments !is null)
-                    foreach (argument; *call.arguments)
-                        compileExpression(argument);
+            if (function_.fbody is null)
+                throw new Exception(noAvailableSourceMessage(function_));
 
-                program.instructions ~= Instruction(
-                    Op.call,
-                    Value.void_,
-                    functionIndex(function_),
-                );
-                return;
-            }
+            if (call.arguments !is null)
+                foreach (argument; *call.arguments)
+                    compileExpression(argument);
+
+            program.instructions ~= Instruction(
+                Op.call,
+                Value.void_,
+                functionIndex(function_),
+            );
+            return;
         }
 
         compileBuiltinCall(call);
@@ -535,6 +532,19 @@ private struct Compiler {
 
         return expression;
     }
+}
+
+private string noAvailableSourceMessage(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.conv: text;
+
+    return text(
+        "`",
+        function_.toChars,
+        "` cannot be interpreted at compile time, ",
+        "because it has no available source code",
+    );
 }
 
 private imported!"quickbite.lang".Value stringValue(

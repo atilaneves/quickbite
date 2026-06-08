@@ -161,16 +161,25 @@ Lua-specific bytecode shape.
   path emitted the ordinary `Op.call` and the VM executed the call frame and
   returned `int` without production changes. The import-path plumbing already
   flowed through the shared fixture parse helpers.
+- `malloc` in `tests/ut/backends/runtime/cstdlib.d` now covers `Bytecode`,
+  completing that module. The promotion exposed the missing
+  no-available-source diagnostic: `malloc` resolves to a `FuncDeclaration`
+  with a null `fbody` and is not an implemented builtin, so `compileCall` now
+  reports `` `malloc` cannot be interpreted at compile time, because it has no
+  available source code `` instead of the generic unsupported-call-target
+  message. The pointer casts, indexing, and `scope(exit)` in the source are
+  never reached, matching the CTFE and tree-walker oracles.
 
 ## Current Next Step
-`tests/ut/backends/api/runner.d` is now complete for `Bytecode`. Every
-backend-matrix test block in the module includes `Bytecode`. Continue with the
-next module named by `ai/plans/backend-test-modules-order.md`
-(`tests/ut/backends/runtime/cstdlib.d`).
+`tests/ut/backends/runtime/cstdlib.d` is now complete for `Bytecode`. Its
+single `malloc` test block includes `Bytecode`. Continue with the next module
+named by `ai/plans/backend-test-modules-order.md`
+(`tests/ut/backends/lang/logic.d`).
 
-Do not return to `tests/ut/backends/lang/integrals.d` or
-`tests/ut/backends/api/runner.d` unless new tests are added there. Their
-current backend-matrix test families all include `Bytecode`.
+Do not return to `tests/ut/backends/lang/integrals.d`,
+`tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`
+unless new tests are added there. Their current backend-matrix test families
+all include `Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
