@@ -255,7 +255,23 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("5 != 6");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 25.0;
+                assert(sqrt(input) == 6.0);
+            }
+        }).shouldThrowWithMessage("5 != 6");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesDifferentRuntimeSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
