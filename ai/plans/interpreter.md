@@ -116,11 +116,13 @@ work focused on regressions or newly added CTFE-backed eval behaviours.
 
 When promoting one eval test, isolate that test in its own `static
 foreach` backend block if the surrounding block contains later eval
-tests. Do not change a broad block from `backends` to
-`backendsWith!Interpreter` unless every test in that block is part of
-the current slice. When integrating worker commits, check that earlier
-Interpreter promotions remain present; a later worker must not move a
-previously promoted test back to CTFE-only coverage.
+tests. If the test is now expected to run on both CTFE and Interpreter,
+change `backends` to `backendsWith!Interpreter` (or equivalent) so it
+is explicitly visible in the module matrix. Avoid creating ad-hoc
+`AliasSeq!(Interpreter)` blocks for promoted shared-surface tests.
+When integrating worker commits, check that earlier Interpreter
+promotions remain present; a later worker must not move a previously
+promoted test back to CTFE-only coverage.
 
 If a promoted test is already green because of an earlier slice, verify
 signal by temporarily mutating the production handler that should cover
@@ -200,6 +202,68 @@ promoted local and zero-argument free-call cases. Do not generalize methods,
 assignment, control flow, or assertion formatting until a promoted test forces
 that behaviour.
 
+Runner progress: `runTests.runsAttributedUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+the narrow assertion-message fix for DMD-lowered equality assertions where the
+generated boolean helper would otherwise report `true != true` instead of the
+original integer operands.
+
+Runner progress: `runTests.runsAttributedThrowingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow module-backed `throw new Exception("...")` support for string-literal
+messages.
+
+Runner progress: `runTests.importPathsRetryAfterFailure` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths runner path and folded
+integer assert handling; signal was verified by temporarily mutating the module
+interpreter integer expression handler.
+
+Runner progress:
+`runTestSummary.countsAttributedPassingAndFailingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow summary counting over attributed unittests, with pass/fail totals
+derived by running each unittest and continuing after assertion failures.
+
+Runner progress: `runTestSummary.countsAllPassingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing summary counting; signal was verified by temporarily
+mutating the Interpreter summary pass counter.
+
+Runner progress: `runTestSummary.countsAssertErrorsAsFailures` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing throw-statement and summary failure counting; signal was
+verified by temporarily mutating the Interpreter throw-statement handler.
+
+Runner progress: `runTestResults.reportsDmdUnittestSymbolNames` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow structured result cases with DMD unittest symbol names and pass/fail
+summary counts; file-backed locations remain for the next runner slice.
+
+Runner progress: `runTestResults.reportsFileBackedUnittestLocations` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+filling structured result locations from each DMD unittest declaration's
+source location.
+
+Runner progress: `runModulesTests.runsBothModules` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing `runModulesTests` iteration and Interpreter
+module-backed `runTests`; signal was verified by temporarily returning after
+the first module.
+
+Runner progress: `runBackendSourceFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths fixture path and narrow
+direct free-function call handling; signal was verified by temporarily
+disabling the Interpreter `call.f` dispatch.
+
+Runner progress: `runBackendFileFixtureTests.withImportPaths` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-file-with-import-paths fixture path and narrow
+imported free-function call handling; signal was verified by temporarily
+disabling both Interpreter direct free-function call dispatch paths. All
+current `runner.d` backend-matrix tests now cover `Interpreter`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
@@ -263,9 +327,12 @@ support together, the chosen test is too broad for the first PR.
   implement the minimum handler that makes it green. Start with one
   existing `eval` test. Existing CTFE-passing tests are pre-approved
   for promotion to the tree-walking backend; do not stop to ask before
-  adding `Interpreter` to exactly one existing test. This exception only covers
-  adding the backend to an existing backend-matrix test; adding a new test or
-  modifying test behaviour still requires approval before editing the test.
+  changing that test's matrix to include Interpreter. For tests that should
+  stay on both CTFE and Interpreter, prefer `backendsWith!Interpreter` (or
+  equivalent) over adding a separate `AliasSeq!(Interpreter)` block.
+  This exception only covers adding the backend to an existing backend-
+  matrix test; adding a new test or modifying test behaviour still
+  requires approval before editing the test.
 - Before promoting any named test from this plan, verify in the current
   checkout that its enclosing `static foreach` still excludes `Interpreter`.
   If the test already uses `backendsWith!Interpreter`, do not edit it; inspect

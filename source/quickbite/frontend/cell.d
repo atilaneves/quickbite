@@ -36,6 +36,7 @@ public struct EvalSession {
     private string localTranscript;
     private LoadedModuleSource[] loadedModuleSources;
     private string moduleTranscript;
+    private uint evalCellCount;
     private uint valueCellCount;
 
     public this(in string[] importPaths) {
@@ -60,6 +61,7 @@ public struct EvalSession {
     ) {
         import std.conv: text;
 
+        const evalFunctionName = syntheticEvalFunctionName(evalCellCount);
         if (allowIncomplete && isIncompleteCell(input))
             return EvalCell(EvalCellKind.incomplete);
 
@@ -67,6 +69,7 @@ public struct EvalSession {
             const source = evalSource(
                 moduleSource(moduleTranscript ~ input ~ "\n"),
                 localTranscript,
+                evalFunctionName,
             );
             return evalCellFromSource(
                 EvalCellKind.noDisplay,
@@ -87,6 +90,7 @@ public struct EvalSession {
             const source = evalSource(
                 moduleSource,
                 localTranscript ~ input ~ "\n",
+                evalFunctionName,
             );
             return evalCellFromSource(
                 EvalCellKind.noDisplay,
@@ -100,6 +104,7 @@ public struct EvalSession {
         const source = evalSource(
             moduleSource,
             localTranscript ~ "return " ~ input ~ ";",
+            evalFunctionName,
         );
         return evalCellFromSource(
             EvalCellKind.expression,
@@ -126,6 +131,7 @@ public struct EvalSession {
                 break;
         }
 
+        ++evalCellCount;
         if (cell.kind == EvalCellKind.expression)
             ++valueCellCount;
     }
@@ -751,8 +757,10 @@ private string firstDiagnosticMessage() {
 private string evalSource(
     in string moduleTranscript,
     in string localTranscript,
+    in string functionName,
 ) {
-    return moduleTranscript ~ "auto f() { " ~ localTranscript ~ " }";
+    return moduleTranscript ~ "auto " ~ functionName ~ "() { " ~
+        localTranscript ~ " }";
 }
 
 private string completeEvalSource(in string source) {
@@ -763,7 +771,20 @@ private string completeEvalSource(in string source) {
             "return " ~
             source[expressionStart .. $] ~
             ";",
+        syntheticEvalFunctionName(nextEvalFunctionIndex),
     );
+}
+
+private string syntheticEvalFunctionName(in uint index) @safe pure {
+    import std.conv: text;
+
+    return text("__quickbite_repl_eval_", index, "__");
+}
+
+private uint nextEvalFunctionIndex() {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(_evalFunctionCounter, 1u);
 }
 
 private size_t finalExpressionStart(in string source) {
@@ -837,3 +858,4 @@ private imported!"dmd.func".FuncDeclaration evalFunction(
 
 private __gshared uint _evalModuleCounter;
 private __gshared uint _diagnosticModuleCounter;
+private __gshared uint _evalFunctionCounter;

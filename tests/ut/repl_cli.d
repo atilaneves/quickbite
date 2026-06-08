@@ -40,30 +40,42 @@ unittest {
 unittest {
     import quickbite.repl_cli: parseReplArgs;
 
-    const result = parseReplArgs(["qb", "--backend", "ir"]);
+    const result = parseReplArgs(["qb", "--backend", "nonsense"]);
 
     result.status.should == 1;
-    result.diagnostic.should == "unknown backend: ir";
+    result.diagnostic.should ==
+        "unknown backend: nonsense\n" ~
+        "valid backends: ctfe, bytecode, ir, interpreter";
+}
+
+@("repl.cli.unknownBackendDiagnosticListsValidBackends")
+unittest {
+    import quickbite.repl_cli: parseReplArgs;
+
+    const result = parseReplArgs(["qb", "-b", "nonsense"]);
+
+    result.status.should == 1;
+    "unknown backend: nonsense".should.be in result.diagnostic;
+    "valid backends: ctfe, bytecode, ir, interpreter".should.be in
+        result.diagnostic;
 }
 
 @("repl.cli.acceptsHelpFlag")
 unittest {
     import quickbite.repl_cli: parseReplArgs;
-    import std.algorithm: canFind;
 
     const result = parseReplArgs(["repl", "--help"]);
 
     result.status.should == 0;
-    result.diagnostic.canFind("Usage").should == true;
+    "Usage".should.be in result.diagnostic;
 }
 
 @("repl.cli.helpDiagnosticDocumentsFlagNames")
 unittest {
     import quickbite.repl_cli: parseReplArgs;
-    import std.algorithm: canFind;
 
     const result = parseReplArgs(["repl", "--help"]);
 
     result.status.should == 0;
-    result.diagnostic.canFind("-c").should == true;
+    "-c".should.be in result.diagnostic;
 }

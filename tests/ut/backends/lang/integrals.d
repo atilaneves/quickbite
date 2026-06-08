@@ -20,9 +20,9 @@ private alias IntegralTypes = AliasSeq!(
 
 static foreach (backend; AliasSeq!(Bytecode)) {
     static foreach (T; IntegralTypes) {
-        @("type." ~ T.stringof ~ "." ~ Bytecode.stringof)
+        @("type." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {
-            runBackendSourceFixtureTests!Bytecode(text(
+            runBackendSourceFixtureTests!backend(text(
                 "alias T = ",
                 T.stringof,
                 ";",
@@ -48,7 +48,7 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
 
     static foreach (T; IntegralTypes) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
