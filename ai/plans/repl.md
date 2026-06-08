@@ -220,6 +220,13 @@ history acceptance. Backends execute complete `ReplCell` values and return
   helper, returning status 1 with no D stack trace for both the
   missing-file and duplicate-load cases.
 
+- Display a `<undisplayable>` placeholder for CTFE results Quickbite cannot
+  represent yet instead of exposing backend internals. `ctfeValue` no longer
+  throws `Unsupported CTFE eval result: …` for kinds such as a delegate
+  literal; a new `Undisplayable` member of `quickbite.lang.Value` (with a
+  `Value.undisplayable` factory) renders exactly `<undisplayable>`, so
+  `delegate int(){ return 42; }` displays the placeholder and exits 0.
+
 ## To do
 
 - Collapse duplicate import-path lines in failed-import diagnostics.
@@ -275,23 +282,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   ```text
   import path[0] = /usr/include/dlang/dmd
   Error: cannot find input file `<repl>`
-  ```
-
-- Add an intentional diagnostic or placeholder for CTFE results that Quickbite
-  cannot display yet. Do not expose backend conversion internals such as
-  `Unsupported CTFE eval result: function_`; something like
-  `<undisplayable>` is enough until the value model supports the result.
-
-  Offending command:
-
-  ```sh
-  bin/qb -c 'delegate int(){ return 42; }'
-  ```
-
-  Current output:
-
-  ```text
-  Error: Unsupported CTFE eval result: function_
   ```
 
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return

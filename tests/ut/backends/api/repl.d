@@ -232,6 +232,18 @@ static foreach (backend; backends) {
         output.should == ["MapResult([1, 2, 3])"];
     }
 
+    @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["delegate int(){ return 42; }", ":q"],
+        );
+
+        output.should == ["<undisplayable>"];
+    }
+
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
