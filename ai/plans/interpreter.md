@@ -245,6 +245,12 @@ Runner progress: `runTestResults.reportsFileBackedUnittestLocations` in
 filling structured result locations from each DMD unittest declaration's
 source location.
 
+Runner progress: `runModulesTests.runsBothModules` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through existing `runModulesTests` iteration and Interpreter
+module-backed `runTests`; signal was verified by temporarily returning after
+the first module.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

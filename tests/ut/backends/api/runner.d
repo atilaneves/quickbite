@@ -187,7 +187,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
@@ -208,7 +208,9 @@ static foreach (backend; backends) {
         const msg = runModulesTests(backend_, [module1, module2,]).shouldThrow.msg;
         "second module ran".should.be in msg;
     }
+}
 
+static foreach (backend; backends) {
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {
