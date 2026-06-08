@@ -223,7 +223,23 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 4");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 9.0;
+                assert(sqrt(input) == 4.0);
+            }
+        }).shouldThrowWithMessage("3 != 4");
+    }
+}
+
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
