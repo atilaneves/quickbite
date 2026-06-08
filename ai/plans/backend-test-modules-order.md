@@ -62,14 +62,15 @@ the normal test-approval stop.
 | 3 | 4.5 | `tests/ut/backends/api/runner.d` |
 | 4 | 5.0 | `tests/ut/backends/lang/logic.d` |
 | 5 | 6.0 | `tests/ut/backends/lang/diagnostics.d` |
-| 6 | 6.5 | `tests/ut/backends/lang/math.d` |
-| 7 | 7.5 | `tests/ut/backends/api/repl.d` |
-| 8 | 8.0 | `tests/ut/backends/lang/arrays.d` |
-| 9 | 8.5 | `tests/ut/backends/lang/structs.d` |
-| 10 | 9.0 | `tests/ut/backends/lang/control_flow.d` |
-| 11 | 9.5 | `tests/ut/backends/lang/expressions.d` |
-| 12 | 10.0 | `tests/ut/backends/lang/exceptions.d` |
-| 13 | 10.5 | `tests/ut/backends/projects/cerealed.d` |
+| 6 | 6.0 | `tests/ut/backends/runtime/cstdlib.d` |
+| 7 | 6.5 | `tests/ut/backends/lang/math.d` |
+| 8 | 7.5 | `tests/ut/backends/api/repl.d` |
+| 9 | 8.0 | `tests/ut/backends/lang/arrays.d` |
+| 10 | 8.5 | `tests/ut/backends/lang/structs.d` |
+| 11 | 9.0 | `tests/ut/backends/lang/control_flow.d` |
+| 12 | 9.5 | `tests/ut/backends/lang/expressions.d` |
+| 13 | 10.0 | `tests/ut/backends/lang/exceptions.d` |
+| 14 | 10.5 | `tests/ut/backends/projects/cerealed.d` |
 
 ## Classification Notes
 
