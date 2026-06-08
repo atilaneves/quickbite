@@ -78,8 +78,9 @@
   worker agents with disjoint file ownership after test approval — don't
   implement everything in the main thread.
 
-- Give subagents that edit code separate git worktrees unless the user
-  explicitly approves sharing a checkout.
+- Give subagents that edit code separate git worktrees only when they are
+  running in parallel. Sequential subagents should share the same task
+  worktree so each worker builds on the previous worker's committed state.
 
 - Unit-threaded focused-test arguments use the full name from `./ut -l` (e.g.
   `ut.ir.ir.minicerealFile`), not just the `@("...")` label.
