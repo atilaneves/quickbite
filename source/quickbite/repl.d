@@ -43,9 +43,13 @@ public struct Repl {
         import quickbite.frontend.compiler: parseModule;
         import std.file: readText;
 
-        const source = filePath.readText;
-        session.loadModuleFile(filePath, source);
-        parseModule(session.loadedModuleSource, importPaths);
+        try {
+            const source = filePath.readText;
+            session.loadModuleFile(filePath, source);
+            parseModule(session.loadedModuleSource, importPaths);
+        } catch (Exception exception) {
+            throw new Exception(userDiagnostic(exception.msg));
+        }
     }
 
     private ReplResult submitResult(in string input) {

@@ -212,6 +212,14 @@ history acceptance. Backends execute complete `ReplCell` values and return
   MapResult([1, 2, 3])
   ```
 
+- Routed all `loadModuleFile` errors through the REPL CLI diagnostic
+  path. `Repl.loadModuleFile` now wraps `readText`/`parseModule` in a
+  try-catch that rethrows `new Exception(userDiagnostic(exception.msg))`,
+  sanitising `snippet_N` names. `repl/main.d` wraps the file-loading loop
+  and prints a concise `Error:` line via the existing `errorDiagnostic`
+  helper, returning status 1 with no D stack trace for both the
+  missing-file and duplicate-load cases.
+
 ## To do
 
 - Collapse duplicate import-path lines in failed-import diagnostics.
@@ -268,42 +276,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   import path[0] = /usr/include/dlang/dmd
   Error: cannot find input file `<repl>`
   ```
-
-- Route all `loadModuleFile` errors through the REPL CLI diagnostic
-  path. Currently any exception thrown from `repl.loadModuleFile` —
-  whether from `readText` (missing file), `parseModule` (duplicate
-  symbol), or elsewhere — escapes the uncaught-exception handler in
-  `main.d` and prints a raw D stack trace. The duplicate-file case
-  additionally leaks unsanitised `snippet_N` names because the
-  exception bypasses `userDiagnostic`.
-
-  Offending code (`repl/main.d:25–28`) — no try-catch around file loading:
-
-  ```d
-  if (options.options.hasFile) {
-      foreach (file; options.options.files)
-          repl.loadModuleFile(file);  // any exception escapes here
-  }
-  ```
-
-  Reproducers:
-
-  ```sh
-  bin/qb /tmp/does-not-exist.d          # missing file
-  bin/qb /tmp/test.d /tmp/test.d        # duplicate load
-  ```
-
-  Current output (duplicate load):
-
-  ```text
-  object.Exception@source/quickbite/frontend/compiler.d(348):
-  function `snippet_1.answer()` conflicts with previous declaration …
-  ----------------
-  … (full D stack trace) …
-  ```
-
-  Expected: a concise `Error:` diagnostic, no stack trace, no
-  synthetic names.
 
 - Add an intentional diagnostic or placeholder for CTFE results that Quickbite
   cannot display yet. Do not expose backend conversion internals such as
