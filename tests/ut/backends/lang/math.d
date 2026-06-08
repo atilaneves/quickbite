@@ -551,7 +551,23 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3.5 != 4.5");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: fabs;
+
+            unittest {
+                double first = -3.5;
+                assert(fabs(first) == 4.5);
+            }
+        }).shouldThrowWithMessage("3.5 != 4.5");
+    }
+}
+
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
