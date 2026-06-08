@@ -140,14 +140,37 @@ Lua-specific bytecode shape.
   coverage gap after the summary API and narrow throw-expression slices: the
   existing summary path already counts thrown `AssertError` instances as
   failures.
+- `runTestResults.reportsDmdUnittestSymbolNames` and
+  `runTestResults.reportsFileBackedUnittestLocations` in
+  `tests/ut/backends/api/runner.d` now cover `Bytecode`. The promotion exposed
+  the missing bytecode `runTestResults` API. Bytecode now reuses the existing
+  compile/execute path to build a `TestRunResult` with per-case
+  `TestOutcome`, the DMD unittest symbol name (`ident.toChars`), and the source
+  location (`loc.toChars`), reporting names such as `__unittest_L2_C13` and
+  file-backed locations such as `path(1)`.
+- `runModulesTests.runsBothModules` in `tests/ut/backends/api/runner.d` now
+  covers `Bytecode`. This was a stale coverage gap: `runModulesTests` just calls
+  `backend.runTests` on each module, and the existing `Bytecode.runTests` path
+  plus its `throw`-expression support already ran both modules and propagated
+  the second module's thrown message without production changes.
+- `runBackendSourceFixtureTests.withImportPaths` and
+  `runBackendFileFixtureTests.withImportPaths` in
+  `tests/ut/backends/api/runner.d` now cover `Bytecode`. This was a stale
+  coverage gap: DMD semantic analysis resolves the imported module function as
+  a `FuncDeclaration` with a populated `fbody`, so the existing `compileCall`
+  path emitted the ordinary `Op.call` and the VM executed the call frame and
+  returned `int` without production changes. The import-path plumbing already
+  flowed through the shared fixture parse helpers.
 
 ## Current Next Step
-Continue with the next module named by
-`ai/plans/backend-test-modules-order.md`.
+`tests/ut/backends/api/runner.d` is now complete for `Bytecode`. Every
+backend-matrix test block in the module includes `Bytecode`. Continue with the
+next module named by `ai/plans/backend-test-modules-order.md`
+(`tests/ut/backends/runtime/cstdlib.d`).
 
-Do not return to `tests/ut/backends/lang/integrals.d` unless new tests are
-added there. The module's current backend-matrix test families all include
-`Bytecode`.
+Do not return to `tests/ut/backends/lang/integrals.d` or
+`tests/ut/backends/api/runner.d` unless new tests are added there. Their
+current backend-matrix test families all include `Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.

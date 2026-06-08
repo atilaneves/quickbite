@@ -5,7 +5,11 @@ private:
 public class Bytecode: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestRunResult, TestSummary;
+    import quickbite.backends:
+        TestCaseResult,
+        TestOutcome,
+        TestRunResult,
+        TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -30,7 +34,33 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     }
 
     public override TestRunResult runTestResults(Module module_) {
-        assert(0);
+        import quickbite.backends.bytecode.compiler: compileUnitTest;
+        import quickbite.backends.bytecode.vm: execute;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestRunResult result;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++result.summary.total;
+            try {
+                execute(compileUnitTest(unitTest));
+                ++result.summary.passed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.passed,
+                    symbolName(unitTest),
+                    locChars(unitTest.loc),
+                    null,
+                );
+            } catch (Exception e) {
+                ++result.summary.failed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.failed,
+                    symbolName(unitTest),
+                    locChars(unitTest.loc),
+                    e.msg,
+                );
+            }
+        });
+        return result;
     }
 
     public override TestSummary runTestSummary(Module module_) {
@@ -50,4 +80,22 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         });
         return summary;
     }
+}
+
+private string symbolName(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) @trusted {
+    import std.string: fromStringz;
+
+    // `ident.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return unitTest.ident.toChars.fromStringz.idup;
+}
+
+private string locChars(imported!"dmd.location".Loc loc) @trusted {
+    import std.string: fromStringz;
+
+    // `loc.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return loc.toChars.fromStringz.idup;
 }
