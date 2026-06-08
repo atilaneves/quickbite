@@ -76,6 +76,10 @@ first integer literal slice is green, keep the eval roadmap covering all D
 integer scalar types (`byte`, `ubyte`, `short`, `ushort`, `int`, `uint`,
 `long`, and `ulong`) before treating integer scalar preservation as complete.
 
+Only migrate or promote tests from one test module per PR. Within that
+module, keep each promoted test as its own subagent slice and commit, but do
+not add interpreter coverage in a second test module until a follow-up PR.
+
 After the existing eval tests are done, do not jump to an entire broad
 language file. Identify the next similarly simple test by counting the
 required language features in the fixture and choosing the smallest delta from
@@ -188,12 +192,13 @@ revert the mutation before accepting a test-only slice.
 Module-backed interpreter support remains intentionally narrow:
 direct free-function calls with evaluated arguments, `in`/`ref` parameter
 binding, return statements, comma-expression sequencing, local bool
-declarations, unary `!`, equality failure messages, truthiness, and
-DMD-lowered logical-not and logical-and temporaries in assertion messages exist
-only because promoted logic and diagnostics tests required them. Logical `&&`
-and `||` short-circuiting exists only for the promoted local and zero-argument
-free-call cases. Do not generalize methods, assignment, control flow, or
-assertion formatting until a promoted test forces that behaviour.
+declarations, typed scalar default values, unary `!`, equality failure
+messages, truthiness, and DMD-lowered logical-not and logical-and temporaries
+in assertion messages exist only because promoted logic and diagnostics tests
+required them. Logical `&&` and `||` short-circuiting exists only for the
+promoted local and zero-argument free-call cases. Do not generalize methods,
+assignment, control flow, or assertion formatting until a promoted test forces
+that behaviour.
 
 ### Implementation Review Notes
 
@@ -205,17 +210,6 @@ the `stringLiteralIsArray` eval test). `EvalModuleInterpreter` has no
 that references a string literal. Before promoting any logic or diagnostics
 test that involves string values, add a shared `StringExp` → `char[]`
 conversion or a matching case in `EvalModuleInterpreter`.
-
-**Finding 3 — Uninitialized variable reads return hardcoded types regardless of
-declared type.**
-Both walkers fall back to a hardcoded `Value` when a variable is not yet in the
-locals map: `EvalFunctionWalker` returns `Value(cast(int) 0)` and
-`EvalModuleInterpreter` returns `Value(false)`. D initialises every variable to
-its type's default (`double` → `double.nan`, `int` → `0`, etc.), so the
-hardcoded fallbacks are wrong for any type other than `int`/`bool`
-respectively. The two walkers also disagree with each other. The fix is to
-derive the default `Value` from the variable's declared type rather than
-hard-coding a scalar.
 
 **Finding 2 — Two expression evaluators with divergent coverage.**
 `evalExpression()` (called by the top-level `eval()` path) handles a narrow

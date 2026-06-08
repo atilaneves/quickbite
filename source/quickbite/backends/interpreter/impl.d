@@ -92,6 +92,85 @@ private imported!"quickbite.lang".Value evalFunction(
     return walker.result;
 }
 
+private imported!"quickbite.lang".Value defaultValue(
+    imported!"dmd.declaration".VarDeclaration variable,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    if (variable.type is null)
+        throw new Exception("Unsupported interpreter default value.");
+
+    const type = variable.type.toBasetype;
+    with (TY) final switch (type.ty) {
+        case Tbool:
+            return Value(false);
+        case Tint8:
+            return Value(cast(byte) 0);
+        case Tuns8:
+            return Value(cast(ubyte) 0);
+        case Tint16:
+            return Value(cast(short) 0);
+        case Tuns16:
+            return Value(cast(ushort) 0);
+        case Tint32:
+            return Value(0);
+        case Tuns32:
+            return Value(0u);
+        case Tint64:
+            return Value(0L);
+        case Tuns64:
+            return Value(0UL);
+        case Tfloat32:
+            return Value(float.init);
+        case Tfloat64:
+            return Value(double.init);
+        case Tfloat80:
+            return Value(real.init);
+        case Tchar:
+            return Value(char.init);
+        case Twchar:
+            return Value(wchar.init);
+        case Tdchar:
+            return Value(dchar.init);
+        case Tpointer:
+        case Tclass:
+        case Tnull:
+            return Value.null_;
+        case Tvoid:
+        case Tint128:
+        case Tuns128:
+        case Timaginary32:
+        case Timaginary64:
+        case Timaginary80:
+        case Tcomplex32:
+        case Tcomplex64:
+        case Tcomplex80:
+        case Tfunction:
+        case Tarray:
+        case Tsarray:
+        case Taarray:
+        case Tident:
+        case Tinstance:
+        case Ttypeof:
+        case Ttuple:
+        case Tslice:
+        case Treturn:
+        case Terror:
+        case Tvector:
+        case Ttraits:
+        case Tmixin:
+        case Tnoreturn:
+        case Ttag:
+        case Tstruct:
+        case Tenum:
+        case Tdelegate:
+        case Treference:
+        case Tnone:
+            throw new Exception("Unsupported interpreter default value.");
+    }
+}
+
 private struct EvalFunctionWalker {
     import quickbite.lang: Value;
     import dmd.declaration: VarDeclaration;
@@ -176,7 +255,7 @@ private struct EvalFunctionWalker {
             if (auto current = variable in locals)
                 return *current;
 
-            return Value(cast(int) 0);
+            return defaultValue(variable);
         }
 
         import std.conv: text;
@@ -222,8 +301,9 @@ private struct EvalFunctionWalker {
             return Value(cast(int) 0);
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            locals[variable] = Value(cast(int) 0);
-            return Value(cast(int) 0);
+            const value = defaultValue(variable);
+            locals[variable] = value;
+            return value;
         }
 
         auto initializer = variable._init.isExpInitializer.exp;
@@ -252,7 +332,7 @@ private struct EvalFunctionWalker {
 
         auto current = variable in locals;
         if (current is null) {
-            locals[variable] = Value(cast(int) 0);
+            locals[variable] = defaultValue(variable);
             current = variable in locals;
         }
 
@@ -417,7 +497,7 @@ private struct EvalModuleInterpreter {
             if (auto current = variable in locals)
                 return *current;
 
-            return Value(false);
+            return defaultValue(variable);
         }
 
         import std.conv: text;
@@ -699,8 +779,9 @@ private struct EvalModuleInterpreter {
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            locals[variable] = Value(false);
-            return Value(false);
+            const value = defaultValue(variable);
+            locals[variable] = value;
+            return value;
         }
 
         auto initializer = variable._init.isExpInitializer.exp;

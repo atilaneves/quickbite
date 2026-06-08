@@ -114,6 +114,13 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("defaultUintPreservesScalarType." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("uint value;\nvalue").should == Value(0u);
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("floatingSubtractionUsesNumericValues." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval(
