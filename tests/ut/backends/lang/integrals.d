@@ -20,7 +20,6 @@ private alias IntegralTypes = AliasSeq!(
 
 static foreach (backend; AliasSeq!(Bytecode)) {
     static foreach (T; IntegralTypes) {
-        static if (is(T == byte))
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {
             runBackendSourceFixtureTests!backend(text(
@@ -77,6 +76,10 @@ static foreach (backend; backendsWith!Interpreter) {
         }
     }
 
+}
+
+static foreach (backend; backendsWith!Bytecode) {
+
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -97,6 +100,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("-126 != 130");
     }
+}
+
+static foreach (backend; backendsWith!Bytecode) {
 
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     unittest {

@@ -50,6 +50,20 @@ Lua-specific bytecode shape.
   `ai/plans/backend-test-modules-order.md`. Within each module, start with the
   smallest named unittest that the current bytecode surface can honestly make
   red and then green.
+- Treat the selected module, not a single template instantiation, as the unit
+  of migration. Before editing, inventory every backend-matrix unittest in the
+  module and classify each test family as already covered by `Bytecode`,
+  blocked by an expected missing feature, or ready to promote.
+- Do not count repeated instantiations of the same parametrized unittest, such
+  as one `static foreach` body over several integral types, as independent
+  migration slices when one instantiation already proves the behavior. Promote
+  the whole test family when it is already green, then move to the next distinct
+  named behavior in the module.
+- When orchestrating subagents, assign work by remaining named test behavior or
+  test family in the selected module. A worker should not spend a full slice on
+  another type-width variant of a behavior that has already passed for
+  `Bytecode` unless that variant is expected to expose a different missing VM
+  feature.
 - Before promoting a named test mentioned by this plan or a review note,
   verify in the current checkout that its enclosing backend matrix still
   excludes `Bytecode`. If it already uses `backendsWith!Bytecode`, treat the
@@ -78,34 +92,32 @@ Lua-specific bytecode shape.
   supported them through its existing eval compiler, VM local/value-stack
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
-- `tests/ut/backends/lang/integral_types.d` now covers `Bytecode` for
-  `integralType.byte`. That slice added the first module-backed
-  `Bytecode.runTests` path, compiling each unittest block to bytecode and
-  executing its directly-called module functions through bytecode call frames.
-  The implementation is deliberately narrow: equality assertions are enough
-  for the passing behavior, while assertion-message diagnostics remain
-  unpromoted.
+- `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
+  every integral type behavior test from `type.byte` through `type.ulong`.
+  These are one parametrized behavior family, not eight meaningful migration
+  slices. The `byte` slice added the first module-backed `Bytecode.runTests`
+  path, compiling each unittest block to bytecode and executing its
+  directly-called module functions through bytecode call frames. The remaining
+  type-width variants passed without production changes and should have been
+  promoted together once that was known. The implementation is deliberately
+  narrow: equality assertions are enough for the passing behavior.
+- `typeFailureMessage.byte.0` now covers `Bytecode`. This promoted the first
+  integral assertion-diagnostic case and taught the bytecode VM to report
+  failed equality assertions from the runtime operands, producing
+  `-126 != 130` for a narrowed `byte` value.
+- `tests/ut/backends/lang/integrals.d` is now complete for `Bytecode`.
+  `typeFailureMessage.ubyte.0` and `typeFailureMessage.uint.0` were promoted
+  together as the remaining integral assertion-diagnostic family. They passed
+  with the existing equality diagnostic support and did not require distinct
+  VM feature work.
 
 ## Current Next Step
-Continue in `tests/ut/backends/lang/integral_types.d`, following
+Continue with the next module named by
 `ai/plans/backend-test-modules-order.md`.
 
-Start with the first current named unittest in that module that still excludes
-`Bytecode`: `integralType.ubyte`. Do not add `Bytecode` to the module's outer
-`static foreach (backend; backends)`, because that would promote every
-remaining integral type case and the failure-message cases at once.
-
-Promote exactly one named behavior, rebuild/list tests, and run
-`ut.backends.lang.integral_types.integralType.ubyte.Bytecode` focused. Only
-after that focused test is red should production code change. If it passes
-without production changes, keep the promotion as supported coverage and move
-to the next smallest current candidate in `integral_types.d`.
-
-Expect the next few integral-width promotions to exercise the module-backed
-unittest path added for `integralType.byte`. Keep each slice to one named
-behavior; do not jump ahead to the failure-message cases, broad
-`api/runner.d` behavior, or richer assertion diagnostics until a promoted test
-forces them.
+Do not return to `tests/ut/backends/lang/integrals.d` unless new tests are
+added there. The module's current backend-matrix test families all include
+`Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
