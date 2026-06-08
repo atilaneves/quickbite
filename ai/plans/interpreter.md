@@ -421,6 +421,11 @@ required. Signal was verified by temporarily mutating Interpreter `sqrt` to
 call `fabs`, which failed the focused test with `2 >= 1.414` instead of
 `1.41421 >= 1.414`.
 
+Math progress: `evaluatesRuntimeFabsDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`fabs` to call `sqrt`, which failed the focused test with `-nan != 3.5`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
