@@ -108,6 +108,14 @@ def test_piped_pragma_msg_writes_once_to_stderr() -> None:
     assert result.stderr == "hello\n"
 
 
+def test_piped_failed_import_writes_only_error_to_stdout() -> None:
+    result = run_qb(input="import mymodule;\n")
+
+    assert result.returncode == 0
+    assert result.stdout == "Error: unable to read module `mymodule`\n"
+    assert result.stderr == ""
+
+
 def test_piped_quit_command_does_not_abandon_pending_input() -> None:
     result = run_qb(
         input="int answer() {\n:q\nreturn 42;\n}\nanswer()\n:q\n",

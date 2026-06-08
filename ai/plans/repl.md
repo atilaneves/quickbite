@@ -234,46 +234,23 @@ history acceptance. Backends execute complete `ReplCell` values and return
   0 instead of leaking `import path[0] = …` and
   `Error: cannot find input file <repl>`.
 
+- Suppressed the raw `import path[N] = …` leak in failed-import
+  diagnostics. The plan's original dedup-ordering diagnosis was wrong:
+  the lines never went through `userDiagnostic`/
+  `withoutConsecutiveDuplicateLines`. The real cause is DMD's
+  `onFileReadError` (`dmd/dmodule.d:634`) calling
+  `fprintf(stderr, "import path[%llu] = %s\n", …)` directly, bypassing
+  the installed diagnostic handler. `parseModuleLocked`
+  (`source/quickbite/frontend/compiler.d`) now captures C-level stderr
+  (fd 2) into a temporary file across `parseModule`/`fullSemantic` and
+  only replays it on the success path, so a failing cell drops the raw
+  import-path noise while a successful cell's legitimate raw output
+  (e.g. `pragma(msg)`) still reaches stderr. The captured diagnostic is
+  surfaced via the thrown exception. `printf 'import mymodule;\n' | bin/qb`
+  now writes only `Error: unable to read module \`mymodule\`` to stdout
+  with empty stderr.
+
 ## To do
-
-- Collapse duplicate import-path lines in failed-import diagnostics.
-  DMD emits `import path[N] = …` once, after the error. The REPL
-  currently prints it twice and before the error message because
-  `withoutConsecutiveDuplicateLines` (`source/quickbite/repl.d:228`)
-  deduplicates on the raw DMD text where the two identical lines are
-  separated by a non-identical "Expected … in one of the following
-  import paths:" line; after the surrounding lines are stripped the
-  duplicates become adjacent but deduplication has already run.
-
-  Offending code (`source/quickbite/repl.d:228`):
-
-  ```d
-  private string withoutConsecutiveDuplicateLines(in string diagnostic)
-  @safe pure {
-      // deduplication runs on the raw diagnostic before any stripping
-      // ...
-  }
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf 'import mymodule;\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  import path[0] = /usr/include/dlang/dmd
-  import path[0] = /usr/include/dlang/dmd
-  Error: unable to read module `mymodule`
-  ```
-
-  Expected (matches DMD):
-
-  ```text
-  Error: unable to read module `mymodule`
-  ```
 
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return
   user-meaningful values instead of internal synthetic names. DMD CTFE
