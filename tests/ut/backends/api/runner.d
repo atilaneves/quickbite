@@ -156,22 +156,25 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTestResults.reportsFileBackedUnittestLocations." ~
         backend.stringof)
     unittest {
         import unit_threaded.integration: Sandbox;
 
         with (immutable Sandbox()) {
+            const fixtureName = text(
+                "structured_result_locations_",
+                backend.stringof,
+                ".d",
+            );
             writeFile(
-                "structured_result_locations.d",
+                fixtureName,
                 "unittest {\n" ~
                 "    assert(1 == 2);\n" ~
                 "}",
             );
-            const fixturePath = inSandboxPath(
-                "structured_result_locations.d",
-            );
+            const fixturePath = inSandboxPath(fixtureName);
 
             const result = runBackendFileFixtureTestResults!backend(
                 fixturePath,
@@ -182,7 +185,9 @@ static foreach (backend; backends) {
             result.cases[0].location.should == fixturePath ~ "(1)";
         }
     }
+}
 
+static foreach (backend; backends) {
     @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;

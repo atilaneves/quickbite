@@ -46,7 +46,7 @@ public class Interpreter: imported!"quickbite.backends".Backend {
                 result.cases ~= TestCaseResult(
                     TestOutcome.passed,
                     symbolName(unitTest),
-                    null,
+                    locChars(unitTest.loc),
                     null,
                 );
             } catch (Exception e) {
@@ -54,7 +54,7 @@ public class Interpreter: imported!"quickbite.backends".Backend {
                 result.cases ~= TestCaseResult(
                     TestOutcome.failed,
                     symbolName(unitTest),
-                    null,
+                    locChars(unitTest.loc),
                     e.msg,
                 );
             }
@@ -89,6 +89,14 @@ private string symbolName(
     // `ident.toChars` returns DMD-owned null-terminated storage; `idup`
     // immediately copies it into a D string.
     return unitTest.ident.toChars.fromStringz.idup;
+}
+
+private string locChars(imported!"dmd.location".Loc loc) @trusted {
+    import std.string: fromStringz;
+
+    // `loc.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return loc.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.lang".Value evalFunction(

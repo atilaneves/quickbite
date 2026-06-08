@@ -240,6 +240,11 @@ Runner progress: `runTestResults.reportsDmdUnittestSymbolNames` in
 narrow structured result cases with DMD unittest symbol names and pass/fail
 summary counts; file-backed locations remain for the next runner slice.
 
+Runner progress: `runTestResults.reportsFileBackedUnittestLocations` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+filling structured result locations from each DMD unittest declaration's
+source location.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
