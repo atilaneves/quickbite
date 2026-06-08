@@ -34,7 +34,21 @@ public class IR: imported!"quickbite.backends".Backend {
     }
 
     public override TestSummary runTestSummary(Module module_) {
-        assert(0);
+        import quickbite.backends.ir.compiler: compileUnitTest;
+        import quickbite.backends.ir.vm: execute;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestSummary summary;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++summary.total;
+            try {
+                execute(compileUnitTest(unitTest));
+                ++summary.passed;
+            } catch (Exception) {
+                ++summary.failed;
+            }
+        });
+        return summary;
     }
 
 }

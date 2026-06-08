@@ -219,6 +219,12 @@ production code. Existing frontend import-path retry handling and IR
 module-backed unittest execution already rerun successfully after an initial
 parse failure without import paths; a temporary assertion mutation confirmed
 the imported enum value reaches the IR assertion path.
+The promoted
+`runTestSummary.countsAttributedPassingAndFailingUnittests.IR` test added the
+minimal IR `runTestSummary` entry point. It enumerates module unittest
+declarations, compiles and executes each one through the existing IR unittest
+path, and records only aggregate total/passed/failed counts. Structured
+`runTestResults` remains unimplemented.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
