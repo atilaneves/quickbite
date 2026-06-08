@@ -58,7 +58,7 @@ the normal test-approval stop.
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
 | 1 | 3.0 | `tests/ut/backends/lang/eval.d` |
-| 2 | 4.0 | `tests/ut/backends/lang/integral_types.d` |
+| 2 | 4.0 | `tests/ut/backends/lang/integrals.d` |
 | 3 | 4.5 | `tests/ut/backends/api/runner.d` |
 | 4 | 5.0 | `tests/ut/backends/lang/logic.d` |
 | 5 | 6.0 | `tests/ut/backends/lang/diagnostics.d` |

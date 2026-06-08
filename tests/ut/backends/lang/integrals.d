@@ -1,4 +1,4 @@
-module ut.backends.lang.integral_types;
+module ut.backends.lang.integrals;
 
 
 import ut.backends;

@@ -13,7 +13,7 @@ int main(string[] args) {
         "ut.backends.lang.diagnostics",
         "ut.backends.lang.exceptions",
         "ut.backends.lang.logic",
-        "ut.backends.lang.integral_types",
+        "ut.backends.lang.integrals",
         "ut.backends.lang.math",
         "ut.backends.lang.structs",
         "ut.backends.projects.cerealed",
