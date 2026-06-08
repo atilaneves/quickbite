@@ -14,6 +14,8 @@ package imported!"quickbite.lang".Value eval(
         ResultType,
         ReturnValue,
         Store,
+        UnaryOp,
+        UnaryOperation,
         Type;
     import quickbite.lang: Value;
     import std.sumtype: match;
@@ -91,6 +93,27 @@ package imported!"quickbite.lang".Value eval(
             },
             (const Load load) {
                 valueBits[load.destination.id] = localBits[load.local];
+            },
+            (const UnaryOp unary) {
+                final switch (unary.operation) with (UnaryOperation) {
+                    case negate:
+                        final switch (unary.type) with (Type) {
+                            case f64:
+                                valueBits[unary.destination.id] = doubleBits(
+                                    -doubleFromBits(valueBits[unary.source]),
+                                );
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i32:
+                            case i64:
+                            case f32:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
+                }
             },
             (const Store store) {
                 final switch (store.type) with (Type) {

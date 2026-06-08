@@ -41,6 +41,10 @@ package enum BinaryOperation {
     divide,
 }
 
+package enum UnaryOperation {
+    negate,
+}
+
 package struct Const {
     public ulong bits;
     public Value destination;
@@ -51,6 +55,13 @@ package struct BinaryOp {
     public Type type;
     public uint lhs;
     public uint rhs;
+    public Value destination;
+}
+
+package struct UnaryOp {
+    public UnaryOperation operation;
+    public Type type;
+    public uint source;
     public Value destination;
 }
 
@@ -75,6 +86,7 @@ package struct Store {
 package alias Instruction = imported!"std.sumtype".SumType!(
     Const,
     BinaryOp,
+    UnaryOp,
     Cast,
     Load,
     Store,

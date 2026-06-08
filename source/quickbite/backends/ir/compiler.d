@@ -54,6 +54,8 @@ private struct Compiler {
         Store,
         Terminator,
         Type,
+        UnaryOp,
+        UnaryOperation,
         Value;
 
     private Instruction[] instructions;
@@ -115,6 +117,9 @@ private struct Compiler {
 
         if (auto real_ = expression.isRealExp)
             return compileReal(real_);
+
+        if (auto negate = expression.isNegExp)
+            return compileUnaryExpression(negate.e1, UnaryOperation.negate);
 
         if (auto add = expression.isAddExp)
             return compileBinaryExpression(add, BinaryOperation.add);
@@ -272,6 +277,21 @@ private struct Compiler {
             default:
                 assert(0);
         }
+    }
+
+    private Value compileUnaryExpression(
+        Expression expression,
+        in UnaryOperation operation,
+    ) {
+        const source = compileExpression(expression);
+        const destination = nextValue(source.type, source.resultType);
+        instructions ~= Instruction(UnaryOp(
+            operation,
+            source.type,
+            source.id,
+            destination,
+        ));
+        return destination;
     }
 
     private Value compileBinaryExpression(

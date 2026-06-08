@@ -132,7 +132,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("floatingUnaryMinusUsesNumericValue." ~ backend.stringof)
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");

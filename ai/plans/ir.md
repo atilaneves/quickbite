@@ -130,7 +130,10 @@ an `i32` local with `uint_` result metadata, and the VM's boundary conversion
 preserves the public `uint` result. The promoted
 `floatingSubtractionUsesNumericValues.IR` test added only the VM support needed
 to execute an already-lowered `BinaryOperation.subtract` on `f64` operands and
-store the raw `double` result bits. IR values carry both an operation type
+store the raw `double` result bits. The promoted
+`floatingUnaryMinusUsesNumericValue.IR` test added the backend-local
+`UnaryOperation.negate` instruction shape, compiler lowering for DMD `NegExp`,
+and VM execution for `f64` negation. IR values carry both an operation type
 (`i32`, `f32`, and so on) and a D-visible scalar result category so the VM can
 keep arithmetic dispatch typed while preserving the public eval result type.
 `vm.d` executes the single entry block directly before converting the returned
@@ -157,6 +160,7 @@ The currently covered IR backend eval tests are:
 - `castsRuntimeValuesToIntegerTypes.IR`
 - `defaultUintPreservesScalarType.IR`
 - `floatingSubtractionUsesNumericValues.IR`
+- `floatingUnaryMinusUsesNumericValue.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
