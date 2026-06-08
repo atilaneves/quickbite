@@ -583,7 +583,23 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("12.25 != 13.25");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: fabs;
+
+            unittest {
+                double second = -12.25;
+                assert(fabs(second) == 13.25);
+            }
+        }).shouldThrowWithMessage("12.25 != 13.25");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesRuntimeFabsPositiveDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
