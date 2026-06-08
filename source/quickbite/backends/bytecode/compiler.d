@@ -303,6 +303,11 @@ private struct Compiler {
             return;
         }
 
+        if (expression.op == EXP.lessOrEqual) {
+            compileBinaryExpression(expression, Op.lessOrEqual);
+            return;
+        }
+
         if (expression.op == EXP.greaterThan) {
             compileBinaryExpression(expression, Op.greaterThan);
             return;
@@ -360,6 +365,7 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.lessThan ||
+            expression.op == EXP.lessOrEqual ||
             expression.op == EXP.greaterThan;
     }
 
@@ -580,9 +586,14 @@ private struct Compiler {
         if (isComparisonExpression(assert_.e1)) {
             import dmd.tokens: EXP;
 
-            auto lessThan = castComparisonExpression(assert_.e1);
-            if (lessThan.op == EXP.lessThan) {
-                compileAssertComparison(lessThan, Op.lessThan);
+            auto comparison = castComparisonExpression(assert_.e1);
+            if (comparison.op == EXP.lessThan) {
+                compileAssertComparison(comparison, Op.lessThan);
+                return;
+            }
+
+            if (comparison.op == EXP.lessOrEqual) {
+                compileAssertComparison(comparison, Op.lessOrEqual);
                 return;
             }
         }

@@ -216,6 +216,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.lessOrEqual:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong <= rhs.asLong);
+                ++ip;
+                break;
+
             case Op.greaterThan:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -383,6 +395,8 @@ private bool comparisonHolds(
             return lhs == rhs;
         case Op.lessThan:
             return lhs.asLong < rhs.asLong;
+        case Op.lessOrEqual:
+            return lhs.asLong <= rhs.asLong;
         case Op.literal:
         case Op.call:
         case Op.jump:
@@ -423,6 +437,8 @@ private string inverseComparisonOperator(
             return "!=";
         case Op.lessThan:
             return ">=";
+        case Op.lessOrEqual:
+            return ">";
         case Op.literal:
         case Op.call:
         case Op.jump:

@@ -20,6 +20,7 @@ package enum Op: ubyte {
     divide,
     bitOr,
     lessThan,
+    lessOrEqual,
     greaterThan,
     not_,
     negate,
