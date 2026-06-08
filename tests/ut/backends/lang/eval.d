@@ -113,7 +113,7 @@ static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("defaultUintPreservesScalarType." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("uint value;\nvalue").should == Value(0u);
