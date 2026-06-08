@@ -209,18 +209,23 @@ blocks. The slice added narrow compiler recognition for DMD's generated
 equality assertion-message call so a folded `assert(1 == 2)` still lowers its
 message operands to the existing IR `AssertCompare` diagnostic path and
 reports `1 != 2`.
+The promoted `runTests.runsAttributedThrowingUnittests.IR` test reuses the
+same runner entry point and adds narrow backend-local lowering for
+`throw new Exception("literal")` in a unittest body. The IR now carries a
+`ThrowException` instruction with the literal message and the VM throws that
+message directly; this is not general exception construction or catch support.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
-`tests/ut/backends/api/runner.d`. Pick the smallest current CTFE-backed
-behavior in that module that still excludes `IR`, promote the existing backend
-matrix, and run the focused test. If it is red, verify it is red for the
-expected missing behavior. If it is green, verify the greenness by temporarily
-mutating the promoted test or relevant production code, confirming the focused
-test fails, and restoring the mutation. Inspect the DMD AST that reaches the
-IR compiler, then add only the IR shape and VM support required by that
-behavior. Verify the current checkout before editing because backend progress
-notes can go stale.
+`tests/ut/backends/api/runner.d`. Pick the smallest remaining current
+CTFE-backed behavior in that module that still excludes `IR`, promote the
+existing backend matrix, and run the focused test. If it is red, verify it is
+red for the expected missing behavior. If it is green, verify the greenness by
+temporarily mutating the promoted test or relevant production code, confirming
+the focused test fails, and restoring the mutation. Inspect the DMD AST that
+reaches the IR compiler, then add only the IR shape and VM support required by
+that behavior. Verify the current checkout before editing because backend
+progress notes can go stale.
 
 ### Next Slice Handoff
 

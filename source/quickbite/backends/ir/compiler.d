@@ -63,6 +63,7 @@ private struct Compiler {
         StringConst,
         Store,
         Terminator,
+        ThrowException,
         Type,
         UnaryIntrinsicOp,
         UnaryIntrinsicOperation,
@@ -123,6 +124,9 @@ private struct Compiler {
         if (auto return_ = statement.isReturnStatement)
             return OptionalValue(compileExpression(return_.exp), true);
 
+        if (auto throw_ = statement.isThrowStatement)
+            return OptionalValue(compileThrow(throw_), true);
+
         if (statement.isImportStatement)
             return OptionalValue.init;
 
@@ -131,6 +135,13 @@ private struct Compiler {
         throw new Exception(
             text("Unsupported IR statement: ", statement.stmt),
         );
+    }
+
+    private Value compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        instructions ~= Instruction(
+            ThrowException(newExceptionMessage(throw_.exp)),
+        );
+        return compileIntegerLiteral(0);
     }
 
     private Value compileExpression(Expression expression) {
@@ -689,6 +700,18 @@ private imported!"dmd.expression".Expression initializerExpression(
         return blit.e2;
 
     return expression;
+}
+
+private string newExceptionMessage(imported!"dmd.expression".Expression expression) {
+    auto new_ = expression is null ? null : expression.isNewExp;
+    if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+        throw new Exception("Unsupported IR throw expression.");
+
+    auto message = (*new_.arguments)[0].isStringExp;
+    if (message is null)
+        throw new Exception("Unsupported IR throw expression.");
+
+    return message.peekString.idup;
 }
 
 private imported!"quickbite.backends.ir.language".Type valueType(
