@@ -38,6 +38,8 @@ static foreach (backend; backendsWith!Interpreter) {
 
         with(immutable Sandbox()) {
             const importPath = "imports";
+            // DMD caches failed imports by module name in process-global state.
+            // The CTFE and Interpreter matrix cases must not share one name.
             const moduleName = text(
                 "quickbite_backend_retry_import_",
                 backend.stringof,
@@ -163,6 +165,8 @@ static foreach (backend; backendsWith!Interpreter) {
         import unit_threaded.integration: Sandbox;
 
         with (immutable Sandbox()) {
+            // DMD keys file-backed modules by module name, not absolute path,
+            // so both backend matrix cases need distinct fixture basenames.
             const fixtureName = text(
                 "structured_result_locations_",
                 backend.stringof,
@@ -254,6 +258,8 @@ static foreach (backend; backendsWith!Interpreter) {
                 },
             );
 
+            // DMD keys file-backed modules by module name, not absolute path,
+            // so both backend matrix cases need distinct fixture basenames.
             const fixturePath = buildPath(
                 importPath,
                 text("fixture_", backend.stringof, ".d"),
