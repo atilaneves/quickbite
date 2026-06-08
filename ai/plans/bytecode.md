@@ -254,6 +254,10 @@ Lua-specific bytecode shape.
   `Bytecode`. This was a stale coverage gap: the existing bytecode local
   declaration, load, function-return, and equality assertion diagnostic path
   already reported the failed comparison as `42 != 43`.
+- `voidFunctionOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode call-frame
+  and integer assertion-failure path already propagated the failure from a
+  called `void` function as `` `assert(0)` failed ``.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
