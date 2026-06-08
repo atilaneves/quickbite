@@ -202,6 +202,12 @@ promoted local and zero-argument free-call cases. Do not generalize methods,
 assignment, control flow, or assertion formatting until a promoted test forces
 that behaviour.
 
+Runner progress: `runTests.runsAttributedUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+the narrow assertion-message fix for DMD-lowered equality assertions where the
+generated boolean helper would otherwise report `true != true` instead of the
+original integer operands.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

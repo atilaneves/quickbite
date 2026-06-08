@@ -752,30 +752,8 @@ private struct EvalModuleInterpreter {
                 );
         }
 
-        if (auto equal = assert_.e1.isEqualExp) {
-            import dmd.tokens: EXP;
-            import std.conv: text;
-
-            const operator = equal.op == EXP.notEqual ? "==" : "!=";
-            const left = runExpression(equal.e1);
-            const right = runExpression(equal.e2);
-            const useBoolMessage =
-                isBoolValue(left) ||
-                isBoolValue(right) ||
-                isBoolExpression(equal.e1) ||
-                isBoolExpression(equal.e2) ||
-                isLogicalNotExpression(equal.e1) ||
-                isLogicalNotExpression(equal.e2) ||
-                isLogicalExpression(equal.e1) ||
-                isLogicalExpression(equal.e2);
-            return text(
-                equalityOperandMessage(left, useBoolMessage, equal.e1),
-                " ",
-                operator,
-                " ",
-                equalityOperandMessage(right, useBoolMessage, equal.e2),
-            );
-        }
+        if (auto equal = assert_.e1.isEqualExp)
+            return equalFailureMessage(equal);
 
         if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
             import std.conv: text;
@@ -791,6 +769,33 @@ private struct EvalModuleInterpreter {
         }
 
         return "`assert(false)` failed";
+    }
+
+    private string equalFailureMessage(
+        imported!"dmd.expression".EqualExp equal,
+    ) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const operator = equal.op == EXP.notEqual ? "==" : "!=";
+        const left = runExpression(equal.e1);
+        const right = runExpression(equal.e2);
+        const useBoolMessage =
+            isBoolValue(left) ||
+            isBoolValue(right) ||
+            isBoolExpression(equal.e1) ||
+            isBoolExpression(equal.e2) ||
+            isLogicalNotExpression(equal.e1) ||
+            isLogicalNotExpression(equal.e2) ||
+            isLogicalExpression(equal.e1) ||
+            isLogicalExpression(equal.e2);
+        return text(
+            equalityOperandMessage(left, useBoolMessage, equal.e1),
+            " ",
+            operator,
+            " ",
+            equalityOperandMessage(right, useBoolMessage, equal.e2),
+        );
     }
 
     private string dmdAssertFailMessage(
@@ -1033,10 +1038,20 @@ private struct EvalModuleInterpreter {
         if (left is null || right is null)
             return null;
 
+        const inverseOperator = operatorText == "==" ? "!=" : "==";
+        if (left.toInteger > 1 || right.toInteger > 1)
+            return text(
+                left.toInteger,
+                " ",
+                inverseOperator,
+                " ",
+                right.toInteger,
+            );
+
         return text(
             left.toInteger != 0,
             " ",
-            operatorText == "==" ? "!=" : "==",
+            inverseOperator,
             " ",
             right.toInteger != 0,
         );

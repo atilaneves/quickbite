@@ -6,7 +6,7 @@ import quickbite.frontend.compiler: parseModule;
 import std.path: buildPath;
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTests.runsAttributedUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -16,7 +16,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
 
+static foreach (backend; backends) {
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         const msg = runBackendSourceFixtureTests!backend(q{
