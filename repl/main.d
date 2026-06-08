@@ -2,6 +2,8 @@ module repl.main;
 
 private:
 
+import std.datetime.stopwatch: Duration;
+
 public int main(string[] args) {
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
@@ -95,10 +97,12 @@ private bool stdoutIsTerminal() {
 
 private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
     import gnu.readline: readline, rl_free;
-    import std.string: fromStringz;
+    import std.string: fromStringz, toStringz;
 
+    Duration lastElapsed;
     while (true) {
-        char* rawLine = readline("> ");
+        const prompt = replPrompt(lastElapsed);
+        auto rawLine = readline(prompt.toStringz);
         if (rawLine is null)
             return 0;
 
@@ -114,7 +118,9 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
 
         add_history(rawLine);
 
-        if (!submit(repl, line, FailureMode.continue_))
+        const result = submitTimed(repl, line, FailureMode.continue_);
+        lastElapsed = result.elapsed;
+        if (!result.keepGoing)
             return 1;
     }
 }
@@ -138,21 +144,45 @@ private bool submit(
     in string line,
     in FailureMode failureMode,
 ) {
+    return submitTimed(repl, line, failureMode).keepGoing;
+}
+
+private struct SubmitResult {
+    public bool keepGoing;
+    public Duration elapsed;
+}
+
+private SubmitResult submitTimed(
+    ref imported!"quickbite.repl".Repl repl,
+    in string line,
+    in FailureMode failureMode,
+) {
+    import std.datetime.stopwatch: StopWatch;
     import std.stdio: writeln;
 
+    StopWatch stopwatch;
+    stopwatch.start;
     try {
         const display = repl.submitDisplay(line);
         if (display !is null)
             writeln(display);
     } catch (Exception e) {
+        const elapsed = stopwatch.peek;
         writeln(errorDiagnostic(e.msg));
-        return failureMode == FailureMode.continue_;
+        return SubmitResult(failureMode == FailureMode.continue_, elapsed);
     } catch (Error e) {
+        const elapsed = stopwatch.peek;
         writeln(errorDiagnostic(e.msg));
-        return false;
+        return SubmitResult(false, elapsed);
     }
 
-    return true;
+    return SubmitResult(true, stopwatch.peek);
+}
+
+private string replPrompt(in Duration elapsed) {
+    import std.format: format;
+
+    return "[%6.1f ms] > ".format(elapsed.total!"hnsecs" / 10_000.0);
 }
 
 private string errorDiagnostic(in string diagnostic) {
