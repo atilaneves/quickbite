@@ -135,6 +135,28 @@ likely candidate in `tests/ut/backends/lang/eval.d` is `add.float`, but verify
 the current checkout before editing because backend progress notes can go
 stale.
 
+### Next Slice Handoff
+
+Start with `tests/ut/backends/lang/eval.d`. Verify that `add.float` still
+excludes `IR`; if it already includes `IR`, treat this handoff as stale and
+choose the next smallest eval behavior that still excludes `IR`.
+
+If `add.float` still excludes `IR`, the next TDD slice is:
+
+1. Promote only the existing `add.float` backend matrix to include `IR`.
+2. Run `ut.backends.lang.eval.add.float.IR` and confirm it is red.
+3. Inspect the DMD AST that reaches `quickbite.backends.ir.compiler` for
+   `1.5f + 2.25f`; the lowered IR must reflect the AST shape actually present
+   after semantic analysis.
+4. Add the smallest production support for `RealExp` constants, `Type.f32`
+   values, `BinaryOp(add, f32)`, VM `f32` execution, and return conversion to
+   `quickbite.lang.Value`.
+5. Run the focused promoted test and then `dub test -- --random`.
+
+Do not store `quickbite.lang.Value` in IR instructions or VM registers for
+this slice. The VM should choose the arithmetic path from the instruction type,
+not from a runtime-tagged public `Value`.
+
 ### Target shape for the three backend-local modules
 
 **`language.d`** defines the IR data types:
