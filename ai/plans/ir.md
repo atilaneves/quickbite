@@ -123,11 +123,15 @@ expression initializers, local loads, the DMD semantic increment shape used by
 `++x`, and the narrow runtime cast shapes currently covered by
 `castsFloatingValueNumerically.IR` (`f64` to `i32`) and
 `castsRuntimeValuesToIntegerTypes.IR` (`i32` to `i8`, `i16`, `i32`, and `i64`
-storage, with result category preserving signedness). IR values carry both an
-operation type (`i32`, `f32`, and so on) and a D-visible scalar result category
-so the VM can keep arithmetic dispatch typed while preserving the public eval
-result type. `vm.d` executes the single entry block directly before converting
-the returned IR value to `quickbite.lang.Value` at the backend boundary.
+storage, with result category preserving signedness). The promoted
+`defaultUintPreservesScalarType.IR` test passed without new production code:
+the existing default local initialization path already lowers `uint value` as
+an `i32` local with `uint_` result metadata, and the VM's boundary conversion
+preserves the public `uint` result. IR values carry both an operation type
+(`i32`, `f32`, and so on) and a D-visible scalar result category so the VM can
+keep arithmetic dispatch typed while preserving the public eval result type.
+`vm.d` executes the single entry block directly before converting the returned
+IR value to `quickbite.lang.Value` at the backend boundary.
 
 The current mutation support is intentionally narrow. Locals are identified by
 compiler-assigned integer indices, and `Load`/`Store` operate on those local
@@ -148,6 +152,7 @@ The currently covered IR backend eval tests are:
 - `preservesScalarValueTypes.IR`
 - `castsFloatingValueNumerically.IR`
 - `castsRuntimeValuesToIntegerTypes.IR`
+- `defaultUintPreservesScalarType.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
