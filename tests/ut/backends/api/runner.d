@@ -137,7 +137,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
@@ -154,7 +154,9 @@ static foreach (backend; backends) {
         result.cases[0].name.should == "__unittest_L2_C13";
         result.cases[1].name.should == "__unittest_L6_C13";
     }
+}
 
+static foreach (backend; backends) {
     @("runTestResults.reportsFileBackedUnittestLocations." ~
         backend.stringof)
     unittest {

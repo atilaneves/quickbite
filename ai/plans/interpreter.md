@@ -235,6 +235,11 @@ Runner progress: `runTestSummary.countsAssertErrorsAsFailures` in
 green through existing throw-statement and summary failure counting; signal was
 verified by temporarily mutating the Interpreter throw-statement handler.
 
+Runner progress: `runTestResults.reportsDmdUnittestSymbolNames` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow structured result cases with DMD unittest symbol names and pass/fail
+summary counts; file-backed locations remain for the next runner slice.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

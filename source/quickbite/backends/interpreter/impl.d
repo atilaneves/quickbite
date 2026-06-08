@@ -7,7 +7,11 @@ private:
 public class Interpreter: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestRunResult, TestSummary;
+    import quickbite.backends:
+        TestCaseResult,
+        TestOutcome,
+        TestRunResult,
+        TestSummary;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -30,7 +34,32 @@ public class Interpreter: imported!"quickbite.backends".Backend {
     }
 
     public override TestRunResult runTestResults(Module module_) {
-        assert(0);
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestRunResult result;
+        EvalModuleInterpreter interpreter;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++result.summary.total;
+            try {
+                interpreter.runTest(unitTest);
+                ++result.summary.passed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.passed,
+                    symbolName(unitTest),
+                    null,
+                    null,
+                );
+            } catch (Exception e) {
+                ++result.summary.failed;
+                result.cases ~= TestCaseResult(
+                    TestOutcome.failed,
+                    symbolName(unitTest),
+                    null,
+                    e.msg,
+                );
+            }
+        });
+        return result;
     }
 
     public override TestSummary runTestSummary(Module module_) {
@@ -50,6 +79,16 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         return summary;
     }
 
+}
+
+private string symbolName(
+    imported!"dmd.declaration".UnitTestDeclaration unitTest,
+) @trusted {
+    import std.string: fromStringz;
+
+    // `ident.toChars` returns DMD-owned null-terminated storage; `idup`
+    // immediately copies it into a D string.
+    return unitTest.ident.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.lang".Value evalFunction(
