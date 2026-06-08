@@ -205,3 +205,6 @@
 
 - Every `@trusted` declaration needs a nearby comment explaining the concrete
   safety argument that justifies it.
+
+- Do not amend an existing commit unless the user explicitly asks for an
+  amend. Make a new commit for follow-up changes.
