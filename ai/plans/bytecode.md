@@ -246,6 +246,10 @@ Lua-specific bytecode shape.
 - `oops` in `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This
   was a stale coverage gap: the existing bytecode equality assertion diagnostic
   path already reported the failed function-return comparison as `42 != 43`.
+- `okFailureMessage.0` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode equality
+  assertion diagnostic path already reported the failed function-return
+  comparison as `7 != 8`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
