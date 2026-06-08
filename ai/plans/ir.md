@@ -242,6 +242,11 @@ path, records aggregate total/passed/failed counts, and appends structured
 case results with DMD-generated unittest symbol names, source locations, and
 thrown messages. The current promoted assertion checks only the symbol names;
 later structured-result runner tests should prove the remaining fields.
+The promoted `runTestResults.reportsFileBackedUnittestLocations.IR` test
+passed without new production code. Existing IR structured results already
+record source locations for file-backed unittest declarations; a temporary
+expected line-number mutation confirmed the promoted test observes the
+reported location.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
