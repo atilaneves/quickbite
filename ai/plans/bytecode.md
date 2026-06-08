@@ -121,6 +121,11 @@ Lua-specific bytecode shape.
   exposed missing `throw` statement support for `throw new Exception(message)`.
   Bytecode now lowers the exception constructor message to a value-stack
   operand and the VM throws that message through a narrow `throw_` opcode.
+- `runTests.importPathsRetryAfterFailure` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap: the shared source-fixture parse path already passed import
+  paths to DMD, and the existing bytecode enum/function/assert support could
+  execute the imported assertion without production changes.
 
 ## Current Next Step
 Continue with the next module named by
