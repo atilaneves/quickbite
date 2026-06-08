@@ -4,8 +4,6 @@ module ut.backends.lang.arrays;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("nestedSliceWritesPropagateToOriginalArray." ~ backend.stringof)
     unittest {

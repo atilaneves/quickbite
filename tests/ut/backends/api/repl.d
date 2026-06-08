@@ -4,8 +4,6 @@ module ut.backends.api.repl;
 import ut.backends;
 
 
-private:
-
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;

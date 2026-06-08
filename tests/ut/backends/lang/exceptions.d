@@ -4,8 +4,6 @@ module ut.backends.lang.exceptions;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("throwingTest." ~ backend.stringof)
     unittest {

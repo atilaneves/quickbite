@@ -4,8 +4,6 @@ module ut.backends.lang.structs;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("structMethodPostIncrementsSizeTField." ~ backend.stringof)
     unittest {

@@ -4,8 +4,6 @@ module ut.backends.projects.cerealed;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~ backend.stringof)
     unittest {

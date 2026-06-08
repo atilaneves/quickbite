@@ -4,8 +4,6 @@ module ut.backends.lang.control_flow;
 import ut.backends;
 
 
-private:
-
 static foreach (backend; backends) {
     @("supportsContinue." ~ backend.stringof)
     unittest {
