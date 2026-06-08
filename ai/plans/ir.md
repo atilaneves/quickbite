@@ -253,6 +253,11 @@ parsed modules and reports the exception thrown from the second module; a
 temporary expected-message mutation confirmed the promoted test observes the
 second module's failure.
 
+The promoted `runBackendSourceFixtureTests.withImportPaths.IR` test passed
+without new production code. Existing IR source-fixture execution already
+honours caller-supplied import paths; a temporary expected-value mutation
+confirmed the promoted test executes the imported function through IR.
+
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`:
 `tests/ut/backends/api/runner.d`. Pick the smallest remaining current
