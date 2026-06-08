@@ -380,7 +380,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.5 != 2.5");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 2.25;
+                assert(sqrt(input) == 2.5);
+            }
+        }).shouldThrowWithMessage("1.5 != 2.5");
+    }
+}
+
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
