@@ -159,25 +159,26 @@ history acceptance. Backends execute complete `ReplCell` values and return
   `PragmaStatement` node and are no longer appended to the persistent REPL
   transcript, so later cells do not re-run their compile-time message.
 
-## To do
+- Verified `std.format.format` in the REPL against the shell-safe
+  reproducer. The earlier reproducer used shell `printf` with `%s` in
+  the format string, so the shell stripped the placeholder before `qb`
+  saw the input and produced `format("hello ", 42)`, which correctly
+  leaves an orphan argument. Passing a literal `%s` to `qb` evaluates
+  like DMD CTFE and prints `"hello 42"`.
 
-- Fix `std.format.format` in the REPL: it throws a
-  `FormatException("Orphan format arguments")` even for well-formed
-  calls, while DMD evaluates the same call at compile time without
-  issue. The exception suggests the argument tuple fed to `format`'s
-  template is being built with an unexpected shape inside the REPL
-  wrapper — the `%s` placeholder fails to consume its argument.
-
-  Reproducer:
+  Shell-safe reproducer:
 
   ```sh
-  printf 'import std.format : format;\nformat("hello %s", 42)\n' | bin/qb
+  printf '%s\n%s\n' \
+    'import std.format : format;' \
+    'format("hello %s", 42)' |
+    bin/qb
   ```
 
-  Current output:
+  Output:
 
   ```text
-  Error: uncaught CTFE exception `std.format.FormatException("Orphan format arguments: args[0..1]")`
+  "hello 42"
   ```
 
   DMD CTFE:
@@ -186,6 +187,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   import std.format : format;
   enum s = format("hello %s", 42);  // "hello 42" — no error
   ```
+
+## To do
 
 - Drop the trailing `null` from lazy-range struct display. DMD
   `pragma(msg)` omits the function-pointer field (which holds the
