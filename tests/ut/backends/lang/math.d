@@ -319,7 +319,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                double input = 16.0;
+                assert(sqrt(input) == 5.0);
+            }
+        }).shouldThrowWithMessage("4 != 5");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
