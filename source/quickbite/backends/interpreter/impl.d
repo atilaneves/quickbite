@@ -167,7 +167,8 @@ private struct EvalFunctionWalker {
             return;
         }
 
-        assert(0);
+        import std.conv: text;
+        throw new Exception(text("Unsupported eval statement: ", statement.stmt));
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {

@@ -218,14 +218,15 @@ wrapper and runs it through `EvalFunctionWalker`. The stale standalone
 second, narrower expression dispatch table that can diverge from multiline
 eval coverage.
 
-**Finding 1 — Mixed `assert(0)` vs `Exception` for unsupported nodes.**
-The plan requires an explicit unsupported diagnostic rather than crashing.
-`impl.d` throws `Exception("Unsupported …")` on some paths but uses `assert(0)`
-on several reachable internal paths (lines 70, 138, 174, 247, 251, 317, 355,
-529). The unimplemented Backend stubs (`evalRepl`, `runTestResults`,
-`runTestSummary`) also use `assert(0)`. Replace reachable `assert(0)` with
-explicit unsupported diagnostics; keep `assert(0)` only for internal
-invariants that can never be triggered by a supported AST input.
+**Finding 1 — Eval unsupported statements report diagnostics.**
+`EvalFunctionWalker.runStatement` now throws
+`"Unsupported eval statement: <kind>"` instead of reaching `assert(0)` for the
+first eval-backed unsupported statement shape covered by `eval.d`. Remaining
+`assert(0)` calls are outside this eval-only PR: unimplemented Backend API
+stubs (`evalRepl`, `runTestResults`, `runTestSummary`), eval expression
+invariants that still need a reachable `eval.d` signal, and module-backed
+interpreter paths that belong to a follow-up PR for their containing test
+module.
 
 ### First PR Guardrails
 
