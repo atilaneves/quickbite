@@ -39,6 +39,7 @@ public struct Value {
         Struct,
         TypeName,
         EnumValue,
+        Undisplayable,
     );
 
     private Data data = Data(Void.init);
@@ -85,6 +86,10 @@ public struct Value {
         return Value(EnumValue(name));
     }
 
+    public static Value undisplayable() @safe pure {
+        return Value(Undisplayable.init);
+    }
+
     private this(in Void value) @safe pure {
         data = Data(value);
     }
@@ -110,6 +115,10 @@ public struct Value {
     }
 
     private this(in EnumValue value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(in Undisplayable value) @safe pure {
         data = Data(value);
     }
 
@@ -239,6 +248,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
+                } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
+                    return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.dText;
                 } else static if (is(T == const(Null)) || is(T == Null)) {
@@ -282,6 +293,8 @@ public struct Value {
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
+                    return value.toString;
+                } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.toString;
@@ -498,6 +511,13 @@ private struct EnumValue {
 
     public string toString() const @safe pure {
         return name;
+    }
+}
+
+
+private struct Undisplayable {
+    public string toString() const @safe pure {
+        return "<undisplayable>";
     }
 }
 

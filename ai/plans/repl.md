@@ -212,115 +212,45 @@ history acceptance. Backends execute complete `ReplCell` values and return
   MapResult([1, 2, 3])
   ```
 
+- Routed all `loadModuleFile` errors through the REPL CLI diagnostic
+  path. `Repl.loadModuleFile` now wraps `readText`/`parseModule` in a
+  try-catch that rethrows `new Exception(userDiagnostic(exception.msg))`,
+  sanitising `snippet_N` names. `repl/main.d` wraps the file-loading loop
+  and prints a concise `Error:` line via the existing `errorDiagnostic`
+  helper, returning status 1 with no D stack trace for both the
+  missing-file and duplicate-load cases.
+
+- Display a `<undisplayable>` placeholder for CTFE results Quickbite cannot
+  represent yet instead of exposing backend internals. `ctfeValue` no longer
+  throws `Unsupported CTFE eval result: …` for kinds such as a delegate
+  literal; a new `Undisplayable` member of `quickbite.lang.Value` (with a
+  `Value.undisplayable` factory) renders exactly `<undisplayable>`, so
+  `delegate int(){ return 42; }` displays the placeholder and exits 0.
+
+- Made `:t` with no loaded tests produce a clean REPL result.
+  `Repl.runLoadedTests` now returns `ReplResult(Value.void_)` when
+  `session.loadedModuleSource.length == 0`, guarding before the DMD
+  parse/test pipeline, so `bin/qb -c ':t'` produces no output and exits
+  0 instead of leaking `import path[0] = …` and
+  `Error: cannot find input file <repl>`.
+
+- Suppressed the raw `import path[N] = …` leak in failed-import
+  diagnostics. The plan's original dedup-ordering diagnosis was wrong:
+  the lines never went through `userDiagnostic`/
+  `withoutConsecutiveDuplicateLines`. The real cause is DMD's
+  `onFileReadError` (`dmd/dmodule.d:634`) calling
+  `fprintf(stderr, "import path[%llu] = %s\n", …)` directly, bypassing
+  the installed diagnostic handler. `parseModuleLocked`
+  (`source/quickbite/frontend/compiler.d`) now captures C-level stderr
+  (fd 2) into a temporary file across `parseModule`/`fullSemantic` and
+  only replays it on the success path, so a failing cell drops the raw
+  import-path noise while a successful cell's legitimate raw output
+  (e.g. `pragma(msg)`) still reaches stderr. The captured diagnostic is
+  surfaced via the thrown exception. `printf 'import mymodule;\n' | bin/qb`
+  now writes only `Error: unable to read module \`mymodule\`` to stdout
+  with empty stderr.
+
 ## To do
-
-- Collapse duplicate import-path lines in failed-import diagnostics.
-  DMD emits `import path[N] = …` once, after the error. The REPL
-  currently prints it twice and before the error message because
-  `withoutConsecutiveDuplicateLines` (`source/quickbite/repl.d:228`)
-  deduplicates on the raw DMD text where the two identical lines are
-  separated by a non-identical "Expected … in one of the following
-  import paths:" line; after the surrounding lines are stripped the
-  duplicates become adjacent but deduplication has already run.
-
-  Offending code (`source/quickbite/repl.d:228`):
-
-  ```d
-  private string withoutConsecutiveDuplicateLines(in string diagnostic)
-  @safe pure {
-      // deduplication runs on the raw diagnostic before any stripping
-      // ...
-  }
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf 'import mymodule;\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  import path[0] = /usr/include/dlang/dmd
-  import path[0] = /usr/include/dlang/dmd
-  Error: unable to read module `mymodule`
-  ```
-
-  Expected (matches DMD):
-
-  ```text
-  Error: unable to read module `mymodule`
-  ```
-
-- Make `:t` with no loaded tests produce a clean REPL result. It should not
-  leak DMD import-path diagnostics or report that `<repl>` cannot be found.
-
-  Offending command:
-
-  ```sh
-  bin/qb -c ':t'
-  ```
-
-  Current output includes:
-
-  ```text
-  import path[0] = /usr/include/dlang/dmd
-  Error: cannot find input file `<repl>`
-  ```
-
-- Route all `loadModuleFile` errors through the REPL CLI diagnostic
-  path. Currently any exception thrown from `repl.loadModuleFile` —
-  whether from `readText` (missing file), `parseModule` (duplicate
-  symbol), or elsewhere — escapes the uncaught-exception handler in
-  `main.d` and prints a raw D stack trace. The duplicate-file case
-  additionally leaks unsanitised `snippet_N` names because the
-  exception bypasses `userDiagnostic`.
-
-  Offending code (`repl/main.d:25–28`) — no try-catch around file loading:
-
-  ```d
-  if (options.options.hasFile) {
-      foreach (file; options.options.files)
-          repl.loadModuleFile(file);  // any exception escapes here
-  }
-  ```
-
-  Reproducers:
-
-  ```sh
-  bin/qb /tmp/does-not-exist.d          # missing file
-  bin/qb /tmp/test.d /tmp/test.d        # duplicate load
-  ```
-
-  Current output (duplicate load):
-
-  ```text
-  object.Exception@source/quickbite/frontend/compiler.d(348):
-  function `snippet_1.answer()` conflicts with previous declaration …
-  ----------------
-  … (full D stack trace) …
-  ```
-
-  Expected: a concise `Error:` diagnostic, no stack trace, no
-  synthetic names.
-
-- Add an intentional diagnostic or placeholder for CTFE results that Quickbite
-  cannot display yet. Do not expose backend conversion internals such as
-  `Unsupported CTFE eval result: function_`; something like
-  `<undisplayable>` is enough until the value model supports the result.
-
-  Offending command:
-
-  ```sh
-  bin/qb -c 'delegate int(){ return 42; }'
-  ```
-
-  Current output:
-
-  ```text
-  Error: Unsupported CTFE eval result: function_
-  ```
 
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return
   user-meaningful values instead of internal synthetic names. DMD CTFE

@@ -232,6 +232,18 @@ static foreach (backend; backends) {
         output.should == ["MapResult([1, 2, 3])"];
     }
 
+    @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["delegate int(){ return 42; }", ":q"],
+        );
+
+        output.should == ["<undisplayable>"];
+    }
+
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -447,6 +459,15 @@ static foreach (backend; backends) {
         repl.submit(":t").should == Value.void_;
     }
 
+    @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit(":t").should == Value.void_;
+    }
+
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -563,6 +584,35 @@ static foreach (backend; backends) {
         }
         runTests.shouldThrow.msg.should ==
             "unittest at " ~ filePath ~ "(6) failed: 41 != 42";
+    }
+
+    @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+        import std.algorithm.searching: canFind;
+        import std.file: remove, tempDir, write;
+        import std.path: buildPath;
+
+        const filePath = buildPath(
+            tempDir,
+            "quickbite-repl-duplicate-load.d",
+        );
+        filePath.write(q{
+            int answer() {
+                return 42;
+            }
+        });
+        scope (exit) filePath.remove;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.loadModuleFile(filePath);
+        void duplicateLoad() {
+            repl.loadModuleFile(filePath);
+        }
+        const message = duplicateLoad.shouldThrow.msg;
+        message.canFind("snippet_").should == false;
+        message.canFind("answer").should == true;
     }
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)

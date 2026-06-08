@@ -220,7 +220,6 @@ private imported!"dmd.expression".Expression interpretCtfeOrThrow(
 private imported!"quickbite.lang".Value ctfeValue(
     imported!"dmd.expression".Expression expression,
 ) {
-    import std.conv: text;
     import quickbite.lang: Value;
 
     if (auto integer = expression.isIntegerExp)
@@ -247,7 +246,7 @@ private imported!"quickbite.lang".Value ctfeValue(
     if (auto struct_ = expression.isStructLiteralExp)
         return structValue(struct_);
 
-    throw new Exception(text("Unsupported CTFE eval result: ", expression.op));
+    return Value.undisplayable;
 }
 
 private imported!"quickbite.lang".Value integerValue(

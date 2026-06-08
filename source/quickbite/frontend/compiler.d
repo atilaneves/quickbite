@@ -339,6 +339,17 @@ final class Compiler {
             ) :
             filePath;
 
+        // DMD's `onFileReadError` writes `import path[N] = …` lines directly to
+        // C stderr via `fprintf`, bypassing the diagnostic handler installed in
+        // the constructor, so a failed import leaks raw text. Capture fd 2 for
+        // the duration of the parse + semantic and only replay it when the cell
+        // succeeds: a successful cell's raw stderr (e.g. `pragma(msg)`) is
+        // legitimate output, while a failing cell's raw stderr is noise we drop
+        // in favour of the captured diagnostic surfaced via the thrown
+        // exceptions below.
+        auto captured = capturedStderr;
+        scope(failure) captured.discard;
+
         ModuleParseResult moduleResult = dmdParseModule(fileName, source);
         if (moduleResult.diagnostics.hasErrors)
             throw new Exception(diagnosticMessage);
@@ -346,6 +357,8 @@ final class Compiler {
         moduleResult.module_.fullSemantic;
         if (global.errors != 0)
             throw new Exception(diagnosticMessage);
+
+        captured.replay;
 
         if (useCache)
             sourceCache[key] = moduleResult.module_;
@@ -387,4 +400,106 @@ public void resetErrors() {
     global.errors = 0;
     global.warnings = 0;
     diagnostics.length = 0;
+}
+
+// Holds the saved C-level stderr (fd 2) and a temporary file collecting the raw
+// stderr writes DMD performs while fd 2 is redirected.
+struct CapturedStderr {
+    import core.stdc.stdio: FILE;
+
+    private int savedFd = -1;
+    private FILE* sink;
+
+    // Restore fd 2, then copy the captured bytes to the original stderr. Used
+    // when the parse succeeds so legitimate raw output (e.g. `pragma(msg)`)
+    // still reaches the user.
+    void replay() @trusted nothrow {
+        import core.stdc.stdio: fclose, fflush, fread, rewind, stderr;
+        import core.sys.posix.unistd: write;
+
+        const restoredFd = unwind;
+        if (sink is null || restoredFd < 0) {
+            close;
+            return;
+        }
+
+        fflush(sink);
+        rewind(sink);
+
+        char[4096] buffer;
+        for (size_t read = fread(buffer.ptr, 1, buffer.length, sink);
+             read != 0;
+             read = fread(buffer.ptr, 1, buffer.length, sink))
+            write(restoredFd, buffer.ptr, read);
+
+        close;
+    }
+
+    // Restore fd 2 and drop the captured bytes. Used when the parse fails so the
+    // raw import-path noise is suppressed in favour of the thrown diagnostic.
+    void discard() @trusted nothrow @nogc {
+        unwind;
+        close;
+    }
+
+    // @trusted: flushes C stderr and swaps fd 2 back to the saved descriptor;
+    // operates only on descriptors this struct owns. Returns the restored fd.
+    private int unwind() @trusted nothrow @nogc {
+        import core.stdc.stdio: fflush, stderr;
+        import core.sys.posix.unistd: dup2;
+
+        if (savedFd < 0)
+            return -1;
+
+        fflush(stderr);
+        dup2(savedFd, 2);
+        return savedFd;
+    }
+
+    // @trusted: closes the saved descriptor and the temporary sink, both owned
+    // by this struct; idempotent via the sentinel/null guards.
+    private void close() @trusted nothrow @nogc {
+        import core.stdc.stdio: fclose;
+        import core.sys.posix.unistd: closeFd = close;
+
+        if (savedFd >= 0) {
+            closeFd(savedFd);
+            savedFd = -1;
+        }
+        if (sink !is null) {
+            fclose(sink);
+            sink = null;
+        }
+    }
+}
+
+// Redirect fd 2 into a temporary file and return a handle that can replay or
+// discard the captured output. DMD writes some diagnostics (e.g. failed-import
+// path lines and `pragma(msg)` text) straight to C stderr, bypassing the
+// diagnostic handler; capturing lets the caller decide per cell whether the raw
+// output is wanted.
+// @trusted: tmpfile/fileno/dup/dup2 operate only on file descriptors and a
+// C-owned FILE*; no D memory is touched, and a failed setup leaves stderr
+// untouched with savedFd == -1 so replay/discard are no-ops.
+CapturedStderr capturedStderr() @trusted nothrow @nogc {
+    import core.stdc.stdio: fileno, tmpfile;
+    import core.sys.posix.unistd: dup, dup2;
+
+    auto sink = tmpfile;
+    if (sink is null)
+        return CapturedStderr.init;
+
+    const sinkFd = fileno(sink);
+    if (sinkFd < 0) {
+        import core.stdc.stdio: fclose;
+        fclose(sink);
+        return CapturedStderr.init;
+    }
+
+    CapturedStderr captured;
+    captured.savedFd = dup(2);
+    captured.sink = sink;
+    dup2(sinkFd, 2);
+
+    return captured;
 }

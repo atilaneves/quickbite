@@ -22,8 +22,13 @@ public int main(string[] args) {
     auto repl = Repl(new Ctfe, options.options.importPaths);
 
     if (options.options.hasFile) {
-        foreach (file; options.options.files)
-            repl.loadModuleFile(file);
+        try {
+            foreach (file; options.options.files)
+                repl.loadModuleFile(file);
+        } catch (Exception e) {
+            writeln(errorDiagnostic(e.msg));
+            return 1;
+        }
     }
 
     if (options.options.hasCommand)
