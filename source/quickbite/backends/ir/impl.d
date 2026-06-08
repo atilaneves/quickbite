@@ -9,10 +9,10 @@ public class IR: imported!"quickbite.backends".Backend {
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
-        import quickbite.backends.ir.compiler: compileExpression;
+        import quickbite.backends.ir.compiler: compileEvalSource;
         import quickbite.backends.ir.vm: eval;
 
-        return eval(compileExpression(expr));
+        return eval(compileEvalSource(expr));
     }
 
     public override Value evalRepl(in EvalCell cell) {

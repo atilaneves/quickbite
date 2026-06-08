@@ -11,6 +11,15 @@ package imported!"quickbite.backends.ir.language".Function compileExpression(
     return compileExpression(parseExpression(expr));
 }
 
+package imported!"quickbite.backends.ir.language".Function compileEvalSource(
+    in string source,
+)
+{
+    import quickbite.frontend.cell: parseEvalSource;
+
+    return compileFunction(parseEvalSource(source).function_);
+}
+
 private imported!"quickbite.backends.ir.language".Function compileExpression(
     imported!"dmd.expression".Expression expression,
 ) {
@@ -19,8 +28,18 @@ private imported!"quickbite.backends.ir.language".Function compileExpression(
     return compiler.function_(result);
 }
 
+private imported!"quickbite.backends.ir.language".Function compileFunction(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    Compiler compiler;
+    const result = compiler.compileStatement(function_.fbody);
+    assert(result.hasValue);
+    return compiler.function_(result.value);
+}
+
 private struct Compiler {
-    import dmd.expression: BinExp, Expression;
+    import dmd.expression: AddAssignExp, BinExp, Expression;
+    import dmd.declaration: VarDeclaration;
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
@@ -28,17 +47,65 @@ private struct Compiler {
         Const,
         Function,
         Instruction,
+        Load,
         ReturnValue,
+        Store,
         Terminator,
         Type,
         Value;
 
     private Instruction[] instructions;
+    private uint[VarDeclaration] locals;
     private uint nextValueId;
+
+    private OptionalValue compileStatement(
+        imported!"dmd.statement".Statement statement,
+    ) {
+        if (auto scope_ = statement.isScopeStatement)
+            return compileStatement(scope_.statement);
+
+        if (auto compound = statement.isCompoundStatement) {
+            OptionalValue result;
+            if (compound.statements !is null)
+                foreach (child; *compound.statements) {
+                    const childResult = compileStatement(child);
+                    if (childResult.hasValue)
+                        result = childResult;
+                }
+            return result;
+        }
+
+        if (auto expression = statement.isExpStatement)
+            return OptionalValue(compileExpression(expression.exp), true);
+
+        if (auto return_ = statement.isReturnStatement)
+            return OptionalValue(compileExpression(return_.exp), true);
+
+        assert(0);
+    }
 
     private Value compileExpression(Expression expression) {
         if (auto integer = expression.isIntegerExp)
             return compileInteger(integer);
+
+        if (auto declaration = expression.isDeclarationExp) {
+            auto variable = declaration.declaration.isVarDeclaration;
+            assert(variable !is null);
+            compileVariableDeclaration(variable);
+            return Value(0, Type.i32);
+        }
+
+        if (auto variable = expression.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            assert(declaration !is null);
+            return compileVariableLoad(declaration);
+        }
+
+        if (auto increment = expression.isPreExp)
+            return compilePreIncrement(increment);
+
+        if (auto addAssign = expression.isAddAssignExp)
+            return compileAddAssign(addAssign);
 
         if (auto real_ = expression.isRealExp)
             return compileReal(real_);
@@ -58,12 +125,84 @@ private struct Compiler {
         assert(0);
     }
 
+    private void compileVariableDeclaration(VarDeclaration variable) {
+        const value = compileIntegerLiteral(0);
+        instructions ~= Instruction(Store(
+            localIndex(variable),
+            value.type,
+            value.id,
+        ));
+    }
+
+    private Value compileVariableLoad(VarDeclaration variable) {
+        const destination = nextValue(Type.i32);
+        instructions ~= Instruction(Load(
+            localIndex(variable),
+            destination,
+        ));
+        return destination;
+    }
+
+    private Value compilePreIncrement(imported!"dmd.expression".PreExp increment) {
+        auto variable = increment.e1.isVarExp;
+        assert(variable !is null);
+
+        auto declaration = variable.var.isVarDeclaration;
+        assert(declaration !is null);
+
+        const lhs = compileVariableLoad(declaration);
+        const rhs = compileIntegerLiteral(1);
+        const destination = nextValue(lhs.type);
+        instructions ~= Instruction(BinaryOp(
+            BinaryOperation.add,
+            lhs.type,
+            lhs.id,
+            rhs.id,
+            destination,
+        ));
+        instructions ~= Instruction(Store(
+            localIndex(declaration),
+            destination.type,
+            destination.id,
+        ));
+        return destination;
+    }
+
+    private Value compileAddAssign(AddAssignExp addAssign) {
+        auto variable = addAssign.e1.isVarExp;
+        assert(variable !is null);
+
+        auto declaration = variable.var.isVarDeclaration;
+        assert(declaration !is null);
+
+        const lhs = compileVariableLoad(declaration);
+        const rhs = compileExpression(addAssign.e2);
+        const destination = nextValue(lhs.type);
+        instructions ~= Instruction(BinaryOp(
+            BinaryOperation.add,
+            lhs.type,
+            lhs.id,
+            rhs.id,
+            destination,
+        ));
+        instructions ~= Instruction(Store(
+            localIndex(declaration),
+            destination.type,
+            destination.id,
+        ));
+        return destination;
+    }
+
     private Value compileInteger(
         imported!"dmd.expression".IntegerExp integer,
     ) {
+        return compileIntegerLiteral(integer.getInteger);
+    }
+
+    private Value compileIntegerLiteral(in ulong bits) {
         const destination = nextValue(Type.i32);
         instructions ~= Instruction(Const(
-            integer.getInteger,
+            bits,
             destination,
         ));
         return destination;
@@ -108,6 +247,15 @@ private struct Compiler {
         return result;
     }
 
+    private uint localIndex(VarDeclaration variable) {
+        if (auto existing = variable in locals)
+            return *existing;
+
+        const index = cast(uint) locals.length;
+        locals[variable] = index;
+        return index;
+    }
+
     private Function function_(in Value result) {
         return Function(
             [
@@ -122,8 +270,14 @@ private struct Compiler {
             ],
             result.type,
             nextValueId,
+            cast(uint) locals.length,
         );
     }
+}
+
+private struct OptionalValue {
+    public imported!"quickbite.backends.ir.language".Value value;
+    public bool hasValue;
 }
 
 // @trusted: reads the bytes of a local float as a same-sized uint for IR raw

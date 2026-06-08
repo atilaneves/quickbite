@@ -38,7 +38,23 @@ package struct BinaryOp {
     public Value destination;
 }
 
-package alias Instruction = imported!"std.sumtype".SumType!(Const, BinaryOp);
+package struct Load {
+    public uint local;
+    public Value destination;
+}
+
+package struct Store {
+    public uint local;
+    public Type type;
+    public uint value;
+}
+
+package alias Instruction = imported!"std.sumtype".SumType!(
+    Const,
+    BinaryOp,
+    Load,
+    Store,
+);
 
 package struct Branch {
     public uint target;
@@ -80,4 +96,5 @@ package struct Function {
     public Block[] blocks;
     public Type returnType;
     public uint valueCount;
+    public uint localCount;
 }

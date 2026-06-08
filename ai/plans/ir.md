@@ -112,13 +112,22 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Current Implementation State
 
-The first CFG/value reset is complete for the already-promoted eval slice.
+The first CFG/value reset is complete for the already-promoted eval slices.
 `language.d` now defines backend-local typed values, instructions,
-terminators, blocks, and functions. Functions carry their SSA value count so
-the VM can size its value storage once before execution. `compiler.d` lowers
-integer literals, `float` literals, and simple arithmetic expressions into a
-single entry block, and `vm.d` executes that block directly before converting
-the returned IR value to `quickbite.lang.Value` at the backend boundary.
+terminators, blocks, and functions. Functions carry their SSA value count and
+local count so the VM can size storage once before execution. `compiler.d`
+lowers eval source through the existing frontend eval-cell parser, walks the
+single eval function body, and supports integer literals, `float` literals,
+simple arithmetic expressions, local integer declarations, local loads, and
+the DMD semantic increment shape used by `++x`. `vm.d` executes the single
+entry block directly before converting the returned IR value to
+`quickbite.lang.Value` at the backend boundary.
+
+The current mutation support is intentionally narrow. Locals are identified by
+compiler-assigned integer indices, and `Load`/`Store` operate on those local
+slots for the promoted integer eval slice. This is enough for `multiCell.IR`;
+it is not yet the full typed place-reference model needed for refs, fields,
+array elements, slices, or aliases.
 
 The currently covered IR backend eval tests are:
 
@@ -128,6 +137,7 @@ The currently covered IR backend eval tests are:
 - `add.int.2.IR`
 - `add.float.IR`
 - `arithmetic.IR`
+- `multiCell.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
@@ -137,27 +147,29 @@ temporarily mutating the promoted test or relevant production code, confirming
 the focused test fails, and restoring the mutation. Inspect the DMD AST that
 reaches the IR compiler, then add only the IR shape and VM support required by
 that behavior. As of this update, the next likely candidate in
-`tests/ut/backends/lang/eval.d` is `multiCell`, but verify the current checkout
-before editing because backend progress notes can go stale.
+`tests/ut/backends/lang/eval.d` is `preservesScalarValueTypes`, but verify the
+current checkout before editing because backend progress notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` still
-excludes `IR`; if it already includes `IR`, treat this handoff as stale and
-choose the next smallest eval behavior that still excludes `IR`.
+Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` includes
+`IR`; if it does not, treat this handoff as stale and restore the completed
+promotion before moving on. Then choose the next smallest eval behavior that
+still excludes `IR`.
 
-If `multiCell` still excludes `IR`, the next TDD slice is:
+The next TDD slice is likely:
 
-1. Promote only the existing `multiCell` backend matrix to include `IR`.
-2. Run `ut.backends.lang.eval.multiCell.IR`. If it is red, verify it is red
-   for the expected missing behavior. If it is green, verify the greenness by
+1. Promote only the existing `preservesScalarValueTypes` backend matrix to
+   include `IR`.
+2. Run the focused `IR` test. If it is red, verify it is red for the expected
+   missing scalar type behavior. If it is green, verify the greenness by
    temporarily mutating the promoted test or relevant production code,
    confirming the focused test fails, and restoring the mutation.
-3. Inspect the DMD statement and expression shapes that reach the IR backend;
-   the lowered IR must reflect the AST shape actually present after semantic
+3. Inspect the DMD expression shapes and types that reach the IR backend; the
+   lowered IR must reflect the AST shape actually present after semantic
    analysis.
-4. Add the smallest production support required for that test's declarations,
-   increment expressions, expression sequencing, and local loads.
+4. Add the smallest production support required for preserving the promoted
+   scalar result types.
 5. Run the focused promoted test and then `dub test -- --random`.
 
 Do not store `quickbite.lang.Value` in IR instructions or VM registers for

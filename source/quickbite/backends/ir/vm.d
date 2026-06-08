@@ -9,7 +9,9 @@ package imported!"quickbite.lang".Value eval(
         BinaryOp,
         BinaryOperation,
         Const,
+        Load,
         ReturnValue,
+        Store,
         Type;
     import quickbite.lang: Value;
     import std.sumtype: match;
@@ -18,10 +20,30 @@ package imported!"quickbite.lang".Value eval(
     // these bits.
     ulong[] valueBits;
     valueBits.length = function_.valueCount;
+    ulong[] localBits;
+    localBits.length = function_.localCount;
     foreach (instruction; function_.blocks[0].instructions) {
         instruction.match!(
             (const Const const_) {
                 valueBits[const_.destination.id] = const_.bits;
+            },
+            (const Load load) {
+                valueBits[load.destination.id] = localBits[load.local];
+            },
+            (const Store store) {
+                final switch (store.type) with (Type) {
+                    case i32:
+                        localBits[store.local] = valueBits[store.value];
+                        break;
+                    case i1:
+                    case i8:
+                    case i16:
+                    case i64:
+                    case f32:
+                    case f64:
+                    case ptr:
+                        assert(0);
+                }
             },
             (const BinaryOp binary) {
                 final switch (binary.operation) with (BinaryOperation) {
