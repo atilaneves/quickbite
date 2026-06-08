@@ -13,9 +13,25 @@ package enum Type {
     ptr,
 }
 
+package enum ResultType {
+    bool_,
+    byte_,
+    ubyte_,
+    short_,
+    ushort_,
+    int_,
+    uint_,
+    long_,
+    ulong_,
+    char_,
+    float_,
+    double_,
+}
+
 package struct Value {
     public uint id;
     public Type type;
+    public ResultType resultType;
 }
 
 package enum BinaryOperation {
@@ -94,7 +110,7 @@ package struct Block {
 
 package struct Function {
     public Block[] blocks;
-    public Type returnType;
+    public ResultType returnType;
     public uint valueCount;
     public uint localCount;
 }

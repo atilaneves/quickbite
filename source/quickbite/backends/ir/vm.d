@@ -10,6 +10,7 @@ package imported!"quickbite.lang".Value eval(
         BinaryOperation,
         Const,
         Load,
+        ResultType,
         ReturnValue,
         Store,
         Type;
@@ -127,18 +128,31 @@ package imported!"quickbite.lang".Value eval(
 
     return function_.blocks[0].terminator.match!(
         (const ReturnValue return_) {
-            final switch (function_.returnType) with (Type) {
-                case i32:
+            final switch (function_.returnType) with (ResultType) {
+                case bool_:
+                    return Value(cast(bool) valueBits[return_.value]);
+                case byte_:
+                    return Value(cast(byte) valueBits[return_.value]);
+                case ubyte_:
+                    return Value(cast(ubyte) valueBits[return_.value]);
+                case short_:
+                    return Value(cast(short) valueBits[return_.value]);
+                case ushort_:
+                    return Value(cast(ushort) valueBits[return_.value]);
+                case int_:
                     return Value(cast(int) valueBits[return_.value]);
-                case f32:
+                case uint_:
+                    return Value(cast(uint) valueBits[return_.value]);
+                case long_:
+                    return Value(cast(long) valueBits[return_.value]);
+                case ulong_:
+                    return Value(cast(ulong) valueBits[return_.value]);
+                case char_:
+                    return Value(cast(char) valueBits[return_.value]);
+                case float_:
                     return Value(floatFromBits(valueBits[return_.value]));
-                case i1:
-                case i8:
-                case i16:
-                case i64:
-                case f64:
-                case ptr:
-                    assert(0);
+                case double_:
+                    return Value(doubleFromBits(valueBits[return_.value]));
             }
         },
         (_) {
@@ -163,4 +177,12 @@ private float floatFromBits(in ulong value) @trusted pure nothrow {
     static assert(float.sizeof == uint.sizeof);
     const bits = cast(uint) value;
     return *cast(float*) &bits;
+}
+
+// @trusted: reads the bytes of a local ulong as a same-sized double after
+// retrieving an f64 value from IR raw scalar storage. The pointer is used only
+// for this immediate read and never escapes.
+private double doubleFromBits(in ulong bits) @trusted pure nothrow {
+    static assert(double.sizeof == ulong.sizeof);
+    return *cast(double*) &bits;
 }

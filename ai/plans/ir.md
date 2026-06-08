@@ -113,14 +113,17 @@ not yet covered anywhere in the current CTFE-backed language tests.
 ## Current Implementation State
 
 The first CFG/value reset is complete for the already-promoted eval slices.
-`language.d` now defines backend-local typed values, instructions,
-terminators, blocks, and functions. Functions carry their SSA value count and
-local count so the VM can size storage once before execution. `compiler.d`
-lowers eval source through the existing frontend eval-cell parser, walks the
-single eval function body, and supports integer literals, `float` literals,
-simple arithmetic expressions, local integer declarations, local loads, and
-the DMD semantic increment shape used by `++x`. `vm.d` executes the single
-entry block directly before converting the returned IR value to
+`language.d` now defines backend-local typed values, result categories,
+instructions, terminators, blocks, and functions. Functions carry their SSA
+value count and local count so the VM can size storage once before execution.
+`compiler.d` lowers eval source through the existing frontend eval-cell
+parser, walks the single eval function body, and supports integer literals,
+`float` and `double` literals, simple arithmetic expressions, local integer
+declarations, local loads, and the DMD semantic increment shape used by `++x`.
+IR values carry both an operation type (`i32`, `f32`, and so on) and a
+D-visible scalar result category so the VM can keep arithmetic dispatch typed
+while preserving the public eval result type. `vm.d` executes the single entry
+block directly before converting the returned IR value to
 `quickbite.lang.Value` at the backend boundary.
 
 The current mutation support is intentionally narrow. Locals are identified by
@@ -138,6 +141,7 @@ The currently covered IR backend eval tests are:
 - `add.float.IR`
 - `arithmetic.IR`
 - `multiCell.IR`
+- `preservesScalarValueTypes.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
@@ -147,8 +151,9 @@ temporarily mutating the promoted test or relevant production code, confirming
 the focused test fails, and restoring the mutation. Inspect the DMD AST that
 reaches the IR compiler, then add only the IR shape and VM support required by
 that behavior. As of this update, the next likely candidate in
-`tests/ut/backends/lang/eval.d` is `preservesScalarValueTypes`, but verify the
-current checkout before editing because backend progress notes can go stale.
+`tests/ut/backends/lang/eval.d` is `castsFloatingValueNumerically`, but verify
+the current checkout before editing because backend progress notes can go
+stale.
 
 ### Next Slice Handoff
 
@@ -157,19 +162,25 @@ Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` includes
 promotion before moving on. Then choose the next smallest eval behavior that
 still excludes `IR`.
 
+The completed `preservesScalarValueTypes.IR` slice promoted only the existing
+backend matrix and added scalar result preservation for constants reaching the
+IR compiler after DMD semantic analysis. It did not add general cast
+instructions; the promoted cast expressions currently arrive as semantically
+typed constants.
+
 The next TDD slice is likely:
 
-1. Promote only the existing `preservesScalarValueTypes` backend matrix to
+1. Promote only the existing `castsFloatingValueNumerically` backend matrix to
    include `IR`.
 2. Run the focused `IR` test. If it is red, verify it is red for the expected
-   missing scalar type behavior. If it is green, verify the greenness by
+   missing runtime cast behavior. If it is green, verify the greenness by
    temporarily mutating the promoted test or relevant production code,
    confirming the focused test fails, and restoring the mutation.
 3. Inspect the DMD expression shapes and types that reach the IR backend; the
    lowered IR must reflect the AST shape actually present after semantic
    analysis.
-4. Add the smallest production support required for preserving the promoted
-   scalar result types.
+4. Add the smallest production support required for the promoted runtime cast
+   behavior.
 5. Run the focused promoted test and then `dub test -- --random`.
 
 Do not store `quickbite.lang.Value` in IR instructions or VM registers for
@@ -185,9 +196,10 @@ not from a runtime-tagged public `Value`.
   not represent D's type hierarchy. `ptr` represents D pointer values, not
   mutable places. Add a separate `Place` or `PlaceId` representation when
   `Alloca`, `Load`, and `Store` are promoted.
-- `Value` struct: `uint id` and `Type type`. Every SSA value declares its type
-  at the single definition site. The executor never inspects a runtime tag to
-  decide which arithmetic path to take.
+- `Value` struct: `uint id`, `Type type`, and `ResultType resultType`. Every
+  SSA value declares its operation type at the single definition site. The
+  executor never inspects a runtime tag to decide which arithmetic path to
+  take; the result category is used only for D-visible boundary conversion.
 - Instructions as a `SumType`. Start with `Const` (typed constant scalar,
   raw bits + destination `Value`) and `BinaryOp` (typed binary op, operation
   enum + lhs/rhs value ids + destination `Value`). Add `Alloca`, `Load`, and

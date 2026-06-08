@@ -48,6 +48,7 @@ private struct Compiler {
         Function,
         Instruction,
         Load,
+        ResultType,
         ReturnValue,
         Store,
         Terminator,
@@ -92,7 +93,7 @@ private struct Compiler {
             auto variable = declaration.declaration.isVarDeclaration;
             assert(variable !is null);
             compileVariableDeclaration(variable);
-            return Value(0, Type.i32);
+            return Value(0, Type.i32, ResultType.int_);
         }
 
         if (auto variable = expression.isVarExp) {
@@ -135,7 +136,7 @@ private struct Compiler {
     }
 
     private Value compileVariableLoad(VarDeclaration variable) {
-        const destination = nextValue(Type.i32);
+        const destination = nextValue(Type.i32, ResultType.int_);
         instructions ~= Instruction(Load(
             localIndex(variable),
             destination,
@@ -152,7 +153,7 @@ private struct Compiler {
 
         const lhs = compileVariableLoad(declaration);
         const rhs = compileIntegerLiteral(1);
-        const destination = nextValue(lhs.type);
+        const destination = nextValue(lhs.type, lhs.resultType);
         instructions ~= Instruction(BinaryOp(
             BinaryOperation.add,
             lhs.type,
@@ -177,7 +178,7 @@ private struct Compiler {
 
         const lhs = compileVariableLoad(declaration);
         const rhs = compileExpression(addAssign.e2);
-        const destination = nextValue(lhs.type);
+        const destination = nextValue(lhs.type, lhs.resultType);
         instructions ~= Instruction(BinaryOp(
             BinaryOperation.add,
             lhs.type,
@@ -196,11 +197,19 @@ private struct Compiler {
     private Value compileInteger(
         imported!"dmd.expression".IntegerExp integer,
     ) {
-        return compileIntegerLiteral(integer.getInteger);
+        return compileIntegerLiteral(
+            integer.getInteger,
+            valueType(integer.type),
+            resultType(integer.type),
+        );
     }
 
-    private Value compileIntegerLiteral(in ulong bits) {
-        const destination = nextValue(Type.i32);
+    private Value compileIntegerLiteral(
+        in ulong bits,
+        in Type type = Type.i32,
+        in ResultType resultType = ResultType.int_,
+    ) {
+        const destination = nextValue(type, resultType);
         instructions ~= Instruction(Const(
             bits,
             destination,
@@ -213,9 +222,16 @@ private struct Compiler {
 
         switch (real_.type.toBasetype.ty) with (TY) {
             case Tfloat32:
-                const destination = nextValue(Type.f32);
+                const destination = nextValue(Type.f32, ResultType.float_);
                 instructions ~= Instruction(Const(
                     floatBits(cast(float) real_.toReal),
+                    destination,
+                ));
+                return destination;
+            case Tfloat64:
+                const destination = nextValue(Type.f64, ResultType.double_);
+                instructions ~= Instruction(Const(
+                    doubleBits(cast(double) real_.toReal),
                     destination,
                 ));
                 return destination;
@@ -230,7 +246,7 @@ private struct Compiler {
     ) {
         const lhs = compileExpression(expression.e1);
         const rhs = compileExpression(expression.e2);
-        const destination = nextValue(lhs.type);
+        const destination = nextValue(lhs.type, lhs.resultType);
         instructions ~= Instruction(BinaryOp(
             operation,
             lhs.type,
@@ -241,8 +257,11 @@ private struct Compiler {
         return destination;
     }
 
-    private Value nextValue(in Type type) @safe @nogc nothrow pure {
-        const result = Value(nextValueId, type);
+    private Value nextValue(
+        in Type type,
+        in ResultType resultType = ResultType.int_,
+    ) @safe @nogc nothrow pure {
+        const result = Value(nextValueId, type, resultType);
         ++nextValueId;
         return result;
     }
@@ -268,7 +287,7 @@ private struct Compiler {
                     0,
                 ),
             ],
-            result.type,
+            result.resultType,
             nextValueId,
             cast(uint) locals.length,
         );
@@ -286,4 +305,75 @@ private struct OptionalValue {
 private ulong floatBits(in float value) @trusted pure nothrow {
     static assert(float.sizeof == uint.sizeof);
     return *cast(uint*) &value;
+}
+
+// @trusted: reads the bytes of a local double as a same-sized ulong for IR raw
+// scalar storage. The pointer is used only for this immediate read and never
+// escapes.
+private ulong doubleBits(in double value) @trusted pure nothrow {
+    static assert(double.sizeof == ulong.sizeof);
+    return *cast(ulong*) &value;
+}
+
+private imported!"quickbite.backends.ir.language".Type valueType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+    import quickbite.backends.ir.language: Type;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tbool:
+            return Type.i1;
+        case Tint8:
+        case Tuns8:
+        case Tchar:
+            return Type.i8;
+        case Tint16:
+        case Tuns16:
+            return Type.i16;
+        case Tint32:
+        case Tuns32:
+            return Type.i32;
+        case Tint64:
+        case Tuns64:
+            return Type.i64;
+        default:
+            assert(0);
+    }
+}
+
+private imported!"quickbite.backends.ir.language".ResultType resultType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+    import quickbite.backends.ir.language: ResultType;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tbool:
+            return ResultType.bool_;
+        case Tint8:
+            return ResultType.byte_;
+        case Tuns8:
+            return ResultType.ubyte_;
+        case Tchar:
+            return ResultType.char_;
+        case Tint16:
+            return ResultType.short_;
+        case Tuns16:
+            return ResultType.ushort_;
+        case Tint32:
+            return ResultType.int_;
+        case Tuns32:
+            return ResultType.uint_;
+        case Tint64:
+            return ResultType.long_;
+        case Tuns64:
+            return ResultType.ulong_;
+        case Tfloat32:
+            return ResultType.float_;
+        case Tfloat64:
+            return ResultType.double_;
+        default:
+            assert(0);
+    }
 }
