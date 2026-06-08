@@ -7,6 +7,9 @@ import ut.backends;
 static foreach (backend; backendsWith!Interpreter) {
     @("malloc." ~ backend.stringof)
     unittest {
+        const msg =
+            "`malloc` cannot be interpreted at compile time, " ~
+            "because it has no available source code";
         enum source = q{
             unittest {
                 import core.stdc.stdlib: malloc, free;
@@ -18,14 +21,6 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         };
 
-        static if (is(backend == Ctfe)) {
-            const msg =
-                "`malloc` cannot be interpreted at compile time, " ~
-                "because it has no available source code";
-            runBackendSourceFixtureTests!backend(source)
-                .shouldThrowWithMessage(msg);
-        } else {
-            runBackendSourceFixtureTests!backend(source);
-        }
+        runBackendSourceFixtureTests!backend(source).shouldThrowWithMessage(msg);
     }
 }

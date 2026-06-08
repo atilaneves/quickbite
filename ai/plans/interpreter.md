@@ -265,10 +265,10 @@ disabling both Interpreter direct free-function call dispatch paths. All
 current `runner.d` backend-matrix tests now cover `Interpreter`.
 
 Runtime cstdlib progress: `malloc` in
-`tests/ut/backends/runtime/cstdlib.d` now runs on `Interpreter`. This required
-narrow module-backed support for no-op imports, `scope(exit)`, `malloc`/`free`
-calls, pointer casts as interpreter-owned heap handles, and single-index
-`ubyte*` reads and writes.
+`tests/ut/backends/runtime/cstdlib.d` now runs on `Interpreter`. The test is
+covered by the same unsupported external-source diagnostic as CTFE; the
+interpreter intentionally does not execute `malloc` or model C heap memory for
+this slice.
 
 ### Implementation Review Notes
 

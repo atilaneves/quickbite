@@ -311,9 +311,6 @@ private struct EvalModuleInterpreter {
 
     private Value[VarDeclaration] locals;
     private bool[VarDeclaration] uninitializedLocals;
-    private ubyte[][long] heap;
-    private imported!"dmd.statement".Statement[] scopeExitStatements;
-    private long nextHeapPointer = 1;
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
@@ -321,13 +318,9 @@ private struct EvalModuleInterpreter {
     private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
         log("Running test ", unitTest);
         runStatement(unitTest.fbody);
-        runScopeExitStatements;
     }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
-        if (statement is null)
-            return;
-
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements)
@@ -365,15 +358,6 @@ private struct EvalModuleInterpreter {
 
         if (statement.isImportStatement !is null)
             return;
-
-        if (auto scopeGuard = statement.isScopeGuardStatement) {
-            import dmd.tokens: TOK;
-
-            if (scopeGuard.tok == TOK.onScopeExit) {
-                scopeExitStatements ~= scopeGuard.statement;
-                return;
-            }
-        }
 
         assert(0);
     }
@@ -436,12 +420,6 @@ private struct EvalModuleInterpreter {
 
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
-
-        if (auto index = expression.isIndexExp)
-            return runPointerIndexExpression(index);
-
-        if (auto array = expression.isArrayExp)
-            return runPointerArrayExpression(array);
 
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
@@ -551,20 +529,35 @@ private struct EvalModuleInterpreter {
                 );
 
         if (call.f !is null) {
-            if (isCStdlibFunction(call.f, "malloc"))
-                return runMalloc(arguments);
-            else if (isCStdlibFunction(call.f, "free"))
-                return runFree(arguments);
-        }
-
-        if (call.f !is null)
+            if (hasNoAvailableSource(call.f))
+                throw new Exception(noAvailableSourceMessage(call.f));
             return runFunction(call.f, arguments, argumentVariables);
+        }
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
                 return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported interpreter call.");
+    }
+
+    private bool hasNoAvailableSource(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        return function_.fbody is null;
+    }
+
+    private string noAvailableSourceMessage(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        import std.conv: text;
+
+        return text(
+            "`",
+            function_.toChars,
+            "` cannot be interpreted at compile time, ",
+            "because it has no available source code",
+        );
     }
 
     private Value runFunction(
@@ -693,12 +686,6 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
-        if (auto index = assign.e1.isIndexExp)
-            return runPointerIndexAssignExpression(index, assign.e2);
-
-        if (auto array = assign.e1.isArrayExp)
-            return runPointerArrayAssignExpression(array, assign.e2);
-
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -711,87 +698,6 @@ private struct EvalModuleInterpreter {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         return value;
-    }
-
-    private Value runPointerIndexExpression(
-        imported!"dmd.expression".IndexExp index,
-    ) {
-        const pointer = runExpression(index.e1).asLong;
-        const offset = cast(size_t) runExpression(index.e2).asLong;
-        return Value(heap[pointer][offset]);
-    }
-
-    private Value runPointerArrayExpression(
-        imported!"dmd.expression".ArrayExp array,
-    ) {
-        return runPointerIndexExpression(arrayPointerIndex(array));
-    }
-
-    private Value runPointerIndexAssignExpression(
-        imported!"dmd.expression".IndexExp index,
-        imported!"dmd.expression".Expression valueExpression,
-    ) {
-        const pointer = runExpression(index.e1).asLong;
-        const offset = cast(size_t) runExpression(index.e2).asLong;
-        auto block = pointer in heap;
-        if (block is null)
-            throw new Exception("Unsupported interpreter pointer assignment.");
-
-        const value = runExpression(valueExpression);
-        (*block)[offset] = cast(ubyte) value.asLong;
-        return value;
-    }
-
-    private Value runPointerArrayAssignExpression(
-        imported!"dmd.expression".ArrayExp array,
-        imported!"dmd.expression".Expression valueExpression,
-    ) {
-        return runPointerIndexAssignExpression(
-            arrayPointerIndex(array),
-            valueExpression,
-        );
-    }
-
-    private imported!"dmd.expression".IndexExp arrayPointerIndex(
-        imported!"dmd.expression".ArrayExp array,
-    ) {
-        import dmd.expression: IndexExp;
-
-        if (array.arguments is null || array.arguments.length != 1)
-            throw new Exception("Unsupported interpreter pointer index.");
-
-        return new IndexExp(array.loc, array.e1, (*array.arguments)[0]);
-    }
-
-    private bool isCStdlibFunction(
-        imported!"dmd.func".FuncDeclaration function_,
-        in string name,
-    ) {
-        return function_.ident.toString == name;
-    }
-
-    private Value runMalloc(in Value[] arguments) {
-        if (arguments.length != 1)
-            throw new Exception("Unsupported interpreter malloc arguments.");
-
-        const pointer = nextHeapPointer;
-        ++nextHeapPointer;
-        heap[pointer] = new ubyte[cast(size_t) arguments[0].asLong];
-        return Value(pointer);
-    }
-
-    private Value runFree(in Value[] arguments) {
-        if (arguments.length != 1)
-            throw new Exception("Unsupported interpreter free arguments.");
-
-        heap.remove(arguments[0].asLong);
-        return Value.void_;
-    }
-
-    private void runScopeExitStatements() {
-        foreach_reverse (statement; scopeExitStatements)
-            runStatement(statement);
-        scopeExitStatements = null;
     }
 
     private VarDeclaration argumentVariable(
@@ -808,13 +714,9 @@ private struct EvalModuleInterpreter {
         import quickbite.backends.casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
-        import dmd.astenums: TY;
 
         auto type = cast_.to.toBasetype;
         if (type is null)
-            return runExpression(cast_.e1);
-
-        if (type.ty == TY.Tpointer)
             return runExpression(cast_.e1);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
