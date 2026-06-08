@@ -110,6 +110,36 @@ Lua-specific bytecode shape.
   together as the remaining integral assertion-diagnostic family. They passed
   with the existing equality diagnostic support and did not require distinct
   VM feature work.
+- `runTests.runsAttributedUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed DMD constant-folded assert diagnostics: `assert(1 == 2)` reaches
+  bytecode as a false assertion with a structured `_d_assert_fail("==", 1, 2)`
+  message payload. Bytecode now lowers that equality payload through the
+  existing assertion-compare opcode so the runner reports `1 != 2`.
+- `runTests.runsAttributedThrowingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed missing `throw` statement support for `throw new Exception(message)`.
+  Bytecode now lowers the exception constructor message to a value-stack
+  operand and the VM throws that message through a narrow `throw_` opcode.
+- `runTests.importPathsRetryAfterFailure` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap: the shared source-fixture parse path already passed import
+  paths to DMD, and the existing bytecode enum/function/assert support could
+  execute the imported assertion without production changes.
+- `runTestSummary.countsAttributedPassingAndFailingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed the missing bytecode backend summary API, not missing VM semantics.
+  Bytecode now compiles and executes each unittest declaration through the
+  existing bytecode path and records total, passed, and failed counts.
+- `runTestSummary.countsAllPassingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap after the summary API slice: the existing bytecode summary path
+  already counted all-passing unittest declarations correctly.
+- `runTestSummary.countsAssertErrorsAsFailures` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. This was a stale
+  coverage gap after the summary API and narrow throw-expression slices: the
+  existing summary path already counts thrown `AssertError` instances as
+  failures.
 
 ## Current Next Step
 Continue with the next module named by

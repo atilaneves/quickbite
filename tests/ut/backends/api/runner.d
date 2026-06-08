@@ -7,7 +7,7 @@ import std.conv: text;
 import std.path: buildPath;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTests.runsAttributedUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -19,7 +19,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         const msg = runBackendSourceFixtureTests!backend(q{
@@ -32,7 +32,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
 
@@ -76,7 +76,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
@@ -102,7 +102,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTestSummary.countsAllPassingUnittests." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -122,7 +122,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{

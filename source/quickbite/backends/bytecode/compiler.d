@@ -126,6 +126,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto throw_ = statement.isThrowStatement) {
+            compileThrow(throw_);
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
     }
@@ -434,6 +439,9 @@ private struct Compiler {
     }
 
     private void compileAssert(AssertExp assert_) {
+        if (compileDmdAssertFailEqualMessage(assert_.msg))
+            return;
+
         if (auto equal = assert_.e1.isEqualExp) {
             compileBinaryExpression(equal, Op.assertCompare);
             return;
@@ -441,6 +449,36 @@ private struct Compiler {
 
         compileExpression(assert_.e1);
         program.instructions ~= Instruction(Op.assertTrue);
+    }
+
+    private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        auto new_ = throw_.exp.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            throw new Exception("Unsupported bytecode throw expression.");
+
+        compileExpression((*new_.arguments)[0]);
+        program.instructions ~= Instruction(Op.throw_);
+    }
+
+    private bool compileDmdAssertFailEqualMessage(Expression message) {
+        if (message is null)
+            return false;
+
+        auto call = message.isCallExp;
+        if (call is null || call.arguments is null)
+            return false;
+
+        if (call.arguments.length != 3)
+            return false;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null || stringChars(operator) != "==")
+            return false;
+
+        compileExpression((*call.arguments)[1]);
+        compileExpression((*call.arguments)[2]);
+        program.instructions ~= Instruction(Op.assertCompare);
+        return true;
     }
 
     private size_t functionIndex(FuncDeclaration function_) {

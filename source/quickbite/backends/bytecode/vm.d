@@ -231,6 +231,13 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.throw_:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                const value = stack[$ - 1];
+                throw new Exception(value.asCharArrayString);
+
             case Op.ret:
                 if (frames.length == 0)
                     return RunResult(stack);

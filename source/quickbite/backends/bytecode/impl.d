@@ -34,6 +34,20 @@ public class Bytecode: imported!"quickbite.backends".Backend {
     }
 
     public override TestSummary runTestSummary(Module module_) {
-        assert(0);
+        import quickbite.backends.bytecode.compiler: compileUnitTest;
+        import quickbite.backends.bytecode.vm: execute;
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+        TestSummary summary;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            ++summary.total;
+            try {
+                execute(compileUnitTest(unitTest));
+                ++summary.passed;
+            } catch (Exception) {
+                ++summary.failed;
+            }
+        });
+        return summary;
     }
 }
