@@ -202,7 +202,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -227,7 +227,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("56 != 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

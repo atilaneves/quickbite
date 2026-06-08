@@ -262,6 +262,10 @@ Lua-specific bytecode shape.
   covers `Bytecode`. This was a stale coverage gap: the existing bytecode
   parameter binding, integer addition, return, and equality assertion
   diagnostic path already reported the failed comparison as `43 != 42`.
+- `tenFunctionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: the existing bytecode call
+  frame parameter binding handled the wider ten-argument call and reported the
+  failed summed comparison as `56 != 42`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
