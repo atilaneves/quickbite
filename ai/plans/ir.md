@@ -112,12 +112,27 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 ## Current Implementation State
 
-The existing `language.d` is a flat expression tree structurally incompatible
-with the IR shape decisions in this plan. Replace it — along with the
-corresponding `compiler.d` and `vm.d` — at the start of the next
-implementation slice. The current tests will be re-grounded on the new
-block/value structure; there is nothing in the expression tree worth
-preserving.
+The first CFG/value reset is complete for the already-promoted eval slice.
+`language.d` now defines backend-local typed values, instructions,
+terminators, blocks, and functions. `compiler.d` lowers integer literals and
+integer `AddExp` expressions into a single entry block, and `vm.d` executes
+that block directly before converting the returned IR value to
+`quickbite.lang.Value` at the backend boundary.
+
+The currently covered IR backend eval tests are:
+
+- `literal.IR`
+- `add.int.0.IR`
+- `add.int.1.IR`
+- `add.int.2.IR`
+
+The next implementation slice should pick the next smallest current
+CTFE-backed eval behavior that still excludes `IR`, confirm it is red after
+promotion, inspect the DMD AST that reaches the IR compiler, then add only the
+IR shape and VM support required by that behavior. As of this update, the next
+likely candidate in `tests/ut/backends/lang/eval.d` is `add.float`, but verify
+the current checkout before editing because backend progress notes can go
+stale.
 
 ### Target shape for the three backend-local modules
 
@@ -168,9 +183,10 @@ For the initial single-block case this degenerates to a linear walk ending at
 is added when a test requires control flow.
 
 ## Slice Plan
-- Start with the narrowest behavior already covered by the existing backend
-  `eval` tests. Prefer integer literals first, then simple arithmetic, then the
-  next behavior with the fewest required D language features.
+- Continue with the narrowest behavior already covered by the existing backend
+  `eval` tests that still excludes `IR`. Integer literals and simple integer
+  addition are already covered by the CFG/value IR slice; prefer the next eval
+  behavior with the fewest required D language features.
 - Promote CTFE-backed test modules in the order documented by
   `ai/plans/backend-test-modules-order.md`. Start with
   `tests/ut/backends/lang/eval.d`, because the bytecode backend already
@@ -179,9 +195,9 @@ is added when a test requires control flow.
   verify in the current checkout that its enclosing backend matrix still
   excludes `IR`. If it already uses `backendsWith!IR`, treat the note as
   stale and choose the next smallest current CTFE-only candidate.
-- Implement `IR.eval` first. Leave `evalRepl`, `runTests`, and
-  `runTestSummary` unimplemented until an approved test specifically
-  requires one of those entry points.
+- `IR.eval` is the only implemented IR backend entry point. Leave `evalRepl`,
+  `runTests`, and `runTestSummary` unimplemented until an approved test
+  specifically requires one of those entry points.
 - Within each module, start with the simplest individual test before taking
   call-based, short-circuit, aggregate, diagnostic, or integration cases.
 - Add locals, parameters, returns, and direct calls only after `eval.d` and the
