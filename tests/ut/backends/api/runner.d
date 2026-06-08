@@ -19,7 +19,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         const msg = runBackendSourceFixtureTests!backend(q{

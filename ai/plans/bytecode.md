@@ -116,6 +116,11 @@ Lua-specific bytecode shape.
   bytecode as a false assertion with a structured `_d_assert_fail("==", 1, 2)`
   message payload. Bytecode now lowers that equality payload through the
   existing assertion-compare opcode so the runner reports `1 != 2`.
+- `runTests.runsAttributedThrowingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed missing `throw` statement support for `throw new Exception(message)`.
+  Bytecode now lowers the exception constructor message to a value-stack
+  operand and the VM throws that message through a narrow `throw_` opcode.
 
 ## Current Next Step
 Continue with the next module named by

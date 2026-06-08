@@ -126,6 +126,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto throw_ = statement.isThrowStatement) {
+            compileThrow(throw_);
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
     }
@@ -444,6 +449,15 @@ private struct Compiler {
 
         compileExpression(assert_.e1);
         program.instructions ~= Instruction(Op.assertTrue);
+    }
+
+    private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        auto new_ = throw_.exp.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            throw new Exception("Unsupported bytecode throw expression.");
+
+        compileExpression((*new_.arguments)[0]);
+        program.instructions ~= Instruction(Op.throw_);
     }
 
     private bool compileDmdAssertFailEqualMessage(Expression message) {

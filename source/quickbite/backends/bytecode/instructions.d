@@ -20,6 +20,7 @@ package enum Op: ubyte {
     binaryNativeCall,
     assertCompare,
     assertTrue,
+    throw_,
     ret,
     halt,
 }
