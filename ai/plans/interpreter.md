@@ -9,10 +9,10 @@ surface covered by the existing test suite, driven first by the
 simplest existing `eval` tests and then by similarly small CTFE-only
 tests promoted one at a time to the tree-walking backend.
 
-Rename the backend from `TreeWalker` to `Interpreter` as the supported
+Rename the backend from `Interpreter` to `Interpreter` as the supported
 interpreter surface grows. Keep any compatibility aliases or test-matrix
 transitions narrow and temporary; the long-term public backend name should be
-`Interpreter`, not `TreeWalker`.
+`Interpreter`, not `Interpreter`.
 
 The process mirrors the IR backend: pick the simplest test that does
 not yet run under the tree walker, add the tree-walking backend to it,
@@ -37,7 +37,7 @@ smallest honest handler rather than hard-coding the fixture.
 
 ## Architecture
 
-- Implement `TreeWalker.eval` first. It may parse an expression through
+- Implement `Interpreter.eval` first. It may parse an expression through
   the same frontend expression path used by the bytecode backend, then
   walk that expression directly.
 - Leave `evalRepl`, broader module-backed test execution, and test-summary
@@ -88,7 +88,7 @@ ranking; within a module, start with the smallest individual tests before
 call-based, short-circuit, aggregate, diagnostic, or integration cases.
 
 Do not pick a CTFE-only test at random just because it currently lacks
-`TreeWalker`. Before migrating one test, inspect the fixture and choose
+`Interpreter`. Before migrating one test, inspect the fixture and choose
 the test most likely to need the fewest production changes. Count the
 visible AST features first: literals only is better than locals;
 locals are broader than direct literals; calls, imports, control flow,
@@ -111,15 +111,15 @@ tests stop being available.
 ### Eval Slice Lessons
 
 Current progress: all tests in `tests/ut/backends/lang/eval.d` are
-covered by `TreeWalker`, including `stringLiteralIsArray`. Keep future eval
+covered by `Interpreter`, including `stringLiteralIsArray`. Keep future eval
 work focused on regressions or newly added CTFE-backed eval behaviours.
 
 When promoting one eval test, isolate that test in its own `static
 foreach` backend block if the surrounding block contains later eval
 tests. Do not change a broad block from `backends` to
-`backendsWith!TreeWalker` unless every test in that block is part of
+`backendsWith!Interpreter` unless every test in that block is part of
 the current slice. When integrating worker commits, check that earlier
-TreeWalker promotions remain present; a later worker must not move a
+Interpreter promotions remain present; a later worker must not move a
 previously promoted test back to CTFE-only coverage.
 
 If a promoted test is already green because of an earlier slice, verify
@@ -263,7 +263,7 @@ support together, the chosen test is too broad for the first PR.
   implement the minimum handler that makes it green. Start with one
   existing `eval` test. Existing CTFE-passing tests are pre-approved
   for promotion to the tree-walking backend; do not stop to ask before
-  adding `TreeWalker` to exactly one existing test. This exception only covers
+  adding `Interpreter` to exactly one existing test. This exception only covers
   adding the backend to an existing backend-matrix test; adding a new test or
   modifying test behaviour still requires approval before editing the test.
 - Before promoting any named test from this plan, verify in the current
