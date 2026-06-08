@@ -169,17 +169,58 @@ Lua-specific bytecode shape.
   available source code `` instead of the generic unsupported-call-target
   message. The pointer casts, indexing, and `scope(exit)` in the source are
   never reached, matching the CTFE and tree-walker oracles.
+- `assertNonzeroIntCondition`, `assertNonzeroIntConditionFailureMessage.0`,
+  and `assertNonzeroIntConditionFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion exposed
+  missing bitwise-or expression support for `40 | mask()`, so bytecode now
+  lowers DMD `OrExp` to a narrow `bitOr` opcode and preserves the existing
+  assertion truthiness and equality diagnostics.
+- `logicalNot`, `logicalNotCall`, `logicalNotFailureMessage.0`,
+  `logicalNotFailureMessage.1`, `logicalNotCallFailureMessage.0`, and
+  `logicalNotCallFailureMessage.1` in `tests/ut/backends/lang/logic.d` now
+  cover `Bytecode`. The promotion exposed missing DMD `NotExp` lowering, so
+  bytecode now lowers logical not to a unary opcode using VM truthiness and
+  reports failed bool equality assertions as `true`/`false`.
+- `logicalAnd`, `logicalAndFailureMessage.0`,
+  `logicalAndFailureMessage.1`, `logicalAndCall`,
+  `logicalAndCallFailureMessage.0`, `logicalAndCallFailureMessage.1`,
+  `logicalAndShortCircuit`, `logicalAndShortCircuitFailureMessage.0`,
+  `logicalAndShortCircuitFailureMessage.1`,
+  `logicalAndCallShortCircuit`,
+  `logicalAndCallShortCircuitFailureMessage.0`, and
+  `logicalAndCallShortCircuitFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion
+  exposed missing DMD `LogicalExp` `&&` lowering, so bytecode now emits narrow
+  jump/pop control flow for short-circuit evaluation, normalizes both paths to
+  bool, and preserves plain assertion text for failed truth assertions.
+- `logicalOr`, `logicalOrBoolResult`,
+  `logicalOrBoolResultFailureMessage.0`,
+  `logicalOrBoolResultFailureMessage.1`, `logicalOrFailureMessage.0`,
+  `logicalOrFailureMessage.1`, `logicalOrOops`, `logicalOrShortCircuit`,
+  `logicalOrShortCircuitFailureMessage.0`, and
+  `logicalOrShortCircuitFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion
+  exposed missing DMD `LogicalExp` `||` lowering, so bytecode now emits narrow
+  jump/pop control flow for short-circuit evaluation, normalizes both paths to
+  bool, and reports failed `assert(!condition)` diagnostics such as
+  `true == true`.
+- `logicalAndComparisonOperands`,
+  `logicalAndComparisonOperandsFailureMessage.0`, and
+  `logicalAndComparisonOperandsFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`, completing the module.
+  The promotion exposed missing DMD `CmpExp` lowering for comparison operands
+  inside logical expressions, so bytecode now lowers the required integer `<`
+  and `>` comparisons to bool results while preserving bool equality assertion
+  diagnostics such as `true != false` and `false != true`.
 
 ## Current Next Step
-`tests/ut/backends/runtime/cstdlib.d` is now complete for `Bytecode`. Its
-single `malloc` test block includes `Bytecode`. Continue with the next module
-named by `ai/plans/backend-test-modules-order.md`
-(`tests/ut/backends/lang/logic.d`).
+Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
+`ai/plans/backend-test-modules-order.md`.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
-`tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`
-unless new tests are added there. Their current backend-matrix test families
-all include `Bytecode`.
+`tests/ut/backends/api/runner.d`, `tests/ut/backends/runtime/cstdlib.d`, or
+`tests/ut/backends/lang/logic.d` unless new tests are added there. Their
+current backend-matrix test families all include `Bytecode`.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.

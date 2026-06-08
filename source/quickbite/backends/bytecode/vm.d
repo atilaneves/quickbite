@@ -62,6 +62,28 @@ private RunResult run(
                 ip = function_.entry;
                 break;
 
+            case Op.jump:
+                ip = instruction.operand;
+                break;
+
+            case Op.jumpIfFalse:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (stack[$ - 1].castTo!bool == Value(false))
+                    ip = instruction.operand;
+                else
+                    ++ip;
+                break;
+
+            case Op.pop:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                stack.length -= 1;
+                ++ip;
+                break;
+
             case Op.loadLocal:
                 if (instruction.operand >= locals.length)
                     throw new Exception("Bytecode local out of bounds");
@@ -170,6 +192,50 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.bitOr:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong | rhs.asLong);
+                ++ip;
+                break;
+
+            case Op.lessThan:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong < rhs.asLong);
+                ++ip;
+                break;
+
+            case Op.greaterThan:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong > rhs.asLong);
+                ++ip;
+                break;
+
+            case Op.not_:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                stack[$ - 1] = Value(stack[$ - 1].castTo!bool == Value(false));
+                ++ip;
+                break;
+
             case Op.negate:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
@@ -219,14 +285,32 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.assertFalse:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                const value = stack[$ - 1].castTo!bool;
+                stack.length -= 1;
+                if (value != Value(false))
+                    throw new Exception(assertFalseMessage(value));
+
+                ++ip;
+                break;
+
             case Op.assertTrue:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
 
                 const value = stack[$ - 1];
                 stack.length -= 1;
-                if (value.asLong == 0)
+                if (value.asLong == 0) {
+                    if (instruction.value != Value.void_)
+                        throw new Exception(
+                            instruction.value.asCharArrayString,
+                        );
+
                     throw new Exception("Unittest assertion failed.");
+                }
 
                 ++ip;
                 break;
@@ -272,5 +356,27 @@ private string assertCompareMessage(
 ) @safe pure {
     import std.conv: text;
 
-    return text(lhs.asLong, " != ", rhs.asLong);
+    return text(compareOperandMessage(lhs), " != ", compareOperandMessage(rhs));
+}
+
+private string assertFalseMessage(
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import std.conv: text;
+
+    return text(compareOperandMessage(value), " == true");
+}
+
+private string compareOperandMessage(
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import std.conv: text;
+
+    if (value == imported!"quickbite.lang".Value(false))
+        return "false";
+
+    if (value == imported!"quickbite.lang".Value(true))
+        return "true";
+
+    return text(value.asLong);
 }

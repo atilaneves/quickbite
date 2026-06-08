@@ -4,7 +4,7 @@ module ut.backends.lang.logic;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -41,33 +41,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+}
 
-    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            unittest {
-                assert(!isReady == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return true;
-            }
-
-            unittest {
-                assert(!isReady == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -187,6 +163,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -276,6 +255,19 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+    @("logicalOr." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool left = false;
+                bool right = true;
+                assert(left || right);
+            }
+        });
+    }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -312,16 +304,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-    @("logicalOr." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                bool left = false;
-                bool right = true;
-                assert(left || right);
-            }
-        });
-    }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -365,6 +350,35 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return true;
+            }
+
+            unittest {
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -384,6 +398,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+
     @("logicalNotCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -396,6 +411,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+
     @("logicalNot." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
