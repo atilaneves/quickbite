@@ -140,6 +140,14 @@ Lua-specific bytecode shape.
   coverage gap after the summary API and narrow throw-expression slices: the
   existing summary path already counts thrown `AssertError` instances as
   failures.
+- `runTestResults.reportsDmdUnittestSymbolNames` and
+  `runTestResults.reportsFileBackedUnittestLocations` in
+  `tests/ut/backends/api/runner.d` now cover `Bytecode`. The promotion exposed
+  the missing bytecode `runTestResults` API. Bytecode now reuses the existing
+  compile/execute path to build a `TestRunResult` with per-case
+  `TestOutcome`, the DMD unittest symbol name (`ident.toChars`), and the source
+  location (`loc.toChars`), reporting names such as `__unittest_L2_C13` and
+  file-backed locations such as `path(1)`.
 
 ## Current Next Step
 Continue with the next module named by
