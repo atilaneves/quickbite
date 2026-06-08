@@ -915,41 +915,48 @@ newly-compiled (dub-dependency image, §3–§5): needs load + module-ctor +
 
 ### 21.1 Shared, backend-neutral resolver
 
-The body-less resolver is shared infrastructure, not per-backend code and not
-a backend choice (proposed module `quickbite.native`). It contains:
+The resident native-call resolver is shared infrastructure, not per-backend
+code and not a backend choice (proposed module `quickbite.native`). The first
+mechanical trigger is a resolved `FuncDeclaration` with `fbody is null`, but
+runtime mode should use the same resolver for every supported already-resident
+native call, including functions that CTFE mode currently reaches through
+DMD-builtin bridges such as `fabs` and `pow`. It contains:
 
 ```text
 - the frontend native-call descriptor: linkage, symbol name (mangling),
   parameter and return ABI types — derived from the resolved
   FuncDeclaration, kept behind the quickbite interface so no dmd.* type
   leaks into a public quickbite.* API
-- the single body-less chokepoint every backend routes a body-less call
-  through
+- the single resident native-call chokepoint every backend routes supported
+  native runtime calls through
 - the execution-mode gate (§21.2)
 - dlsym(RTLD_DEFAULT, ...) resolution against the resident process
 - the typed call plus scalar/pointer marshalling
 ```
 
-Per-backend code is limited to: (a) recognizing a body-less call and
-delegating to the chokepoint, and (b) converting between the backend's value
-representation and the ABI. No backend is privileged; whichever backend
+Per-backend code is limited to: (a) recognizing a supported resident native
+call and delegating to the chokepoint, and (b) converting between the backend's
+value representation and the ABI. No backend is privileged; whichever backend
 reaches CTFE parity first can adopt it.
 
 ### 21.2 The mode gate (also the future CTFE-drop-in seam)
 
 Quickbite is also intended to become a faster drop-in CTFE engine for D, so
-the same body-less chokepoint must be **mode-parameterized** from the start:
+the same native-call chokepoint must be **mode-parameterized** from the start:
 
 ```text
-runtime mode: fbody is null  ->  dlsym + native call
-CTFE mode:    fbody is null  ->  reject unless the function is a pure
-              builtin (dmd.builtin whitelist), faithful to DMD CTFE
+runtime mode:          supported resident native call -> dlsym + native call
+CTFE-compatible mode:  preserve DMD CTFE behavior; reject body-less calls
+                       unless the function is a CTFE-supported builtin
 ```
 
-The CTFE-mode rejection is driven by the builtin/purity classification the
-other backends already copy from `dmd.builtin` (`isBuiltin`, the `BUILTIN`
-enum). Routing both modes through one chokepoint keeps the runtime/CTFE fork
-in exactly one place.
+The CTFE-compatible-mode rejection is driven by the builtin/purity
+classification the other backends already copy from `dmd.builtin`
+(`isBuiltin`, the `BUILTIN` enum). Builtin bridges exist only to preserve DMD
+CTFE behavior. Runtime mode routes supported calls such as `malloc`, `free`,
+`fabs`, and `pow` through the same resident native-call resolver, with no
+backend-local special cases. Routing both modes through one chokepoint keeps
+the runtime/CTFE fork in exactly one place.
 
 ### 21.3 Oracles
 
@@ -967,9 +974,10 @@ The two oracles deliberately diverge on the same source: CTFE throws,
 compiled D returns a non-null pointer. That divergence is the content of the
 first test.
 
-## 22. Increment 1: malloc in two modes (first test)
+## 22. Increment 1: first resident native call
 
-The first test pins the mode seam in place from day one.
+The first test pins the mode seam in place from day one. `malloc`/`free` are
+the first pointer-returning proof, not a special case in the implementation.
 
 Source under test:
 
@@ -977,15 +985,14 @@ Source under test:
 unittest {
     import core.stdc.stdlib: malloc, free;
     auto p = cast(ubyte*) malloc(8);
-    p[7] = 0xff;
-    p[7].should == 0xff;
+    assert(p !is null);
     free(p);
 }
 ```
 
 `malloc`/`free` are `extern(C)`, body-less, not pure, and absent from DMD's
-`BUILTIN` whitelist — the cleanest probe of the seam. `free(p)` also exercises
-passing an opaque pointer **back** into a native call.
+`BUILTIN` whitelist — the cleanest pointer-returning probe of the seam.
+`free(p)` also exercises passing a pointer **back** into a native call.
 
 Expectations:
 
@@ -1003,13 +1010,18 @@ noted):
 
 ```text
 - an execution-mode parameter (CTFE vs runtime) reaching the chokepoint
-- the single body-less chokepoint that consults mode (§21.2)
+- the single resident native-call chokepoint that consults mode (§21.2)
 - the frontend native-call descriptor (linkage, symbol, ABI types)
-- dlsym(RTLD_DEFAULT, "malloc" / "free")
-- an opaque-pointer Value case in quickbite.lang (a machine word, NOT
-  GC-scanned, since malloc memory is C heap) and `!is null`
+- dlsym(RTLD_DEFAULT, symbol)
+- a general pointer Value kind in quickbite.lang (a machine word, NOT
+  GC-scanned, since pointed-to memory may be C heap) with v1 operations
+  limited to null/equality checks and native ABI marshalling
 - marshalling: size_t in, void* out, void* in
 ```
+
+The next proof should use another resident `extern(C)` scalar call, such as
+`core.stdc.stdlib.abs`, to prove the path is descriptor-driven rather than
+malloc-specific.
 
 Explicitly still rejected after Increment 1 (scope guard):
 
@@ -1019,6 +1031,7 @@ runtime mode: anything but extern(C) scalar/pointer signatures of this shape
 CTFE mode: every body-less call that is not a pure builtin
 ```
 
-This is the malloc rung of the ladder. The next rungs (file read, then
-GC-returning calls needing the handle-table/arena from §13) build on the same
-chokepoint.
+This is the first resident-native-call rung of the ladder. Pointer
+dereference, indexing, and writes are deferred until a later memory-semantics
+slice. The next rungs (file read, then GC-returning calls needing the
+handle-table/arena from §13) build on the same chokepoint.
