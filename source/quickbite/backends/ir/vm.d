@@ -140,12 +140,17 @@ package imported!"quickbite.lang".Value eval(
                                     cast(int) valueBits[binary.lhs] -
                                     cast(int) valueBits[binary.rhs];
                                 break;
+                            case f64:
+                                valueBits[binary.destination.id] = doubleBits(
+                                    doubleFromBits(valueBits[binary.lhs]) -
+                                    doubleFromBits(valueBits[binary.rhs]),
+                                );
+                                break;
                             case i1:
                             case i8:
                             case i16:
                             case i64:
                             case f32:
-                            case f64:
                             case ptr:
                                 assert(0);
                         }
@@ -240,6 +245,14 @@ private float floatFromBits(in ulong value) @trusted pure nothrow {
     static assert(float.sizeof == uint.sizeof);
     const bits = cast(uint) value;
     return *cast(float*) &bits;
+}
+
+// @trusted: reads the bytes of a local double as a same-sized ulong for IR raw
+// scalar storage. The pointer is used only for this immediate read and never
+// escapes.
+private ulong doubleBits(in double value) @trusted pure nothrow {
+    static assert(double.sizeof == ulong.sizeof);
+    return *cast(ulong*) &value;
 }
 
 // @trusted: reads the bytes of a local ulong as a same-sized double after

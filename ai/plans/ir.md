@@ -127,7 +127,10 @@ storage, with result category preserving signedness). The promoted
 `defaultUintPreservesScalarType.IR` test passed without new production code:
 the existing default local initialization path already lowers `uint value` as
 an `i32` local with `uint_` result metadata, and the VM's boundary conversion
-preserves the public `uint` result. IR values carry both an operation type
+preserves the public `uint` result. The promoted
+`floatingSubtractionUsesNumericValues.IR` test added only the VM support needed
+to execute an already-lowered `BinaryOperation.subtract` on `f64` operands and
+store the raw `double` result bits. IR values carry both an operation type
 (`i32`, `f32`, and so on) and a D-visible scalar result category so the VM can
 keep arithmetic dispatch typed while preserving the public eval result type.
 `vm.d` executes the single entry block directly before converting the returned
@@ -153,6 +156,7 @@ The currently covered IR backend eval tests are:
 - `castsFloatingValueNumerically.IR`
 - `castsRuntimeValuesToIntegerTypes.IR`
 - `defaultUintPreservesScalarType.IR`
+- `floatingSubtractionUsesNumericValues.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
@@ -166,10 +170,10 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` includes
-`IR`; if it does not, treat this handoff as stale and restore the completed
-promotion before moving on. Then choose the next smallest eval behavior that
-still excludes `IR`.
+Start with `tests/ut/backends/lang/eval.d`. Verify that
+`floatingSubtractionUsesNumericValues` includes `IR`; if it does not, treat
+this handoff as stale and restore the completed promotion before moving on.
+Then choose the next smallest eval behavior that still excludes `IR`.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
