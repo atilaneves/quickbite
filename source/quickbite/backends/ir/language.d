@@ -54,6 +54,13 @@ package struct BinaryOp {
     public Value destination;
 }
 
+package struct Cast {
+    public Type sourceType;
+    public Type targetType;
+    public uint source;
+    public Value destination;
+}
+
 package struct Load {
     public uint local;
     public Value destination;
@@ -68,6 +75,7 @@ package struct Store {
 package alias Instruction = imported!"std.sumtype".SumType!(
     Const,
     BinaryOp,
+    Cast,
     Load,
     Store,
 );

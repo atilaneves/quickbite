@@ -118,19 +118,22 @@ instructions, terminators, blocks, and functions. Functions carry their SSA
 value count and local count so the VM can size storage once before execution.
 `compiler.d` lowers eval source through the existing frontend eval-cell
 parser, walks the single eval function body, and supports integer literals,
-`float` and `double` literals, simple arithmetic expressions, local integer
-declarations, local loads, and the DMD semantic increment shape used by `++x`.
-IR values carry both an operation type (`i32`, `f32`, and so on) and a
-D-visible scalar result category so the VM can keep arithmetic dispatch typed
-while preserving the public eval result type. `vm.d` executes the single entry
-block directly before converting the returned IR value to
-`quickbite.lang.Value` at the backend boundary.
+`float` and `double` literals, simple arithmetic expressions, local scalar
+declarations with expression initializers, local loads, the DMD semantic
+increment shape used by `++x`, and the narrow runtime cast shape currently
+covered by `castsFloatingValueNumerically.IR` (`f64` to `i32`). IR values carry
+both an operation type (`i32`, `f32`, and so on) and a D-visible scalar result
+category so the VM can keep arithmetic dispatch typed while preserving the
+public eval result type. `vm.d` executes the single entry block directly before
+converting the returned IR value to `quickbite.lang.Value` at the backend
+boundary.
 
 The current mutation support is intentionally narrow. Locals are identified by
 compiler-assigned integer indices, and `Load`/`Store` operate on those local
-slots for the promoted integer eval slice. This is enough for `multiCell.IR`;
-it is not yet the full typed place-reference model needed for refs, fields,
-array elements, slices, or aliases.
+slots for the promoted scalar eval slices. The compiler preserves each local's
+IR scalar type and result category for later loads, but this is not yet the
+full typed place-reference model needed for refs, fields, array elements,
+slices, or aliases.
 
 The currently covered IR backend eval tests are:
 
@@ -142,6 +145,7 @@ The currently covered IR backend eval tests are:
 - `arithmetic.IR`
 - `multiCell.IR`
 - `preservesScalarValueTypes.IR`
+- `castsFloatingValueNumerically.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing
@@ -151,9 +155,9 @@ temporarily mutating the promoted test or relevant production code, confirming
 the focused test fails, and restoring the mutation. Inspect the DMD AST that
 reaches the IR compiler, then add only the IR shape and VM support required by
 that behavior. As of this update, the next likely candidate in
-`tests/ut/backends/lang/eval.d` is `castsFloatingValueNumerically`, but verify
-the current checkout before editing because backend progress notes can go
-stale.
+`tests/ut/backends/lang/eval.d` is `castsRuntimeValuesToIntegerTypes`, but
+verify the current checkout before editing because backend progress notes can
+go stale.
 
 ### Next Slice Handoff
 
@@ -162,16 +166,17 @@ Start with `tests/ut/backends/lang/eval.d`. Verify that `multiCell` includes
 promotion before moving on. Then choose the next smallest eval behavior that
 still excludes `IR`.
 
-The completed `preservesScalarValueTypes.IR` slice promoted only the existing
-backend matrix and added scalar result preservation for constants reaching the
-IR compiler after DMD semantic analysis. It did not add general cast
-instructions; the promoted cast expressions currently arrive as semantically
-typed constants.
+The completed `castsFloatingValueNumerically.IR` slice promoted only the
+existing backend matrix and added a backend-local `Cast` instruction plus VM
+support for the observed `f64` to `i32` runtime cast. It also made initialized
+scalar locals preserve their IR type/result metadata so `double input = 7.75`
+loads as `f64` instead of the earlier integer-only local shape. This is not
+general cast support yet.
 
 The next TDD slice is likely:
 
-1. Promote only the existing `castsFloatingValueNumerically` backend matrix to
-   include `IR`.
+1. Promote only the existing `castsRuntimeValuesToIntegerTypes` backend matrix
+   to include `IR`.
 2. Run the focused `IR` test. If it is red, verify it is red for the expected
    missing runtime cast behavior. If it is green, verify the greenness by
    temporarily mutating the promoted test or relevant production code,

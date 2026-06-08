@@ -44,6 +44,7 @@ private struct Compiler {
         BinaryOp,
         BinaryOperation,
         Block,
+        Cast,
         Const,
         Function,
         Instruction,
@@ -57,6 +58,7 @@ private struct Compiler {
 
     private Instruction[] instructions;
     private uint[VarDeclaration] locals;
+    private Value[VarDeclaration] localValues;
     private uint nextValueId;
 
     private OptionalValue compileStatement(
@@ -93,7 +95,7 @@ private struct Compiler {
             auto variable = declaration.declaration.isVarDeclaration;
             assert(variable !is null);
             compileVariableDeclaration(variable);
-            return Value(0, Type.i32, ResultType.int_);
+            return localValue(variable);
         }
 
         if (auto variable = expression.isVarExp) {
@@ -101,6 +103,9 @@ private struct Compiler {
             assert(declaration !is null);
             return compileVariableLoad(declaration);
         }
+
+        if (auto cast_ = expression.isCastExp)
+            return compileCast(cast_);
 
         if (auto increment = expression.isPreExp)
             return compilePreIncrement(increment);
@@ -127,18 +132,47 @@ private struct Compiler {
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
-        const value = compileIntegerLiteral(0);
+        const value = variable._init is null ?
+            compileIntegerLiteral(
+                0,
+                valueType(variable.type),
+                resultType(variable.type),
+            ) :
+            compileInitializer(variable._init);
         instructions ~= Instruction(Store(
             localIndex(variable),
             value.type,
             value.id,
         ));
+        localValues[variable] = Value(0, value.type, value.resultType);
     }
 
     private Value compileVariableLoad(VarDeclaration variable) {
-        const destination = nextValue(Type.i32, ResultType.int_);
+        const local = localValue(variable);
+        const destination = nextValue(local.type, local.resultType);
         instructions ~= Instruction(Load(
             localIndex(variable),
+            destination,
+        ));
+        return destination;
+    }
+
+    private Value compileInitializer(
+        imported!"dmd.init".Initializer initializer,
+    ) {
+        auto expression = initializer.isExpInitializer;
+        assert(expression !is null);
+
+        return compileExpression(initializerExpression(expression.exp));
+    }
+
+    private Value compileCast(imported!"dmd.expression".CastExp cast_) {
+        const source = compileExpression(cast_.e1);
+        const destination = nextValue(valueType(cast_.to), resultType(cast_.to));
+        instructions ~= Instruction(Cast(
+            source.type,
+            destination.type,
+            source.id,
             destination,
         ));
         return destination;
@@ -275,6 +309,13 @@ private struct Compiler {
         return index;
     }
 
+    private Value localValue(VarDeclaration variable) {
+        if (auto existing = variable in localValues)
+            return *existing;
+
+        return Value(0, valueType(variable.type), resultType(variable.type));
+    }
+
     private Function function_(in Value result) {
         return Function(
             [
@@ -297,6 +338,21 @@ private struct Compiler {
 private struct OptionalValue {
     public imported!"quickbite.backends.ir.language".Value value;
     public bool hasValue;
+}
+
+private imported!"dmd.expression".Expression initializerExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto assignment = expression.isAssignExp)
+        return assignment.e2;
+
+    if (auto construct = expression.isConstructExp)
+        return construct.e2;
+
+    if (auto blit = expression.isBlitExp)
+        return blit.e2;
+
+    return expression;
 }
 
 // @trusted: reads the bytes of a local float as a same-sized uint for IR raw

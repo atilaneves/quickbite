@@ -8,6 +8,7 @@ package imported!"quickbite.lang".Value eval(
     import quickbite.backends.ir.language:
         BinaryOp,
         BinaryOperation,
+        Cast,
         Const,
         Load,
         ResultType,
@@ -28,6 +29,36 @@ package imported!"quickbite.lang".Value eval(
             (const Const const_) {
                 valueBits[const_.destination.id] = const_.bits;
             },
+            (const Cast cast_) {
+                final switch (cast_.sourceType) with (Type) {
+                    case f64:
+                        final switch (cast_.targetType) with (Type) {
+                            case i32:
+                                valueBits[cast_.destination.id] =
+                                    cast(int) doubleFromBits(
+                                        valueBits[cast_.source],
+                                    );
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i64:
+                            case f32:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
+                    case i1:
+                    case i8:
+                    case i16:
+                    case i32:
+                    case i64:
+                    case f32:
+                    case ptr:
+                        assert(0);
+                }
+            },
             (const Load load) {
                 valueBits[load.destination.id] = localBits[load.local];
             },
@@ -36,12 +67,14 @@ package imported!"quickbite.lang".Value eval(
                     case i32:
                         localBits[store.local] = valueBits[store.value];
                         break;
+                    case f64:
+                        localBits[store.local] = valueBits[store.value];
+                        break;
                     case i1:
                     case i8:
                     case i16:
                     case i64:
                     case f32:
-                    case f64:
                     case ptr:
                         assert(0);
                 }

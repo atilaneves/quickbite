@@ -83,7 +83,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
