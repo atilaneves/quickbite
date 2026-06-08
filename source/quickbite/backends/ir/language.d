@@ -20,6 +20,9 @@ package struct Value {
 
 package enum BinaryOperation {
     add,
+    subtract,
+    multiply,
+    divide,
 }
 
 package struct Const {
