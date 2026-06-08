@@ -308,6 +308,13 @@ changes were required:
    floating-point scalars), then switched `runComparisonExpression` to use
    `asReal` instead of `asLong`.
 
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsic` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. It was already
+green through the existing direct free-function call path; signal was
+verified by temporarily mutating the module interpreter's `call.f` dispatch
+to return the first `pow` argument instead of executing the user-defined
+function, which failed the focused test with `2 != 6`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
