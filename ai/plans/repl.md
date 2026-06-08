@@ -86,8 +86,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   f()
   ```
 
-## To do
-
 - Generalise incomplete-input detection beyond function declarations. Partial
   structs, enums, templates, and other declarations should buffer until they
   are complete instead of becoming hard syntax errors.
@@ -116,6 +114,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   ```text
   Error: `}` expected following members in `struct` declaration
   ```
+
+## To do
 
 - Require type-expression classification to consume the whole input. A cell
   that starts with a type expression but has trailing tokens must not be

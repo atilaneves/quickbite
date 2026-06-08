@@ -549,7 +549,7 @@ private bool isIncompleteCell(in string input) {
         result = moduleResult.diagnostics.hasErrors &&
             moduleResult.module_.members !is null &&
             moduleResult.module_.members.length != 0 &&
-            allFunctionDeclarations(moduleResult.module_.members) &&
+            allEvalModuleDeclarations(moduleResult.module_.members) &&
             hasDiagnosticAtEnd(input);
     });
 
@@ -579,6 +579,15 @@ private bool isEvalModuleDeclaration(
     if (isEvalFunctionDeclaration(declaration))
         return true;
 
+    if (declaration.isAggregateDeclaration !is null)
+        return true;
+
+    if (declaration.isEnumDeclaration !is null)
+        return true;
+
+    if (declaration.isTemplateDeclaration !is null)
+        return true;
+
     return false;
 }
 
@@ -587,17 +596,6 @@ private bool isEvalFunctionDeclaration(
 ) {
     auto function_ = declaration.isFuncDeclaration;
     return function_ !is null && function_.fbody !is null;
-}
-
-private bool allFunctionDeclarations(
-    imported!"dmd.dsymbol".Dsymbols* declarations,
-) {
-    foreach (declaration; *declarations) {
-        if (!isEvalFunctionDeclaration(declaration))
-            return false;
-    }
-
-    return true;
 }
 
 private bool hasDiagnosticAtEnd(in string input) {

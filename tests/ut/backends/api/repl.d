@@ -113,6 +113,24 @@ static foreach (backend; backends) {
         output.should == ["42"];
     }
 
+    @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct StructCell {",
+                "int value;",
+                "}",
+                "StructCell(42).value",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
