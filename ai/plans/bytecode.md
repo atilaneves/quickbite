@@ -258,6 +258,10 @@ Lua-specific bytecode shape.
   `Bytecode`. This was a stale coverage gap: the existing bytecode call-frame
   and integer assertion-failure path already propagated the failure from a
   called `void` function as `` `assert(0)` failed ``.
+- `functionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: the existing bytecode
+  parameter binding, integer addition, return, and equality assertion
+  diagnostic path already reported the failed comparison as `43 != 42`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
