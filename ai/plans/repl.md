@@ -20,41 +20,13 @@ Shared frontend/session code owns parsing, classification, buffering, and
 history acceptance. Backends execute complete `ReplCell` values and return
 `quickbite.lang.Value`.
 
+## Done
+
+- Silently skip comment-only lines instead of erroring. The piped CLI loop,
+  interactive CLI loop, and `runReplLoop` now skip blank, whitespace-only,
+  and `//` comment-only input before submitting to DMD.
+
 ## To do
-
-- Silently skip comment-only lines instead of erroring. The REPL
-  already skips blank and whitespace-only lines
-  (`repl/main.d:45–46`); a `//`-comment line is invisible to DMD but
-  is not whitespace, so it falls through to the statement path and
-  produces `Error: found 'End of File' instead of statement`. In piped
-  mode the error also terminates the session, dropping all subsequent
-  lines. Python and GHCi both silently ignore comment input. The fix
-  should extend the skip guard and apply consistently to `runReplLoop`.
-
-  Offending code (`repl/main.d:45–46`):
-
-  ```d
-  if (line.strip.length == 0)
-      continue;
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf '// just a comment\n1 + 2\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: found `End of File` instead of statement
-  ```
-
-  Expected:
-
-  ```text
-  3
-  ```
 
 - Continue past errors in piped mode instead of exiting on the first
   failure. The interactive REPL uses `FailureMode.continue_` and keeps

@@ -19,6 +19,18 @@ static foreach (backend; backends) {
         output.should == ["1", "2"];
     }
 
+    @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["// just a comment", "1 + 2", ":q"],
+        );
+
+        output.should == ["3"];
+    }
+
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

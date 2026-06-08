@@ -199,12 +199,22 @@ public string[] runReplLoop(
         if (input == ":q" || input == ":quit")
             break;
 
+        if (input.ignoredReplInput)
+            continue;
+
         const display = repl.submitDisplay(input);
         if (display !is null)
             output ~= display;
     }
 
     return output;
+}
+
+private bool ignoredReplInput(in string input) @safe pure {
+    import std.string: startsWith, strip;
+
+    const stripped = input.strip;
+    return stripped.length == 0 || stripped.startsWith("//");
 }
 
 private string userDiagnostic(in string diagnostic) @safe pure {
