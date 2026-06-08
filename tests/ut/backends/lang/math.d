@@ -65,6 +65,38 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("3 <= 3.001");
     }
 
+}
+
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: pow;
+
+            unittest {
+                double base = 2.0;
+                double exponent = 4.0;
+                assert(pow(base, exponent) == 17.0);
+            }
+        }).shouldThrowWithMessage("16 != 17");
+    }
+
+    @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: pow;
+
+            unittest {
+                double base = 9.0;
+                double exponent = 0.5;
+                double root = pow(base, exponent);
+                assert(root > 3.001);
+            }
+        }).shouldThrowWithMessage("3 <= 3.001");
+    }
+}
+
+static foreach (backend; backends) {
     @("doesNotTreatUserNamedPowAsMathIntrinsic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -272,6 +272,20 @@ this slice.
 
 ### Math Slice Lessons
 
+Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
+`.1` in `tests/ut/backends/lang/math.d` now run on `Interpreter` as
+PASSING tests. Because the Interpreter formats double assert messages
+correctly (producing "16 != 17" and "3 <= 3.001"), these tests pass
+without `@ShouldFail`. The user approved a split: the two existing
+`@ShouldFail` unittests inside the `static foreach (backend; backends)`
+block remain as-is (CTFE keeps `@ShouldFail` for `<double not
+supported>`); a separate adjacent block
+`static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter))`
+contains copies of those two tests with identical bodies and label
+names but without `@ShouldFail`. No production change was required —
+the pow infra already existed from the `evaluatesRuntimePowDoubleInputs`
+slice.
+
 Math progress: `evaluatesRuntimePowDoubleInputs` in
 `tests/ut/backends/lang/math.d` now runs on `Interpreter`. Three production
 changes were required:
