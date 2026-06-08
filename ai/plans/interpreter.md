@@ -213,6 +213,12 @@ Runner progress: `runTests.runsAttributedThrowingUnittests` in
 narrow module-backed `throw new Exception("...")` support for string-literal
 messages.
 
+Runner progress: `runTests.importPathsRetryAfterFailure` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
+green through the existing parse-with-import-paths runner path and folded
+integer assert handling; signal was verified by temporarily mutating the module
+interpreter integer expression handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

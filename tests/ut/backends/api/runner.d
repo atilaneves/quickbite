@@ -3,6 +3,7 @@ module ut.backends.api.runner;
 
 import ut.backends;
 import quickbite.frontend.compiler: parseModule;
+import std.conv: text;
 import std.path: buildPath;
 
 
@@ -31,29 +32,39 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
 
         with(immutable Sandbox()) {
             const importPath = "imports";
+            const moduleName = text(
+                "quickbite_backend_retry_import_",
+                backend.stringof,
+            );
             writeFile(
-                buildPath(importPath, "quickbite_backend_retry_import.d"),
-                q{
-                    module quickbite_backend_retry_import;
+                buildPath(importPath, moduleName ~ ".d"),
+                text(
+                    "module ",
+                    moduleName,
+                    q{;
                     enum quickbiteRetryAnswer = 42;
                 },
+                ),
             );
-            const source = q{
-                import quickbite_backend_retry_import;
+            const source = text(
+                "import ",
+                moduleName,
+                q{;
                 unittest {
                     assert(quickbiteRetryAnswer == 42);
                 }
-            };
+            },
+            );
 
             parseModule(source, []).shouldThrowWithMessage(
-                "unable to read module `quickbite_backend_retry_import`\n" ~
-                "unable to read module `quickbite_backend_retry_import`\n" ~
+                "unable to read module `" ~ moduleName ~ "`\n" ~
+                "unable to read module `" ~ moduleName ~ "`\n" ~
                 "undefined identifier `quickbiteRetryAnswer`",
             );
 
@@ -61,7 +72,9 @@ static foreach (backend; backends) {
 
         }
     }
+}
 
+static foreach (backend; backends) {
     @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
