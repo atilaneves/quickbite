@@ -175,11 +175,16 @@ Lua-specific bytecode shape.
   missing bitwise-or expression support for `40 | mask()`, so bytecode now
   lowers DMD `OrExp` to a narrow `bitOr` opcode and preserves the existing
   assertion truthiness and equality diagnostics.
+- `logicalNot`, `logicalNotCall`, `logicalNotFailureMessage.0`,
+  `logicalNotFailureMessage.1`, `logicalNotCallFailureMessage.0`, and
+  `logicalNotCallFailureMessage.1` in `tests/ut/backends/lang/logic.d` now
+  cover `Bytecode`. The promotion exposed missing DMD `NotExp` lowering, so
+  bytecode now lowers logical not to a unary opcode using VM truthiness and
+  reports failed bool equality assertions as `true`/`false`.
 
 ## Current Next Step
 Continue `tests/ut/backends/lang/logic.d` with the next distinct CTFE-only
-behavior family after `assertNonzeroIntCondition`: the
-`logicalNotCallFailureMessage.*` tests.
+behavior family after logical not: logical AND.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
 `tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`

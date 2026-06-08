@@ -44,32 +44,6 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
-    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return false;
-            }
-
-            unittest {
-                assert(!isReady == false);
-            }
-        }).shouldThrowWithMessage("true != false");
-    }
-
-    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            bool isReady() {
-                return true;
-            }
-
-            unittest {
-                assert(!isReady == true);
-            }
-        }).shouldThrowWithMessage("false != true");
-    }
-
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -367,6 +341,35 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+    @("logicalNotCallFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return false;
+            }
+
+            unittest {
+                assert(!isReady == false);
+            }
+        }).shouldThrowWithMessage("true != false");
+    }
+
+    @("logicalNotCallFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isReady() {
+                return true;
+            }
+
+            unittest {
+                assert(!isReady == true);
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -386,6 +389,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+
     @("logicalNotCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -398,6 +402,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+
     @("logicalNot." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

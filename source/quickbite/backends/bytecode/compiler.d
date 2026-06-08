@@ -239,6 +239,12 @@ private struct Compiler {
             return;
         }
 
+        if (auto not = expression.isNotExp) {
+            compileExpression(not.e1);
+            program.instructions ~= Instruction(Op.not_);
+            return;
+        }
+
         if (auto negate = expression.isNegExp) {
             compileExpression(negate.e1);
             program.instructions ~= Instruction(Op.negate);
