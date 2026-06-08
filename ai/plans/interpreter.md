@@ -231,12 +231,12 @@ module.
 ### Integrals Slice Lessons
 
 Current progress in `tests/ut/backends/lang/integrals.d`:
-`type.byte.<backend>` is covered by `Interpreter` for `backend = Bytecode` and
-`backend = Interpreter`. This requires adding module-cast handling to
+`type.byte` and `type.ubyte` are covered by `Interpreter` (and bytecode
+coverage still exists where previously present). This required adding module
+cast handling to
 `EvalModuleInterpreter.castValue`.
 
-Next smallest candidate is `type.ubyte.<backend>`, while keeping the test
-shape unchanged.
+Next smallest candidate is `type.short.<backend>`.
 
 ### First PR Guardrails
 
