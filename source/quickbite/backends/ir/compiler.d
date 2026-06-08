@@ -90,6 +90,7 @@ private struct Compiler {
                 ),
             ],
             result.type,
+            nextValueId,
         );
     }
 }

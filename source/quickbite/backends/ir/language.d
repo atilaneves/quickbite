@@ -76,4 +76,5 @@ package struct Block {
 package struct Function {
     public Block[] blocks;
     public Type returnType;
+    public uint valueCount;
 }

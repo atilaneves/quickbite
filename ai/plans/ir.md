@@ -114,10 +114,11 @@ not yet covered anywhere in the current CTFE-backed language tests.
 
 The first CFG/value reset is complete for the already-promoted eval slice.
 `language.d` now defines backend-local typed values, instructions,
-terminators, blocks, and functions. `compiler.d` lowers integer literals and
-integer `AddExp` expressions into a single entry block, and `vm.d` executes
-that block directly before converting the returned IR value to
-`quickbite.lang.Value` at the backend boundary.
+terminators, blocks, and functions. Functions carry their SSA value count so
+the VM can size its value storage once before execution. `compiler.d` lowers
+integer literals and integer `AddExp` expressions into a single entry block,
+and `vm.d` executes that block directly before converting the returned IR
+value to `quickbite.lang.Value` at the backend boundary.
 
 The currently covered IR backend eval tests are:
 
@@ -163,7 +164,8 @@ stale.
   `blocks[0]` is the entry block.
 - `Function` struct for the eval-only slice: `Block[] blocks` (`blocks[0]` is
   the entry block; its params are the function parameters when parameters are
-  first promoted) plus return type/result metadata.
+  first promoted) plus return type/result metadata and the SSA value count
+  needed to size VM value storage once per function execution.
 - Add function ids, debug names, module function tables, and `StaticVar` tables
   only when direct calls, module-backed tests, or static variables are the
   promoted red behavior. Module-level and `static` local variables must be

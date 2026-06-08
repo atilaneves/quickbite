@@ -14,16 +14,15 @@ package imported!"quickbite.lang".Value eval(
     import std.sumtype: match;
 
     long[] values;
+    values.length = function_.valueCount;
     foreach (instruction; function_.blocks[0].instructions) {
         instruction.match!(
             (const Const const_) {
-                ensureValue(values, const_.destination.id);
                 values[const_.destination.id] = cast(int) const_.bits;
             },
             (const BinaryOp binary) {
                 final switch (binary.operation) with (BinaryOperation) {
                     case add:
-                        ensureValue(values, binary.destination.id);
                         values[binary.destination.id] =
                             values[binary.lhs] + values[binary.rhs];
                         break;
@@ -39,9 +38,4 @@ package imported!"quickbite.lang".Value eval(
             return Value.void_;
         },
     );
-}
-
-private void ensureValue(ref long[] values, in uint id) @safe {
-    if (id >= values.length)
-        values.length = id + 1;
 }
