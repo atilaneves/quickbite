@@ -434,6 +434,9 @@ private struct Compiler {
     }
 
     private void compileAssert(AssertExp assert_) {
+        if (compileDmdAssertFailEqualMessage(assert_.msg))
+            return;
+
         if (auto equal = assert_.e1.isEqualExp) {
             compileBinaryExpression(equal, Op.assertCompare);
             return;
@@ -441,6 +444,27 @@ private struct Compiler {
 
         compileExpression(assert_.e1);
         program.instructions ~= Instruction(Op.assertTrue);
+    }
+
+    private bool compileDmdAssertFailEqualMessage(Expression message) {
+        if (message is null)
+            return false;
+
+        auto call = message.isCallExp;
+        if (call is null || call.arguments is null)
+            return false;
+
+        if (call.arguments.length != 3)
+            return false;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null || stringChars(operator) != "==")
+            return false;
+
+        compileExpression((*call.arguments)[1]);
+        compileExpression((*call.arguments)[2]);
+        program.instructions ~= Instruction(Op.assertCompare);
+        return true;
     }
 
     private size_t functionIndex(FuncDeclaration function_) {

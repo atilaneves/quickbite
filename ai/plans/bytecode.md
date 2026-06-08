@@ -110,6 +110,12 @@ Lua-specific bytecode shape.
   together as the remaining integral assertion-diagnostic family. They passed
   with the existing equality diagnostic support and did not require distinct
   VM feature work.
+- `runTests.runsAttributedUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed DMD constant-folded assert diagnostics: `assert(1 == 2)` reaches
+  bytecode as a false assertion with a structured `_d_assert_fail("==", 1, 2)`
+  message payload. Bytecode now lowers that equality payload through the
+  existing assertion-compare opcode so the runner reports `1 != 2`.
 
 ## Current Next Step
 Continue with the next module named by
