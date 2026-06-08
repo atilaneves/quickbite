@@ -130,12 +130,15 @@ The currently covered IR backend eval tests are:
 - `arithmetic.IR`
 
 The next implementation slice should pick the next smallest current
-CTFE-backed eval behavior that still excludes `IR`, confirm it is red after
-promotion, inspect the DMD AST that reaches the IR compiler, then add only the
-IR shape and VM support required by that behavior. As of this update, the next
-likely candidate in `tests/ut/backends/lang/eval.d` is `multiCell`, but verify
-the current checkout before editing because backend progress notes can go
-stale.
+CTFE-backed eval behavior that still excludes `IR`, promote the existing
+backend matrix, and run the focused test. If it is red, verify it is red for
+the expected missing behavior. If it is green, verify the greenness by
+temporarily mutating the promoted test or relevant production code, confirming
+the focused test fails, and restoring the mutation. Inspect the DMD AST that
+reaches the IR compiler, then add only the IR shape and VM support required by
+that behavior. As of this update, the next likely candidate in
+`tests/ut/backends/lang/eval.d` is `multiCell`, but verify the current checkout
+before editing because backend progress notes can go stale.
 
 ### Next Slice Handoff
 
@@ -146,7 +149,10 @@ choose the next smallest eval behavior that still excludes `IR`.
 If `multiCell` still excludes `IR`, the next TDD slice is:
 
 1. Promote only the existing `multiCell` backend matrix to include `IR`.
-2. Run `ut.backends.lang.eval.multiCell.IR` and confirm it is red.
+2. Run `ut.backends.lang.eval.multiCell.IR`. If it is red, verify it is red
+   for the expected missing behavior. If it is green, verify the greenness by
+   temporarily mutating the promoted test or relevant production code,
+   confirming the focused test fails, and restoring the mutation.
 3. Inspect the DMD statement and expression shapes that reach the IR backend;
    the lowered IR must reflect the AST shape actually present after semantic
    analysis.
