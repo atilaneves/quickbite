@@ -50,6 +50,10 @@ public struct EvalSession {
         return submitImpl(input, false);
     }
 
+    public bool isTypeExpressionCell(in string input) {
+        return isReplTypeExpressionCell(input, moduleSource, importPaths);
+    }
+
     private EvalCell submitImpl(
         in string input,
         in bool allowIncomplete,
@@ -579,6 +583,9 @@ private bool isEvalModuleDeclaration(
     if (declaration.isUnitTestDeclaration !is null)
         return true;
 
+    if (declaration.isAliasDeclaration !is null)
+        return true;
+
     if (isEvalFunctionDeclaration(declaration))
         return true;
 
@@ -592,6 +599,83 @@ private bool isEvalModuleDeclaration(
         return true;
 
     return false;
+}
+
+private bool isReplTypeExpressionCell(
+    in string input,
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    return isParsedTypeExpressionCell(input) ||
+        isResolvedTypeAliasCell(input, moduleSource, importPaths);
+}
+
+private bool isParsedTypeExpressionCell(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        const expression = parser.parseExpression;
+        result = expression !is null &&
+            expression.isTypeExp !is null &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0;
+    });
+
+    return result;
+}
+
+private bool isResolvedTypeAliasCell(
+    in string input,
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleUncached;
+
+    try {
+        auto moduleResult = parseModuleUncached(
+            moduleSource ~ typeExpressionProbeSource(input),
+            importPaths,
+        );
+        return syntheticTypeAlias(moduleResult.module_) !is null;
+    } catch (Exception) {
+        return false;
+    }
+}
+
+private string typeExpressionProbeSource(in string input) @safe pure {
+    return "alias __quickbite_repl_type_expression_probe = " ~ input ~ ";\n";
+}
+
+private imported!"dmd.declaration".AliasDeclaration syntheticTypeAlias(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members is null || module_.members.length == 0)
+        return null;
+
+    auto declaration = (*module_.members)[module_.members.length - 1];
+    auto alias_ = declaration.isAliasDeclaration;
+    return alias_ !is null && alias_.type !is null ? alias_ : null;
 }
 
 private bool isEvalFunctionDeclaration(

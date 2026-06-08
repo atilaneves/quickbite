@@ -358,6 +358,25 @@ static foreach (backend; backends) {
         output.should == ["int"];
     }
 
+    @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "string",
+                "alias MyInt = int;",
+                "MyInt",
+                "struct Widget { int value; }",
+                "Widget",
+                ":q",
+            ],
+        );
+
+        output.should == ["string", "int", "Widget"];
+    }
+
     @("repl.backend.displaysStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

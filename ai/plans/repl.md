@@ -146,38 +146,14 @@ history acceptance. Backends execute complete `ReplCell` values and return
   now accepts a complete DMD `MixinStatement` node as displayable REPL input,
   so `mixin("1 + 2")` evaluates through the expression path and displays `3`.
 
-## To do
-
 - Extend type-expression display to cover type aliases and user-defined
-  types, not only primitive type keywords. `isTypeExpressionCell`
-  (`source/quickbite/frontend/repl.d`) checks `expression.isTypeExp`,
-  which returns null for an `IdentifierExp`; type aliases such as
-  `string` (`alias string = immutable(char)[];`) parse as identifiers,
-  not as `TypeExp` nodes, so they fall through to the regular
-  expression path and fail with "type is not an expression". All
-  primitive type keywords (`int`, `bool`, `long`, etc.) work because
-  the parser produces a `TypeExp` for them. DMD handles
-  `pragma(msg, string)` without issue. The same failure affects any
-  user-defined alias.
+  types, not only primitive type keywords. REPL type-expression
+  classification now checks the current session module context with a
+  DMD-resolved synthetic alias probe, so built-in aliases such as `string`,
+  user aliases such as `MyInt`, and user-defined types such as `Widget`
+  display through the `.stringof` path.
 
-  Reproducer:
-
-  ```sh
-  printf 'string\n' | bin/qb
-  printf 'alias MyInt = int;\nMyInt\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: type `string` is not an expression
-  ```
-
-  Expected:
-
-  ```text
-  string
-  ```
+## To do
 
 - Suppress `pragma(msg, …)` output during cell classification and
   ensure it fires exactly once (during evaluation) on stderr. Currently
