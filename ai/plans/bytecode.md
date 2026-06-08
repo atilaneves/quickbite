@@ -66,6 +66,41 @@ Lua-specific bytecode shape.
 - Treat bytecode as an internal artifact, not a public interchange format or a
   serialization compatibility promise.
 
+## Current Coverage State
+- `tests/ut/backends/lang/eval.d` now covers `Bytecode` for every eval
+  candidate previously listed for promotion: `multiCell`,
+  `preservesScalarValueTypes`, `castsFloatingValueNumerically`,
+  `castsRuntimeValuesToIntegerTypes`,
+  `floatingSubtractionUsesNumericValues`,
+  `floatingUnaryMinusUsesNumericValue`, `fabsFloatPreservesReturnType`, and
+  `powFloatDoesNotReturnDoubleValue`.
+- Those promotions were stale coverage gaps. The bytecode backend already
+  supported them through its existing eval compiler, VM local/value-stack
+  operations, scalar casts, floating arithmetic, and narrow `std.math`
+  builtin bridge.
+
+## Current Next Step
+The next module is `tests/ut/backends/lang/integral_types.d`, following
+`ai/plans/backend-test-modules-order.md`.
+
+Start with the first current named unittest in that module that still excludes
+`Bytecode`: `integralType.byte`. Do not add `Bytecode` to the module's outer
+`static foreach (backend; backends)` as a first step, because that would
+promote every integral type case and the failure-message cases at once.
+
+Promote exactly one named behavior, rebuild/list tests, and run
+`ut.backends.lang.integral_types.integralType.byte.Bytecode` focused. Only
+after that focused test is red should production code change. If it passes
+without production changes, keep the promotion as supported coverage and move
+to the next smallest current candidate in `integral_types.d`.
+
+Expect this module to force module-backed unittest execution rather than just
+`eval`: `integral_types.d` uses `runBackendSourceFixtureTests`, while
+`Bytecode.runTests` is still outside the eval-only path. Keep the first
+implementation slice to the minimum needed for the promoted test; do not jump
+ahead to broad `api/runner.d` behavior, assertion diagnostics, or function
+tables beyond what the red test forces.
+
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
 - Add focused VM contract tests only for bytecode-specific properties such as
