@@ -148,6 +148,11 @@ Lua-specific bytecode shape.
   `TestOutcome`, the DMD unittest symbol name (`ident.toChars`), and the source
   location (`loc.toChars`), reporting names such as `__unittest_L2_C13` and
   file-backed locations such as `path(1)`.
+- `runModulesTests.runsBothModules` in `tests/ut/backends/api/runner.d` now
+  covers `Bytecode`. This was a stale coverage gap: `runModulesTests` just calls
+  `backend.runTests` on each module, and the existing `Bytecode.runTests` path
+  plus its `throw`-expression support already ran both modules and propagated
+  the second module's thrown message without production changes.
 
 ## Current Next Step
 Continue with the next module named by

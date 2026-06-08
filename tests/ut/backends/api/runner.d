@@ -191,7 +191,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
