@@ -94,7 +94,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -109,7 +109,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 == 42");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

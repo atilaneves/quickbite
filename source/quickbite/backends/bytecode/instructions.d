@@ -14,6 +14,7 @@ package enum Op: ubyte {
     incrementLocal,
     cast_,
     equal,
+    notEqual,
     add,
     subtract,
     multiply,

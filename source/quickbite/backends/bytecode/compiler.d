@@ -185,7 +185,7 @@ private struct Compiler {
         }
 
         if (auto equal = expression.isEqualExp) {
-            compileBinaryExpression(equal, Op.equal);
+            compileBinaryExpression(equal, equalityOp(equal));
             return;
         }
 
@@ -585,7 +585,7 @@ private struct Compiler {
             return;
 
         if (auto equal = assert_.e1.isEqualExp) {
-            compileAssertComparison(equal, Op.equal);
+            compileAssertComparison(equal, equalityOp(equal));
             return;
         }
 
@@ -659,6 +659,12 @@ private struct Compiler {
             Op.equal,
         );
         return true;
+    }
+
+    private Op equalityOp(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+
+        return equal.op == EXP.notEqual ? Op.notEqual : Op.equal;
     }
 
     private Value assertMessageValue(AssertExp assert_) {
