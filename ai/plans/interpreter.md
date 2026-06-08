@@ -228,6 +228,16 @@ invariants that still need a reachable `eval.d` signal, and module-backed
 interpreter paths that belong to a follow-up PR for their containing test
 module.
 
+### Integrals Slice Lessons
+
+Current progress in `tests/ut/backends/lang/integrals.d`:
+`type.byte.<backend>` is covered by `Interpreter` for `backend = Bytecode` and
+`backend = Interpreter`. This requires adding module-cast handling to
+`EvalModuleInterpreter.castValue`.
+
+Next smallest candidate is `type.ubyte.<backend>`, while keeping the test
+shape unchanged.
+
 ### First PR Guardrails
 
 The first PR must be smaller than a general-purpose interpreter slice.

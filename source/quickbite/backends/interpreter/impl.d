@@ -616,7 +616,15 @@ private struct EvalModuleInterpreter {
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
-        return runExpression(cast_.e1);
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
+
+        auto type = cast_.to.toBasetype;
+        if (type is null)
+            return runExpression(cast_.e1);
+
+        return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
     }
 
     private string receiverName(imported!"dmd.expression".Expression receiver) {

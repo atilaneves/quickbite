@@ -18,7 +18,7 @@ private alias IntegralTypes = AliasSeq!(
 );
 
 
-static foreach (backend; AliasSeq!(Bytecode)) {
+static foreach (backend; AliasSeq!(Bytecode, Interpreter)) {
     static foreach (T; IntegralTypes) {
         static if (is(T == byte))
         @("type." ~ T.stringof ~ "." ~ Bytecode.stringof)
