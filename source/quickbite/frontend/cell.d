@@ -50,6 +50,10 @@ public struct EvalSession {
         return submitImpl(input, false);
     }
 
+    public bool isTypeExpressionCell(in string input) {
+        return isReplTypeExpressionCell(input, moduleSource, importPaths);
+    }
+
     private EvalCell submitImpl(
         in string input,
         in bool allowIncomplete,
@@ -77,6 +81,9 @@ public struct EvalSession {
             if (const diagnostic = statementSyntaxDiagnostic(input))
                 throw new Exception(diagnostic);
 
+            const history = input.isStandalonePragmaMessageStatement ?
+                null :
+                input ~ "\n";
             const source = evalSource(
                 moduleSource,
                 localTranscript ~ input ~ "\n",
@@ -86,7 +93,7 @@ public struct EvalSession {
                 source,
                 importPaths,
                 EvalHistoryTarget.local,
-                input ~ "\n",
+                history,
             );
         }
 
@@ -452,9 +459,12 @@ private bool isExpressionCell(in string input) {
         parser.nextToken;
         const statement = parser.parseStatement(0);
         const expression = statement is null ? null : statement.isExpStatement;
-        result = expression !is null &&
+        const isExpressionStatement = expression !is null &&
             expression.exp !is null &&
-            expression.exp.isDeclarationExp is null &&
+            expression.exp.isDeclarationExp is null;
+        const isMixinExpressionStatement = statement !is null &&
+            statement.isMixinStatement !is null;
+        result = (isExpressionStatement || isMixinExpressionStatement) &&
             parser.token.value == TOK.endOfFile &&
             global.errors == 0;
     });
@@ -489,6 +499,43 @@ private string statementSyntaxDiagnostic(in string input) {
         parser.parseStatement(0);
         if (global.errors != 0)
             result = firstDiagnosticMessage;
+    });
+
+    return result;
+}
+
+private bool isStandalonePragmaMessageStatement(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.id: Id;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        auto statement = parser.parseStatement(0);
+        auto pragma_ = statement is null ? null : statement.isPragmaStatement;
+        result = pragma_ !is null &&
+            pragma_.ident is Id.msg &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0;
     });
 
     return result;
@@ -549,7 +596,7 @@ private bool isIncompleteCell(in string input) {
         result = moduleResult.diagnostics.hasErrors &&
             moduleResult.module_.members !is null &&
             moduleResult.module_.members.length != 0 &&
-            allFunctionDeclarations(moduleResult.module_.members) &&
+            allEvalModuleDeclarations(moduleResult.module_.members) &&
             hasDiagnosticAtEnd(input);
     });
 
@@ -576,10 +623,99 @@ private bool isEvalModuleDeclaration(
     if (declaration.isUnitTestDeclaration !is null)
         return true;
 
+    if (declaration.isAliasDeclaration !is null)
+        return true;
+
     if (isEvalFunctionDeclaration(declaration))
         return true;
 
+    if (declaration.isAggregateDeclaration !is null)
+        return true;
+
+    if (declaration.isEnumDeclaration !is null)
+        return true;
+
+    if (declaration.isTemplateDeclaration !is null)
+        return true;
+
     return false;
+}
+
+private bool isReplTypeExpressionCell(
+    in string input,
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    return isParsedTypeExpressionCell(input) ||
+        isResolvedTypeAliasCell(input, moduleSource, importPaths);
+}
+
+private bool isParsedTypeExpressionCell(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        const expression = parser.parseExpression;
+        result = expression !is null &&
+            expression.isTypeExp !is null &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0;
+    });
+
+    return result;
+}
+
+private bool isResolvedTypeAliasCell(
+    in string input,
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleUncached;
+
+    try {
+        auto moduleResult = parseModuleUncached(
+            moduleSource ~ typeExpressionProbeSource(input),
+            importPaths,
+        );
+        return syntheticTypeAlias(moduleResult.module_) !is null;
+    } catch (Exception) {
+        return false;
+    }
+}
+
+private string typeExpressionProbeSource(in string input) @safe pure {
+    return "alias __quickbite_repl_type_expression_probe = " ~ input ~ ";\n";
+}
+
+private imported!"dmd.declaration".AliasDeclaration syntheticTypeAlias(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members is null || module_.members.length == 0)
+        return null;
+
+    auto declaration = (*module_.members)[module_.members.length - 1];
+    auto alias_ = declaration.isAliasDeclaration;
+    return alias_ !is null && alias_.type !is null ? alias_ : null;
 }
 
 private bool isEvalFunctionDeclaration(
@@ -587,17 +723,6 @@ private bool isEvalFunctionDeclaration(
 ) {
     auto function_ = declaration.isFuncDeclaration;
     return function_ !is null && function_.fbody !is null;
-}
-
-private bool allFunctionDeclarations(
-    imported!"dmd.dsymbol".Dsymbols* declarations,
-) {
-    foreach (declaration; *declarations) {
-        if (!isEvalFunctionDeclaration(declaration))
-            return false;
-    }
-
-    return true;
 }
 
 private bool hasDiagnosticAtEnd(in string input) {

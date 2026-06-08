@@ -342,8 +342,14 @@ private imported!"quickbite.lang".Value structValue(
 
     Value[] fields;
     if (struct_.elements !is null) {
-        foreach (element; *struct_.elements) {
+        foreach (index, element; *struct_.elements) {
             if (element is null)
+                continue;
+
+            auto field = structLiteralField(struct_, index);
+            if (field is null)
+                continue;
+            if (isUndisplayableCtfeStructField(field, element))
                 continue;
 
             fields ~= ctfeValue(element);
@@ -354,6 +360,49 @@ private imported!"quickbite.lang".Value structValue(
         struct_.sd.ident.toString.idup,
         fields,
     );
+}
+
+private bool isUndisplayableCtfeStructField(
+    imported!"dmd.declaration".VarDeclaration field,
+    imported!"dmd.expression".Expression element,
+) {
+    if (element.isNullExp is null)
+        return false;
+    if (isSyntheticThisField(field))
+        return true;
+    return isFunctionLikeType(field.type);
+}
+
+private bool isSyntheticThisField(
+    imported!"dmd.declaration".VarDeclaration field,
+) {
+    import dmd.declaration: ThisDeclaration;
+
+    return cast(ThisDeclaration) field !is null;
+}
+
+private imported!"dmd.declaration".VarDeclaration structLiteralField(
+    imported!"dmd.expression".StructLiteralExp literal,
+    in size_t index,
+) {
+    if (literal.sd is null || index >= literal.sd.fields.length)
+        return null;
+    return literal.sd.fields[index];
+}
+
+private bool isFunctionLikeType(imported!"dmd.mtype".Type type) {
+    if (type is null)
+        return false;
+
+    auto basetype = type.toBasetype;
+    if (basetype.isTypeFunction !is null)
+        return true;
+    if (basetype.isTypeDelegate !is null)
+        return true;
+    if (auto pointer = basetype.isTypePointer)
+        return pointer.nextOf.isTypeFunction !is null;
+
+    return false;
 }
 
 private __gshared uint _diagnosticModuleCounter;

@@ -82,9 +82,42 @@ def test_interactive_error_label_is_red() -> None:
 def test_piped_error_label_is_not_coloured() -> None:
     result = run_qb(input="1 / 0\n")
 
-    assert result.returncode == 1
+    assert result.returncode == 0
     assert result.stdout.startswith("Error: ")
     assert "\x1b[" not in result.stdout
+
+
+def test_piped_mode_continues_after_error() -> None:
+    result = run_qb(input="1 + 1\n2 + 2\nbad_var\n4 + 4\n5 + 5\n")
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        "2\n"
+        "4\n"
+        "Error: undefined identifier `bad_var`\n"
+        "8\n"
+        "10\n"
+    )
+
+
+def test_piped_pragma_msg_writes_once_to_stderr() -> None:
+    result = run_qb(input='pragma(msg, "hello");\n42\n')
+
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+    assert result.stderr == "hello\n"
+
+
+def test_piped_quit_command_does_not_abandon_pending_input() -> None:
+    result = run_qb(
+        input="int answer() {\n:q\nreturn 42;\n}\nanswer()\n:q\n",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == (
+        "Error: cannot run REPL command `:q` while input is pending\n"
+        "42\n"
+    )
 
 
 def test_command_prints_expression_result() -> None:

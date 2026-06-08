@@ -20,41 +20,11 @@ Shared frontend/session code owns parsing, classification, buffering, and
 history acceptance. Backends execute complete `ReplCell` values and return
 `quickbite.lang.Value`.
 
-## To do
+## Done
 
-- Silently skip comment-only lines instead of erroring. The REPL
-  already skips blank and whitespace-only lines
-  (`repl/main.d:45–46`); a `//`-comment line is invisible to DMD but
-  is not whitespace, so it falls through to the statement path and
-  produces `Error: found 'End of File' instead of statement`. In piped
-  mode the error also terminates the session, dropping all subsequent
-  lines. Python and GHCi both silently ignore comment input. The fix
-  should extend the skip guard and apply consistently to `runReplLoop`.
-
-  Offending code (`repl/main.d:45–46`):
-
-  ```d
-  if (line.strip.length == 0)
-      continue;
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf '// just a comment\n1 + 2\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: found `End of File` instead of statement
-  ```
-
-  Expected:
-
-  ```text
-  3
-  ```
+- Silently skip comment-only lines instead of erroring. The piped CLI loop,
+  interactive CLI loop, and `runReplLoop` now skip blank, whitespace-only,
+  and `//` comment-only input before submitting to DMD.
 
 - Continue past errors in piped mode instead of exiting on the first
   failure. The interactive REPL uses `FailureMode.continue_` and keeps
@@ -96,21 +66,15 @@ history acceptance. Backends execute complete `ReplCell` values and return
 
 - Clear buffered incomplete input after a buffered cell completes with a
   diagnostic. A failed multiline declaration such as a function with an
-  undefined identifier must not append later submissions to the rejected
+  undefined identifier no longer appends later submissions to the rejected
   source.
-
-  Offending input:
-
-  ```text
-  int dup() {
-  return unknown;
-  }
-  42
-  ```
 
 - Define command handling while input is pending. Commands such as `:q` must
   not silently abandon a buffered D cell in the binary path unless the API path
   models the same explicit command behavior.
+  `Repl` now rejects REPL commands while a D cell is buffered, keeps the
+  buffered source intact, and exposes the valid quit-command check used by both
+  `runReplLoop` and the CLI loops.
 
   Offending input:
 
@@ -179,135 +143,42 @@ history acceptance. Backends execute complete `ReplCell` values and return
   ```
 
 - Recognise standalone `mixin(…)` as an expression cell. `isExpressionCell`
-  (`source/quickbite/frontend/cell.d:425`) appends `";\0"` and calls
-  `parseStatement`; `mixin("…");` parses as a `MixinStatement`, not an
-  `ExpStatement`, so the check fails and the cell falls through to the
-  statement path, which errors. The assigned form works because the mixin
-  is not the outermost statement. DMD handles mixin expressions in CTFE
-  without issue.
-
-  Offending code (`source/quickbite/frontend/cell.d:453–458`):
-
-  ```d
-  const statement = parser.parseStatement(0);
-  const expression = statement is null ? null : statement.isExpStatement;
-  result = expression !is null &&
-      expression.exp !is null &&
-      expression.exp.isDeclarationExp is null &&
-      parser.token.value == TOK.endOfFile &&
-      global.errors == 0;
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf 'mixin("1 + 2")\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: found `End of File` when expecting `;` following mixin
-  ```
-
-  Expected:
-
-  ```text
-  3
-  ```
+  now accepts a complete DMD `MixinStatement` node as displayable REPL input,
+  so `mixin("1 + 2")` evaluates through the expression path and displays `3`.
 
 - Extend type-expression display to cover type aliases and user-defined
-  types, not only primitive type keywords. `isTypeExpressionCell`
-  (`source/quickbite/frontend/repl.d`) checks `expression.isTypeExp`,
-  which returns null for an `IdentifierExp`; type aliases such as
-  `string` (`alias string = immutable(char)[];`) parse as identifiers,
-  not as `TypeExp` nodes, so they fall through to the regular
-  expression path and fail with "type is not an expression". All
-  primitive type keywords (`int`, `bool`, `long`, etc.) work because
-  the parser produces a `TypeExp` for them. DMD handles
-  `pragma(msg, string)` without issue. The same failure affects any
-  user-defined alias.
-
-  Reproducer:
-
-  ```sh
-  printf 'string\n' | bin/qb
-  printf 'alias MyInt = int;\nMyInt\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: type `string` is not an expression
-  ```
-
-  Expected:
-
-  ```text
-  string
-  ```
+  types, not only primitive type keywords. REPL type-expression
+  classification now checks the current session module context with a
+  DMD-resolved synthetic alias probe, so built-in aliases such as `string`,
+  user aliases such as `MyInt`, and user-defined types such as `Widget`
+  display through the `.stringof` path.
 
 - Suppress `pragma(msg, …)` output during cell classification and
-  ensure it fires exactly once (during evaluation) on stderr. Currently
-  `parseModule` is called twice per cell — once in
-  `isModuleDeclarationCell` (`source/quickbite/frontend/cell.d:512`)
-  and once in `evalCellFromSource` (`source/quickbite/frontend/cell.d:226`)
-  — so `pragma(msg)` output appears twice and lands on stdout, which
-  corrupts piped output. DMD fires it exactly once and writes to
-  stderr.
+  ensure it fires exactly once during evaluation on stderr. Standalone
+  `pragma(msg)` cells are recognised through DMD's parsed
+  `PragmaStatement` node and are no longer appended to the persistent REPL
+  transcript, so later cells do not re-run their compile-time message.
 
-  Offending code — both call sites invoke `parseModule` without
-  suppressing pragmas:
+- Verified `std.format.format` in the REPL against the shell-safe
+  reproducer. The earlier reproducer used shell `printf` with `%s` in
+  the format string, so the shell stripped the placeholder before `qb`
+  saw the input and produced `format("hello ", 42)`, which correctly
+  leaves an orphan argument. Passing a literal `%s` to `qb` evaluates
+  like DMD CTFE and prints `"hello 42"`.
 
-  ```d
-  // cell.d:512 — classification
-  auto moduleResult = parseModule(
-      text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
-      input,
-  );
-
-  // cell.d:226 — evaluation
-  auto moduleResult = parseModule(source, importPaths);
-  ```
-
-  Reproducer:
+  Shell-safe reproducer:
 
   ```sh
-  printf 'pragma(msg, "hello");\n42\n' | bin/qb
+  printf '%s\n%s\n' \
+    'import std.format : format;' \
+    'format("hello %s", 42)' |
+    bin/qb
   ```
 
-  Current output:
+  Output:
 
   ```text
-  hello
-  hello
-  42
-  ```
-
-  Expected:
-
-  ```text
-  hello
-  42
-  ```
-
-- Fix `std.format.format` in the REPL: it throws a
-  `FormatException("Orphan format arguments")` even for well-formed
-  calls, while DMD evaluates the same call at compile time without
-  issue. The exception suggests the argument tuple fed to `format`'s
-  template is being built with an unexpected shape inside the REPL
-  wrapper — the `%s` placeholder fails to consume its argument.
-
-  Reproducer:
-
-  ```sh
-  printf 'import std.format : format;\nformat("hello %s", 42)\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: uncaught CTFE exception `std.format.FormatException("Orphan format arguments: args[0..1]")`
+  "hello 42"
   ```
 
   DMD CTFE:
@@ -340,6 +211,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   ```text
   MapResult([1, 2, 3])
   ```
+
+## To do
 
 - Collapse duplicate import-path lines in failed-import diagnostics.
   DMD emits `import path[N] = …` once, after the error. The REPL

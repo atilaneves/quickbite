@@ -7,7 +7,6 @@ public int main(string[] args) {
     import quickbite.repl: Repl;
     import quickbite.repl_cli: parseReplArgs;
     import std.stdio: stderr, stdin, writeln;
-    import std.string: strip;
 
     const options = parseReplArgs(args);
     if (options.status != 0) {
@@ -39,13 +38,13 @@ public int main(string[] args) {
     }
 
     foreach (line; stdin.byLineCopy) {
-        if (line == ":q" || line == ":quit")
+        if (repl.shouldQuit(line))
             break;
 
-        if (line.strip.length == 0)
+        if (line.ignoredReplInput)
             continue;
 
-        if (!submit(repl, line, FailureMode.exit))
+        if (!submit(repl, line, FailureMode.continue_))
             return 1;
     }
 
@@ -69,7 +68,6 @@ private bool stdoutIsTerminal() {
 private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
     import gnu.readline: readline, rl_free;
     import std.string: fromStringz;
-    import std.string: strip;
 
     while (true) {
         char* rawLine = readline("> ");
@@ -80,11 +78,13 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
             rl_free(rawLine);
 
         const line = rawLine.fromStringz.idup;
-        if (line == ":q" || line == ":quit")
+        if (repl.shouldQuit(line))
             return 0;
 
-        if (line.strip.length != 0)
-            add_history(rawLine);
+        if (line.ignoredReplInput)
+            continue;
+
+        add_history(rawLine);
 
         if (!submit(repl, line, FailureMode.continue_))
             return 1;
@@ -92,6 +92,13 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
 }
 
 extern (C) private void add_history(const(char)* line);
+
+private bool ignoredReplInput(in string input) @safe pure {
+    import std.string: startsWith, strip;
+
+    const stripped = input.strip;
+    return stripped.length == 0 || stripped.startsWith("//");
+}
 
 private enum FailureMode {
     exit,

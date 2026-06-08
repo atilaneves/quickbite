@@ -6,6 +6,15 @@ import ut.backends;
 
 private:
 
+@("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
+unittest {
+    import quickbite.frontend.repl: ReplCellKind, ReplSession;
+
+    auto session = ReplSession([]);
+
+    session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
+}
+
 static foreach (backend; backends) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
@@ -17,6 +26,30 @@ static foreach (backend; backends) {
         );
 
         output.should == ["1", "2"];
+    }
+
+    @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["// just a comment", "1 + 2", ":q"],
+        );
+
+        output.should == ["3"];
+    }
+
+    @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`mixin("1 + 2")`, ":q"],
+        );
+
+        output.should == ["3"];
     }
 
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
@@ -101,6 +134,59 @@ static foreach (backend; backends) {
         output.should == ["42"];
     }
 
+    @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct StructCell {",
+                "int value;",
+                "}",
+                "StructCell(42).value",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+
+    @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int dup() {").should == Value.void_;
+        repl.submit("return unknown;").should == Value.void_;
+        void completeRejectedDeclaration() {
+            repl.submit("}");
+        }
+        completeRejectedDeclaration.shouldThrowWithMessage(
+            "undefined identifier `unknown`",
+        );
+        repl.submit("42").should == Value(42);
+    }
+
+    @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int answer() {").should == Value.void_;
+        void quitWhilePending() {
+            repl.submit(":q");
+        }
+        quitWhilePending.shouldThrowWithMessage(
+            "cannot run REPL command `:q` while input is pending",
+        );
+        repl.submit("return 42;").should == Value.void_;
+        repl.submit("}").should == Value.void_;
+        repl.submit("answer()").should == Value(42);
+    }
+
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -143,7 +229,7 @@ static foreach (backend; backends) {
             ],
         );
 
-        output.should == ["MapResult([1, 2, 3], null)"];
+        output.should == ["MapResult([1, 2, 3])"];
     }
 
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
@@ -270,6 +356,25 @@ static foreach (backend; backends) {
         );
 
         output.should == ["int"];
+    }
+
+    @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "string",
+                "alias MyInt = int;",
+                "MyInt",
+                "struct Widget { int value; }",
+                "Widget",
+                ":q",
+            ],
+        );
+
+        output.should == ["string", "int", "Widget"];
     }
 
     @("repl.backend.displaysStringValues." ~ backend.stringof)

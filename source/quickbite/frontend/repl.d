@@ -23,7 +23,7 @@ public struct ReplSession {
     }
 
     public ReplCell submit(in string input) {
-        if (isTypeExpressionCell(input)) {
+        if (evalSession.isTypeExpressionCell(input)) {
             auto cell = evalSession.submit(input ~ ".stringof");
             return ReplCell(ReplCellKind.typeExpression, cell.source, cell);
         }
@@ -63,39 +63,4 @@ private ReplCellKind replCellKind(
         case expression:
             return ReplCellKind.expression;
     }
-}
-
-private bool isTypeExpressionCell(in string input) {
-    import dmd.astcodegen: ASTCodegen;
-    import dmd.errors: diagnostics;
-    import dmd.globals: global;
-    import dmd.parse: Parser;
-    import dmd.tokens: TOK;
-    import quickbite.frontend.compiler: withCompilerLock;
-
-    bool result;
-    withCompilerLock(() {
-        global.errors = 0;
-        global.warnings = 0;
-        diagnostics.length = 0;
-
-        const source = input ~ '\0';
-        scope parser = new Parser!ASTCodegen(
-            null,
-            source,
-            false,
-            global.errorSink,
-            &global.compileEnv,
-            true,
-        );
-
-        parser.nextToken;
-        const expression = parser.parseExpression;
-        result = expression !is null &&
-            expression.isTypeExp !is null &&
-            parser.token.value != TOK.semicolon &&
-            global.errors == 0;
-    });
-
-    return result;
 }
