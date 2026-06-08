@@ -202,3 +202,9 @@
 
 - Do not treat `gh pr create --web` as creating a PR. It only opens a
   pre-filled form; use non-interactive `gh pr create` when asked to create one.
+
+- Every `@trusted` declaration needs a nearby comment explaining the concrete
+  safety argument that justifies it.
+
+- Do not amend an existing commit unless the user explicitly asks for an
+  amend. Make a new commit for follow-up changes.

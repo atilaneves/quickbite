@@ -32,7 +32,7 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);

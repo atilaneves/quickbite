@@ -40,6 +40,9 @@ private struct Compiler {
         if (auto integer = expression.isIntegerExp)
             return compileInteger(integer);
 
+        if (auto real_ = expression.isRealExp)
+            return compileReal(real_);
+
         if (auto add = expression.isAddExp)
             return compileAdd(add);
 
@@ -57,13 +60,29 @@ private struct Compiler {
         return destination;
     }
 
+    private Value compileReal(imported!"dmd.expression".RealExp real_) {
+        import dmd.astenums: TY;
+
+        switch (real_.type.toBasetype.ty) with (TY) {
+            case Tfloat32:
+                const destination = nextValue(Type.f32);
+                instructions ~= Instruction(Const(
+                    floatBits(cast(float) real_.toReal),
+                    destination,
+                ));
+                return destination;
+            default:
+                assert(0);
+        }
+    }
+
     private Value compileAdd(imported!"dmd.expression".AddExp add) {
         const lhs = compileExpression(add.e1);
         const rhs = compileExpression(add.e2);
-        const destination = nextValue(Type.i32);
+        const destination = nextValue(lhs.type);
         instructions ~= Instruction(BinaryOp(
             BinaryOperation.add,
-            Type.i32,
+            lhs.type,
             lhs.id,
             rhs.id,
             destination,
@@ -93,4 +112,12 @@ private struct Compiler {
             nextValueId,
         );
     }
+}
+
+// @trusted: reads the bytes of a local float as a same-sized uint for IR raw
+// scalar storage. The pointer is used only for this immediate read and never
+// escapes.
+private ulong floatBits(in float value) @trusted pure nothrow {
+    static assert(float.sizeof == uint.sizeof);
+    return *cast(uint*) &value;
 }
