@@ -99,6 +99,12 @@ private string locChars(imported!"dmd.location".Loc loc) @trusted {
     return loc.toChars.fromStringz.idup;
 }
 
+private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tarray || type.ty == TY.Tsarray;
+}
+
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
@@ -285,6 +291,9 @@ private struct EvalFunctionWalker {
 
         auto type = cast_.to.toBasetype;
         if (type is null)
+            return runExpression(cast_.e1);
+
+        if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
@@ -685,6 +694,9 @@ private struct EvalModuleInterpreter {
 
         auto type = cast_.to.toBasetype;
         if (type is null)
+            return runExpression(cast_.e1);
+
+        if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));

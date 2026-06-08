@@ -309,13 +309,18 @@ public struct Value {
 
     public Value castTo(T)() const @safe pure {
         import std.sumtype: match;
-        import std.traits: Unqual, isFloatingPoint, isIntegral;
+        import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
 
         return data.match!(
             (value) {
                 alias U = Unqual!(typeof(value));
 
-                static if (isIntegral!U || isFloatingPoint!U) {
+                static if (
+                    is(U == bool) ||
+                    isSomeChar!U ||
+                    isIntegral!U ||
+                    isFloatingPoint!U
+                ) {
                     return Value(cast(T) value);
                 } else {
                     throw new Exception("Unsupported cast.");
