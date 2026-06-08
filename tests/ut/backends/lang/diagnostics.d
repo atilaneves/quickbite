@@ -111,7 +111,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -124,7 +124,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

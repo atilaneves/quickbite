@@ -240,6 +240,9 @@ Lua-specific bytecode shape.
   distinguish `!=` from `==`, so bytecode now emits and evaluates a `notEqual`
   opcode and reports failed `!=` assertions with the inverse operator, such as
   `42 == 42`.
+- `ok` in `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This
+  was a stale coverage gap: the existing bytecode function-call, return, and
+  equality assertion path already handled the passing assertion.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
