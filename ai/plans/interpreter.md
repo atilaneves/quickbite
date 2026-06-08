@@ -197,15 +197,6 @@ assertion formatting until a promoted test forces that behaviour.
 
 ### Implementation Review Notes
 
-**Finding 5 — Builtin call zero-argument check uses `is null` instead of a
-length guard.**
-`EvalFunctionWalker` tests `call.arguments is null` to detect a zero-argument
-builtin. DMD may produce a non-null empty `Expressions*` (`.length == 0`)
-rather than null for a call with no arguments, causing the check to fail and
-the interpreter to throw "Unsupported eval call argument count" for a valid
-zero-argument builtin. Replace with `call.arguments is null ||
-call.arguments.length == 0`.
-
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
 `EvalModuleInterpreter`.**
 `EvalFunctionWalker` converts `StringExp` to a `char[]` array `Value` (covers

@@ -159,6 +159,12 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
+@("zeroArgumentCallReportsArgumentCount.Interpreter")
+unittest {
+    newBackend!Interpreter.eval("int zero() { return 0; }\nzero")
+        .shouldThrowWithMessage("Unsupported eval call argument count.");
+}
+
 static foreach (backend; backendsWith!(Bytecode, Interpreter)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {

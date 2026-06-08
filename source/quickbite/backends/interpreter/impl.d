@@ -191,7 +191,7 @@ private struct EvalFunctionWalker {
         import std.math: mathFabs = fabs;
         import std.math: mathPow = pow;
 
-        if (call.arguments is null)
+        if (call.arguments is null || call.arguments.length == 0)
             throw new Exception("Unsupported eval call argument count.");
 
         with (BUILTIN) switch (isBuiltin(call.f)) {
