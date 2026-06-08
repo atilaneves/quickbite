@@ -96,6 +96,9 @@ public struct Repl {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
         import quickbite.lang: Value;
 
+        if (session.loadedModuleSource.length == 0)
+            return ReplResult(Value.void_);
+
         const result = backend.runTestResults(
             parseModuleWithCheckActionContext(
                 session.loadedModuleSource,

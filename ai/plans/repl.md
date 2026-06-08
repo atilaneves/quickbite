@@ -227,6 +227,13 @@ history acceptance. Backends execute complete `ReplCell` values and return
   `Value.undisplayable` factory) renders exactly `<undisplayable>`, so
   `delegate int(){ return 42; }` displays the placeholder and exits 0.
 
+- Made `:t` with no loaded tests produce a clean REPL result.
+  `Repl.runLoadedTests` now returns `ReplResult(Value.void_)` when
+  `session.loadedModuleSource.length == 0`, guarding before the DMD
+  parse/test pipeline, so `bin/qb -c ':t'` produces no output and exits
+  0 instead of leaking `import path[0] = …` and
+  `Error: cannot find input file <repl>`.
+
 ## To do
 
 - Collapse duplicate import-path lines in failed-import diagnostics.
@@ -266,22 +273,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
 
   ```text
   Error: unable to read module `mymodule`
-  ```
-
-- Make `:t` with no loaded tests produce a clean REPL result. It should not
-  leak DMD import-path diagnostics or report that `<repl>` cannot be found.
-
-  Offending command:
-
-  ```sh
-  bin/qb -c ':t'
-  ```
-
-  Current output includes:
-
-  ```text
-  import path[0] = /usr/include/dlang/dmd
-  Error: cannot find input file `<repl>`
   ```
 
 - Make `__FILE__`, `__FUNCTION__`, and `__MODULE__` return

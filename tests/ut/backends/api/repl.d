@@ -459,6 +459,15 @@ static foreach (backend; backends) {
         repl.submit(":t").should == Value.void_;
     }
 
+    @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit(":t").should == Value.void_;
+    }
+
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
