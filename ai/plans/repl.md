@@ -26,8 +26,6 @@ history acceptance. Backends execute complete `ReplCell` values and return
   interactive CLI loop, and `runReplLoop` now skip blank, whitespace-only,
   and `//` comment-only input before submitting to DMD.
 
-## To do
-
 - Continue past errors in piped mode instead of exiting on the first
   failure. The interactive REPL uses `FailureMode.continue_` and keeps
   running after an error; the piped path uses `FailureMode.exit` and
@@ -65,6 +63,8 @@ history acceptance. Backends execute complete `ReplCell` values and return
   8
   10
   ```
+
+## To do
 
 - Clear buffered incomplete input after a buffered cell completes with a
   diagnostic. A failed multiline declaration such as a function with an

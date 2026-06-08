@@ -44,7 +44,7 @@ public int main(string[] args) {
         if (line.ignoredReplInput)
             continue;
 
-        if (!submit(repl, line, FailureMode.exit))
+        if (!submit(repl, line, FailureMode.continue_))
             return 1;
     }
 
