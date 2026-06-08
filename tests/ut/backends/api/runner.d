@@ -18,7 +18,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         const msg = runBackendSourceFixtureTests!backend(q{
@@ -29,7 +29,9 @@ static foreach (backend; backends) {
         }).shouldThrow.msg;
         "quickbite regression".should.be in msg;
     }
+}
 
+static foreach (backend; backends) {
     @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
 

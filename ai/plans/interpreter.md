@@ -208,6 +208,11 @@ the narrow assertion-message fix for DMD-lowered equality assertions where the
 generated boolean helper would otherwise report `true != true` instead of the
 original integer operands.
 
+Runner progress: `runTests.runsAttributedThrowingUnittests` in
+`tests/ut/backends/api/runner.d` now runs on `Interpreter`. This required only
+narrow module-backed `throw new Exception("...")` support for string-literal
+messages.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

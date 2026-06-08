@@ -286,6 +286,9 @@ private struct EvalModuleInterpreter {
             return;
         }
 
+        if (auto throw_ = statement.isThrowStatement)
+            throw new Exception(thrownExceptionMessage(throw_.exp));
+
         assert(0);
     }
 
@@ -654,6 +657,20 @@ private struct EvalModuleInterpreter {
             values ~= cast(char) string_.getIndex(index);
 
         return values;
+    }
+
+    private string thrownExceptionMessage(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto new_ = expression is null ? null : expression.isNewExp;
+        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+            return "Unittest assertion failed.";
+
+        auto message = (*new_.arguments)[0].isStringExp;
+        if (message is null)
+            return "Unittest assertion failed.";
+
+        return stringChars(message).idup;
     }
 
     private Value runDeclarationExpression(
