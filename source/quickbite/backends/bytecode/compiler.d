@@ -194,6 +194,11 @@ private struct Compiler {
                 compileAndAnd(logical);
                 return;
             }
+
+            if (isOrOr(logical)) {
+                compileOrOr(logical);
+                return;
+            }
         }
 
         if (auto increment = expression.isPreExp) {
@@ -289,10 +294,31 @@ private struct Compiler {
         patchJump(endJump);
     }
 
+    private void compileOrOr(LogicalExp expression) {
+        compileExpression(expression.e1);
+        const falseJump = emitJump(Op.jumpIfFalse);
+
+        emitBoolCast;
+        const endJump = emitJump(Op.jump);
+
+        patchJump(falseJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileExpression(expression.e2);
+        emitBoolCast;
+
+        patchJump(endJump);
+    }
+
     private bool isAndAnd(LogicalExp expression) {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.andAnd;
+    }
+
+    private bool isOrOr(LogicalExp expression) {
+        import dmd.tokens: EXP;
+
+        return expression.op == EXP.orOr;
     }
 
     private size_t localIndex(VarDeclaration variable) {
@@ -498,6 +524,12 @@ private struct Compiler {
 
         if (auto equal = assert_.e1.isEqualExp) {
             compileBinaryExpression(equal, Op.assertCompare);
+            return;
+        }
+
+        if (auto not = assert_.e1.isNotExp) {
+            compileExpression(not.e1);
+            program.instructions ~= Instruction(Op.assertFalse);
             return;
         }
 

@@ -261,6 +261,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.assertFalse:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                const value = stack[$ - 1].castTo!bool;
+                stack.length -= 1;
+                if (value != Value(false))
+                    throw new Exception(assertFalseMessage(value));
+
+                ++ip;
+                break;
+
             case Op.assertTrue:
                 if (stack.length < 1)
                     throw new Exception("Bytecode stack underflow");
@@ -321,6 +333,14 @@ private string assertCompareMessage(
     import std.conv: text;
 
     return text(compareOperandMessage(lhs), " != ", compareOperandMessage(rhs));
+}
+
+private string assertFalseMessage(
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import std.conv: text;
+
+    return text(compareOperandMessage(value), " == true");
 }
 
 private string compareOperandMessage(

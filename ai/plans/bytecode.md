@@ -193,11 +193,21 @@ Lua-specific bytecode shape.
   exposed missing DMD `LogicalExp` `&&` lowering, so bytecode now emits narrow
   jump/pop control flow for short-circuit evaluation, normalizes both paths to
   bool, and preserves plain assertion text for failed truth assertions.
+- `logicalOr`, `logicalOrBoolResult`,
+  `logicalOrBoolResultFailureMessage.0`,
+  `logicalOrBoolResultFailureMessage.1`, `logicalOrFailureMessage.0`,
+  `logicalOrFailureMessage.1`, `logicalOrOops`, `logicalOrShortCircuit`,
+  `logicalOrShortCircuitFailureMessage.0`, and
+  `logicalOrShortCircuitFailureMessage.1` in
+  `tests/ut/backends/lang/logic.d` now cover `Bytecode`. The promotion
+  exposed missing DMD `LogicalExp` `||` lowering, so bytecode now emits narrow
+  jump/pop control flow for short-circuit evaluation, normalizes both paths to
+  bool, and reports failed `assert(!condition)` diagnostics such as
+  `true == true`.
 
 ## Current Next Step
-Continue `tests/ut/backends/lang/logic.d` with the next distinct CTFE-only
-behavior family after logical AND: logical OR or logical AND comparison
-operands.
+Continue `tests/ut/backends/lang/logic.d` with the remaining CTFE-only logic
+family: `logicalAndComparisonOperands*`.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
 `tests/ut/backends/api/runner.d`, or `tests/ut/backends/runtime/cstdlib.d`
