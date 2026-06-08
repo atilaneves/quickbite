@@ -73,6 +73,8 @@ private struct Compiler {
         compileFunctionBody(unitTest);
         program.instructions ~= Instruction(Op.halt);
 
+        // Compiling one deferred function can discover more called functions,
+        // so keep checking the current queue length while draining it.
         for (size_t i = 0; i < functions.length; ++i)
             compileQueuedFunction(i);
     }
