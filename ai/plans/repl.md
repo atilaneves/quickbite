@@ -142,45 +142,11 @@ history acceptance. Backends execute complete `ReplCell` values and return
   `(int) + 2` cannot be interpreted at compile time
   ```
 
-## To do
-
 - Recognise standalone `mixin(…)` as an expression cell. `isExpressionCell`
-  (`source/quickbite/frontend/cell.d:425`) appends `";\0"` and calls
-  `parseStatement`; `mixin("…");` parses as a `MixinStatement`, not an
-  `ExpStatement`, so the check fails and the cell falls through to the
-  statement path, which errors. The assigned form works because the mixin
-  is not the outermost statement. DMD handles mixin expressions in CTFE
-  without issue.
+  now accepts a complete DMD `MixinStatement` node as displayable REPL input,
+  so `mixin("1 + 2")` evaluates through the expression path and displays `3`.
 
-  Offending code (`source/quickbite/frontend/cell.d:453–458`):
-
-  ```d
-  const statement = parser.parseStatement(0);
-  const expression = statement is null ? null : statement.isExpStatement;
-  result = expression !is null &&
-      expression.exp !is null &&
-      expression.exp.isDeclarationExp is null &&
-      parser.token.value == TOK.endOfFile &&
-      global.errors == 0;
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf 'mixin("1 + 2")\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  Error: found `End of File` when expecting `;` following mixin
-  ```
-
-  Expected:
-
-  ```text
-  3
-  ```
+## To do
 
 - Extend type-expression display to cover type aliases and user-defined
   types, not only primitive type keywords. `isTypeExpressionCell`

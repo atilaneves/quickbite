@@ -40,6 +40,18 @@ static foreach (backend; backends) {
         output.should == ["3"];
     }
 
+    @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [`mixin("1 + 2")`, ":q"],
+        );
+
+        output.should == ["3"];
+    }
+
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

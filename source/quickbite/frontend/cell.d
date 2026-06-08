@@ -452,9 +452,12 @@ private bool isExpressionCell(in string input) {
         parser.nextToken;
         const statement = parser.parseStatement(0);
         const expression = statement is null ? null : statement.isExpStatement;
-        result = expression !is null &&
+        const isExpressionStatement = expression !is null &&
             expression.exp !is null &&
-            expression.exp.isDeclarationExp is null &&
+            expression.exp.isDeclarationExp is null;
+        const isMixinExpressionStatement = statement !is null &&
+            statement.isMixinStatement !is null;
+        result = (isExpressionStatement || isMixinExpressionStatement) &&
             parser.token.value == TOK.endOfFile &&
             global.errors == 0;
     });
