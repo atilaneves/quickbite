@@ -6,8 +6,6 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-private:
-
 static foreach (backend; backendsWith!Interpreter) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
@@ -26,9 +24,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("intLessThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -88,9 +84,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("41 < 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -105,9 +99,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 == 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -120,9 +112,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -135,9 +125,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -150,9 +138,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -166,9 +152,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -181,9 +165,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("functionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -196,9 +178,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -223,9 +203,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("56 != 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -238,9 +216,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("ifElseOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -256,9 +232,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -273,9 +247,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("inFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -288,9 +260,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("refSizeTParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -306,9 +276,6 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
-}
-
-static foreach (backend; backendsWith!Interpreter) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -326,9 +293,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -341,9 +306,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -353,9 +316,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -365,9 +326,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("'a' != 'b'");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -377,9 +336,7 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("oops");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -396,9 +353,7 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage(
             "function call through null class reference `null`");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -413,9 +368,7 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage(
             "class `thing` is `null` and cannot be dereferenced");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -428,9 +381,7 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage(
             "null pointer dereference evaluating typeid. `thing` is `null`");
     }
-}
 
-static foreach (backend; backendsWith!Interpreter) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(
