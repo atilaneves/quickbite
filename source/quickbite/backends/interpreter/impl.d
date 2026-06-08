@@ -57,35 +57,35 @@ private imported!"quickbite.lang".Value defaultValue(
     const type = variable.type.toBasetype;
     with (TY) final switch (type.ty) {
         case Tbool:
-            return Value(false);
+            return scalarDefaultValue!Tbool;
         case Tint8:
-            return Value(cast(byte) 0);
+            return scalarDefaultValue!Tint8;
         case Tuns8:
-            return Value(cast(ubyte) 0);
+            return scalarDefaultValue!Tuns8;
         case Tint16:
-            return Value(cast(short) 0);
+            return scalarDefaultValue!Tint16;
         case Tuns16:
-            return Value(cast(ushort) 0);
+            return scalarDefaultValue!Tuns16;
         case Tint32:
-            return Value(0);
+            return scalarDefaultValue!Tint32;
         case Tuns32:
-            return Value(0u);
+            return scalarDefaultValue!Tuns32;
         case Tint64:
-            return Value(0L);
+            return scalarDefaultValue!Tint64;
         case Tuns64:
-            return Value(0UL);
+            return scalarDefaultValue!Tuns64;
         case Tfloat32:
-            return Value(float.init);
+            return scalarDefaultValue!Tfloat32;
         case Tfloat64:
-            return Value(double.init);
+            return scalarDefaultValue!Tfloat64;
         case Tfloat80:
-            return Value(real.init);
+            return scalarDefaultValue!Tfloat80;
         case Tchar:
-            return Value(char.init);
+            return scalarDefaultValue!Tchar;
         case Twchar:
-            return Value(wchar.init);
+            return scalarDefaultValue!Twchar;
         case Tdchar:
-            return Value(dchar.init);
+            return scalarDefaultValue!Tdchar;
         case Tpointer:
         case Tclass:
         case Tnull:
@@ -122,6 +122,16 @@ private imported!"quickbite.lang".Value defaultValue(
         case Tnone:
             throw new Exception("Unsupported interpreter default value.");
     }
+}
+
+private imported!"quickbite.lang".Value scalarDefaultValue(
+    imported!"dmd.astenums".TY type,
+)() {
+    import quickbite.frontend.dmd_types: dmdScalarType;
+    import quickbite.lang: Value;
+
+    alias T = dmdScalarType!type;
+    return Value(T.init);
 }
 
 private struct EvalFunctionWalker {
