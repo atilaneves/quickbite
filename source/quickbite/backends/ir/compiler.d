@@ -86,6 +86,9 @@ private struct Compiler {
         if (auto return_ = statement.isReturnStatement)
             return OptionalValue(compileExpression(return_.exp), true);
 
+        if (statement.isImportStatement)
+            return OptionalValue.init;
+
         assert(0);
     }
 
@@ -118,6 +121,9 @@ private struct Compiler {
         if (auto real_ = expression.isRealExp)
             return compileReal(real_);
 
+        if (auto call = expression.isCallExp)
+            return compileCall(call);
+
         if (auto negate = expression.isNegExp)
             return compileUnaryExpression(negate.e1, UnaryOperation.negate);
 
@@ -134,6 +140,18 @@ private struct Compiler {
             return compileBinaryExpression(divide, BinaryOperation.divide);
 
         assert(0);
+    }
+
+    private Value compileCall(imported!"dmd.expression".CallExp call) {
+        assert(call.f !is null);
+        assert(call.f.ident.toString == "fabs");
+        assert(call.arguments !is null);
+        assert(call.arguments.length == 1);
+
+        return compileUnaryExpression(
+            callArguments(call)[0],
+            UnaryOperation.fabs,
+        );
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -413,9 +431,19 @@ private imported!"quickbite.backends.ir.language".Type valueType(
         case Tint64:
         case Tuns64:
             return Type.i64;
+        case Tfloat32:
+            return Type.f32;
+        case Tfloat64:
+            return Type.f64;
         default:
             assert(0);
     }
+}
+
+private ref auto callArguments(
+    imported!"dmd.expression".CallExp call,
+) @trusted pure {
+    return *call.arguments;
 }
 
 private imported!"quickbite.backends.ir.language".ResultType resultType(

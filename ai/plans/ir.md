@@ -133,11 +133,16 @@ to execute an already-lowered `BinaryOperation.subtract` on `f64` operands and
 store the raw `double` result bits. The promoted
 `floatingUnaryMinusUsesNumericValue.IR` test added the backend-local
 `UnaryOperation.negate` instruction shape, compiler lowering for DMD `NegExp`,
-and VM execution for `f64` negation. IR values carry both an operation type
-(`i32`, `f32`, and so on) and a D-visible scalar result category so the VM can
-keep arithmetic dispatch typed while preserving the public eval result type.
-`vm.d` executes the single entry block directly before converting the returned
-IR value to `quickbite.lang.Value` at the backend boundary.
+and VM execution for `f64` negation. The promoted
+`fabsFloatPreservesReturnType.IR` test added no-op import statement handling,
+narrow call lowering for one-argument `fabs`, the backend-local
+`UnaryOperation.fabs` instruction shape, `f32` value-type mapping and local
+storage, and VM execution for `f32` `fabs` while preserving the public `float`
+result. IR values carry both an operation type (`i32`, `f32`, and so on) and a
+D-visible scalar result category so the VM can keep arithmetic dispatch typed
+while preserving the public eval result type. `vm.d` executes the single entry
+block directly before converting the returned IR value to `quickbite.lang.Value`
+at the backend boundary.
 
 The current mutation support is intentionally narrow. Locals are identified by
 compiler-assigned integer indices, and `Load`/`Store` operate on those local
@@ -161,6 +166,7 @@ The currently covered IR backend eval tests are:
 - `defaultUintPreservesScalarType.IR`
 - `floatingSubtractionUsesNumericValues.IR`
 - `floatingUnaryMinusUsesNumericValue.IR`
+- `fabsFloatPreservesReturnType.IR`
 
 The next implementation slice should pick the next smallest current
 CTFE-backed eval behavior that still excludes `IR`, promote the existing

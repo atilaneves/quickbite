@@ -43,6 +43,7 @@ package enum BinaryOperation {
 
 package enum UnaryOperation {
     negate,
+    fabs,
 }
 
 package struct Const {

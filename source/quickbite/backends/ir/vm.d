@@ -113,6 +113,25 @@ package imported!"quickbite.lang".Value eval(
                                 assert(0);
                         }
                         break;
+                    case fabs:
+                        import std.math: fabs;
+
+                        final switch (unary.type) with (Type) {
+                            case f32:
+                                valueBits[unary.destination.id] = floatBits(
+                                    fabs(floatFromBits(valueBits[unary.source])),
+                                );
+                                break;
+                            case i1:
+                            case i8:
+                            case i16:
+                            case i32:
+                            case i64:
+                            case f64:
+                            case ptr:
+                                assert(0);
+                        }
+                        break;
                 }
             },
             (const Store store) {
@@ -123,11 +142,13 @@ package imported!"quickbite.lang".Value eval(
                     case f64:
                         localBits[store.local] = valueBits[store.value];
                         break;
+                    case f32:
+                        localBits[store.local] = valueBits[store.value];
+                        break;
                     case i1:
                     case i8:
                     case i16:
                     case i64:
-                    case f32:
                     case ptr:
                         assert(0);
                 }
