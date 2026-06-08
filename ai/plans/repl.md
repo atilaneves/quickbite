@@ -153,51 +153,13 @@ history acceptance. Backends execute complete `ReplCell` values and return
   user aliases such as `MyInt`, and user-defined types such as `Widget`
   display through the `.stringof` path.
 
-## To do
-
 - Suppress `pragma(msg, …)` output during cell classification and
-  ensure it fires exactly once (during evaluation) on stderr. Currently
-  `parseModule` is called twice per cell — once in
-  `isModuleDeclarationCell` (`source/quickbite/frontend/cell.d:512`)
-  and once in `evalCellFromSource` (`source/quickbite/frontend/cell.d:226`)
-  — so `pragma(msg)` output appears twice and lands on stdout, which
-  corrupts piped output. DMD fires it exactly once and writes to
-  stderr.
+  ensure it fires exactly once during evaluation on stderr. Standalone
+  `pragma(msg)` cells are recognised through DMD's parsed
+  `PragmaStatement` node and are no longer appended to the persistent REPL
+  transcript, so later cells do not re-run their compile-time message.
 
-  Offending code — both call sites invoke `parseModule` without
-  suppressing pragmas:
-
-  ```d
-  // cell.d:512 — classification
-  auto moduleResult = parseModule(
-      text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
-      input,
-  );
-
-  // cell.d:226 — evaluation
-  auto moduleResult = parseModule(source, importPaths);
-  ```
-
-  Reproducer:
-
-  ```sh
-  printf 'pragma(msg, "hello");\n42\n' | bin/qb
-  ```
-
-  Current output:
-
-  ```text
-  hello
-  hello
-  42
-  ```
-
-  Expected:
-
-  ```text
-  hello
-  42
-  ```
+## To do
 
 - Fix `std.format.format` in the REPL: it throws a
   `FormatException("Orphan format arguments")` even for well-formed

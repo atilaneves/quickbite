@@ -81,6 +81,9 @@ public struct EvalSession {
             if (const diagnostic = statementSyntaxDiagnostic(input))
                 throw new Exception(diagnostic);
 
+            const history = input.isStandalonePragmaMessageStatement ?
+                null :
+                input ~ "\n";
             const source = evalSource(
                 moduleSource,
                 localTranscript ~ input ~ "\n",
@@ -90,7 +93,7 @@ public struct EvalSession {
                 source,
                 importPaths,
                 EvalHistoryTarget.local,
-                input ~ "\n",
+                history,
             );
         }
 
@@ -496,6 +499,43 @@ private string statementSyntaxDiagnostic(in string input) {
         parser.parseStatement(0);
         if (global.errors != 0)
             result = firstDiagnosticMessage;
+    });
+
+    return result;
+}
+
+private bool isStandalonePragmaMessageStatement(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.id: Id;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        auto statement = parser.parseStatement(0);
+        auto pragma_ = statement is null ? null : statement.isPragmaStatement;
+        result = pragma_ !is null &&
+            pragma_.ident is Id.msg &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0;
     });
 
     return result;

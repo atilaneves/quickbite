@@ -100,6 +100,14 @@ def test_piped_mode_continues_after_error() -> None:
     )
 
 
+def test_piped_pragma_msg_writes_once_to_stderr() -> None:
+    result = run_qb(input='pragma(msg, "hello");\n42\n')
+
+    assert result.returncode == 0
+    assert result.stdout == "42\n"
+    assert result.stderr == "hello\n"
+
+
 def test_piped_quit_command_does_not_abandon_pending_input() -> None:
     result = run_qb(
         input="int answer() {\n:q\nreturn 42;\n}\nanswer()\n:q\n",
