@@ -126,6 +126,11 @@ Lua-specific bytecode shape.
   coverage gap: the shared source-fixture parse path already passed import
   paths to DMD, and the existing bytecode enum/function/assert support could
   execute the imported assertion without production changes.
+- `runTestSummary.countsAttributedPassingAndFailingUnittests` in
+  `tests/ut/backends/api/runner.d` now covers `Bytecode`. The promotion
+  exposed the missing bytecode backend summary API, not missing VM semantics.
+  Bytecode now compiles and executes each unittest declaration through the
+  existing bytecode path and records total, passed, and failed counts.
 
 ## Current Next Step
 Continue with the next module named by
