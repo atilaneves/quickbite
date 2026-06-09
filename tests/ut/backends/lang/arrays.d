@@ -52,8 +52,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
-
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceAppendKeepsOriginalArrayTail." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -66,7 +65,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backends) {
     @("nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

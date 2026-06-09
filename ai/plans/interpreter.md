@@ -780,6 +780,12 @@ narrow `SliceExp` evaluation for dynamic array values plus local slice-alias
 writeback so an indexed write through a nested slice updates the original
 array local.
 
+Arrays progress: `nestedSliceAppendKeepsOriginalArrayTail` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation and local array append
+detachment; signal was verified by temporarily mutating the fixture's expected
+tail value.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`
