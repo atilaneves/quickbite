@@ -276,6 +276,16 @@ execution reused the caller's value and local slots; the VM now saves the
 caller scalar/local storage around a direct call and copies only the callee's
 return value into the call result slot. This is still a narrow call-frame
 isolation step, not a full activation-record or recursive-call model.
+The promoted logical-and call/short-circuit group in `logic.d` added narrow
+IR support for DMD `&&` as explicit `CondBranch`/`Branch` control flow with a
+single block-parameter join value. The VM now dispatches basic blocks, copies
+branch arguments into block parameters, and preserves RHS short-circuit
+semantics for this shape. The same slice added the bool-local, bool equality
+diagnostic, integer-to-bool cast, and unary logical-not support observed in
+that group. `AssertTrue` now carries the DMD-rendered assertion message needed
+by the promoted logical assertion failures. This is the first CFG execution
+slice; broader control flow and `eval` result conversion for multi-block
+functions remain deliberately narrow until a later promoted test forces them.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -290,12 +300,11 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/lang/logic.d`. The first backend matrix now
-includes `IR`; verify the current checkout, then promote the next smallest
+Continue in `tests/ut/backends/lang/logic.d`. The first two backend matrices
+now include `IR`; verify the current checkout, then promote the next smallest
 remaining matrix that still excludes `IR`. Prefer the next existing test or
-small family that forces one language behavior, and avoid jumping straight to
-short-circuit control flow unless the earlier call/boolean result cases are
-already green.
+small family that forces one language behavior, and keep CFG/general
+diagnostic expansion tied to the exact promoted failures.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

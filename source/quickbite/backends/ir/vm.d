@@ -29,8 +29,10 @@ private struct Machine {
         BinaryOperation,
         AssertCompare,
         AssertTrue,
+        Branch,
         Cast,
         Call,
+        CondBranch,
         Const,
         Function,
         Instruction,
@@ -73,16 +75,44 @@ private struct Machine {
         foreach (i, argument; arguments)
             localScalarValues[i] = scalarValues[argument];
 
-        foreach (instruction; function_.blocks[0].instructions)
-            execute(instruction);
+        uint blockIndex;
+        const(uint)[] blockArguments;
+        while (true) {
+            const block = function_.blocks[blockIndex];
+            foreach (i, argument; blockArguments)
+                scalarValues[block.params[i].id] = scalarValues[argument];
+            blockArguments = null;
 
-        return function_.blocks[0].terminator.match!(
-            (const ReturnValue return_) => scalarValues[return_.value],
-            (_) {
-                assert(0);
-                return ulong.init;
-            },
-        );
+            foreach (instruction; block.instructions)
+                execute(instruction);
+
+            bool returned;
+            ulong result;
+            block.terminator.match!(
+                (const ReturnValue return_) {
+                    returned = true;
+                    result = scalarValues[return_.value];
+                },
+                (const Branch branch) {
+                    blockIndex = branch.target;
+                    blockArguments = branch.args;
+                },
+                (const CondBranch branch) {
+                    if (scalarValues[branch.condition] != 0) {
+                        blockIndex = branch.trueTarget;
+                        blockArguments = branch.trueArgs;
+                    } else {
+                        blockIndex = branch.falseTarget;
+                        blockArguments = branch.falseArgs;
+                    }
+                },
+                (_) {
+                    assert(0);
+                },
+            );
+            if (returned)
+                return result;
+        }
     }
 
     private void execute(const Instruction instruction) {
@@ -115,13 +145,15 @@ private struct Machine {
             case f64:
                 castF64(cast_);
                 break;
+            case i1:
+                castI1(cast_);
+                break;
             case i32:
             case i8:
             case i16:
             case i64:
                 castInteger(cast_);
                 break;
-            case i1:
             case f32:
             case ptr:
                 assert(0);
@@ -140,19 +172,40 @@ private struct Machine {
 
     private void execute(const AssertTrue assert_) {
         if (scalarValues[assert_.condition] == 0) {
-            import quickbite.unittest_assertions:
-                AssertionMessageMode,
-                failedAssertionMessage;
+            throw new Exception(assert_.message);
+        }
+    }
 
-            throw new Exception(failedAssertionMessage(
-                AssertionMessageMode.context,
-            ));
+    private void castI1(const Cast cast_) {
+        final switch (cast_.targetType) with (Type) {
+            case i1:
+                scalarValues[cast_.result.id] =
+                    scalarValues[cast_.source] != 0;
+                break;
+            case i8:
+            case i16:
+            case i32:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
         }
     }
 
     private void execute(const AssertCompare assert_) {
         if (compare(assert_))
             return;
+
+        if (assert_.resultKind == ResultKind.bool_) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                assertionBool(assert_.lhs),
+                " != ",
+                assertionBool(assert_.rhs),
+            ));
+        }
 
         import quickbite.unittest_assertions:
             AssertionMessageMode,
@@ -215,6 +268,8 @@ private struct Machine {
                     cast(long) source;
                 break;
             case i1:
+                scalarValues[cast_.result.id] = source != 0;
+                break;
             case f32:
             case f64:
             case ptr:
@@ -230,6 +285,10 @@ private struct Machine {
         final switch (unary.operation) with (UnaryOperation) {
             case negate:
                 executeNegate(unary);
+                break;
+            case not_:
+                scalarValues[unary.result.id] =
+                    scalarValues[unary.source] == 0;
                 break;
         }
     }
@@ -287,9 +346,9 @@ private struct Machine {
             case i64:
             case f64:
             case f32:
+            case i1:
                 localScalarValues[store.local] = scalarValues[store.value];
                 break;
-            case i1:
             case ptr:
                 assert(0);
         }
@@ -487,6 +546,10 @@ private struct Machine {
                         cast(long) scalarValues[binary.rhs];
                 break;
             case i1:
+                scalarValues[binary.result.id] =
+                    cast(bool) scalarValues[binary.lhs] ==
+                    cast(bool) scalarValues[binary.rhs];
+                break;
             case f32:
             case f64:
             case ptr:
@@ -539,11 +602,16 @@ private struct Machine {
                     cast(long) cast(ulong) scalarValues[value] :
                     cast(long) scalarValues[value];
             case i1:
+                return scalarValues[value] == 0 ? 0 : 1;
             case f32:
             case f64:
             case ptr:
                 assert(0);
         }
+    }
+
+    private bool assertionBool(in uint value) {
+        return scalarValues[value] != 0;
     }
 
     private string comparisonOperator(in BinaryOperation operation) @safe pure {

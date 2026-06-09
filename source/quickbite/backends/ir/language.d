@@ -47,6 +47,7 @@ package enum BinaryOperation {
 
 package enum UnaryOperation {
     negate,
+    not_,
 }
 
 package enum UnaryIntrinsicOperation {
@@ -100,6 +101,7 @@ package struct Call {
 
 package struct AssertTrue {
     public uint condition;
+    public string message;
 }
 
 package struct AssertCompare {
