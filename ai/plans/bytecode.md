@@ -168,6 +168,52 @@ Lua-specific bytecode shape.
   missing queued function-body emission for eval/REPL bytecode programs, so
   bytecode now emits the entry body, halts, and then drains called functions for
   REPL evaluation just as it already did for unittest execution.
+- `api/repl.d` promotion probe on branch `bytecode-api-repl-plan` promoted
+  every remaining `backendsWith!Interpreter` loop to
+  `backendsWith!(Interpreter, Bytecode)` without production changes. A seeded
+  `dub test -- --seed 1612601343` confirmed six stale gaps already pass:
+  `repl.backend.userDefinedFunctionDoesNotCollideWithWrapper`,
+  `repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`,
+  `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`,
+  `repl.backend.multilineStructDeclarationsBufferUntilComplete`,
+  `repl.backend.failedBufferedDeclarationDoesNotPoisonSession`, and
+  `repl.backend.commandsDoNotAbandonPendingInput`.
+- The same probe found seven real `Bytecode` gaps in
+  `tests/ut/backends/api/repl.d`: `importDeclarationsPersistWithoutDisplay`
+  fails while executing Phobos `min` because bytecode does not lower DMD's
+  conditional expression `b < a ? b : a`; `displaysNestedArrayResults`,
+  `displaysStaticStringArrayResults`, and
+  `displaysNestedEmptyStringValues` fail because bytecode does not lower array
+  literals to `Value.arrayValue`; `displaysWideStringValues` and
+  `displaysWideCharacterArrayValues` fail because bytecode does not lower
+  wide string/wide character array results into displayable values; and
+  `displaysUndisplayablePlaceholderForFunctionLiterals` fails because a
+  delegate literal reaches bytecode as a synthetic function-literal symbol
+  instead of `Value.undisplayable`.
+- Fix the remaining `api/repl.d` bytecode gaps in this order:
+  1. Promote and implement `displaysUndisplayablePlaceholderForFunctionLiterals`
+     by recognizing DMD function/delegate literal expressions in the bytecode
+     compiler and emitting a `Value.undisplayable` literal. This is the
+     smallest isolated display-only slice and should not require VM opcodes.
+  2. Promote and implement `displaysStaticStringArrayResults` by lowering flat
+     `ArrayLiteralExp` values to a new bytecode array-literal operation, with
+     the VM building `Value.arrayValue` from stack elements. Preserve the
+     existing `Value.stringValue` path for string expressions so scalar string
+     display stays unchanged.
+  3. Promote `displaysNestedEmptyStringValues` and `displaysNestedArrayResults`
+     together after flat array literals pass. They exercise the same recursive
+     array-literal lowering plus empty-string display inside arrays.
+  4. Promote `displaysWideStringValues` and
+     `displaysWideCharacterArrayValues` after generic array literals. Lower
+     `StringExp` and array literals with `wchar`/`dchar` element types to
+     character `Value`s so REPL string display can encode UTF-8 through the
+     existing `Value.asCharArrayString`/array display path.
+  5. Promote `importDeclarationsPersistWithoutDisplay` last. Implement DMD
+     conditional expression lowering with normal short-circuit control flow:
+     evaluate the condition, jump to the false arm when false, leave exactly
+     one selected arm value on the stack, and jump over the other arm. The
+     Phobos `min(3, 1)` fixture should then execute through the existing
+     function-call, comparison, and import-preservation paths.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
