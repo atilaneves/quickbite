@@ -284,6 +284,10 @@ Lua-specific bytecode shape.
   covers `Bytecode`. This was a stale coverage gap: bytecode already treats
   `in int` parameters as value parameters, evaluates the integer addition in
   the callee, and reports the failed equality assertion as `43 != 42`.
+- `refSizeTParameterOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing scalar `ref`
+  parameter writeback path already handles `size_t`, so bytecode increments
+  the caller local and reports the final failed comparison as `42 != 43`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
