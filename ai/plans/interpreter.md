@@ -270,6 +270,13 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through; signal was verified by
+temporarily disabling that write-through, which changed the promoted failure
+message from `99 != 100` to `1 != 100`.
+
 Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
 now runs on `Interpreter`. This required narrow module-backed
 `ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
