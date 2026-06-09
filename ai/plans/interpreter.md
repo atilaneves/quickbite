@@ -748,6 +748,12 @@ only treating a null-initialized dynamic array local as an empty array value
 when executing the declaration, so existing append, length, and index-read
 support can handle the fixture.
 
+Arrays progress: `localDynamicArrayAppendFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing null dynamic array, append, length, and equality
+assertion message support; signal was verified by temporarily mutating the
+Interpreter array append handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
