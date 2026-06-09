@@ -119,6 +119,10 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `fabs` builtin slice: the existing bytecode
   unary native-call path already executes positive runtime `double` inputs
   correctly.
+- `repl.backend.skipsCommentOnlyLines` in `tests/ut/backends/api/repl.d` now
+  covers `Bytecode`. This was a stale coverage gap after the REPL expression
+  loop slice: the shared REPL loop already skips comment-only input before
+  dispatching cells to the backend.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
