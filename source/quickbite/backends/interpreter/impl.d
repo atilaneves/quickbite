@@ -548,6 +548,14 @@ private struct EvalModuleInterpreter {
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
 
+        if (expression.op == EXP.concatenateElemAssign) {
+            auto assign = cast(imported!"dmd.expression".BinExp) expression;
+            if (assign is null)
+                assert(0);
+
+            return runArrayAppendAssignExpression(assign);
+        }
+
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
 
@@ -894,6 +902,27 @@ private struct EvalModuleInterpreter {
         locals[variable] = current.withArrayElement(arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private Value runArrayAppendAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        const value = runExpression(assign.e2);
+        locals[variable] = current.withAppendedArrayElement(value);
+        uninitializedLocals.remove(variable);
+        return locals[variable];
     }
 
     private VarDeclaration argumentVariable(

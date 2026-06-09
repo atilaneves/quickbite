@@ -298,6 +298,12 @@ change was required; signal was verified by temporarily mutating indexed array
 assignment writeback, which made the promoted test fail because the expected
 assertion exception was no longer thrown.
 
+Arrays progress: `ubyteArrayAppendAssign` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow `concatenateElemAssign` handling for appending one evaluated element to
+a local dynamic array value; slices, ref parameter mutation, append-array, and
+bounds diagnostics remain unpromoted.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
