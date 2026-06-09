@@ -25,4 +25,8 @@ tmp
 !/bin/bench.sh
 .codex
 .claude
+.reggae
 worktrees
+.ninja*
+*.ninja
+compile_commands.json

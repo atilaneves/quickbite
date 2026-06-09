@@ -20,7 +20,7 @@ configuration "unittest" {
     mainSourceFile "tests/main.d"
     sourcePaths "tests" "benchmarks"
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d"
-    includePaths "tests" "benchmarks"
+    importPaths "tests" "benchmarks"
     versions "unitUnthreaded"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.
@@ -38,7 +38,7 @@ configuration "unittest-cov" {
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests" "tests/coverage"
-    includePaths "tests"
+    importPaths "tests"
     versions "unitUnthreaded"
 
     // Pair this config with `--build=unittest-cov`; dub will then pass
@@ -60,7 +60,7 @@ configuration "benchmark" {
 
     mainSourceFile "benchmarks/main.d"
     sourcePaths "benchmarks"
-    includePaths "benchmarks"
+    importPaths "benchmarks"
     dflags "-defaultlib=libphobos2.so"
     versions "QuickbiteRuntimeLoadLibrary"
 
@@ -75,7 +75,7 @@ configuration "qb" {
 
     mainSourceFile "repl/main.d"
     sourcePaths "source" "repl"
-    includePaths "source" "repl"
+    importPaths "source" "repl"
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
