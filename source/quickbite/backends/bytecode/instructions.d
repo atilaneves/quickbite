@@ -30,6 +30,7 @@ package enum Op: ubyte {
     unaryNativeCall,
     binaryNativeCall,
     throwIfNullClassMethod,
+    throwIfNullClassField,
     assertCompare,
     assertFalse,
     assertTrue,

@@ -59,7 +59,7 @@ private struct Compiler {
     import dmd.func: FuncDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        Expression, LogicalExp, PreExp;
+        DotVarExp, Expression, IdentityExp, LogicalExp, PreExp, TypeidExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -69,6 +69,7 @@ private struct Compiler {
     // the bytecode function table in Program.functions.
     private FuncDeclaration[] functions;
     private size_t[FuncDeclaration] functionIndices;
+    private FuncDeclaration currentFunction;
 
     private void compileUnitTest(FuncDeclaration unitTest) {
         compileFunctionBody(unitTest);
@@ -82,6 +83,7 @@ private struct Compiler {
 
     private void compileFunctionBody(FuncDeclaration function_) {
         locals = null;
+        currentFunction = function_;
         registerParameters(function_);
         compileStatement(function_.fbody);
     }
@@ -219,6 +221,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto identity = expression.isIdentityExp) {
+            compileBinaryExpression(identity, identityOp(identity));
+            return;
+        }
+
         if (auto logical = expression.isLogicalExp) {
             if (isAndAnd(logical)) {
                 compileAndAnd(logical);
@@ -306,6 +313,16 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp) {
             compileCall(call);
+            return;
+        }
+
+        if (auto typeid_ = expression.isTypeidExp) {
+            compileTypeid(typeid_);
+            return;
+        }
+
+        if (auto dot = expression.isDotVarExp) {
+            compileDotVarExpression(dot);
             return;
         }
 
@@ -430,12 +447,32 @@ private struct Compiler {
     private void compileVariableDeclaration(
         VarDeclaration variable,
     ) {
+        if (variable._init !is null &&
+            variable._init.isVoidInitializer !is null) {
+            program.instructions ~= Instruction(
+                Op.initializeLocal,
+                Value.void_,
+                localIndex(variable),
+            );
+            return;
+        }
+
         if (variable._init !is null) {
             auto initializer = variable._init.isExpInitializer;
             if (initializer is null)
                 throw new Exception("Unsupported bytecode initializer.");
 
-            compileExpression(initializerExpression(initializer.exp));
+            auto expression = initializerExpression(initializer.exp);
+            if (expression.isVoidInitExp !is null) {
+                program.instructions ~= Instruction(
+                    Op.initializeLocal,
+                    Value.void_,
+                    localIndex(variable),
+                );
+                return;
+            }
+
+            compileExpression(expression);
 
             program.instructions ~= Instruction(
                 Op.storeLocal,
@@ -457,8 +494,24 @@ private struct Compiler {
     ) {
         program.instructions ~= Instruction(
             Op.loadLocal,
-            Value.void_,
+            Value(uninitializedVariableMessage(variable)),
             localIndex(variable),
+        );
+    }
+
+    private string uninitializedVariableMessage(VarDeclaration variable) {
+        import std.conv: text;
+
+        const functionName = currentFunction is null
+            ? "<unknown>"
+            : currentFunction.ident.toString;
+
+        return text(
+            "cannot read uninitialized variable `.",
+            functionName,
+            ".",
+            variable.ident.toString,
+            "` in ctfe",
         );
     }
 
@@ -585,6 +638,67 @@ private struct Compiler {
         compileExpression(dot.e1);
         program.instructions ~= Instruction(Op.throwIfNullClassMethod);
         program.instructions ~= Instruction(Op.pop);
+    }
+
+    private void compileDotVarExpression(DotVarExp dot) {
+        compileExpression(dot.e1);
+        program.instructions ~= Instruction(
+            Op.throwIfNullClassField,
+            Value(nullClassFieldMessage(dot)),
+        );
+        program.instructions ~= Instruction(Op.pop);
+        program.instructions ~= Instruction(
+            Op.literal,
+            Value("Unsupported bytecode field read."),
+        );
+        program.instructions ~= Instruction(Op.throw_);
+    }
+
+    private void compileTypeid(TypeidExp typeid_) {
+        import dmd.dtemplate: isExpression;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression !is null) {
+            compileExpression(expression);
+            program.instructions ~= Instruction(
+                Op.throwIfNullClassField,
+                Value(nullTypeidMessage(expression)),
+            );
+            program.instructions ~= Instruction(Op.pop);
+        }
+
+        program.instructions ~= Instruction(
+            Op.literal,
+            Value.typeName("bytecode.typeid"),
+        );
+    }
+
+    private string nullTypeidMessage(Expression expression) {
+        import std.conv: text;
+
+        return text(
+            "null pointer dereference evaluating typeid. `",
+            receiverName(expression),
+            "` is `null`",
+        );
+    }
+
+    private string nullClassFieldMessage(DotVarExp dot) {
+        import std.conv: text;
+
+        return text(
+            "class `",
+            receiverName(dot.e1),
+            "` is `null` and cannot be dereferenced",
+        );
+    }
+
+    private string receiverName(Expression receiver) {
+        auto variable = receiver.isVarExp;
+        if (variable is null)
+            return "null";
+
+        return variable.var.ident.toString.idup;
     }
 
     private void compileBuiltinCall(CallExp call) {
@@ -778,6 +892,12 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return equal.op == EXP.notEqual ? Op.notEqual : Op.equal;
+    }
+
+    private Op identityOp(IdentityExp identity) {
+        import dmd.tokens: EXP;
+
+        return identity.op == EXP.notIdentity ? Op.notEqual : Op.equal;
     }
 
     private Value assertMessageValue(AssertExp assert_) {

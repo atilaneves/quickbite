@@ -98,6 +98,9 @@ private RunResult run(
                 if (instruction.operand >= locals.length)
                     throw new Exception("Bytecode local out of bounds");
 
+                if (locals[instruction.operand] == Value.void_)
+                    throw new Exception(instruction.value.asCharArrayString);
+
                 stack ~= locals[instruction.operand];
                 ++ip;
                 break;
@@ -338,6 +341,16 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.throwIfNullClassField:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (stack[$ - 1] == Value.null_)
+                    throw new Exception(instruction.value.asCharArrayString);
+
+                ++ip;
+                break;
+
             case Op.assertCompare:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -496,6 +509,7 @@ private bool comparisonHolds(
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
         case Op.throwIfNullClassMethod:
+        case Op.throwIfNullClassField:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
@@ -545,6 +559,7 @@ private string inverseComparisonOperator(
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
         case Op.throwIfNullClassMethod:
+        case Op.throwIfNullClassField:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
