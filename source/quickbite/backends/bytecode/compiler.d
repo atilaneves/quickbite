@@ -185,7 +185,7 @@ private struct Compiler {
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
             if (variable is null)
-                throw new Exception("Unsupported bytecode declaration.");
+                return;
 
             compileVariableDeclaration(variable);
             return;
@@ -752,12 +752,20 @@ private struct Compiler {
 
         with (BUILTIN) switch (isBuiltin(function_)) {
             case fabs:
+            case isinfinity:
+            case isnan:
             case pow:
+            case sqrt:
                 return true;
 
             default:
-                return false;
+                break;
         }
+
+        if (function_.ident !is null && function_.ident.toString == "signbit")
+            return true;
+
+        return false;
     }
 
     private void compileAssert(AssertExp assert_) {

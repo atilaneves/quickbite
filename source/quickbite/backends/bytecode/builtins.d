@@ -4,7 +4,11 @@ private:
 
 package enum BytecodeBuiltin: size_t {
     fabs,
+    isInfinity,
+    isNaN,
     pow,
+    signbit,
+    sqrt,
 }
 
 package BytecodeBuiltin bytecodeBuiltin(
@@ -20,12 +24,24 @@ package BytecodeBuiltin bytecodeBuiltin(
         case fabs:
             return BytecodeBuiltin.fabs;
 
+        case isinfinity:
+            return BytecodeBuiltin.isInfinity;
+
+        case isnan:
+            return BytecodeBuiltin.isNaN;
+
         case pow:
             return BytecodeBuiltin.pow;
+
+        case sqrt:
+            return BytecodeBuiltin.sqrt;
 
         default:
             break;
     }
+
+    if (function_.ident !is null && function_.ident.toString == "signbit")
+        return BytecodeBuiltin.signbit;
 
     throw new Exception("Unsupported bytecode call target.");
 }
@@ -37,8 +53,20 @@ package size_t bytecodeBuiltinArgumentCount(
         case fabs:
             return 1;
 
+        case isInfinity:
+            return 1;
+
+        case isNaN:
+            return 1;
+
         case pow:
             return 2;
+
+        case signbit:
+            return 1;
+
+        case sqrt:
+            return 1;
     }
 }
 
@@ -47,13 +75,29 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     in imported!"quickbite.lang".Value value,
 ) {
     import std.math: mathFabs = fabs;
+    import std.math: mathIsInfinity = isInfinity;
+    import std.math: mathIsNaN = isNaN;
+    import std.math: mathSignbit = signbit;
+    import std.math: mathSqrt = sqrt;
 
     with (BytecodeBuiltin) final switch (builtin) {
         case fabs:
             return value.unaryFloating!mathFabs;
 
+        case isInfinity:
+            return value.unaryFloating!mathIsInfinity;
+
+        case isNaN:
+            return value.unaryFloating!mathIsNaN;
+
         case pow:
             break;
+
+        case signbit:
+            return value.unaryFloating!mathSignbit;
+
+        case sqrt:
+            return value.unaryFloating!mathSqrt;
     }
 
     throw new Exception("Unsupported bytecode unary builtin call.");
@@ -70,8 +114,20 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
         case fabs:
             break;
 
+        case isInfinity:
+            break;
+
+        case isNaN:
+            break;
+
         case pow:
             return lhs.binaryFloating!mathPow(rhs);
+
+        case signbit:
+            break;
+
+        case sqrt:
+            break;
     }
 
     throw new Exception("Unsupported bytecode binary builtin call.");
