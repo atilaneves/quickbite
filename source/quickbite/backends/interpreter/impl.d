@@ -181,6 +181,7 @@ private struct EvalFunctionWalker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.tokens: EXP;
         import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
@@ -191,6 +192,9 @@ private struct EvalFunctionWalker {
 
         if (auto string_ = expression.isStringExp)
             return stringValue(string_);
+
+        if (auto array = expression.isArrayLiteralExp)
+            return arrayValue(array);
 
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
@@ -210,11 +214,30 @@ private struct EvalFunctionWalker {
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+        if (
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual
+        ) {
+            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+            if (comparison is null)
+                assert(0);
+
+            return runComparisonExpression(comparison);
+        }
+
+        if (auto conditional = expression.isCondExp)
+            return runConditionalExpression(conditional);
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
+
+        if (expression.isFuncExp)
+            return Value.undisplayable;
 
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
@@ -232,6 +255,41 @@ private struct EvalFunctionWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runComparisonExpression(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(comparison.e1).asReal;
+        const right = runExpression(comparison.e2).asReal;
+
+        if (comparison.op == EXP.lessThan)
+            return Value(left < right);
+        if (comparison.op == EXP.lessOrEqual)
+            return Value(left <= right);
+        if (comparison.op == EXP.greaterThan)
+            return Value(left > right);
+        return Value(left >= right);
+    }
+
+    private Value runConditionalExpression(
+        imported!"dmd.expression".CondExp conditional,
+    ) {
+        return isTruthy(runExpression(conditional.econd)) ?
+            runExpression(conditional.e1) :
+            runExpression(conditional.e2);
+    }
+
+    private bool isTruthy(in Value value) {
+        if (value == Value(false))
+            return false;
+
+        if (value == Value(true))
+            return true;
+
+        return value.castTo!bool == Value(true);
     }
 
     private Value runCallExpression(
@@ -416,13 +474,34 @@ private struct EvalFunctionWalker {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
+    }
+
+    private Value arrayValue(
+        imported!"dmd.expression".ArrayLiteralExp array,
+    ) {
+        Value[] values;
+        if (array.elements !is null)
+            foreach (element; *array.elements)
+                values ~= runExpression(element);
+
+        return Value.arrayValue(values);
     }
 
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        import std.utf: encode;
+
         char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
+        foreach (index; 0 .. string_.numberOfCodeUnits) {
+            const codeUnit = string_.getIndex(index);
+            if (string_.sz == 1) {
+                values ~= cast(char) codeUnit;
+            } else {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) codeUnit);
+                values ~= encoded[0 .. length];
+            }
+        }
 
         return values;
     }
@@ -972,7 +1051,7 @@ private struct EvalModuleInterpreter {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
     }
 
     private Value arrayValue(
@@ -987,9 +1066,19 @@ private struct EvalModuleInterpreter {
     }
 
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        import std.utf: encode;
+
         char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
+        foreach (index; 0 .. string_.numberOfCodeUnits) {
+            const codeUnit = string_.getIndex(index);
+            if (string_.sz == 1) {
+                values ~= cast(char) codeUnit;
+            } else {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) codeUnit);
+                values ~= encoded[0 .. length];
+            }
+        }
 
         return values;
     }
