@@ -114,6 +114,11 @@ Lua-specific bytecode shape.
   covers `Bytecode`. This was a stale coverage gap: the existing bytecode
   unary native-call path already recognizes and executes DMD's `fabs` builtin
   for negative runtime `double` inputs.
+- `evaluatesRuntimeFabsPositiveDoubleInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `fabs` builtin slice: the existing bytecode
+  unary native-call path already executes positive runtime `double` inputs
+  correctly.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
