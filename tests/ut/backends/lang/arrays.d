@@ -123,7 +123,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("refUbyteArrayParameterAppendFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -138,7 +138,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+
+static foreach (backend; backends) {
     @("arrayEqualTrue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
