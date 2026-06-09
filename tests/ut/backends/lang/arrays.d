@@ -117,14 +117,14 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("3 != 4");
     }
 
-    @("ubyteArrayIndexReadFailureMessage.1." ~ backend.stringof)
+    @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
-                assert(values[0] == 0x2au);
+                assert(values[1] == 0x2bu);
             }
-        }).shouldThrowWithMessage("41 != 42");
+        }).shouldThrowWithMessage("42 != 43");
     }
 
     @("ubyteArrayIndexWrite." ~ backend.stringof)
@@ -2214,14 +2214,14 @@ static foreach (backend; backendsWith!Interpreter) {
         });
     }
 
-    @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
+    @("ubyteArrayIndexReadFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 ubyte[] values = [0x29u, 0x2au];
-                assert(values[1] == 0x2bu);
+                assert(values[0] == 0x2au);
             }
-        }).shouldThrowWithMessage("42 != 43");
+        }).shouldThrowWithMessage("41 != 42");
     }
 
     @("arrayLength." ~ backend.stringof)

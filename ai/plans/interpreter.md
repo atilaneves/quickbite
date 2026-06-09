@@ -673,7 +673,7 @@ green through existing nonempty array literal, array-length expression, and
 equality assertion message support; signal was verified by temporarily
 mutating the active Interpreter array-length handler.
 
-Arrays progress: `ubyteArrayIndexReadFailureMessage.0` in
+Arrays progress: `ubyteArrayIndexReadFailureMessage.1` in
 `tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
 green through existing read-only array indexing and equality assertion message
 support; signal was verified by temporarily mutating the Interpreter
