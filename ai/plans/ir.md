@@ -293,6 +293,11 @@ join through one bool block parameter. The same slice added a narrow
 `AssertFalse` instruction for the observed `assert(!expr)` diagnostic shape;
 the VM currently reports the DMD-matching `true == true` message for that
 promoted failure only.
+The promoted `logicalAndComparisonOperands.IR` group reused logical-and CFG
+lowering and added narrow signed `i32` comparison support for DMD `<` and `>`.
+Those comparison operations produce `bool` IR values and currently support only
+the operand type observed by this group. The promoted failure-message variants
+reuse the existing bool equality assertion diagnostic path.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -307,7 +312,7 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/lang/logic.d`. The first three backend matrices
+Continue in `tests/ut/backends/lang/logic.d`. The first four backend matrices
 now include `IR`; verify the current checkout, then promote the next smallest
 remaining matrix that still excludes `IR`. Prefer the next existing test or
 small family that forces one language behavior, and keep CFG/general

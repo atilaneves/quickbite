@@ -43,6 +43,8 @@ package enum BinaryOperation {
     bitwiseOr,
     pow,
     equal,
+    lessThan,
+    greaterThan,
 }
 
 package enum UnaryOperation {

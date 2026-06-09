@@ -384,6 +384,12 @@ private struct Machine {
             case equal:
                 executeEqual(binary);
                 break;
+            case lessThan:
+                executeLessThan(binary);
+                break;
+            case greaterThan:
+                executeGreaterThan(binary);
+                break;
         }
     }
 
@@ -564,6 +570,42 @@ private struct Machine {
         }
     }
 
+    private void executeLessThan(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] <
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeGreaterThan(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] >
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
     private bool compare(const AssertCompare assert_) {
         final switch (assert_.operation) with (BinaryOperation) {
             case equal:
@@ -582,6 +624,8 @@ private struct Machine {
             case divide:
             case bitwiseOr:
             case pow:
+            case lessThan:
+            case greaterThan:
                 assert(0);
         }
     }
@@ -631,6 +675,8 @@ private struct Machine {
             case divide:
             case bitwiseOr:
             case pow:
+            case lessThan:
+            case greaterThan:
                 assert(0);
         }
     }

@@ -43,7 +43,7 @@ private imported!"quickbite.backends.ir.language".Function compileFunction(
 }
 
 private struct Compiler {
-    import dmd.expression: AddAssignExp, BinExp, Expression;
+    import dmd.expression: AddAssignExp, BinExp, CmpExp, Expression;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import quickbite.backends.ir.language:
@@ -181,6 +181,9 @@ private struct Compiler {
 
         if (auto equal = expression.isEqualExp)
             return compileBinaryExpression(equal, BinaryOperation.equal);
+
+        if (isComparisonExpression(expression))
+            return compileComparisonExpression(castComparisonExpression(expression));
 
         if (auto logical = expression.isLogicalExp) {
             if (isAndAnd(logical))
@@ -657,6 +660,22 @@ private struct Compiler {
         return compileBinaryExpression(expression.e1, expression.e2, operation);
     }
 
+    private Value compileComparisonExpression(CmpExp expression) {
+        import dmd.tokens: EXP;
+
+        if (expression.op == EXP.lessThan)
+            return compileBinaryExpression(expression, BinaryOperation.lessThan);
+
+        if (expression.op == EXP.greaterThan)
+            return compileBinaryExpression(expression, BinaryOperation.greaterThan);
+
+        import std.conv: text;
+        throw new Exception(text(
+            "Unsupported IR comparison: ",
+            expression.op,
+        ));
+    }
+
     private Value compileBinaryExpression(
         Expression lhsExpression,
         Expression rhsExpression,
@@ -672,7 +691,7 @@ private struct Compiler {
         in Value rhs,
         in BinaryOperation operation,
     ) {
-        const result = operation == BinaryOperation.equal ?
+        const result = isBoolResult(operation) ?
             nextValue(Type.i1, ResultKind.bool_) :
             nextValue(lhs.type, lhs.resultKind);
         instructions ~= Instruction(
@@ -815,6 +834,45 @@ private bool isOrOr(imported!"dmd.expression".LogicalExp expression) {
     import dmd.tokens: EXP;
 
     return expression.op == EXP.orOr;
+}
+
+private bool isComparisonExpression(imported!"dmd.expression".Expression expression) {
+    import dmd.tokens: EXP;
+
+    return expression.op == EXP.lessThan ||
+        expression.op == EXP.greaterThan;
+}
+
+private imported!"dmd.expression".CmpExp castComparisonExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+    if (comparison is null)
+        throw new Exception("Unsupported IR comparison expression.");
+
+    return comparison;
+}
+
+private bool isBoolResult(
+    in imported!"quickbite.backends.ir.language".BinaryOperation operation,
+)
+    @safe pure nothrow
+{
+    import quickbite.backends.ir.language: BinaryOperation;
+
+    final switch (operation) with (BinaryOperation) {
+        case equal:
+        case lessThan:
+        case greaterThan:
+            return true;
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case bitwiseOr:
+        case pow:
+            return false;
+    }
 }
 
 private imported!"dmd.expression".EqualExp assertEqualExpression(
