@@ -105,6 +105,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
   unary native-call path already executed the non-integer runtime `sqrt` input
   correctly.
+- `evaluatesRuntimeNonPerfectSqrtInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
+  unary native-call path already executed the non-perfect runtime `sqrt` input
+  and comparison assertions correctly.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
