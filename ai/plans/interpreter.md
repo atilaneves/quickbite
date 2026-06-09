@@ -559,6 +559,11 @@ REPL progress: `repl.backend.declarationCellsPersistWithoutDisplay` in
 executing no-display EvalCells through the existing eval function walker and
 returning `Value.void_` so the REPL suppresses display.
 
+REPL progress: `repl.backend.expressionSideEffectsPersist` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+narrow local-variable postfix `++` support in the eval function walker so a
+single REPL session can persist `int x;`, `x++`, then `x`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

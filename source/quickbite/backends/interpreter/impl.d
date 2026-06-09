@@ -188,6 +188,9 @@ private struct EvalFunctionWalker {
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
 
+        if (auto post = expression.isPostExp)
+            return runPostIncrementExpression(post);
+
         if (auto addAssign = expression.isAddAssignExp)
             return runIncrementAssignExpression(addAssign);
 
@@ -272,6 +275,28 @@ private struct EvalFunctionWalker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runPostIncrementExpression(
+        imported!"dmd.expression".PostExp post,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (post.op != EXP.plusPlus)
+            throw new Exception("Unsupported eval post expression.");
+
+        auto var = post.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto current = variable in locals;
+        const oldValue = current is null ? defaultValue(variable) : *current;
+        locals[variable] = oldValue + Value(cast(int) 1);
+        return oldValue;
     }
 
     private Value runDeclarationExpression(
