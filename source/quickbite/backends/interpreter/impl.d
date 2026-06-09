@@ -39,9 +39,11 @@ public class Interpreter: imported!"quickbite.backends".Backend {
     public override void runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        EvalModuleInterpreter interpreter;
+        Evaluator evaluator;
+        evaluator.allowZeroArgumentCalls = true;
+        evaluator.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            interpreter.runTest(unitTest);
+            evaluator.runTest(unitTest);
         });
     }
 
@@ -49,11 +51,13 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         TestRunResult result;
-        EvalModuleInterpreter interpreter;
+        Evaluator evaluator;
+        evaluator.allowZeroArgumentCalls = true;
+        evaluator.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
             ++result.summary.total;
             try {
-                interpreter.runTest(unitTest);
+                evaluator.runTest(unitTest);
                 ++result.summary.passed;
                 result.cases ~= TestCaseResult(
                     TestOutcome.passed,
@@ -78,11 +82,13 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         TestSummary summary;
-        EvalModuleInterpreter interpreter;
+        Evaluator evaluator;
+        evaluator.allowZeroArgumentCalls = true;
+        evaluator.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
             ++summary.total;
             try {
-                interpreter.runTest(unitTest);
+                evaluator.runTest(unitTest);
                 ++summary.passed;
             } catch (Exception) {
                 ++summary.failed;
@@ -125,20 +131,31 @@ private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
     bool allowZeroArgumentCalls = false,
 ) {
-    EvalFunctionWalker walker;
-    walker.allowZeroArgumentCalls = allowZeroArgumentCalls;
-    walker.runStatement(function_.fbody);
-    return walker.result;
+    Evaluator evaluator;
+    evaluator.allowZeroArgumentCalls = allowZeroArgumentCalls;
+    evaluator.allowControlFlow = false;
+    evaluator.runStatement(function_.fbody);
+    return evaluator.result;
 }
 
-private struct EvalFunctionWalker {
-    import quickbite.lang: Value;
-    import quickbite.frontend.dmd.values: defaultValue;
+private struct Evaluator {
     import dmd.declaration: VarDeclaration;
+    import dmd.func: FuncDeclaration;
+    import quickbite.frontend.dmd.values: defaultValue;
+    import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
+    private bool[VarDeclaration] uninitializedLocals;
     private Value result;
+    private bool runningCalledFunction;
+    private FuncDeclaration currentFunction;
     private bool allowZeroArgumentCalls;
+    private bool allowControlFlow;
+
+    private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
+        log("Running test ", unitTest);
+        runStatement(unitTest.fbody);
+    }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -176,315 +193,21 @@ private struct EvalFunctionWalker {
             return;
         }
 
+        if (allowControlFlow) {
+            if (auto if_ = statement.isIfStatement) {
+                if (isTruthy(runExpression(if_.condition)))
+                    runStatement(if_.ifbody);
+                else
+                    runStatement(if_.elsebody);
+                return;
+            }
+
+            if (auto throw_ = statement.isThrowStatement)
+                throw new Exception(thrownExceptionMessage(throw_.exp));
+        }
+
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
-    }
-
-    private Value runExpression(imported!"dmd.expression".Expression expression) {
-        import quickbite.frontend.dmd.values: integerValue, realValue;
-
-        if (auto integer = expression.isIntegerExp)
-            return integerValue(integer);
-
-        if (auto real_ = expression.isRealExp)
-            return realValue(real_);
-
-        if (auto string_ = expression.isStringExp)
-            return stringValue(string_);
-
-        if (auto cast_ = expression.isCastExp)
-            return castValue(cast_);
-
-        if (auto post = expression.isPostExp)
-            return runPostIncrementExpression(post);
-
-        if (auto addAssign = expression.isAddAssignExp)
-            return runIncrementAssignExpression(addAssign);
-
-        if (auto add = expression.isAddExp)
-            return runExpression(add.e1) + runExpression(add.e2);
-
-        if (auto sub = expression.isMinExp)
-            return runExpression(sub.e1) - runExpression(sub.e2);
-
-        if (auto mul = expression.isMulExp)
-            return runExpression(mul.e1) * runExpression(mul.e2);
-
-        if (auto neg = expression.isNegExp)
-            return -runExpression(neg.e1);
-
-        if (auto call = expression.isCallExp)
-            return runCallExpression(call);
-
-        if (auto declaration = expression.isDeclarationExp)
-            return runDeclarationExpression(declaration);
-
-        if (auto var = expression.isVarExp) {
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null)
-                assert(0);
-
-            if (auto current = variable in locals)
-                return *current;
-
-            return defaultValue(variable);
-        }
-
-        import std.conv: text;
-        throw new Exception(text("Unsupported eval expression: ", expression.op));
-    }
-
-    private Value runCallExpression(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import quickbite.backends.interpreter.builtins:
-            binaryBuiltinCall,
-            interpreterBuiltinArgumentCount,
-            tryInterpreterBuiltin,
-            unaryBuiltinCall;
-
-        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-
-        import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
-
-        InterpreterBuiltin builtin;
-        if (tryInterpreterBuiltin(call.f, builtin)) {
-            with (InterpreterBuiltin) final switch (builtin) {
-                case fabs:
-                case isInfinity:
-                case signbit:
-                    if (
-                        argumentCount !=
-                        interpreterBuiltinArgumentCount(builtin)
-                    )
-                        throw new Exception(
-                            "Unsupported eval call argument count.",
-                        );
-
-                    return unaryBuiltinCall(
-                        builtin,
-                        runExpression((*call.arguments)[0]),
-                    );
-
-                case pow:
-                    if (
-                        argumentCount !=
-                        interpreterBuiltinArgumentCount(builtin)
-                    )
-                        throw new Exception(
-                            "Unsupported eval call argument count.",
-                        );
-
-                    return binaryBuiltinCall(
-                        builtin,
-                        runExpression((*call.arguments)[0]),
-                        runExpression((*call.arguments)[1]),
-                    );
-
-                case sqrt:
-                    break;
-            }
-        }
-
-        if (argumentCount == 0 && !allowZeroArgumentCalls)
-            throw new Exception("Unsupported eval call argument count.");
-
-        if (call.f !is null)
-            return runDirectFunctionCall(call.f, call.arguments);
-
-        if (auto var = call.e1.isVarExp)
-            if (auto function_ = var.var.isFuncDeclaration)
-                return runDirectFunctionCall(function_, call.arguments);
-
-        throw new Exception("Unsupported eval call.");
-    }
-
-    private Value runDirectFunctionCall(
-        imported!"dmd.func".FuncDeclaration function_,
-        imported!"dmd.root.array".Array!(imported!"dmd.expression".Expression)*
-            arguments,
-    ) {
-        if (function_.fbody is null)
-            throw new Exception("Unsupported eval call.");
-
-        const argumentCount = arguments is null ? 0 : arguments.length;
-        if (
-            function_.parameters is null && argumentCount != 0 ||
-            function_.parameters !is null &&
-                function_.parameters.length != argumentCount
-        )
-            throw new Exception("Unsupported eval call argument count.");
-
-        auto savedLocals = locals.dup;
-        const savedResult = result;
-        locals = null;
-        if (argumentCount != 0) {
-            foreach (index, parameter; *function_.parameters)
-                locals[parameter] = runExpression((*arguments)[index]);
-        }
-
-        runStatement(function_.fbody);
-        const value = result;
-
-        locals = savedLocals;
-        result = savedResult;
-        return value;
-    }
-
-    private Value runPostIncrementExpression(
-        imported!"dmd.expression".PostExp post,
-    ) {
-        import dmd.tokens: EXP;
-
-        if (post.op != EXP.plusPlus)
-            throw new Exception("Unsupported eval post expression.");
-
-        auto var = post.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported eval post expression target.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported eval post expression target.");
-
-        auto current = variable in locals;
-        const oldValue = current is null ? defaultValue(variable) : *current;
-        locals[variable] = oldValue + Value(cast(int) 1);
-        return oldValue;
-    }
-
-    private Value runDeclarationExpression(
-        imported!"dmd.expression".DeclarationExp declaration,
-    ) {
-        auto variable = declaration.declaration.isVarDeclaration;
-        if (variable is null)
-            return Value(cast(int) 0);
-
-        if (variable._init is null || variable._init.isExpInitializer is null) {
-            const value = defaultValue(variable);
-            locals[variable] = value;
-            return value;
-        }
-
-        auto initializer = variable._init.isExpInitializer.exp;
-        if (auto assign = initializer.isAssignExp)
-            initializer = assign.e2;
-        else if (auto construct = initializer.isConstructExp)
-            initializer = construct.e2;
-        else if (auto blit = initializer.isBlitExp)
-            initializer = blit.e2;
-
-        auto value = runExpression(initializer);
-        locals[variable] = value;
-        return value;
-    }
-
-    private Value runIncrementAssignExpression(
-        imported!"dmd.expression".BinExp assign,
-    ) {
-        auto var = assign.e1.isVarExp;
-        if (var is null)
-            assert(0);
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            assert(0);
-
-        auto current = variable in locals;
-        if (current is null) {
-            locals[variable] = defaultValue(variable);
-            current = variable in locals;
-        }
-
-        *current = *current + Value(cast(int) 1);
-        return *current;
-    }
-
-    private Value castValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.backends.casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValue;
-
-        auto type = cast_.to.toBasetype;
-        if (type is null)
-            return runExpression(cast_.e1);
-
-        if (isTransparentArrayCastTarget(type))
-            return runExpression(cast_.e1);
-
-        return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
-    }
-
-    private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
-    }
-
-    private char[] stringChars(imported!"dmd.expression".StringExp string_) {
-        char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
-
-        return values;
-    }
-}
-
-private struct EvalModuleInterpreter {
-    import dmd.declaration: VarDeclaration;
-    import dmd.func: FuncDeclaration;
-    import quickbite.frontend.dmd.values: defaultValue;
-    import quickbite.lang: Value;
-
-    private Value[VarDeclaration] locals;
-    private bool[VarDeclaration] uninitializedLocals;
-    private Value result;
-    private bool runningCalledFunction;
-    private FuncDeclaration currentFunction;
-
-    private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
-        log("Running test ", unitTest);
-        runStatement(unitTest.fbody);
-    }
-
-    private void runStatement(imported!"dmd.statement".Statement statement) {
-        if (auto compound = statement.isCompoundDeclarationStatement) {
-            if (compound.statements !is null)
-                foreach (child; *compound.statements)
-                    runStatement(child);
-            return;
-        }
-
-        if (auto compound = statement.isCompoundStatement) {
-            if (compound.statements !is null)
-                foreach (child; *compound.statements)
-                    runStatement(child);
-            return;
-        }
-
-        if (auto expression = statement.isExpStatement) {
-            runExpression(expression.exp);
-            return;
-        }
-
-        if (auto return_ = statement.isReturnStatement) {
-            result = runExpression(return_.exp);
-            return;
-        }
-
-        if (auto if_ = statement.isIfStatement) {
-            if (isTruthy(runExpression(if_.condition)))
-                runStatement(if_.ifbody);
-            else
-                runStatement(if_.elsebody);
-            return;
-        }
-
-        if (auto throw_ = statement.isThrowStatement)
-            throw new Exception(thrownExceptionMessage(throw_.exp));
-
-        if (statement.isImportStatement !is null)
-            return;
-
-        assert(0);
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
@@ -546,8 +269,23 @@ private struct EvalModuleInterpreter {
             return runComparisonExpression(comparison);
         }
 
+        if (auto post = expression.isPostExp)
+            return runPostIncrementExpression(post);
+
+        if (auto addAssign = expression.isAddAssignExp)
+            return runIncrementAssignExpression(addAssign);
+
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
+
+        if (auto sub = expression.isMinExp)
+            return runExpression(sub.e1) - runExpression(sub.e2);
+
+        if (auto mul = expression.isMulExp)
+            return runExpression(mul.e1) * runExpression(mul.e2);
+
+        if (auto neg = expression.isNegExp)
+            return -runExpression(neg.e1);
 
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
@@ -603,7 +341,7 @@ private struct EvalModuleInterpreter {
         }
 
         import std.conv: text;
-        throw new Exception(text("Unsupported interpreter expression: ", expression.op));
+        throw new Exception(text("Unsupported eval expression: ", expression.op));
     }
 
     private Value runLogicalAndExpression(
@@ -695,6 +433,10 @@ private struct EvalModuleInterpreter {
             }
         }
 
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
+        if (argumentCount == 0 && !allowZeroArgumentCalls)
+            throw new Exception("Unsupported eval call argument count.");
+
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
@@ -720,7 +462,7 @@ private struct EvalModuleInterpreter {
             if (auto function_ = var.var.isFuncDeclaration)
                 return runFunction(function_, arguments, argumentVariables);
 
-        throw new Exception("Unsupported interpreter call.");
+        throw new Exception("Unsupported eval call.");
     }
 
     private bool hasNoAvailableSource(
@@ -1418,6 +1160,49 @@ private struct EvalModuleInterpreter {
             " ",
             right.toInteger != 0,
         );
+    }
+
+    private Value runPostIncrementExpression(
+        imported!"dmd.expression".PostExp post,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (post.op != EXP.plusPlus)
+            throw new Exception("Unsupported eval post expression.");
+
+        auto var = post.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto current = variable in locals;
+        const oldValue = current is null ? defaultValue(variable) : *current;
+        locals[variable] = oldValue + Value(cast(int) 1);
+        return oldValue;
+    }
+
+    private Value runIncrementAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            assert(0);
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            assert(0);
+
+        auto current = variable in locals;
+        if (current is null) {
+            locals[variable] = defaultValue(variable);
+            current = variable in locals;
+        }
+
+        *current = *current + Value(cast(int) 1);
+        return *current;
     }
 }
 
