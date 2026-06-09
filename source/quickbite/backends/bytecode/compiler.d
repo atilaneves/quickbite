@@ -59,7 +59,7 @@ private struct Compiler {
     import dmd.func: FuncDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        Expression, LogicalExp, PreExp;
+        DotVarExp, Expression, LogicalExp, PreExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -306,6 +306,11 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp) {
             compileCall(call);
+            return;
+        }
+
+        if (auto dot = expression.isDotVarExp) {
+            compileDotVarExpression(dot);
             return;
         }
 
@@ -585,6 +590,38 @@ private struct Compiler {
         compileExpression(dot.e1);
         program.instructions ~= Instruction(Op.throwIfNullClassMethod);
         program.instructions ~= Instruction(Op.pop);
+    }
+
+    private void compileDotVarExpression(DotVarExp dot) {
+        compileExpression(dot.e1);
+        program.instructions ~= Instruction(
+            Op.throwIfNullClassField,
+            Value(nullClassFieldMessage(dot)),
+        );
+        program.instructions ~= Instruction(Op.pop);
+        program.instructions ~= Instruction(
+            Op.literal,
+            Value("Unsupported bytecode field read."),
+        );
+        program.instructions ~= Instruction(Op.throw_);
+    }
+
+    private string nullClassFieldMessage(DotVarExp dot) {
+        import std.conv: text;
+
+        return text(
+            "class `",
+            receiverName(dot.e1),
+            "` is `null` and cannot be dereferenced",
+        );
+    }
+
+    private string receiverName(Expression receiver) {
+        auto variable = receiver.isVarExp;
+        if (variable is null)
+            return "null";
+
+        return variable.var.ident.toString.idup;
     }
 
     private void compileBuiltinCall(CallExp call) {

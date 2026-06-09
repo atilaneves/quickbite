@@ -325,6 +325,12 @@ Lua-specific bytecode shape.
   for dot-call class methods. Bytecode now lowers DMD `null` to `Value.null_`
   and checks the dot-call receiver before emitting the function call, reporting
   `function call through null class reference `null``.
+- `nullClassFieldReadReportsDiagnostic` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing DMD `DotVarExp` lowering for class field reads. Bytecode now
+  evaluates the field receiver and reports the null-receiver diagnostic
+  `` class `thing` is `null` and cannot be dereferenced `` before leaving
+  non-null class field reads unsupported.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
