@@ -1005,7 +1005,25 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isNaN(double value) {
+                return false;
+            }
+
+            unittest {
+                double input = 21.0;
+                assert(isNaN(input));
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backends) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

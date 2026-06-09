@@ -563,6 +563,11 @@ Math progress: `callsUserNamedIsNaNForNanInputFailureMessage.0` in
 change was required. Signal was verified by temporarily mutating the promoted
 Interpreter expectation, which failed the focused test with `false != true`.
 
+Math progress: `callsUserNamedIsNaNForNanInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the promoted
+Interpreter expectation, which failed the focused test with `false != true`.
+
 REPL progress: `repl.backend.evaluatesExpressionCellsUntilQuit` in
 `tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
 expression-cell `evalRepl` dispatch through the existing eval function walker.
