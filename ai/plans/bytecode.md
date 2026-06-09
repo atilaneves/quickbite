@@ -133,6 +133,11 @@ Lua-specific bytecode shape.
   coverage gap: the existing REPL session history already preserves module
   declaration cells without display, and bytecode already evaluates the
   persisted scalar declaration through the following expression cell.
+- `repl.backend.expressionSideEffectsPersist` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  missing local post-increment expression support, so bytecode now lowers
+  `x++` by loading the old local value for the expression result and mutating
+  the persisted local through the existing increment opcode.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it

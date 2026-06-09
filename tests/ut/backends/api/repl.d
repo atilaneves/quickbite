@@ -69,7 +69,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
