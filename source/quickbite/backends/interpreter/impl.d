@@ -39,11 +39,11 @@ public class Interpreter: imported!"quickbite.backends".Backend {
     public override void runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        Evaluator evaluator;
-        evaluator.allowZeroArgumentCalls = true;
-        evaluator.allowControlFlow = true;
+        Walker walker;
+        walker.allowZeroArgumentCalls = true;
+        walker.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            evaluator.runTest(unitTest);
+            walker.runTest(unitTest);
         });
     }
 
@@ -51,13 +51,13 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         TestRunResult result;
-        Evaluator evaluator;
-        evaluator.allowZeroArgumentCalls = true;
-        evaluator.allowControlFlow = true;
+        Walker walker;
+        walker.allowZeroArgumentCalls = true;
+        walker.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
             ++result.summary.total;
             try {
-                evaluator.runTest(unitTest);
+                walker.runTest(unitTest);
                 ++result.summary.passed;
                 result.cases ~= TestCaseResult(
                     TestOutcome.passed,
@@ -82,13 +82,13 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         TestSummary summary;
-        Evaluator evaluator;
-        evaluator.allowZeroArgumentCalls = true;
-        evaluator.allowControlFlow = true;
+        Walker walker;
+        walker.allowZeroArgumentCalls = true;
+        walker.allowControlFlow = true;
         foreachUnitTestDeclaration(module_, (unitTest) {
             ++summary.total;
             try {
-                evaluator.runTest(unitTest);
+                walker.runTest(unitTest);
                 ++summary.passed;
             } catch (Exception) {
                 ++summary.failed;
@@ -127,14 +127,14 @@ private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
     bool allowZeroArgumentCalls = false,
 ) {
-    Evaluator evaluator;
-    evaluator.allowZeroArgumentCalls = allowZeroArgumentCalls;
-    evaluator.allowControlFlow = false;
-    evaluator.runStatement(function_.fbody);
-    return evaluator.result;
+    Walker walker;
+    walker.allowZeroArgumentCalls = allowZeroArgumentCalls;
+    walker.allowControlFlow = false;
+    walker.runStatement(function_.fbody);
+    return walker.result;
 }
 
-private struct Evaluator {
+private struct Walker {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import quickbite.frontend.dmd.values: defaultValue;
@@ -146,6 +146,10 @@ private struct Evaluator {
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
+    // The entry points pin pairwise-different restrictions: `eval`
+    // rejects both zero-argument calls and control flow, the REPL
+    // allows only the former, and module test runs allow both, so
+    // neither flag can stand in for the other.
     private bool allowZeroArgumentCalls;
     private bool allowControlFlow;
 
@@ -510,7 +514,7 @@ private struct Evaluator {
         in Value[] arguments,
         VarDeclaration[] argumentVariables,
     ) {
-        Evaluator child;
+        Walker child;
         child.allowZeroArgumentCalls = allowZeroArgumentCalls;
         child.allowControlFlow = allowControlFlow;
         child.runningCalledFunction = true;
