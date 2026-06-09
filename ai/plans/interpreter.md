@@ -786,6 +786,14 @@ green through existing nested-slice evaluation and local array append
 detachment; signal was verified by temporarily mutating the fixture's expected
 tail value.
 
+Arrays progress:
+`nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation, local array append detachment,
+index-read, and equality assertion message support; signal was verified by
+temporarily mutating the Interpreter `IndexExp` handler, which made the
+promoted fixture stop throwing the expected `3 != 4` message.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`
