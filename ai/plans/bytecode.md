@@ -123,6 +123,11 @@ Lua-specific bytecode shape.
   covers `Bytecode`. This was a stale coverage gap after the REPL expression
   loop slice: the shared REPL loop already skips comment-only input before
   dispatching cells to the backend.
+- `repl.backend.evaluatesStandaloneMixinExpression` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. This was a stale
+  coverage gap: the existing REPL frontend already classifies standalone mixin
+  expression statements as expression cells, and bytecode already executes the
+  mixed-in expression through the existing eval path.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
