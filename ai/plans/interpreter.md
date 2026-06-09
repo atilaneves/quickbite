@@ -429,6 +429,94 @@ for wide character values; signal was verified by temporarily mutating the
 `wchar` conversion path, which changed the first displayed result from `"ab"`
 to `"bc"`.
 
+REPL promotion probe:
+All remaining CTFE-backed backend-matrix tests in
+`tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
+branch `interpreter-api-repl-plan`. The two previously split Interpreter-only
+copies of `importDeclarationsPersistWithoutDisplay` and
+`displaysUndisplayablePlaceholderForFunctionLiterals` were folded back into the
+shared matrix to avoid duplicate test names.
+
+The promoted suite was run with `dub test -- --random`; the failing seed was
+`963603312`. Re-running with `dub test -- --seed 963603312` left exactly these
+new Interpreter failures:
+
+- `importStdExposesPhobosSymbols`: `Unsupported eval statement: UnrolledLoop`.
+- `displaysFiniteRangeResults`: `Unsupported DMD default value`.
+- `displaysFilteredArrayResults`: `Unsupported eval statement: If`.
+- `displaysAssocArrayResults`: `Unsupported eval expression:
+  assocArrayLiteral`.
+- `displaysEnumValues`: displayed `["7", "[7, 8]", "7"]` instead of
+  `["E.a", "[E.a, E.b]", "7"]`.
+- `runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`: reported
+  `Unsupported eval call.` instead of the no-available-source `malloc`
+  diagnostic.
+- `expressionCtfeErrorsReportDiagnostics`: reported `Unsupported eval
+  expression: index` instead of the array-bounds diagnostic.
+- `diagnosticsHideSyntheticWrapperNames`: reported `Unsupported eval
+  expression: assert_` instead of evaluating the explicit `__FUNCTION__`
+  assertion message to `<repl>`.
+
+The remaining promoted Interpreter cases were already green:
+`displaysStringValues`, `specialTokenValuesHideWrapperInternals`,
+`numericScalarDisplayUsesDLiteralSuffixes`, `noDisplayCellsReturnVoid`,
+`runLoadedUnittestBlocks`, `runLoadedTestsWithNothingLoadedReturnsVoid`,
+`loadedUnittestFailuresReportReplLocation`,
+`laterLoadedUnittestFailuresReportReplLocation`,
+`runLoadedTestsReportsEveryFailedUnittest`, `runLoadedFileUnittestBlocks`,
+`loadedSourceDoesNotAdvanceTypedReplLocations`,
+`loadedFileUnittestFailuresReportFileLocation`,
+`loadModuleFileErrorsHideSyntheticNames`,
+`duplicateDeclarationsHideSyntheticNames`,
+`failedModuleNoDisplayCellsDoNotPoisonSession`,
+`syntaxErrorsHideWrapperInternals`,
+`functionCallMismatchShowsCandidateSignature`, and
+`functionCallMismatchShowsOverloadSignatures`.
+
+Fix plan for the failing REPL probe:
+
+1. Start with the narrow REPL walker parity cases before Phobos ranges. Add
+   `EvalFunctionWalker` support for `AssertExp`, using the existing module
+   interpreter assertion-message helpers as the reference but only for the
+   explicit-message REPL shape required by
+   `diagnosticsHideSyntheticWrapperNames`. This should evaluate
+   `assert(false, __FUNCTION__)` to the sanitized `<repl>` message.
+
+2. Add `EvalFunctionWalker` external-source call diagnostics to match
+   `EvalModuleInterpreter.runCallExpression`: when a resolved `call.f` has no
+   body, report the mechanically-derived no-available-source message before
+   falling through to generic unsupported-call diagnostics. This should make
+   the `malloc` REPL cell fail with the CTFE-compatible diagnostic while
+   preserving session state.
+
+3. Add read-only REPL `IndexExp` support for local and literal dynamic arrays,
+   including DMD-compatible bounds messages for the two promoted REPL shapes:
+   literal `[1, 2, 3][10]` and local `arr[99]`. Reuse `Value` array indexing
+   where it already reports the desired diagnostic; otherwise add a small
+   helper that formats the existing CTFE messages without adding writes,
+   slices, or pointer indexing.
+
+4. Add REPL `AssocArrayLiteralExp` support by evaluating DMD literal keys and
+   values into `Value.assocArrayValue`. Keep this literal-only and display-only
+   for `displaysAssocArrayResults`; do not add associative-array indexing,
+   mutation, `.keys`, `.values`, or runtime druntime hooks until a promoted
+   test requires them.
+
+5. Preserve enum display metadata in REPL expression evaluation. When DMD
+   represents an enum member as an `IntegerExp` with enum type, construct
+   `Value.enumValue` from the original expression spelling, matching the CTFE
+   backend's `ctfeValue` behavior. Ensure casts to integral types still discard
+   the enum display wrapper so `cast(int) E.a` remains `7`.
+
+6. Tackle Phobos range expressions last. First add `UnrolledLoopStatement`
+   sequencing and the narrow `IfStatement` behavior observed in the lowered
+   `std`/`std.algorithm` template bodies. Then inspect the
+   `Unsupported DMD default value` path from `displaysFiniteRangeResults`;
+   likely fixes are limited default-value support for the Phobos range wrapper
+   types or returning an undisplayable/default display value for fields that
+   cannot be materialized. Do not implement a broad range engine or generic
+   Phobos interpreter without another promoted red test forcing each step.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
