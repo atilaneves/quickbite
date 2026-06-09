@@ -111,7 +111,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -125,7 +125,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -143,7 +143,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -163,7 +163,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -183,7 +183,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -202,7 +202,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -222,7 +222,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -304,7 +304,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -336,7 +336,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -350,7 +350,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -364,7 +364,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -378,7 +378,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -392,7 +392,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
