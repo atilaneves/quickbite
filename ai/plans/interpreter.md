@@ -285,6 +285,13 @@ Arrays progress: `ubyteArrayIndexRead` in
 read-only `IndexExp` evaluation over `Value.arrayValue` elements; array
 writes, slices, append, and index diagnostics remain unpromoted.
 
+Arrays progress: `ubyteArrayIndexWrite` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow indexed assignment for local array variables by replacing one
+`Value.arrayValue` element and writing the updated value back to the local;
+slices, append, ref parameter mutation, and bounds diagnostics remain
+unpromoted.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

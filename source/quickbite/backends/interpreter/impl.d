@@ -856,6 +856,9 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        if (auto index = assign.e1.isIndexExp)
+            return runIndexAssignExpression(index, assign.e2);
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -866,6 +869,29 @@ private struct EvalModuleInterpreter {
 
         const value = runExpression(assign.e2);
         locals[variable] = value;
+        uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private Value runIndexAssignExpression(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const value = runExpression(rhs);
+        locals[variable] = current.withArrayElement(arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
     }

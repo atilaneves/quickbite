@@ -127,17 +127,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
-    @("ubyteArrayIndexWrite." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x00u];
-                values[1] = 0x2au;
-                assert(values[1] == 0x2au);
-            }
-        });
-    }
-
     @("ubyteArrayIndexWriteFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2204,6 +2193,17 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("ubyteArrayIndexWrite." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x00u];
+                values[1] = 0x2au;
+                assert(values[1] == 0x2au);
+            }
+        });
+    }
+
     @("ubyteArrayIndexRead." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

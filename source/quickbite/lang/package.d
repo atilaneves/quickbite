@@ -372,6 +372,25 @@ public struct Value {
         );
     }
 
+    public Value withArrayElement(
+        in size_t index,
+        in Value element,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) {
+                auto elements = array.elements.dup;
+                elements[index] = element;
+                return Value.arrayValue(elements);
+            },
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
     public real asReal() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
