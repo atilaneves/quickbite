@@ -540,6 +540,10 @@ change was required. Signal was verified by temporarily treating any function
 named `isNaN` as the Interpreter math builtin, which failed the focused test
 with `false != true`.
 
+REPL progress: `repl.backend.evaluatesExpressionCellsUntilQuit` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+expression-cell `evalRepl` dispatch through the existing eval function walker.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

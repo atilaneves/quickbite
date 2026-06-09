@@ -20,8 +20,21 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         return evalFunction(parseEvalSource(expr).function_);
     }
 
-    public override Value evalRepl(in EvalCell cell) {
-        assert(0);
+    public override Value evalRepl(EvalCell cell) {
+        import quickbite.frontend.cell: EvalCellKind;
+
+        final switch (cell.kind) with (EvalCellKind) {
+            case incomplete:
+                throw new Exception(
+                    "Incomplete REPL cell reached Interpreter backend.",
+                );
+            case noDisplay:
+                throw new Exception(
+                    "Unsupported Interpreter REPL no-display cell.",
+                );
+            case expression:
+                return evalFunction(cell.function_);
+        }
     }
 
     public override void runTests(Module module_) {
