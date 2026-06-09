@@ -499,6 +499,9 @@ private struct EvalModuleInterpreter {
         if (auto string_ = expression.isStringExp)
             return stringValue(string_);
 
+        if (auto array = expression.isArrayLiteralExp)
+            return arrayValue(array);
+
         if (auto assert_ = expression.isAssertExp) {
             if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(assertFailureMessage(assert_));
@@ -558,6 +561,9 @@ private struct EvalModuleInterpreter {
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
+
+        if (auto arrayLength = expression.isArrayLengthExp)
+            return Value(runExpression(arrayLength.e1).length);
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -903,6 +909,17 @@ private struct EvalModuleInterpreter {
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
         return Value(stringChars(string_));
+    }
+
+    private Value arrayValue(
+        imported!"dmd.expression".ArrayLiteralExp array,
+    ) {
+        Value[] values;
+        if (array.elements !is null)
+            foreach (element; *array.elements)
+                values ~= runExpression(element);
+
+        return Value.arrayValue(values);
     }
 
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {

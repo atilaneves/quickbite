@@ -348,6 +348,18 @@ public struct Value {
         );
     }
 
+    public size_t length() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.elements.length,
+            (_) {
+                throw new Exception("Expected array.");
+                return size_t.init;
+            },
+        );
+    }
+
     public real asReal() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;

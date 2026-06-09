@@ -270,6 +270,11 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. This required narrow module-backed
+`ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
+evaluation returning the array length as `size_t`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

@@ -226,16 +226,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
-    @("arrayLength." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] arr = [1, 2, 3];
-                assert(arr.length == 3);
-            }
-        });
-    }
-
     @("arrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2280,5 +2270,17 @@ static foreach (backend; backends) {
                 assert(second[0] == 'z');
             }
         }).shouldThrowWithMessage("'a' != 'z'");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("arrayLength." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] arr = [1, 2, 3];
+                assert(arr.length == 3);
+            }
+        });
     }
 }
