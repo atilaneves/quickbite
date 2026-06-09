@@ -301,23 +301,35 @@ this. The merged walker must include it.
 
 ### Chosen Mode Flags
 
-The merged `Evaluator` struct needs exactly **one** boolean mode flag:
+The merged `Evaluator` struct needs exactly **two** boolean mode flags:
 
 ```d
 private bool allowZeroArgumentCalls;
+private bool allowControlFlow;
 ```
 
-Set to `false` (default) for `eval`; set to `true` for `evalRepl` and for
-the module-interpreter path (which always allows zero-argument calls).
+A single flag cannot work: once the merged walker handles `IfStatement`
+for the module path, plain `eval` of an `if` would no longer throw, and
+`ifStatementReportsUnsupportedEvalStatement.Interpreter` pins that it must
+throw `"Unsupported eval statement: If"`. Nor can `allowZeroArgumentCalls`
+double as the gate, because the REPL sets it to `true` yet currently also
+rejects `if` (it walks via `EvalFunctionWalker`, which has no `if`
+support). The flags per entry point:
+
+| Entry point  | `allowZeroArgumentCalls` | `allowControlFlow` |
+|--------------|--------------------------|--------------------|
+| `eval`       | `false`                  | `false`            |
+| `evalRepl`   | `true`                   | `false`            |
+| module tests | `true`                   | `true`             |
+
+When `allowControlFlow` is `false`, `runStatement` must reject
+`IfStatement` and `ThrowStatement` through the existing fall-through
+diagnostic, preserving the pinned message text
+`"Unsupported eval statement: If"` exactly.
 
 All other differences reduce to: (a) include all features from both walkers
 in the single merged struct, or (b) drop the `sqrt` fall-through in favour
 of treating `sqrt` as a full builtin.
-
-No separate "isModuleMode" or "isEvalMode" flag is needed. The statement-set
-difference (`if`/`throw` absent from eval) is handled by the unsupported-
-statement diagnostic path (throws `"Unsupported eval statement: …"`), which
-is already present and tested.
 
 ---
 
@@ -345,10 +357,10 @@ EvalModuleInterpreter into Evaluator`
   `isCharExpression`, `isUnsignedLongExpression`, `isBoolValue`,
   `isBoolExpression`, `isLogicalNotExpression`, `isLogicalExpression`,
   `isVariableMessage`, `equalFailureMessage`.
-- Add `IfStatement` and `ThrowStatement` to `runStatement` (already in
-  `EvalModuleInterpreter`; keep them gated by the existing unsupported-
-  statement throw for eval mode — but `if`/`throw` are needed for the
-  module path).
+- Add `IfStatement` and `ThrowStatement` to `runStatement`, gated by
+  `allowControlFlow`. When the flag is `false` they fall through to the
+  unsupported-statement throw, preserving the pinned
+  `"Unsupported eval statement: If"` message.
 - Add `ScopeStatement` to `EvalModuleInterpreter`'s statement list (it was
   absent; now unified).
 - Absorb all expression types from both walkers into one `runExpression`.
@@ -358,7 +370,7 @@ EvalModuleInterpreter into Evaluator`
   `runningCalledFunction` tracking.
 - Delete `EvalModuleInterpreter`.
 - Update `evalFunction` to create an `Evaluator` with the given
-  `allowZeroArgumentCalls` flag.
+  `allowZeroArgumentCalls` flag and `allowControlFlow = false`.
 - Update `runTests`, `runTestResults`, `runTestSummary` to use `Evaluator`
   instead of `EvalModuleInterpreter`.
 - Run `dub test -- --random`.
@@ -376,7 +388,10 @@ Replace the save/restore pattern with a recursive `Evaluator` value
 constructed for each call frame:
 
 - At each function call, construct a fresh `Evaluator` with
-  `allowZeroArgumentCalls = true` and `runningCalledFunction = true`.
+  `runningCalledFunction = true`, inheriting `allowZeroArgumentCalls` and
+  `allowControlFlow` from the caller frame (today's single-instance walker
+  applies the same gates to nested calls, and the refactor must preserve
+  that).
 - Bind arguments into the fresh walker's `locals`.
 - Execute the body in the fresh walker.
 - After execution, write back `ref` parameters from the inner walker to the
