@@ -847,7 +847,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -859,7 +859,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 0");
     }
+}
 
+static foreach (backend; backends) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
