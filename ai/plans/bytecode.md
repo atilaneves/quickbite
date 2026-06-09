@@ -138,6 +138,11 @@ Lua-specific bytecode shape.
   missing `std.math.isInfinity` builtin support and non-runtime declaration
   expressions in the fixture, so bytecode now treats non-var declarations as
   no-ops and executes `isInfinity` through the existing unary native-call path.
+- `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isInfinity` builtin slice: the existing
+  bytecode logical-not and bool equality assertion diagnostics already report
+  `true == true`.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration

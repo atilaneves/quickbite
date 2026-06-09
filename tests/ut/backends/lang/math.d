@@ -749,7 +749,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
