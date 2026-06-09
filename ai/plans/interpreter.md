@@ -342,6 +342,13 @@ evaluation and `Value.arrayValue` equality; signal was verified by temporarily
 mutating `Array.opEquals`, which failed the promoted Interpreter test with
 `[1, 2, 3] != [1, 2, 3]`.
 
+Arrays progress: `arrayEqualTrueFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and generic equality assertion message
+formatting; signal was verified by temporarily mutating the Interpreter
+equality operand formatter, which changed the promoted failure message to
+`<mutated> != <mutated>`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
