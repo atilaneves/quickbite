@@ -138,6 +138,11 @@ Lua-specific bytecode shape.
   missing local post-increment expression support, so bytecode now lowers
   `x++` by loading the old local value for the expression result and mutating
   the persisted local through the existing increment opcode.
+- `repl.backend.statementsExecuteImmediately` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. This was a stale
+  coverage gap after the REPL expression-side-effects slice: bytecode already
+  executes no-display statement cells immediately through the existing
+  pre-increment local mutation path.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
