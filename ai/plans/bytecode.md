@@ -288,6 +288,11 @@ Lua-specific bytecode shape.
   `Bytecode`. This was a stale coverage gap: the existing scalar `ref`
   parameter writeback path already handles `size_t`, so bytecode increments
   the caller local and reports the final failed comparison as `42 != 43`.
+- `explicitAssertMessageOverridesContext` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: bytecode already gives an explicit assertion message
+  priority over generated comparison context, so `assert(1 == 2, "oops")`
+  reports `oops`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

@@ -311,7 +311,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -320,7 +320,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("oops");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
