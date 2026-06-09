@@ -495,6 +495,12 @@ change was required. Signal was verified by temporarily routing Interpreter
 `isInfinity` through `isNaN`, which made the focused test fail because the
 fixture no longer threw.
 
+Math progress: `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`isInfinity` through `fabs`, which failed the focused test because the fixture
+no longer threw.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
