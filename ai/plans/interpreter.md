@@ -540,6 +540,53 @@ change was required. Signal was verified by temporarily treating any function
 named `isNaN` as the Interpreter math builtin, which failed the focused test
 with `false != true`.
 
+Math progress: `doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+No production change was required. Signal was verified by temporarily treating
+any function named `isNaN` as an Interpreter math builtin, which failed the
+focused test because the fixture no longer threw the expected `true == true`
+assertion message.
+
+Math progress: `doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+No production change was required. Signal was verified by temporarily mutating
+the promoted Interpreter expectation, which failed the focused test with
+`true == true` instead of `false != true`.
+
+Math progress: `callsUserNamedIsNaNForNanInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the promoted
+Interpreter expectation, which failed the focused test with `false != true`.
+
+Math progress: `callsUserNamedIsNaNForNanInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the promoted
+Interpreter expectation, which failed the focused test with `false != true`.
+
+Math progress: `callsUserNamedIsNaNForNanInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the promoted
+Interpreter expectation, which failed the focused test with `false != true`.
+
+Math progress: `doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily making the
+Interpreter direct user-function call path return the first argument, which
+failed the focused test with `9 != 10`.
+
+Math progress: `doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0`
+in `tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING
+test. No production change was required. Signal was verified by temporarily
+mutating the promoted Interpreter expectation, which failed the focused test
+with `10 != 11`.
+
+Math progress: `doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1`
+in `tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING
+test. No production change was required. Signal was verified by temporarily
+mutating the promoted Interpreter expectation, which failed the focused test
+with `11 != 12`. No current `math.d` backend-matrix tests still exclude
+`Interpreter`.
+
 REPL progress: `repl.backend.evaluatesExpressionCellsUntilQuit` in
 `tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
 expression-cell `evalRepl` dispatch through the existing eval function walker.
