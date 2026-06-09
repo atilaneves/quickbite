@@ -310,6 +310,12 @@ change was required; signal was verified by temporarily mutating the local
 dynamic array append handler, which made this promoted failure-message test and
 the existing positive append test fail.
 
+Arrays progress: `ubyteArrayAppendAssignFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating the local
+dynamic array append handler, which changed the promoted failure message from
+`3 != 4` to `1 != 4`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

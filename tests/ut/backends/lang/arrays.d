@@ -83,18 +83,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("4 != 5");
     }
 
-    @("ubyteArrayAppendAssignFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                auto values = [0x2au];
-                values ~= 0x2bu;
-                values ~= 0x2cu;
-                assert(values.length == 4);
-            }
-        }).shouldThrowWithMessage("3 != 4");
-    }
-
     @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2180,6 +2168,18 @@ static foreach (backend; backendsWith!Interpreter) {
                 assert(values.length == 3);
             }
         }).shouldThrowWithMessage("2 != 3");
+    }
+
+    @("ubyteArrayAppendAssignFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto values = [0x2au];
+                values ~= 0x2bu;
+                values ~= 0x2cu;
+                assert(values.length == 4);
+            }
+        }).shouldThrowWithMessage("3 != 4");
     }
 
     @("ubyteArrayAppendAssign." ~ backend.stringof)
