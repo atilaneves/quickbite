@@ -55,6 +55,7 @@ private struct Machine {
     private string[] stringValues;
     private ulong[] localScalarValues;
     private const(Function)[] functions;
+    private uint returnedValueId;
 
     private void init(in Function function_) {
         functions = function_.functions;
@@ -92,6 +93,7 @@ private struct Machine {
             block.terminator.match!(
                 (const ReturnValue return_) {
                     returned = true;
+                    returnedValueId = return_.value;
                     result = scalarValues[return_.value];
                 },
                 (const Branch branch) {
@@ -184,7 +186,7 @@ private struct Machine {
     }
 
     private void castI1(const Cast cast_) {
-        final switch (cast_.targetType) with (Type) {
+        final switch (cast_.result.type) with (Type) {
             case i1:
                 scalarValues[cast_.result.id] =
                     scalarValues[cast_.source] != 0;
@@ -201,7 +203,7 @@ private struct Machine {
     }
 
     private void execute(const AssertCompare assert_) {
-        if (compare(assert_))
+        if (scalarValues[assert_.condition] != 0)
             return;
 
         if (assert_.resultKind == ResultKind.bool_) {
@@ -231,7 +233,7 @@ private struct Machine {
     }
 
     private void castF64(const Cast cast_) {
-        final switch (cast_.targetType) with (Type) {
+        final switch (cast_.result.type) with (Type) {
             case i32:
                 scalarValues[cast_.result.id] =
                     cast(int) doubleFromBits(scalarValues[cast_.source]);
@@ -249,7 +251,7 @@ private struct Machine {
 
     private void castInteger(const Cast cast_) {
         const source = scalarValues[cast_.source];
-        final switch (cast_.targetType) with (Type) {
+        final switch (cast_.result.type) with (Type) {
             case i8:
                 scalarValues[cast_.result.id] =
                     cast_.result.resultKind == ResultKind.ubyte_ ?
@@ -516,47 +518,28 @@ private struct Machine {
         }
     }
 
+    // Integer equality is signedness-agnostic once both operands are
+    // truncated to the operation width.
     private void executeEqual(const BinaryOp binary) {
         final switch (binary.type) with (Type) {
             case i8:
-                if (binary.result.resultKind == ResultKind.ubyte_)
-                    scalarValues[binary.result.id] =
-                        cast(ubyte) scalarValues[binary.lhs] ==
-                        cast(ubyte) scalarValues[binary.rhs];
-                else
-                    scalarValues[binary.result.id] =
-                        cast(byte) scalarValues[binary.lhs] ==
-                        cast(byte) scalarValues[binary.rhs];
+                scalarValues[binary.result.id] =
+                    cast(ubyte) scalarValues[binary.lhs] ==
+                    cast(ubyte) scalarValues[binary.rhs];
                 break;
             case i16:
-                if (binary.result.resultKind == ResultKind.ushort_)
-                    scalarValues[binary.result.id] =
-                        cast(ushort) scalarValues[binary.lhs] ==
-                        cast(ushort) scalarValues[binary.rhs];
-                else
-                    scalarValues[binary.result.id] =
-                        cast(short) scalarValues[binary.lhs] ==
-                        cast(short) scalarValues[binary.rhs];
+                scalarValues[binary.result.id] =
+                    cast(ushort) scalarValues[binary.lhs] ==
+                    cast(ushort) scalarValues[binary.rhs];
                 break;
             case i32:
-                if (binary.result.resultKind == ResultKind.uint_)
-                    scalarValues[binary.result.id] =
-                        cast(uint) scalarValues[binary.lhs] ==
-                        cast(uint) scalarValues[binary.rhs];
-                else
-                    scalarValues[binary.result.id] =
-                        cast(int) scalarValues[binary.lhs] ==
-                        cast(int) scalarValues[binary.rhs];
+                scalarValues[binary.result.id] =
+                    cast(uint) scalarValues[binary.lhs] ==
+                    cast(uint) scalarValues[binary.rhs];
                 break;
             case i64:
-                if (binary.result.resultKind == ResultKind.ulong_)
-                    scalarValues[binary.result.id] =
-                        cast(ulong) scalarValues[binary.lhs] ==
-                        cast(ulong) scalarValues[binary.rhs];
-                else
-                    scalarValues[binary.result.id] =
-                        cast(long) scalarValues[binary.lhs] ==
-                        cast(long) scalarValues[binary.rhs];
+                scalarValues[binary.result.id] =
+                    scalarValues[binary.lhs] == scalarValues[binary.rhs];
                 break;
             case i1:
                 scalarValues[binary.result.id] =
@@ -602,30 +585,6 @@ private struct Machine {
             case f32:
             case f64:
             case ptr:
-                assert(0);
-        }
-    }
-
-    private bool compare(const AssertCompare assert_) {
-        final switch (assert_.operation) with (BinaryOperation) {
-            case equal:
-                return assertionInteger(
-                    assert_.type,
-                    assert_.resultKind,
-                    assert_.lhs,
-                ) == assertionInteger(
-                    assert_.type,
-                    assert_.resultKind,
-                    assert_.rhs,
-                );
-            case add:
-            case subtract:
-            case multiply:
-            case divide:
-            case bitwiseOr:
-            case pow:
-            case lessThan:
-            case greaterThan:
                 assert(0);
         }
     }
@@ -682,15 +641,7 @@ private struct Machine {
     }
 
     private Value result(in Function function_) {
-        return function_.blocks[0].terminator.match!(
-            (const ReturnValue return_) {
-                return result(function_.returnType, return_.value);
-            },
-            (_) {
-                assert(0);
-                return Value.void_;
-            },
-        );
+        return result(function_.returnType, returnedValueId);
     }
 
     private Value result(in ResultKind kind, in uint valueId) {
