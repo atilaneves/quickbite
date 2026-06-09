@@ -4,7 +4,7 @@ module ut.backends.lang.math;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputs." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

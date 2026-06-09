@@ -345,6 +345,11 @@ Lua-specific bytecode shape.
   uninitialized-read diagnostics such as
   `` cannot read uninitialized variable `.answer.value` in ctfe `` when the
   local is loaded.
+- `evaluatesRuntimePowDoubleInputs` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. The promotion exposed that bytecode assertion comparisons
+  only accepted integer-compatible operands; bytecode now compares numeric
+  operands through `Value.asReal`, allowing the existing `std.math.pow` builtin
+  bridge to handle runtime `double` inputs and fractional bounds.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/math.d`, the next module in
