@@ -19,8 +19,23 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         return eval(compileEvalSource(expr));
     }
 
-    public override Value evalRepl(in EvalCell cell) {
-        assert(0);
+    public override Value evalRepl(EvalCell cell) {
+        import quickbite.backends.bytecode.compiler: compileEvalCell;
+        import quickbite.backends.bytecode.vm: eval, execute;
+        import quickbite.frontend.cell: EvalCellKind;
+
+        const program = compileEvalCell(cell);
+        final switch (cell.kind) with (EvalCellKind) {
+            case incomplete:
+                throw new Exception(
+                    "Incomplete REPL cell reached Bytecode backend.",
+                );
+            case noDisplay:
+                execute(program);
+                return Value.void_;
+            case expression:
+                return eval(program);
+        }
     }
 
     public override void runTests(Module module_) {

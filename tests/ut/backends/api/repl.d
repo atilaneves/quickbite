@@ -13,7 +13,7 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

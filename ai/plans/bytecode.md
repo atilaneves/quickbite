@@ -255,6 +255,11 @@ Lua-specific bytecode shape.
   path emitted the ordinary `Op.call` and the VM executed the call frame and
   returned `int` without production changes. The import-path plumbing already
   flowed through the shared fixture parse helpers.
+- `repl.backend.evaluatesExpressionCellsUntilQuit` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  the missing bytecode `evalRepl` API, so Bytecode now compiles an already
+  parsed REPL eval cell and runs expression cells through the existing VM
+  eval path.
 - `malloc` in `tests/ut/backends/runtime/cstdlib.d` now covers `Bytecode`,
   completing that module. The promotion exposed the missing
   no-available-source diagnostic: `malloc` resolves to a `FuncDeclaration`
