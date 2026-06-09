@@ -348,6 +348,65 @@ public struct Value {
         );
     }
 
+    public size_t length() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.elements.length,
+            (_) {
+                throw new Exception("Expected array.");
+                return size_t.init;
+            },
+        );
+    }
+
+    public Value opIndex(in size_t index) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.elements[index],
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withArrayElement(
+        in size_t index,
+        in Value element,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) {
+                auto elements = array.elements.dup;
+                elements[index] = element;
+                return Value.arrayValue(elements);
+            },
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withAppendedArrayElement(in Value element) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) {
+                auto elements = array.elements.dup;
+                elements ~= element;
+                return Value.arrayValue(elements);
+            },
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
     public real asReal() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;

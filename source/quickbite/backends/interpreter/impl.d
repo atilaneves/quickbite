@@ -117,6 +117,10 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return type.ty == TY.Tarray || type.ty == TY.Tsarray;
 }
 
+private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeDArray !is null;
+}
+
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
     bool allowZeroArgumentCalls = false,
@@ -499,6 +503,9 @@ private struct EvalModuleInterpreter {
         if (auto string_ = expression.isStringExp)
             return stringValue(string_);
 
+        if (auto array = expression.isArrayLiteralExp)
+            return arrayValue(array);
+
         if (auto assert_ = expression.isAssertExp) {
             if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(assertFailureMessage(assert_));
@@ -545,6 +552,14 @@ private struct EvalModuleInterpreter {
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
 
+        if (expression.op == EXP.concatenateElemAssign) {
+            auto assign = cast(imported!"dmd.expression".BinExp) expression;
+            if (assign is null)
+                assert(0);
+
+            return runArrayAppendAssignExpression(assign);
+        }
+
         if (auto bitOr = expression.isOrExp)
             return runBitwiseOrExpression(bitOr);
 
@@ -558,6 +573,14 @@ private struct EvalModuleInterpreter {
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
+
+        if (auto arrayLength = expression.isArrayLengthExp)
+            return Value(runExpression(arrayLength.e1).length);
+
+        if (auto index = expression.isIndexExp)
+            return runExpression(index.e1)[
+                cast(size_t) runExpression(index.e2).asLong
+            ];
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -845,6 +868,9 @@ private struct EvalModuleInterpreter {
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        if (auto index = assign.e1.isIndexExp)
+            return runIndexAssignExpression(index, assign.e2);
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -857,6 +883,50 @@ private struct EvalModuleInterpreter {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private Value runIndexAssignExpression(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const value = runExpression(rhs);
+        locals[variable] = current.withArrayElement(arrayIndex, value);
+        uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private Value runArrayAppendAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        auto var = assign.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        const value = runExpression(assign.e2);
+        locals[variable] = current.withAppendedArrayElement(value);
+        uninitializedLocals.remove(variable);
+        return locals[variable];
     }
 
     private VarDeclaration argumentVariable(
@@ -903,6 +973,17 @@ private struct EvalModuleInterpreter {
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
         return Value(stringChars(string_));
+    }
+
+    private Value arrayValue(
+        imported!"dmd.expression".ArrayLiteralExp array,
+    ) {
+        Value[] values;
+        if (array.elements !is null)
+            foreach (element; *array.elements)
+                values ~= runExpression(element);
+
+        return Value.arrayValue(values);
     }
 
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
@@ -956,6 +1037,13 @@ private struct EvalModuleInterpreter {
         if (initializer.isVoidInitExp !is null) {
             uninitializedLocals[variable] = true;
             return Value.void_;
+        }
+
+        if (initializer.isNullExp !is null && typeIsDynamicArray(variable.type)) {
+            auto value = Value.arrayValue([]);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            return value;
         }
 
         auto value = runExpression(initializer);

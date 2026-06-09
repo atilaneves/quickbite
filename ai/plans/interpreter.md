@@ -270,6 +270,58 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. This required narrow module-backed
+`ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
+evaluation returning the array length as `size_t`.
+
+Arrays progress: `emptyArrayLength` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through the same array literal
+and length support as `arrayLength`; signal was verified by temporarily
+mutating the active `ArrayLengthExp` handler.
+
+Arrays progress: `ubyteArrayIndexRead` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+read-only `IndexExp` evaluation over `Value.arrayValue` elements; array
+writes, slices, append, and index diagnostics remain unpromoted.
+
+Arrays progress: `ubyteArrayIndexWrite` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow indexed assignment for local array variables by replacing one
+`Value.arrayValue` element and writing the updated value back to the local;
+slices, append, ref parameter mutation, and bounds diagnostics remain
+unpromoted.
+
+Arrays progress: `ubyteArrayIndexWriteFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating indexed array
+assignment writeback, which changed the promoted failure message from
+`42 != 43` to `0 != 43`.
+
+Arrays progress: `ubyteArrayIndexWriteFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating indexed array
+assignment writeback, which made the promoted test fail because the expected
+assertion exception was no longer thrown.
+
+Arrays progress: `ubyteArrayAppendAssign` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow `concatenateElemAssign` handling for appending one evaluated element to
+a local dynamic array value; slices, ref parameter mutation, append-array, and
+bounds diagnostics remain unpromoted.
+
+Arrays progress: `ubyteArrayAppendAssignFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating the local
+dynamic array append handler, which made this promoted failure-message test and
+the existing positive append test fail.
+
+Arrays progress: `ubyteArrayAppendAssignFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating the local
+dynamic array append handler, which changed the promoted failure message from
+`3 != 4` to `1 != 4`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
@@ -633,6 +685,80 @@ in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through existing direct free-function call dispatch over DMD's
 instantiated function template; signal was verified by temporarily changing the
 promoted test expectation.
+
+Arrays progress: `arrayLengthFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing array-length expression support and equality assertion
+message formatting; signal was verified by temporarily mutating the
+Interpreter array-length handler.
+
+Arrays progress: `arrayLengthFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing array-length expression support and equality assertion
+message formatting; signal was verified by temporarily mutating the
+Interpreter array-length handler.
+
+Arrays progress: `emptyArrayLengthFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing empty array literal, array-length expression, and
+equality assertion message support; signal was verified by temporarily
+mutating the Interpreter array-length handler.
+
+Arrays progress: `emptyArrayLengthFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nonempty array literal, array-length expression, and
+equality assertion message support; signal was verified by temporarily
+mutating the active Interpreter array-length handler.
+
+Arrays progress: `ubyteArrayIndexReadFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing read-only array indexing and equality assertion message
+support; signal was verified by temporarily mutating the Interpreter
+`IndexExp` handler.
+
+Arrays progress: `ubyteArrayIndexReadFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing read-only array indexing and equality assertion message
+support; signal was verified by temporarily mutating the Interpreter
+`IndexExp` handler.
+
+Arrays progress: `refUbyteArrayParameterAppend` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch, `ref` parameter
+writeback, local dynamic array append, length, and index-read support; signal
+was verified by temporarily mutating Interpreter `ref` parameter writeback.
+
+Arrays progress: `refUbyteArrayParameterAppendFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch, `ref` parameter
+writeback, local dynamic array append, length, and equality assertion message
+support; signal was verified by temporarily mutating the Interpreter array
+append handler.
+
+Arrays progress: `refUbyteArrayParameterAppendFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch, `ref` parameter
+writeback, local dynamic array append, index-read, and equality assertion
+message support; signal was verified by temporarily mutating the Interpreter
+array append handler.
+
+Arrays progress: `localDynamicArrayAppend` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+only treating a null-initialized dynamic array local as an empty array value
+when executing the declaration, so existing append, length, and index-read
+support can handle the fixture.
+
+Arrays progress: `localDynamicArrayAppendFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing null dynamic array, append, length, and equality
+assertion message support; signal was verified by temporarily mutating the
+Interpreter array append handler.
+
+Arrays progress: `localDynamicArrayAppendFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing null dynamic array, append, index-read, and equality
+assertion message support; signal was verified by temporarily mutating the
+Interpreter array append handler.
 
 ### Implementation Review Notes
 
