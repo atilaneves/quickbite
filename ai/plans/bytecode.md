@@ -313,6 +313,12 @@ Lua-specific bytecode shape.
   exposed that bytecode assertion diagnostics rendered char operands as their
   integer code units. Bytecode now formats comparisons between two char
   operands as D char literals, such as `'a' != 'b'`.
+- `dynamicAssertMessageMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing dynamic assertion-message handling: bytecode now evaluates a
+  variable assertion message only on the failing branch, unwraps DMD's cast
+  wrapper around that message expression, and throws the evaluated string
+  `oops`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

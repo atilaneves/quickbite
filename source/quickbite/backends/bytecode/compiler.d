@@ -630,6 +630,9 @@ private struct Compiler {
         if (compileDmdAssertFailMessage(assert_.msg))
             return;
 
+        if (compileDynamicAssertMessage(assert_))
+            return;
+
         if (auto equal = assert_.e1.isEqualExp) {
             compileAssertComparison(equal, equalityOp(equal));
             return;
@@ -671,6 +674,46 @@ private struct Compiler {
             Op.assertTrue,
             assertTrueMessageValue(assert_),
         );
+    }
+
+    private bool compileDynamicAssertMessage(AssertExp assert_) {
+        if (!isVariableAssertMessage(assert_.msg))
+            return false;
+
+        compileExpression(assert_.e1);
+        const messageJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+        const endJump = emitJump(Op.jump);
+
+        patchJump(messageJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileAssertMessageExpression(assert_.msg);
+        program.instructions ~= Instruction(Op.throw_);
+
+        patchJump(endJump);
+        return true;
+    }
+
+    private bool isVariableAssertMessage(Expression expression) {
+        if (expression is null)
+            return false;
+
+        if (expression.isVarExp !is null)
+            return true;
+
+        if (auto cast_ = expression.isCastExp)
+            return isVariableAssertMessage(cast_.e1);
+
+        return false;
+    }
+
+    private void compileAssertMessageExpression(Expression expression) {
+        if (auto cast_ = expression.isCastExp) {
+            compileAssertMessageExpression(cast_.e1);
+            return;
+        }
+
+        compileExpression(expression);
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
