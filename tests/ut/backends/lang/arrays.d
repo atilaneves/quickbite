@@ -4,7 +4,7 @@ module ut.backends.lang.arrays;
 import ut.backends;
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceWritesPropagateToOriginalArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -17,7 +17,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -30,7 +33,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("99 != 100");
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -43,7 +49,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("98 != 99");
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceAppendKeepsOriginalArrayTail." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -56,7 +65,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -69,7 +81,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 4");
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceAppendKeepsOriginalArrayTailFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -141,7 +156,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualTrue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -152,7 +167,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualTrueFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -163,7 +181,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 4]");
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualTrueFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -174,7 +195,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("[1, 2] != [1, 2, 3]");
     }
+}
 
+
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualFalse." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -185,7 +209,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 4]");
     }
+}
 
+
+static foreach (backend; backends) {
     @("arrayEqualFalseFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

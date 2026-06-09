@@ -270,6 +270,20 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through; signal was verified by
+temporarily disabling that write-through, which changed the promoted failure
+message from `99 != 100` to `1 != 100`.
+
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through with accumulated slice
+offsets; signal was verified by temporarily dropping the accumulated offset,
+which changed the promoted failure message from `98 != 99` to `2 != 99`.
+
 Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
 now runs on `Interpreter`. This required narrow module-backed
 `ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
@@ -321,6 +335,33 @@ Arrays progress: `ubyteArrayAppendAssignFailureMessage.1` in
 change was required; signal was verified by temporarily mutating the local
 dynamic array append handler, which changed the promoted failure message from
 `3 != 4` to `1 != 4`.
+
+Arrays progress: `arrayEqualTrue` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+evaluation and `Value.arrayValue` equality; signal was verified by temporarily
+mutating `Array.opEquals`, which failed the promoted Interpreter test with
+`[1, 2, 3] != [1, 2, 3]`.
+
+Arrays progress: `arrayEqualTrueFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and generic equality assertion message
+formatting; signal was verified by temporarily mutating the Interpreter
+equality operand formatter, which changed the promoted failure message to
+`<mutated> != <mutated>`.
+
+Arrays progress: `arrayEqualTrueFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and array assertion message formatting;
+signal was verified by temporarily mutating `Array.opEquals` to ignore length
+differences, which made the promoted test fail because the expected assertion
+exception was no longer thrown.
+
+Arrays progress: `arrayEqualFalse` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+equality and generic array assertion message formatting; signal was verified
+by temporarily making Interpreter equality always report success, which made
+the promoted fixture stop throwing the expected `[1, 2, 3] != [1, 2, 4]`
+assertion message.
 
 REPL progress:
 `repl.backend.multilineStructDeclarationsBufferUntilComplete` in
@@ -825,6 +866,34 @@ Arrays progress: `localDynamicArrayAppendFailureMessage.1` in
 green through existing null dynamic array, append, index-read, and equality
 assertion message support; signal was verified by temporarily mutating the
 Interpreter array append handler.
+
+Arrays progress: `nestedSliceWritesPropagateToOriginalArray` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow `SliceExp` evaluation for dynamic array values plus local slice-alias
+writeback so an indexed write through a nested slice updates the original
+array local.
+
+Arrays progress: `nestedSliceAppendKeepsOriginalArrayTail` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation and local array append
+detachment; signal was verified by temporarily mutating the fixture's expected
+tail value.
+
+Arrays progress:
+`nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation, local array append detachment,
+index-read, and equality assertion message support; signal was verified by
+temporarily mutating the Interpreter `IndexExp` handler, which made the
+promoted fixture stop throwing the expected `3 != 4` message.
+
+Arrays progress:
+`nestedSliceAppendKeepsOriginalArrayTailFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation, local array append detachment,
+index-read, and equality assertion message support; signal was verified by
+temporarily mutating the append handler to write through the slice alias, which
+made the promoted fixture fail before the expected `4 != 5` assertion message.
 
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
