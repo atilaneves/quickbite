@@ -246,16 +246,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("2 != 3");
     }
 
-    @("emptyArrayLength." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] arr = [];
-                assert(arr.length == 0);
-            }
-        });
-    }
-
     @("emptyArrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2280,6 +2270,16 @@ static foreach (backend; backendsWith!Interpreter) {
             unittest {
                 ubyte[] arr = [1, 2, 3];
                 assert(arr.length == 3);
+            }
+        });
+    }
+
+    @("emptyArrayLength." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] arr = [];
+                assert(arr.length == 0);
             }
         });
     }
