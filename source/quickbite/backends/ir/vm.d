@@ -28,6 +28,7 @@ private struct Machine {
         BinaryOp,
         BinaryOperation,
         AssertCompare,
+        AssertFalse,
         AssertTrue,
         Branch,
         Cast,
@@ -122,6 +123,7 @@ private struct Machine {
             (const Cast cast_) => execute(cast_),
             (const Call call) => execute(call),
             (const AssertTrue assert_) => execute(assert_),
+            (const AssertFalse assert_) => execute(assert_),
             (const AssertCompare assert_) => execute(assert_),
             (const ThrowException throw_) => execute(throw_),
             (const Load load) => execute(load),
@@ -174,6 +176,11 @@ private struct Machine {
         if (scalarValues[assert_.condition] == 0) {
             throw new Exception(assert_.message);
         }
+    }
+
+    private void execute(const AssertFalse assert_) {
+        if (scalarValues[assert_.condition] != 0)
+            throw new Exception("true == true");
     }
 
     private void castI1(const Cast cast_) {

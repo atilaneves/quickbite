@@ -286,6 +286,13 @@ that group. `AssertTrue` now carries the DMD-rendered assertion message needed
 by the promoted logical assertion failures. This is the first CFG execution
 slice; broader control flow and `eval` result conversion for multi-block
 functions remain deliberately narrow until a later promoted test forces them.
+The promoted logical-or group in `logic.d` reused the existing block-dispatch
+shape and added DMD `||` lowering as explicit short-circuit CFG: true LHS
+branches directly to a true block, false LHS evaluates the RHS, and both paths
+join through one bool block parameter. The same slice added a narrow
+`AssertFalse` instruction for the observed `assert(!expr)` diagnostic shape;
+the VM currently reports the DMD-matching `true == true` message for that
+promoted failure only.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -300,7 +307,7 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/lang/logic.d`. The first two backend matrices
+Continue in `tests/ut/backends/lang/logic.d`. The first three backend matrices
 now include `IR`; verify the current checkout, then promote the next smallest
 remaining matrix that still excludes `IR`. Prefer the next existing test or
 small family that forces one language behavior, and keep CFG/general

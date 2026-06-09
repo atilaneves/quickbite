@@ -51,6 +51,7 @@ private struct Compiler {
         BinaryOperation,
         Block,
         AssertCompare,
+        AssertFalse,
         AssertTrue,
         Branch,
         Cast,
@@ -184,6 +185,8 @@ private struct Compiler {
         if (auto logical = expression.isLogicalExp) {
             if (isAndAnd(logical))
                 return compileAndAnd(logical);
+            if (isOrOr(logical))
+                return compileOrOr(logical);
         }
 
         if (auto cast_ = expression.isCastExp)
@@ -304,6 +307,12 @@ private struct Compiler {
         const result = compileDmdAssertFailEqualMessage(assert_.msg);
         if (result.hasValue)
             return result.value;
+
+        if (auto not = assert_.e1.isNotExp) {
+            const condition = compileExpression(not.e1);
+            instructions ~= Instruction(AssertFalse(condition.id));
+            return condition;
+        }
 
         const condition = compileExpression(assert_.e1);
         instructions ~= Instruction(
@@ -610,6 +619,37 @@ private struct Compiler {
         return result;
     }
 
+    private Value compileOrOr(imported!"dmd.expression".LogicalExp expression) {
+        const lhs = compileExpression(expression.e1);
+        const trueBlock = cast(uint) blocks.length + 1;
+        const rhsBlock = trueBlock + 1;
+        const joinBlock = rhsBlock + 1;
+        finishBlock(Terminator(
+            CondBranch(
+                lhs.id,
+                trueBlock,
+                [],
+                rhsBlock,
+                [],
+            ),
+        ));
+
+        currentBlockId = trueBlock;
+        currentBlockParams = null;
+        const true_ = compileIntegerLiteral(1, Type.i1, ResultKind.bool_);
+        finishBlock(Terminator(Branch(joinBlock, [true_.id])));
+
+        currentBlockId = rhsBlock;
+        currentBlockParams = null;
+        const rhs = compileExpression(expression.e2);
+        finishBlock(Terminator(Branch(joinBlock, [rhs.id])));
+
+        currentBlockId = joinBlock;
+        const result = nextValue(Type.i1, ResultKind.bool_);
+        currentBlockParams = [result];
+        return result;
+    }
+
     private Value compileBinaryExpression(
         BinExp expression,
         in BinaryOperation operation,
@@ -769,6 +809,12 @@ private bool isAndAnd(imported!"dmd.expression".LogicalExp expression) {
     import dmd.tokens: EXP;
 
     return expression.op == EXP.andAnd;
+}
+
+private bool isOrOr(imported!"dmd.expression".LogicalExp expression) {
+    import dmd.tokens: EXP;
+
+    return expression.op == EXP.orOr;
 }
 
 private imported!"dmd.expression".EqualExp assertEqualExpression(
