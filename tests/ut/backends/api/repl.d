@@ -355,7 +355,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -367,7 +367,9 @@ static foreach (backend; backends) {
 
         output.should == [`["", "a"]`];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

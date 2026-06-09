@@ -369,6 +369,12 @@ support; signal was verified by temporarily mutating the Interpreter string
 literal helper, which changed the displayed result from `["a", "b"]` to
 `["b", "c"]`.
 
+REPL progress:
+`repl.backend.displaysNestedEmptyStringValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required
+preserving string display metadata for empty D string literals by constructing
+interpreter string values through `Value.stringValue`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

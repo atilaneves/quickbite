@@ -474,7 +474,7 @@ private struct EvalFunctionWalker {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
     }
 
     private Value arrayValue(
@@ -1041,7 +1041,7 @@ private struct EvalModuleInterpreter {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
     }
 
     private Value arrayValue(
