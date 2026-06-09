@@ -581,6 +581,12 @@ REPL-only zero-argument direct call path plus the existing addition dispatch in
 the eval walker; signal was verified with the focused slice and the random
 suite.
 
+REPL progress: `repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`
+in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch over DMD's
+instantiated function template; signal was verified by temporarily changing the
+promoted test expectation.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
