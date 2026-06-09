@@ -664,7 +664,24 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9.5 != 10.5");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: fabs;
+
+            unittest {
+                double input = 9.5;
+                assert(fabs(input) == 10.5);
+            }
+        }).shouldThrowWithMessage("9.5 != 10.5");
+    }
+}
+
+static foreach (backend; backends) {
     @("evaluatesRuntimeIsNaNDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
