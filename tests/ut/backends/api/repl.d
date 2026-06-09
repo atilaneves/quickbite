@@ -325,7 +325,9 @@ static foreach (backend; backends) {
 
         output.should == ["[0, 2, 4]"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -337,7 +339,9 @@ static foreach (backend; backends) {
 
         output.should == ["[[1, 2], [3, 4]]"];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

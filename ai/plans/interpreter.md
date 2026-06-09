@@ -355,6 +355,12 @@ REPL progress:
 REPL eval support for DMD function-literal expressions by returning the
 existing `<undisplayable>` value.
 
+REPL progress:
+`repl.backend.displaysNestedArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD array-literal expressions by recursively evaluating
+their elements into existing `Value.arrayValue` values.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
