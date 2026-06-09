@@ -63,6 +63,7 @@ private struct Compiler {
         StringConst,
         Store,
         Terminator,
+        ThrowException,
         Type,
         UnaryIntrinsicOp,
         UnaryIntrinsicOperation,
@@ -123,6 +124,9 @@ private struct Compiler {
         if (auto return_ = statement.isReturnStatement)
             return OptionalValue(compileExpression(return_.exp), true);
 
+        if (auto throw_ = statement.isThrowStatement)
+            return OptionalValue(compileThrow(throw_), true);
+
         if (statement.isImportStatement)
             return OptionalValue.init;
 
@@ -131,6 +135,13 @@ private struct Compiler {
         throw new Exception(
             text("Unsupported IR statement: ", statement.stmt),
         );
+    }
+
+    private Value compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        instructions ~= Instruction(
+            ThrowException(newExceptionMessage(throw_.exp)),
+        );
+        return compileIntegerLiteral(0);
     }
 
     private Value compileExpression(Expression expression) {
@@ -268,6 +279,10 @@ private struct Compiler {
         if (auto equal = assert_.e1.isEqualExp)
             return compileAssertCompare(equal, BinaryOperation.equal);
 
+        const result = compileDmdAssertFailEqualMessage(assert_.msg);
+        if (result.hasValue)
+            return result.value;
+
         const condition = compileExpression(assert_.e1);
         instructions ~= Instruction(
             AssertTrue(condition.id),
@@ -275,12 +290,45 @@ private struct Compiler {
         return condition;
     }
 
+    private OptionalValue compileDmdAssertFailEqualMessage(Expression message) {
+        if (message is null)
+            return OptionalValue.init;
+
+        auto call = message.isCallExp;
+        if (call is null || call.arguments is null)
+            return OptionalValue.init;
+
+        if (call.arguments.length != 3)
+            return OptionalValue.init;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null || operator.peekString != "==")
+            return OptionalValue.init;
+
+        return OptionalValue(
+            compileAssertCompare(
+                (*call.arguments)[1],
+                (*call.arguments)[2],
+                BinaryOperation.equal,
+            ),
+            true,
+        );
+    }
+
     private Value compileAssertCompare(
         BinExp expression,
         in BinaryOperation operation,
     ) {
-        const lhs = compileExpression(expression.e1);
-        const rhs = compileExpression(expression.e2);
+        return compileAssertCompare(expression.e1, expression.e2, operation);
+    }
+
+    private Value compileAssertCompare(
+        Expression lhsExpression,
+        Expression rhsExpression,
+        in BinaryOperation operation,
+    ) {
+        const lhs = compileExpression(lhsExpression);
+        const rhs = compileExpression(rhsExpression);
         const result = compileBinaryExpression(lhs, rhs, operation);
         instructions ~= Instruction(
             AssertCompare(
@@ -652,6 +700,18 @@ private imported!"dmd.expression".Expression initializerExpression(
         return blit.e2;
 
     return expression;
+}
+
+private string newExceptionMessage(imported!"dmd.expression".Expression expression) {
+    auto new_ = expression is null ? null : expression.isNewExp;
+    if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
+        throw new Exception("Unsupported IR throw expression.");
+
+    auto message = (*new_.arguments)[0].isStringExp;
+    if (message is null)
+        throw new Exception("Unsupported IR throw expression.");
+
+    return message.peekString.idup;
 }
 
 private imported!"quickbite.backends.ir.language".Type valueType(

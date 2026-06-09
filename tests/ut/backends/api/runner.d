@@ -7,7 +7,7 @@ import std.conv: text;
 import std.path: buildPath;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTests.runsAttributedUnittests." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -19,7 +19,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTests.runsAttributedThrowingUnittests." ~ backend.stringof)
     unittest {
         const msg = runBackendSourceFixtureTests!backend(q{
@@ -32,7 +32,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTests.importPathsRetryAfterFailure." ~ backend.stringof)
     unittest {
 
@@ -76,7 +76,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
@@ -102,7 +102,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestSummary.countsAllPassingUnittests." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -122,7 +122,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const summary = runBackendSourceFixtureTestSummary!backend(q{
@@ -139,7 +139,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestResults.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
@@ -158,7 +158,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runTestResults.reportsFileBackedUnittestLocations." ~
         backend.stringof)
     unittest {
@@ -191,7 +191,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runModulesTests.runsBothModules." ~ backend.stringof)
     unittest {
         import quickbite.frontend.compiler: parseModule;
@@ -214,7 +214,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {
@@ -243,7 +243,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {

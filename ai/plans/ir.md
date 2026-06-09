@@ -203,25 +203,84 @@ The promoted `typeFailureMessage.ubyte.0.IR` test reuses that diagnostic path
 for unsigned byte assertion formatting and verifies the `130 != 129` message.
 The promoted `typeFailureMessage.uint.0.IR` test reuses the same unsigned
 integer assertion diagnostic path and verifies the `130 != 131` message.
+The promoted `runTests.runsAttributedUnittests.IR` test added no new runner
+entry point: `IR.runTests` already discovers and executes attributed unittest
+blocks. The slice added narrow compiler recognition for DMD's generated
+equality assertion-message call so a folded `assert(1 == 2)` still lowers its
+message operands to the existing IR `AssertCompare` diagnostic path and
+reports `1 != 2`.
+The promoted `runTests.runsAttributedThrowingUnittests.IR` test reuses the
+same runner entry point and adds narrow backend-local lowering for
+`throw new Exception("literal")` in a unittest body. The IR now carries a
+`ThrowException` instruction with the literal message and the VM throws that
+message directly; this is not general exception construction or catch support.
+The promoted `runTests.importPathsRetryAfterFailure.IR` test passed without new
+production code. Existing frontend import-path retry handling and IR
+module-backed unittest execution already rerun successfully after an initial
+parse failure without import paths; a temporary assertion mutation confirmed
+the imported enum value reaches the IR assertion path.
+The promoted
+`runTestSummary.countsAttributedPassingAndFailingUnittests.IR` test added the
+minimal IR `runTestSummary` entry point. It enumerates module unittest
+declarations, compiles and executes each one through the existing IR unittest
+path, and records only aggregate total/passed/failed counts.
+The promoted `runTestSummary.countsAllPassingUnittests.IR` test passed without
+new production code. Existing IR summary execution already counts multiple
+passing unittest declarations and reports zero failures; a temporary expected
+failure-count mutation confirmed the promoted test observes the summary result.
+The promoted `runTestSummary.countsAssertErrorsAsFailures.IR` test passed
+without new production code. Existing narrow throw lowering already accepts
+`throw new AssertError("literal")`, emits the same message-carrying
+`ThrowException` instruction used by the `Exception` fixture, and
+`runTestSummary` records the thrown unittest as one failure; a temporary
+expected failure-count mutation confirmed the promoted test observes the
+summary result.
+The promoted `runTestResults.reportsDmdUnittestSymbolNames.IR` test added the
+minimal IR `runTestResults` entry point. It enumerates module unittest
+declarations, compiles and executes each one through the existing IR unittest
+path, records aggregate total/passed/failed counts, and appends structured
+case results with DMD-generated unittest symbol names, source locations, and
+thrown messages. The current promoted assertion checks only the symbol names;
+later structured-result runner tests should prove the remaining fields.
+The promoted `runTestResults.reportsFileBackedUnittestLocations.IR` test
+passed without new production code. Existing IR structured results already
+record source locations for file-backed unittest declarations; a temporary
+expected line-number mutation confirmed the promoted test observes the
+reported location.
+The promoted `runModulesTests.runsBothModules.IR` test passed without new
+production code. Existing IR module-backed unittest execution already runs both
+parsed modules and reports the exception thrown from the second module; a
+temporary expected-message mutation confirmed the promoted test observes the
+second module's failure.
+
+The promoted `runBackendSourceFixtureTests.withImportPaths.IR` test passed
+without new production code. Existing IR source-fixture execution already
+honours caller-supplied import paths; a temporary expected-value mutation
+confirmed the promoted test executes the imported function through IR.
+The promoted `runBackendFileFixtureTests.withImportPaths.IR` test passed
+without new production code. Existing IR file-fixture execution already
+honours caller-supplied import paths; a temporary expected-value mutation
+confirmed the promoted test executes the imported function through IR.
+`tests/ut/backends/api/runner.d` is complete for current IR coverage: no
+backend matrices in that module still exclude `IR`.
 
 The next implementation slice should move to the next module in
-`ai/plans/backend-test-modules-order.md`:
-`tests/ut/backends/lang/integrals.d`. Pick the smallest current CTFE-backed
-behavior in that module that still excludes `IR`, promote the existing backend
-matrix, and run the focused test. If it is red, verify it is red for the
-expected missing behavior. If it is green, verify the greenness by temporarily
-mutating the promoted test or relevant production code, confirming the focused
-test fails, and restoring the mutation. Inspect the DMD AST that reaches the
-IR compiler, then add only the IR shape and VM support required by that
-behavior. Verify the current checkout before editing because backend progress
-notes can go stale.
+`ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
+CTFE-backed behavior in that module that still excludes `IR`, promote the
+existing backend matrix, and run the focused test. If it is red, verify it is
+red for the expected missing behavior. If it is green, verify the greenness by
+temporarily mutating the promoted test or relevant production code, confirming
+the focused test fails, and restoring the mutation. Inspect the DMD AST that
+reaches the IR compiler, then add only the IR shape and VM support required by
+that behavior. Verify the current checkout before editing because backend
+progress notes can go stale.
 
 ### Next Slice Handoff
 
-Start with `tests/ut/backends/lang/integrals.d`, the next module after
-`eval.d` in `ai/plans/backend-test-modules-order.md`. Verify in the current
-checkout which backend matrices still exclude `IR`, then choose the smallest
-honest promotion from that module.
+Move to the next module in `ai/plans/backend-test-modules-order.md` after
+`tests/ut/backends/api/runner.d`. Verify in the current checkout which backend
+matrices still exclude `IR`, then choose the smallest honest promotion from
+that module.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

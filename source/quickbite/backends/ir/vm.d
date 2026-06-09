@@ -39,6 +39,7 @@ private struct Machine {
         ReturnValue,
         StringConst,
         Store,
+        ThrowException,
         Type,
         UnaryIntrinsicOp,
         UnaryIntrinsicOperation,
@@ -92,6 +93,7 @@ private struct Machine {
             (const Call call) => execute(call),
             (const AssertTrue assert_) => execute(assert_),
             (const AssertCompare assert_) => execute(assert_),
+            (const ThrowException throw_) => execute(throw_),
             (const Load load) => execute(load),
             (const UnaryOp unary) => execute(unary),
             (const UnaryIntrinsicOp intrinsic) => execute(intrinsic),
@@ -157,6 +159,10 @@ private struct Machine {
             assertionInteger(assert_.type, assert_.resultKind, assert_.rhs),
             comparisonOperator(assert_.operation),
         ));
+    }
+
+    private void execute(const ThrowException throw_) {
+        throw new Exception(throw_.message);
     }
 
     private void castF64(const Cast cast_) {

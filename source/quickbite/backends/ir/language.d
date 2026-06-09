@@ -109,6 +109,10 @@ package struct AssertCompare {
     public uint rhs;
 }
 
+package struct ThrowException {
+    public string message;
+}
+
 package struct Load {
     public uint local;
     public Value result;
@@ -130,6 +134,7 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     Call,
     AssertTrue,
     AssertCompare,
+    ThrowException,
     Load,
     Store,
 );
