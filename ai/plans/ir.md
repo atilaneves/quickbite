@@ -257,10 +257,15 @@ The promoted `runBackendSourceFixtureTests.withImportPaths.IR` test passed
 without new production code. Existing IR source-fixture execution already
 honours caller-supplied import paths; a temporary expected-value mutation
 confirmed the promoted test executes the imported function through IR.
+The promoted `runBackendFileFixtureTests.withImportPaths.IR` test passed
+without new production code. Existing IR file-fixture execution already
+honours caller-supplied import paths; a temporary expected-value mutation
+confirmed the promoted test executes the imported function through IR.
+`tests/ut/backends/api/runner.d` is complete for current IR coverage: no
+backend matrices in that module still exclude `IR`.
 
 The next implementation slice should move to the next module in
-`ai/plans/backend-test-modules-order.md`:
-`tests/ut/backends/api/runner.d`. Pick the smallest remaining current
+`ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
 CTFE-backed behavior in that module that still excludes `IR`, promote the
 existing backend matrix, and run the focused test. If it is red, verify it is
 red for the expected missing behavior. If it is green, verify the greenness by
@@ -272,11 +277,10 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/api/runner.d`. Verify in the current checkout
-which backend matrices still exclude `IR`, then choose the smallest honest
-promotion from that module. `runModulesTests.runsBothModules.IR` is now
-covered; continue with the next remaining current backend matrix in that
-module that still excludes `IR`.
+Move to the next module in `ai/plans/backend-test-modules-order.md` after
+`tests/ut/backends/api/runner.d`. Verify in the current checkout which backend
+matrices still exclude `IR`, then choose the smallest honest promotion from
+that module.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
