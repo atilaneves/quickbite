@@ -181,6 +181,7 @@ private struct EvalFunctionWalker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.tokens: EXP;
         import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
@@ -210,6 +211,22 @@ private struct EvalFunctionWalker {
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+        if (
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual
+        ) {
+            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+            if (comparison is null)
+                assert(0);
+
+            return runComparisonExpression(comparison);
+        }
+
+        if (auto conditional = expression.isCondExp)
+            return runConditionalExpression(conditional);
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
@@ -232,6 +249,41 @@ private struct EvalFunctionWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runComparisonExpression(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(comparison.e1).asReal;
+        const right = runExpression(comparison.e2).asReal;
+
+        if (comparison.op == EXP.lessThan)
+            return Value(left < right);
+        if (comparison.op == EXP.lessOrEqual)
+            return Value(left <= right);
+        if (comparison.op == EXP.greaterThan)
+            return Value(left > right);
+        return Value(left >= right);
+    }
+
+    private Value runConditionalExpression(
+        imported!"dmd.expression".CondExp conditional,
+    ) {
+        return isTruthy(runExpression(conditional.econd)) ?
+            runExpression(conditional.e1) :
+            runExpression(conditional.e2);
+    }
+
+    private bool isTruthy(in Value value) {
+        if (value == Value(false))
+            return false;
+
+        if (value == Value(true))
+            return true;
+
+        return value.castTo!bool == Value(true);
     }
 
     private Value runCallExpression(

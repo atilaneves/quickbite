@@ -343,6 +343,12 @@ through the shared pending-command guard and existing function declaration
 execution; signal was verified by temporarily disabling the guard, which made
 the focused test fail because `:q` no longer threw while input was pending.
 
+REPL progress:
+`repl.backend.importDeclarationsPersistWithoutDisplay` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD conditional expressions and numeric comparisons,
+which is the AST produced for the imported `std.algorithm.min(3, 1)` call.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
