@@ -549,6 +549,11 @@ REPL progress: `repl.backend.skipsCommentOnlyLines` in
 through the shared REPL loop comment filter; signal was verified by temporarily
 disabling that filter.
 
+REPL progress: `repl.backend.evaluatesStandaloneMixinExpression` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing expression-cell `evalRepl` dispatch; signal was verified by
+temporarily forcing Interpreter REPL expression cells to return `0`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
