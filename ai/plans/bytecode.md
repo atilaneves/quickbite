@@ -168,6 +168,11 @@ Lua-specific bytecode shape.
   missing queued function-body emission for eval/REPL bytecode programs, so
   bytecode now emits the entry body, halts, and then drains called functions for
   REPL evaluation just as it already did for unittest execution.
+- `repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  delegate literals reaching bytecode as synthetic function-literal symbols, so
+  bytecode now emits `Value.undisplayable` literals for DMD function/delegate
+  literal expressions without adding a VM opcode.
 - `api/repl.d` promotion probe on branch `bytecode-api-repl-plan` promoted
   every remaining `backendsWith!Interpreter` loop to
   `backendsWith!(Interpreter, Bytecode)` without production changes. A seeded
@@ -191,24 +196,20 @@ Lua-specific bytecode shape.
   delegate literal reaches bytecode as a synthetic function-literal symbol
   instead of `Value.undisplayable`.
 - Fix the remaining `api/repl.d` bytecode gaps in this order:
-  1. Promote and implement `displaysUndisplayablePlaceholderForFunctionLiterals`
-     by recognizing DMD function/delegate literal expressions in the bytecode
-     compiler and emitting a `Value.undisplayable` literal. This is the
-     smallest isolated display-only slice and should not require VM opcodes.
-  2. Promote and implement `displaysStaticStringArrayResults` by lowering flat
+  1. Promote and implement `displaysStaticStringArrayResults` by lowering flat
      `ArrayLiteralExp` values to a new bytecode array-literal operation, with
      the VM building `Value.arrayValue` from stack elements. Preserve the
      existing `Value.stringValue` path for string expressions so scalar string
      display stays unchanged.
-  3. Promote `displaysNestedEmptyStringValues` and `displaysNestedArrayResults`
+  2. Promote `displaysNestedEmptyStringValues` and `displaysNestedArrayResults`
      together after flat array literals pass. They exercise the same recursive
      array-literal lowering plus empty-string display inside arrays.
-  4. Promote `displaysWideStringValues` and
+  3. Promote `displaysWideStringValues` and
      `displaysWideCharacterArrayValues` after generic array literals. Lower
      `StringExp` and array literals with `wchar`/`dchar` element types to
      character `Value`s so REPL string display can encode UTF-8 through the
      existing `Value.asCharArrayString`/array display path.
-  5. Promote `importDeclarationsPersistWithoutDisplay` last. Implement DMD
+  4. Promote `importDeclarationsPersistWithoutDisplay` last. Implement DMD
      conditional expression lowering with normal short-circuit control flow:
      evaluate the condition, jump to the false arm when false, leave exactly
      one selected arm value on the stack, and jump over the other arm. The

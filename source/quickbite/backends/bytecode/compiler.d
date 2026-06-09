@@ -177,6 +177,14 @@ private struct Compiler {
     {
         import std.string: fromStringz;
 
+        if (isUndisplayableFunctionLiteral(expression)) {
+            program.instructions ~= Instruction(
+                Op.literal,
+                Value.undisplayable,
+            );
+            return;
+        }
+
         if (auto integer = expression.isIntegerExp) {
             program.instructions ~= Instruction(
                 Op.literal,
@@ -351,6 +359,19 @@ private struct Compiler {
         compileExpression(expression.e1);
         compileExpression(expression.e2);
         program.instructions ~= Instruction(op);
+    }
+
+    private bool isUndisplayableFunctionLiteral(Expression expression) {
+        if (expression.isFuncExp !is null)
+            return true;
+
+        if (expression.isDelegateExp !is null)
+            return true;
+
+        if (auto symbol = expression.isSymOffExp)
+            return symbol.var.isFuncDeclaration !is null;
+
+        return false;
     }
 
     private void compileAssertComparison(BinExp expression, in Op op) {

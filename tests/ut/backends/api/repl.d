@@ -304,7 +304,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
