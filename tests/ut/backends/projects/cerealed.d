@@ -27,6 +27,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -49,6 +52,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -71,6 +77,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
@@ -94,6 +103,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -116,6 +128,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -138,6 +153,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
@@ -159,6 +177,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -179,6 +200,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -199,6 +223,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.stringof)
     unittest {
@@ -222,6 +249,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -243,6 +273,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -264,6 +297,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
     unittest {
@@ -289,6 +325,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
     unittest {
@@ -317,6 +356,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
     unittest {
@@ -350,6 +392,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
     unittest {
@@ -402,6 +447,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
     unittest {
@@ -435,6 +483,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~ backend.stringof)
     unittest {
@@ -482,6 +533,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~ backend.stringof)
     unittest {
@@ -529,6 +583,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.pointerToIntWritesPointeeBytes." ~ backend.stringof)
     unittest {
@@ -552,6 +609,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~ backend.stringof)
     unittest {
@@ -585,6 +645,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     unittest {
@@ -670,6 +733,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     unittest {
@@ -718,6 +784,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
     unittest {
@@ -766,6 +835,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~ backend.stringof)
     unittest {
@@ -823,6 +895,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~ backend.stringof)
     unittest {
@@ -872,6 +947,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
@@ -921,6 +999,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("array index 12 is out of bounds `[0..12]`");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
@@ -956,6 +1037,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("array index 5 is out of bounds `[0..5]`");
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     unittest {
@@ -980,6 +1064,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
     unittest {
@@ -1002,6 +1089,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("array index 6 is out of bounds `[0..6]`");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE cannot read a static child-class registry at compile time",

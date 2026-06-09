@@ -18,6 +18,9 @@ static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
     }
+}
+
+static foreach (backend; backendsWith!(Bytecode, IR, Interpreter)) {
 
     @("add.int.1." ~ backend.stringof)
     unittest {

@@ -17,6 +17,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntConditionFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -29,6 +32,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntConditionFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -60,6 +66,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("`assert(left && right)` failed");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -76,6 +85,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCall." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -92,6 +104,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -102,6 +117,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -112,6 +130,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -129,6 +150,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -146,6 +170,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -174,6 +201,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -182,6 +212,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -195,6 +228,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -205,6 +241,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -215,6 +254,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -225,6 +267,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("`assert(left || right)` failed");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -235,6 +280,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -245,6 +293,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -255,6 +306,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOr." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -280,6 +334,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -292,6 +349,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -317,6 +377,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalAndFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -328,6 +391,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalAndFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -339,6 +405,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalAnd." ~ backend.stringof)
     unittest {
@@ -365,6 +434,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalNotCallFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -378,6 +450,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -388,6 +463,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalNotFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -398,6 +476,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalNotCall." ~ backend.stringof)
     unittest {
@@ -411,6 +492,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
     }
+}
+
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
     @("logicalNot." ~ backend.stringof)
     unittest {
