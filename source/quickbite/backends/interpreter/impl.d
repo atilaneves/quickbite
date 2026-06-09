@@ -925,7 +925,7 @@ private struct EvalModuleInterpreter {
         if (auto not = assert_.e1.isNotExp) {
             import std.conv: text;
 
-            if (isLogicalExpression(not.e1))
+            if (isBoolExpression(not.e1) || isLogicalExpression(not.e1))
                 return text(
                     equalityOperandMessage(runExpression(not.e1), true, not.e1),
                     " == true",

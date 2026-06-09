@@ -472,6 +472,12 @@ Math progress: `evaluatesRuntimeIsNaNDoubleInput` in
 change was required. Signal was verified by temporarily mutating Interpreter
 logical-not handling, which failed the focused test with `false != true`.
 
+Math progress: `evaluatesRuntimeIsNaNDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+extending `assert(!expr)` failure messages to bool-typed expressions, so
+`assert(!isNaN(notANumber))` reports `true == true` instead of the lowered
+boolean assertion message `false != true`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
