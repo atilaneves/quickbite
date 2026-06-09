@@ -293,7 +293,23 @@ static foreach (backend; backends) {
 
         output.should == ["<undisplayable>"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
+    @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["delegate int(){ return 42; }", ":q"],
+        );
+
+        output.should == ["<undisplayable>"];
+    }
+}
+
+static foreach (backend; backends) {
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

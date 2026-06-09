@@ -349,6 +349,12 @@ REPL progress:
 REPL eval support for DMD conditional expressions and numeric comparisons,
 which is the AST produced for the imported `std.algorithm.min(3, 1)` call.
 
+REPL progress:
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD function-literal expressions by returning the
+existing `<undisplayable>` value.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

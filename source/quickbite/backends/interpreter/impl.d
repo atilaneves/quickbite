@@ -233,6 +233,9 @@ private struct EvalFunctionWalker {
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
 
+        if (expression.isFuncExp)
+            return Value.undisplayable;
+
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
