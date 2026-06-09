@@ -83,38 +83,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("4 != 5");
     }
 
-    @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x2au];
-                assert(values[1] == 0x2bu);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-
-    @("ubyteArrayIndexWriteFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x00u];
-                values[1] = 0x2au;
-                assert(values[1] == 0x2bu);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-
-    @("ubyteArrayIndexWriteFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] values = [0x29u, 0x00u];
-                values[0] = 0x28u;
-                assert(values[0] == 0x29u);
-            }
-        }).shouldThrowWithMessage("40 != 41");
-    }
-
     @("refUbyteArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2204,6 +2172,17 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage("40 != 41");
     }
 
+    @("ubyteArrayIndexWriteFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x00u];
+                values[1] = 0x2au;
+                assert(values[1] == 0x2bu);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("ubyteArrayIndexWrite." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2223,6 +2202,16 @@ static foreach (backend; backendsWith!Interpreter) {
                 assert(values[1] == 0x2au);
             }
         });
+    }
+
+    @("ubyteArrayIndexReadFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x2au];
+                assert(values[1] == 0x2bu);
+            }
+        }).shouldThrowWithMessage("42 != 43");
     }
 
     @("ubyteArrayIndexReadFailureMessage.1." ~ backend.stringof)

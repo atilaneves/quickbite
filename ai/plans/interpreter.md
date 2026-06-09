@@ -292,6 +292,12 @@ narrow indexed assignment for local array variables by replacing one
 slices, append, ref parameter mutation, and bounds diagnostics remain
 unpromoted.
 
+Arrays progress: `ubyteArrayIndexWriteFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating indexed array
+assignment writeback, which changed the promoted failure message from
+`42 != 43` to `0 != 43`.
+
 Arrays progress: `ubyteArrayIndexWriteFailureMessage.1` in
 `tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
 change was required; signal was verified by temporarily mutating indexed array
@@ -703,6 +709,12 @@ Arrays progress: `emptyArrayLengthFailureMessage.1` in
 green through existing nonempty array literal, array-length expression, and
 equality assertion message support; signal was verified by temporarily
 mutating the active Interpreter array-length handler.
+
+Arrays progress: `ubyteArrayIndexReadFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing read-only array indexing and equality assertion message
+support; signal was verified by temporarily mutating the Interpreter
+`IndexExp` handler.
 
 Arrays progress: `ubyteArrayIndexReadFailureMessage.1` in
 `tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
