@@ -100,11 +100,31 @@ Lua-specific bytecode shape.
   now covers `Bytecode`. This was a stale coverage gap after the runtime
   `sqrt` builtin slice: the existing bytecode unary native-call path already
   executed a different runtime `sqrt` input correctly.
+- `evaluatesDifferentRuntimeSqrtInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `4 != 5`.
+- `evaluatesDifferentRuntimeSqrtInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `6 != 7`.
 - `evaluatesRuntimeNonIntegerSqrtInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
   unary native-call path already executed the non-integer runtime `sqrt` input
   correctly.
+- `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `1.5 != 2.5`.
+- `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `2.5 != 3.5`.
 - `evaluatesRuntimeNonPerfectSqrtInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
@@ -169,8 +189,38 @@ Lua-specific bytecode shape.
 - `doesNotTreatUserNamedPowAsMathIntrinsic` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap: bytecode already calls the user-defined `pow` function instead
-  of treating it as the `std.math.pow` builtin. In the current checkout,
-  `math.d` is now complete for `Bytecode`.
+  of treating it as the `std.math.pow` builtin.
+- `evaluatesRuntimePowDoubleInputsFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
+  bytecode assertion diagnostics formatting floating operands through integer
+  scalar access. Bytecode now keeps existing integer-compatible assertion
+  messages but renders floating operands through `Value` so runtime `pow`
+  equality failures report `16 != 17`.
+- `evaluatesRuntimePowDoubleInputsFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `pow` and floating assertion-diagnostic
+  slices: the existing bytecode binary native-call path and comparison
+  assertion diagnostics already report `3 <= 3.001`.
+- `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the user-defined `pow` and floating equality-diagnostic
+  slices: bytecode already calls the user-defined function and reports
+  `6 != 7`.
+- `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the user-defined `pow` and floating equality-diagnostic
+  slices: bytecode already calls the user-defined function and reports
+  `7 != 8`.
+- `evaluatesRuntimeSqrtInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `3 != 4`.
+- `evaluatesRuntimeSqrtInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `5 != 6`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
