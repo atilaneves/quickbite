@@ -143,6 +143,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `isInfinity` builtin slice: the existing
   bytecode logical-not and bool equality assertion diagnostics already report
   `true == true`.
+- `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isInfinity` builtin slice: the existing
+  bytecode `isInfinity` builtin and bool equality assertion diagnostics
+  already report `false != true`.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
