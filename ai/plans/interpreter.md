@@ -380,6 +380,14 @@ REPL progress:
 runs on `Interpreter`. This required encoding DMD wide string-literal code
 units as UTF-8 before constructing interpreter string values.
 
+REPL progress:
+`repl.backend.displaysWideCharacterArrayValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL string display for character arrays and UTF-8 conversion
+for wide character values; signal was verified by temporarily mutating the
+`wchar` conversion path, which changed the first displayed result from `"ab"`
+to `"bc"`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

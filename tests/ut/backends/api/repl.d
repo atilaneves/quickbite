@@ -383,7 +383,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -399,7 +399,9 @@ static foreach (backend; backends) {
 
         output.should == [`"ab"`, `"ab"`];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
