@@ -906,7 +906,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isNaN(double value) {
+                return true;
+            }
+
+            unittest {
+                double input = 21.0;
+                assert(!isNaN(input));
+            }
+        }).shouldThrowWithMessage("true == true");
+    }
+}
+
+static foreach (backend; backends) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
