@@ -728,6 +728,13 @@ green through existing direct free-function call dispatch, `ref` parameter
 writeback, local dynamic array append, length, and index-read support; signal
 was verified by temporarily mutating Interpreter `ref` parameter writeback.
 
+Arrays progress: `refUbyteArrayParameterAppendFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch, `ref` parameter
+writeback, local dynamic array append, length, and equality assertion message
+support; signal was verified by temporarily mutating the Interpreter array
+append handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
