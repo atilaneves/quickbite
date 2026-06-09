@@ -329,6 +329,13 @@ through existing frontend REPL buffering and eval-cell expression execution;
 signal was verified by temporarily mutating the Interpreter integer literal
 handler, which changed the displayed result from `42` to `41`.
 
+REPL progress:
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared buffered-input error recovery path; signal was verified by
+temporarily removing the pending-input clear after a failed buffered
+declaration, which made the final `42` submission return `void`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
