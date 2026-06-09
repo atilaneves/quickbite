@@ -87,6 +87,10 @@ public bool isArrayType(imported!"dmd.mtype".Type type) {
     return arrayElementType(type) !is null;
 }
 
+public bool isDynamicArrayType(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeDArray !is null;
+}
+
 public template dmdScalarType(imported!"dmd.astenums".TY type) {
     import dmd.astenums: TY;
 

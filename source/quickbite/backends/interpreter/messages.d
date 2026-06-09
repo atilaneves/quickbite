@@ -64,19 +64,6 @@ public string thrownExceptionMessage(
     return stringChars(message).idup;
 }
 
-public string noAvailableSourceMessage(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.conv: text;
-
-    return text(
-        "`",
-        function_.toChars,
-        "` cannot be interpreted at compile time, ",
-        "because it has no available source code",
-    );
-}
-
 public string receiverName(imported!"dmd.expression".Expression receiver) {
     auto var = receiver.isVarExp;
     if (var is null)

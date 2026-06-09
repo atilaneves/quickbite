@@ -735,7 +735,10 @@ private struct Compiler {
         }
 
         if (function_ !is null) {
-            if (function_.fbody is null)
+            import quickbite.frontend.dmd.functions:
+                hasNoAvailableSource, noAvailableSourceMessage;
+
+            if (hasNoAvailableSource(function_))
                 throw new Exception(noAvailableSourceMessage(function_));
 
             compileClassMethodReceiverCheck(call);
@@ -1169,19 +1172,6 @@ private struct Compiler {
 
         return expression;
     }
-}
-
-private string noAvailableSourceMessage(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.conv: text;
-
-    return text(
-        "`",
-        function_.toChars,
-        "` cannot be interpreted at compile time, ",
-        "because it has no available source code",
-    );
 }
 
 private imported!"quickbite.lang".Value stringValue(

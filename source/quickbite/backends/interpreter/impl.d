@@ -117,20 +117,10 @@ private string locChars(imported!"dmd.location".Loc loc) @trusted {
     return loc.toChars.fromStringz.idup;
 }
 
-private bool hasNoAvailableSource(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    return function_.fbody is null;
-}
-
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     import quickbite.frontend.dmd.types: isArrayType;
 
     return isArrayType(type);
-}
-
-private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) {
-    return type !is null && type.toBasetype.isTypeDArray !is null;
 }
 
 private imported!"quickbite.lang".Value evalFunction(
@@ -500,7 +490,8 @@ private struct Evaluator {
                 );
 
         if (call.f !is null) {
-            import quickbite.backends.interpreter.messages: noAvailableSourceMessage;
+            import quickbite.frontend.dmd.functions:
+                hasNoAvailableSource, noAvailableSourceMessage;
 
             if (hasNoAvailableSource(call.f))
                 throw new Exception(noAvailableSourceMessage(call.f));
@@ -834,7 +825,9 @@ private struct Evaluator {
             return Value.void_;
         }
 
-        if (initializer.isNullExp !is null && typeIsDynamicArray(variable.type)) {
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             auto value = Value.arrayValue([]);
             locals[variable] = value;
             uninitializedLocals.remove(variable);

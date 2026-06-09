@@ -219,9 +219,12 @@ private struct Compiler {
     }
 
     private Value compileIntrinsicCall(imported!"dmd.expression".CallExp call) {
+        import quickbite.frontend.dmd.functions:
+            hasNoAvailableSource, noAvailableSourceMessage;
+
         if (auto function_ = callFunction(call))
             if (!isImplementedBuiltin(function_)) {
-                if (function_.fbody is null)
+                if (hasNoAvailableSource(function_))
                     throw new Exception(noAvailableSourceMessage(function_));
                 return compileCall(call, function_);
             }
@@ -883,19 +886,6 @@ private string newExceptionMessage(imported!"dmd.expression".Expression expressi
         throw new Exception("Unsupported IR throw expression.");
 
     return message.peekString.idup;
-}
-
-private string noAvailableSourceMessage(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.conv: text;
-
-    return text(
-        "`",
-        function_.toChars,
-        "` cannot be interpreted at compile time, ",
-        "because it has no available source code",
-    );
 }
 
 private imported!"quickbite.backends.ir.language".Type valueType(
