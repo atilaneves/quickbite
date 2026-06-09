@@ -565,6 +565,11 @@ private struct EvalModuleInterpreter {
         if (auto arrayLength = expression.isArrayLengthExp)
             return Value(runExpression(arrayLength.e1).length);
 
+        if (auto index = expression.isIndexExp)
+            return runExpression(index.e1)[
+                cast(size_t) runExpression(index.e2).asLong
+            ];
+
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
 

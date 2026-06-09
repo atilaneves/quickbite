@@ -280,6 +280,11 @@ now runs on `Interpreter`. It was already green through the same array literal
 and length support as `arrayLength`; signal was verified by temporarily
 mutating the active `ArrayLengthExp` handler.
 
+Arrays progress: `ubyteArrayIndexRead` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+read-only `IndexExp` evaluation over `Value.arrayValue` elements; array
+writes, slices, append, and index diagnostics remain unpromoted.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

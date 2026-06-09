@@ -360,6 +360,18 @@ public struct Value {
         );
     }
 
+    public Value opIndex(in size_t index) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.elements[index],
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
     public real asReal() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
