@@ -29,46 +29,6 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: pow;
-
-            unittest {
-                double base = 2.0;
-                double exponent = 4.0;
-                assert(pow(base, exponent) == 17.0);
-            }
-        }).shouldThrowWithMessage("16 != 17");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: pow;
-
-            unittest {
-                double base = 9.0;
-                double exponent = 0.5;
-                double root = pow(base, exponent);
-                assert(root > 3.001);
-            }
-        }).shouldThrowWithMessage("3 <= 3.001");
-    }
-}
-
 static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -211,24 +171,6 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: sqrt;
-
-            unittest {
-                double input = 9.0;
-                assert(sqrt(input) == 4.0);
-            }
-        }).shouldThrowWithMessage("3 != 4");
-    }
-}
-
 static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -240,24 +182,6 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
                 assert(sqrt(input) == 4.0);
             }
         }).shouldThrowWithMessage("3 != 4");
-    }
-}
-
-static foreach (backend; backends) {
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: sqrt;
-
-            unittest {
-                double input = 25.0;
-                assert(sqrt(input) == 6.0);
-            }
-        }).shouldThrowWithMessage("5 != 6");
     }
 }
 
@@ -544,24 +468,6 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: fabs;
-
-            unittest {
-                double first = -3.5;
-                assert(fabs(first) == 4.5);
-            }
-        }).shouldThrowWithMessage("3.5 != 4.5");
-    }
-}
-
 static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -573,24 +479,6 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
                 assert(fabs(first) == 4.5);
             }
         }).shouldThrowWithMessage("3.5 != 4.5");
-    }
-}
-
-static foreach (backend; backends) {
-    @ShouldFail(
-        "DMD CTFE returns <double not supported> because druntime's " ~
-        "assert formatter uses sprintf",
-    )
-    @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import std.math: fabs;
-
-            unittest {
-                double second = -12.25;
-                assert(fabs(second) == 13.25);
-            }
-        }).shouldThrowWithMessage("12.25 != 13.25");
     }
 }
 
