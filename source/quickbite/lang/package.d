@@ -348,6 +348,24 @@ public struct Value {
         );
     }
 
+    public real asReal() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isIntegral!T || is(T == bool) || isFloatingPoint!T) {
+                    return cast(real) value;
+                } else {
+                    throw new Exception("Expected numeric scalar.");
+                    return real.nan;
+                }
+            },
+        );
+    }
+
     public Value opBinary(string op)(in Value rhs) const @safe pure
         if (op == "+" || op == "-" || op == "*" || op == "/")
     {

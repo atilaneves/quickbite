@@ -270,6 +270,276 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+### Math Slice Lessons
+
+Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
+`.1` in `tests/ut/backends/lang/math.d` now run on `Interpreter` as
+PASSING tests. Because the Interpreter formats double assert messages
+correctly (producing "16 != 17" and "3 <= 3.001"), these tests pass
+without `@ShouldFail`. The user approved a split: the two existing
+`@ShouldFail` unittests inside the `static foreach (backend; backends)`
+block remain as-is (CTFE keeps `@ShouldFail` for `<double not
+supported>`); a separate adjacent block
+`static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter))`
+contains copies of those two tests with identical bodies and label
+names but without `@ShouldFail`. No production change was required —
+the pow infra already existed from the `evaluatesRuntimePowDoubleInputs`
+slice.
+
+Math progress: `evaluatesRuntimePowDoubleInputs` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. Three production
+changes were required:
+
+1. **`RealExp` in `EvalModuleInterpreter`** — The module interpreter's
+   `runExpression` lacked a `RealExp` branch (floating-point literals such
+   as `2.0`). Added `realValue` dispatch mirroring the existing
+   `EvalFunctionWalker` handler.
+
+2. **`pow` builtin dispatch in `EvalModuleInterpreter`** — The module
+   `runCallExpression` had no builtin check before calling `runFunction`.
+   Added an inline `isBuiltin`/`BUILTIN.pow`/`BUILTIN.fabs` switch at the
+   top of `runCallExpression`, mirroring the pattern already in
+   `EvalFunctionWalker.runCallExpression`.
+
+3. **Floating-point ordering comparisons** — `runComparisonExpression`
+   used `asLong` for both operands, which throws for `double` values.
+   Added `asReal() const @safe pure` to `quickbite.lang.Value` (returns
+   the stored value widened to `real`, covering both integer and
+   floating-point scalars), then switched `runComparisonExpression` to use
+   `asReal` instead of `asLong`.
+
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsic` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. It was already
+green through the existing direct free-function call path; signal was
+verified by temporarily mutating the module interpreter's `call.f` dispatch
+to return the first `pow` argument instead of executing the user-defined
+function, which failed the focused test with `2 != 6`.
+
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter addition to
+subtraction, which failed the focused test with `-2 != 7` instead of `6 != 7`.
+
+Math progress: `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter addition to
+subtraction, which failed the focused test with `-1 != 8` instead of `7 != 8`.
+
+Math progress: `evaluatesRuntimeSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+extracting Interpreter builtin dispatch into
+`source/quickbite/backends/interpreter/builtins.d` and adding narrow
+module-backed handling for DMD's `BUILTIN.sqrt`, evaluating one argument and
+applying `std.math.sqrt` through the existing floating `Value` helper.
+
+Math progress: `evaluatesRuntimeSqrtInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `9 != 4` instead of `3 != 4`.
+
+Math progress: `evaluatesRuntimeSqrtInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `25 != 6` instead of `5 != 6`.
+
+Math progress: `evaluatesDifferentRuntimeSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`sqrt` to call `fabs`, which failed the focused test with `16 != 4`.
+
+Math progress: `evaluatesDifferentRuntimeSqrtInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `16 != 5` instead of `4 != 5`.
+
+Math progress: `evaluatesDifferentRuntimeSqrtInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `36 != 7` instead of `6 != 7`.
+
+Math progress: `evaluatesRuntimeNonIntegerSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`sqrt` to call `fabs`, which failed the focused test with `2.25 != 1.5`.
+
+Math progress: `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `2.25 != 2.5` instead of
+`1.5 != 2.5`.
+
+Math progress: `evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `6.25 != 3.5` instead of
+`2.5 != 3.5`.
+
+Math progress: `evaluatesRuntimeNonPerfectSqrtInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`sqrt` to call `fabs`, which failed the focused test with `2 >= 1.415`.
+
+Math progress: `evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test because the expression no longer
+threw.
+
+Math progress: `evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `sqrt` to
+call `fabs`, which failed the focused test with `2 >= 1.414` instead of
+`1.41421 >= 1.414`.
+
+Math progress: `evaluatesRuntimeFabsDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`fabs` to call `sqrt`, which failed the focused test with `-nan != 3.5`.
+
+Math progress: `evaluatesRuntimeFabsDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `fabs` to
+call `sqrt`, which failed the focused test with `-nan != 4.5` instead of
+`3.5 != 4.5`.
+
+Math progress: `evaluatesRuntimeFabsDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `fabs` to
+call `sqrt`, which failed the focused test with `-nan != 13.25` instead of
+`12.25 != 13.25`.
+
+Math progress: `evaluatesRuntimeFabsPositiveDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+`fabs` to call `sqrt`, which failed the focused test with `2.78388 != 7.75`.
+
+Math progress: `evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `fabs` to
+call `sqrt`, which failed the focused test with `2.78388 != 8.75` instead of
+`7.75 != 8.75`.
+
+Math progress: `evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter` as a PASSING test.
+The CTFE `@ShouldFail` copy remains in the `backends` block for the upstream
+double formatter limitation; the Interpreter copy is split into an adjacent
+Interpreter-only block without `@ShouldFail`. No production change was
+required. Signal was verified by temporarily mutating Interpreter `fabs` to
+call `sqrt`, which failed the focused test with `3.08221 != 10.5` instead of
+`9.5 != 10.5`.
+
+Math progress: `evaluatesRuntimeIsNaNDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating Interpreter
+logical-not handling, which failed the focused test with `false != true`.
+
+Math progress: `evaluatesRuntimeIsNaNDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+extending `assert(!expr)` failure messages to bool-typed expressions, so
+`assert(!isNaN(notANumber))` reports `true == true` instead of the lowered
+boolean assertion message `false != true`.
+
+Math progress: `evaluatesRuntimeIsNaNDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the
+Interpreter bool assertion formatter, which failed the focused test with
+`false != false` instead of `false != true`.
+
+Math progress: `evaluatesRuntimeIsInfinityDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+adding `std.math.isInfinity` to the Interpreter builtins module so the backend
+does not fall through into unsupported druntime expression interpretation.
+
+Math progress: `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`isInfinity` through `isNaN`, which made the focused test fail because the
+fixture no longer threw.
+
+Math progress: `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`isInfinity` through `fabs`, which failed the focused test because the fixture
+no longer threw.
+
+Math progress: `evaluatesRuntimeSignbitDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+adding narrow `std.math.signbit` handling to the Interpreter builtins module.
+
+Math progress: `evaluatesRuntimeSignbitDoubleInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`signbit` through `fabs`, which failed the focused test with `0 != 0` instead
+of `1 != 0`.
+
+Math progress: `evaluatesRuntimeSignbitDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily making Interpreter
+`signbit` return `1`, which failed the focused test because the fixture no
+longer threw.
+
+Math progress: `evaluatesRuntimeSignbitNanInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`signbit` through `fabs`, which failed the focused test with `nan != 0`.
+
+Math progress: `evaluatesRuntimeSignbitNanInputFailureMessage.0` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`signbit` through `fabs`, which failed the focused test with `nan != 0`
+instead of `1 != 0`.
+
+Math progress: `evaluatesRuntimeSignbitNanInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily routing Interpreter
+`signbit` through `isNaN`, which failed the focused test because the fixture
+no longer threw.
+
+Math progress: `doesNotTreatUserNamedIsNaNAsMathIntrinsic` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily treating any function
+named `isNaN` as the Interpreter math builtin, which failed the focused test
+with `false != true`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
