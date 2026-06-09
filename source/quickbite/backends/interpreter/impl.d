@@ -29,10 +29,10 @@ public class Interpreter: imported!"quickbite.backends".Backend {
                     "Incomplete REPL cell reached Interpreter backend.",
                 );
             case noDisplay:
-                evalFunction(cell.function_);
+                evalFunction(cell.function_, true);
                 return Value.void_;
             case expression:
-                return evalFunction(cell.function_);
+                return evalFunction(cell.function_, true);
         }
     }
 
@@ -119,8 +119,10 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
 
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
+    bool allowZeroArgumentCalls = false,
 ) {
     EvalFunctionWalker walker;
+    walker.allowZeroArgumentCalls = allowZeroArgumentCalls;
     walker.runStatement(function_.fbody);
     return walker.result;
 }
@@ -132,6 +134,7 @@ private struct EvalFunctionWalker {
 
     private Value[VarDeclaration] locals;
     private Value result;
+    private bool allowZeroArgumentCalls;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -194,6 +197,9 @@ private struct EvalFunctionWalker {
         if (auto addAssign = expression.isAddAssignExp)
             return runIncrementAssignExpression(addAssign);
 
+        if (auto add = expression.isAddExp)
+            return runExpression(add.e1) + runExpression(add.e2);
+
         if (auto sub = expression.isMinExp)
             return runExpression(sub.e1) - runExpression(sub.e2);
 
@@ -233,8 +239,7 @@ private struct EvalFunctionWalker {
             tryInterpreterBuiltin,
             unaryBuiltinCall;
 
-        if (call.arguments is null || call.arguments.length == 0)
-            throw new Exception("Unsupported eval call argument count.");
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
 
         import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -245,7 +250,7 @@ private struct EvalFunctionWalker {
                 case isInfinity:
                 case signbit:
                     if (
-                        call.arguments.length !=
+                        argumentCount !=
                         interpreterBuiltinArgumentCount(builtin)
                     )
                         throw new Exception(
@@ -259,7 +264,7 @@ private struct EvalFunctionWalker {
 
                 case pow:
                     if (
-                        call.arguments.length !=
+                        argumentCount !=
                         interpreterBuiltinArgumentCount(builtin)
                     )
                         throw new Exception(
@@ -276,6 +281,9 @@ private struct EvalFunctionWalker {
                     break;
             }
         }
+
+        if (argumentCount == 0 && !allowZeroArgumentCalls)
+            throw new Exception("Unsupported eval call argument count.");
 
         if (call.f !is null)
             return runDirectFunctionCall(call.f, call.arguments);
@@ -295,18 +303,21 @@ private struct EvalFunctionWalker {
         if (function_.fbody is null)
             throw new Exception("Unsupported eval call.");
 
+        const argumentCount = arguments is null ? 0 : arguments.length;
         if (
-            function_.parameters is null ||
-            function_.parameters.length != 1 ||
-            arguments is null ||
-            arguments.length != 1
+            function_.parameters is null && argumentCount != 0 ||
+            function_.parameters !is null &&
+                function_.parameters.length != argumentCount
         )
             throw new Exception("Unsupported eval call argument count.");
 
         auto savedLocals = locals.dup;
         const savedResult = result;
         locals = null;
-        locals[(*function_.parameters)[0]] = runExpression((*arguments)[0]);
+        if (argumentCount != 0) {
+            foreach (index, parameter; *function_.parameters)
+                locals[parameter] = runExpression((*arguments)[index]);
+        }
 
         runStatement(function_.fbody);
         const value = result;

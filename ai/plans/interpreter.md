@@ -575,6 +575,12 @@ through existing no-display EvalCell execution and narrow local-variable
 increment-assign support; signal was verified by temporarily disabling the
 Interpreter increment-assign handler.
 
+REPL progress: `repl.backend.userDefinedFunctionDoesNotCollideWithWrapper` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This needed the
+REPL-only zero-argument direct call path plus the existing addition dispatch in
+the eval walker; signal was verified with the focused slice and the random
+suite.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
