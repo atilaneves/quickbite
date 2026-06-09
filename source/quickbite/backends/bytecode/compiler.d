@@ -185,7 +185,7 @@ private struct Compiler {
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
             if (variable is null)
-                throw new Exception("Unsupported bytecode declaration.");
+                return;
 
             compileVariableDeclaration(variable);
             return;
@@ -752,6 +752,7 @@ private struct Compiler {
 
         with (BUILTIN) switch (isBuiltin(function_)) {
             case fabs:
+            case isinfinity:
             case isnan:
             case pow:
             case sqrt:

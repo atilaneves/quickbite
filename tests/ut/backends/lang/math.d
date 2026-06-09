@@ -726,7 +726,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsInfinityDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
