@@ -267,6 +267,51 @@ The promoted `malloc.IR` runtime cstdlib test added the minimal IR compiler
 diagnostic for resolved non-builtin function calls whose DMD declaration has no
 body. This reports the same unavailable-source message as the other current
 backends before any IR execution is attempted.
+The promoted `assertNonzeroIntCondition.IR`,
+`assertNonzeroIntConditionFailureMessage.0.IR`, and
+`assertNonzeroIntConditionFailureMessage.1.IR` tests in `logic.d` added the
+minimal IR support for DMD `OrExp` as a typed `bitwiseOr` binary operation on
+`i32` values. The diagnostic variants also exposed that child function
+execution reused the caller's value and local slots; the VM now saves the
+caller scalar/local storage around a direct call and copies only the callee's
+return value into the call result slot. This is still a narrow call-frame
+isolation step, not a full activation-record or recursive-call model.
+The promoted logical-and call/short-circuit group in `logic.d` added narrow
+IR support for DMD `&&` as explicit `CondBranch`/`Branch` control flow with a
+single block-parameter join value. The VM now dispatches basic blocks, copies
+branch arguments into block parameters, and preserves RHS short-circuit
+semantics for this shape. The same slice added the bool-local, bool equality
+diagnostic, integer-to-bool cast, and unary logical-not support observed in
+that group. `AssertTrue` now carries the DMD-rendered assertion message needed
+by the promoted logical assertion failures. This is the first CFG execution
+slice; broader control flow and `eval` result conversion for multi-block
+functions remain deliberately narrow until a later promoted test forces them.
+The promoted logical-or group in `logic.d` reused the existing block-dispatch
+shape and added DMD `||` lowering as explicit short-circuit CFG: true LHS
+branches directly to a true block, false LHS evaluates the RHS, and both paths
+join through one bool block parameter. The same slice added a narrow
+`AssertFalse` instruction for the observed `assert(!expr)` diagnostic shape;
+the VM currently reports the DMD-matching `true == true` message for that
+promoted failure only.
+The promoted `logicalAndComparisonOperands.IR` group reused logical-and CFG
+lowering and added narrow signed `i32` comparison support for DMD `<` and `>`.
+Those comparison operations produce `bool` IR values and currently support only
+the operand type observed by this group. The promoted failure-message variants
+reuse the existing bool equality assertion diagnostic path.
+The promoted later local-variable logical-and group in `logic.d`
+(`logicalAndShortCircuit.IR`, `logicalAndFailureMessage.1.IR`,
+`logicalAndFailureMessage.0.IR`, and `logicalAnd.IR`) passed without new
+production code. Existing bool-local storage, logical-and CFG lowering,
+division short-circuiting, and bool equality diagnostics already covered that
+group.
+The promoted logical-not group in `logic.d`
+(`logicalNotCallFailureMessage.0.IR`, `logicalNotCallFailureMessage.1.IR`,
+`logicalNotFailureMessage.1.IR`, `logicalNotFailureMessage.0.IR`,
+`logicalNotCall.IR`, and `logicalNot.IR`) passed without new production code.
+Existing unary logical-not lowering, direct calls, bool locals, and bool
+diagnostics already covered that group. `tests/ut/backends/lang/logic.d` is
+complete for current IR coverage: no backend matrices in that module still
+exclude `IR`.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -282,9 +327,9 @@ progress notes can go stale.
 ### Next Slice Handoff
 
 Move to the next module in `ai/plans/backend-test-modules-order.md` after
-`tests/ut/backends/api/runner.d`. Verify in the current checkout which backend
-matrices still exclude `IR`, then choose the smallest honest promotion from
-that module.
+`tests/ut/backends/lang/logic.d`. Verify the current checkout before editing,
+then promote the next smallest existing backend matrix that still excludes
+`IR`.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

@@ -4,7 +4,7 @@ module ut.backends.lang.logic;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -43,7 +43,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -165,7 +165,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalOrBoolResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -267,7 +267,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -306,7 +306,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -352,7 +352,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -40,12 +40,16 @@ package enum BinaryOperation {
     subtract,
     multiply,
     divide,
+    bitwiseOr,
     pow,
     equal,
+    lessThan,
+    greaterThan,
 }
 
 package enum UnaryOperation {
     negate,
+    not_,
 }
 
 package enum UnaryIntrinsicOperation {
@@ -99,6 +103,11 @@ package struct Call {
 
 package struct AssertTrue {
     public uint condition;
+    public string message;
+}
+
+package struct AssertFalse {
+    public uint condition;
 }
 
 package struct AssertCompare {
@@ -133,6 +142,7 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     Cast,
     Call,
     AssertTrue,
+    AssertFalse,
     AssertCompare,
     ThrowException,
     Load,

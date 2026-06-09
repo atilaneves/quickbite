@@ -43,7 +43,7 @@ private imported!"quickbite.backends.ir.language".Function compileFunction(
 }
 
 private struct Compiler {
-    import dmd.expression: AddAssignExp, BinExp, Expression;
+    import dmd.expression: AddAssignExp, BinExp, CmpExp, Expression;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import quickbite.backends.ir.language:
@@ -51,9 +51,12 @@ private struct Compiler {
         BinaryOperation,
         Block,
         AssertCompare,
+        AssertFalse,
         AssertTrue,
+        Branch,
         Cast,
         Call,
+        CondBranch,
         Const,
         Function,
         Instruction,
@@ -77,6 +80,9 @@ private struct Compiler {
     private FuncDeclaration[] functions;
     private uint[FuncDeclaration] functionIndices;
     private Function[] compiledFunctions;
+    private Block[] blocks;
+    private Value[] currentBlockParams;
+    private uint currentBlockId;
     private uint nextValueId;
 
     private Function compileEntryFunction(FuncDeclaration function_) {
@@ -93,6 +99,9 @@ private struct Compiler {
         instructions = null;
         locals = null;
         localValues = null;
+        blocks = null;
+        currentBlockParams = null;
+        currentBlockId = 0;
         nextValueId = 0;
         registerParameters(function_);
 
@@ -173,6 +182,16 @@ private struct Compiler {
         if (auto equal = expression.isEqualExp)
             return compileBinaryExpression(equal, BinaryOperation.equal);
 
+        if (isComparisonExpression(expression))
+            return compileComparisonExpression(castComparisonExpression(expression));
+
+        if (auto logical = expression.isLogicalExp) {
+            if (isAndAnd(logical))
+                return compileAndAnd(logical);
+            if (isOrOr(logical))
+                return compileOrOr(logical);
+        }
+
         if (auto cast_ = expression.isCastExp)
             return compileCast(cast_);
 
@@ -191,6 +210,9 @@ private struct Compiler {
         if (auto call = expression.isCallExp)
             return compileIntrinsicCall(call);
 
+        if (auto not = expression.isNotExp)
+            return compileUnaryExpression(not.e1, UnaryOperation.not_);
+
         if (auto negate = expression.isNegExp)
             return compileUnaryExpression(negate.e1, UnaryOperation.negate);
 
@@ -205,6 +227,9 @@ private struct Compiler {
 
         if (auto divide = expression.isDivExp)
             return compileBinaryExpression(divide, BinaryOperation.divide);
+
+        if (auto bitwiseOr = expression.isOrExp)
+            return compileBinaryExpression(bitwiseOr, BinaryOperation.bitwiseOr);
 
         import std.string: fromStringz;
 
@@ -279,16 +304,22 @@ private struct Compiler {
     }
 
     private Value compileAssert(imported!"dmd.expression".AssertExp assert_) {
-        if (auto equal = assert_.e1.isEqualExp)
+        if (auto equal = assertEqualExpression(assert_.e1))
             return compileAssertCompare(equal, BinaryOperation.equal);
 
         const result = compileDmdAssertFailEqualMessage(assert_.msg);
         if (result.hasValue)
             return result.value;
 
+        if (auto not = assert_.e1.isNotExp) {
+            const condition = compileExpression(not.e1);
+            instructions ~= Instruction(AssertFalse(condition.id));
+            return condition;
+        }
+
         const condition = compileExpression(assert_.e1);
         instructions ~= Instruction(
-            AssertTrue(condition.id),
+            AssertTrue(condition.id, assertFailureMessage(assert_.e1)),
         );
         return condition;
     }
@@ -382,7 +413,11 @@ private struct Compiler {
 
     private Value compileCast(imported!"dmd.expression".CastExp cast_) {
         const source = compileExpression(cast_.e1);
-        const result = nextValue(valueType(cast_.to), resultKind(cast_.to));
+        const targetType = valueType(cast_.to);
+        if (source.type == Type.i1 && targetType == Type.i32)
+            return source;
+
+        const result = nextValue(targetType, resultKind(cast_.to));
         instructions ~= Instruction(
             Cast(
                 source.type,
@@ -556,11 +591,89 @@ private struct Compiler {
         return result;
     }
 
+    private Value compileAndAnd(imported!"dmd.expression".LogicalExp expression) {
+        const lhs = compileExpression(expression.e1);
+        const rhsBlock = cast(uint) blocks.length + 1;
+        const falseBlock = rhsBlock + 1;
+        const joinBlock = falseBlock + 1;
+        finishBlock(Terminator(
+            CondBranch(
+                lhs.id,
+                rhsBlock,
+                [],
+                falseBlock,
+                [],
+            ),
+        ));
+
+        currentBlockId = rhsBlock;
+        currentBlockParams = null;
+        const rhs = compileExpression(expression.e2);
+        finishBlock(Terminator(Branch(joinBlock, [rhs.id])));
+
+        currentBlockId = falseBlock;
+        currentBlockParams = null;
+        const false_ = compileIntegerLiteral(0, Type.i1, ResultKind.bool_);
+        finishBlock(Terminator(Branch(joinBlock, [false_.id])));
+
+        currentBlockId = joinBlock;
+        const result = nextValue(Type.i1, ResultKind.bool_);
+        currentBlockParams = [result];
+        return result;
+    }
+
+    private Value compileOrOr(imported!"dmd.expression".LogicalExp expression) {
+        const lhs = compileExpression(expression.e1);
+        const trueBlock = cast(uint) blocks.length + 1;
+        const rhsBlock = trueBlock + 1;
+        const joinBlock = rhsBlock + 1;
+        finishBlock(Terminator(
+            CondBranch(
+                lhs.id,
+                trueBlock,
+                [],
+                rhsBlock,
+                [],
+            ),
+        ));
+
+        currentBlockId = trueBlock;
+        currentBlockParams = null;
+        const true_ = compileIntegerLiteral(1, Type.i1, ResultKind.bool_);
+        finishBlock(Terminator(Branch(joinBlock, [true_.id])));
+
+        currentBlockId = rhsBlock;
+        currentBlockParams = null;
+        const rhs = compileExpression(expression.e2);
+        finishBlock(Terminator(Branch(joinBlock, [rhs.id])));
+
+        currentBlockId = joinBlock;
+        const result = nextValue(Type.i1, ResultKind.bool_);
+        currentBlockParams = [result];
+        return result;
+    }
+
     private Value compileBinaryExpression(
         BinExp expression,
         in BinaryOperation operation,
     ) {
         return compileBinaryExpression(expression.e1, expression.e2, operation);
+    }
+
+    private Value compileComparisonExpression(CmpExp expression) {
+        import dmd.tokens: EXP;
+
+        if (expression.op == EXP.lessThan)
+            return compileBinaryExpression(expression, BinaryOperation.lessThan);
+
+        if (expression.op == EXP.greaterThan)
+            return compileBinaryExpression(expression, BinaryOperation.greaterThan);
+
+        import std.conv: text;
+        throw new Exception(text(
+            "Unsupported IR comparison: ",
+            expression.op,
+        ));
     }
 
     private Value compileBinaryExpression(
@@ -578,7 +691,9 @@ private struct Compiler {
         in Value rhs,
         in BinaryOperation operation,
     ) {
-        const result = nextValue(lhs.type, lhs.resultKind);
+        const result = isBoolResult(operation) ?
+            nextValue(Type.i1, ResultKind.bool_) :
+            nextValue(lhs.type, lhs.resultKind);
         instructions ~= Instruction(
             BinaryOp(
                 operation,
@@ -589,6 +704,19 @@ private struct Compiler {
             ),
         );
         return result;
+    }
+
+    private void finishBlock(Terminator terminator) {
+        blocks ~= Block(
+            currentBlockId,
+            currentBlockParams,
+            instructions,
+            terminator,
+            false,
+            0,
+        );
+        instructions = null;
+        currentBlockParams = null;
     }
 
     private Value nextValue(
@@ -657,6 +785,25 @@ private struct Compiler {
     }
 
     private Function makeFunction(in Value result, in uint parameterCount = 0) {
+        if (blocks.length != 0) {
+            blocks ~= Block(
+                currentBlockId,
+                currentBlockParams,
+                instructions,
+                Terminator(ReturnValue(result.id)),
+                false,
+                0,
+            );
+            return Function(
+                blocks,
+                result.resultKind,
+                nextValueId,
+                cast(uint) locals.length,
+                parameterCount,
+                [],
+            );
+        }
+
         return Function(
             [
                 Block(
@@ -675,6 +822,89 @@ private struct Compiler {
             [],
         );
     }
+}
+
+private bool isAndAnd(imported!"dmd.expression".LogicalExp expression) {
+    import dmd.tokens: EXP;
+
+    return expression.op == EXP.andAnd;
+}
+
+private bool isOrOr(imported!"dmd.expression".LogicalExp expression) {
+    import dmd.tokens: EXP;
+
+    return expression.op == EXP.orOr;
+}
+
+private bool isComparisonExpression(imported!"dmd.expression".Expression expression) {
+    import dmd.tokens: EXP;
+
+    return expression.op == EXP.lessThan ||
+        expression.op == EXP.greaterThan;
+}
+
+private imported!"dmd.expression".CmpExp castComparisonExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+    if (comparison is null)
+        throw new Exception("Unsupported IR comparison expression.");
+
+    return comparison;
+}
+
+private bool isBoolResult(
+    in imported!"quickbite.backends.ir.language".BinaryOperation operation,
+)
+    @safe pure nothrow
+{
+    import quickbite.backends.ir.language: BinaryOperation;
+
+    final switch (operation) with (BinaryOperation) {
+        case equal:
+        case lessThan:
+        case greaterThan:
+            return true;
+        case add:
+        case subtract:
+        case multiply:
+        case divide:
+        case bitwiseOr:
+        case pow:
+            return false;
+    }
+}
+
+private imported!"dmd.expression".EqualExp assertEqualExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto equal = expression.isEqualExp)
+        return equal;
+
+    if (auto comma = expression.isCommaExp)
+        return assertEqualExpression(comma.e2);
+
+    if (auto cast_ = expression.isCastExp)
+        return assertEqualExpression(cast_.e1);
+
+    return null;
+}
+
+private string assertFailureMessage(imported!"dmd.expression".Expression expression) {
+    import std.array: replace;
+    import std.conv: text;
+
+    return text(
+        "`assert(",
+        expressionText(expression).replace("()", ""),
+        ")` failed",
+    );
+}
+
+private string expressionText(imported!"dmd.expression".Expression expression) {
+    import std.string: fromStringz;
+
+    return expression.toChars.fromStringz.idup;
 }
 
 private imported!"quickbite.backends.ir.language".Function withFunctions(
