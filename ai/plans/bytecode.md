@@ -319,6 +319,12 @@ Lua-specific bytecode shape.
   variable assertion message only on the failing branch, unwraps DMD's cast
   wrapper around that message expression, and throws the evaluated string
   `oops`.
+- `nullClassMethodCallReportsDiagnostic` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing `null` expression support and missing receiver diagnostics
+  for dot-call class methods. Bytecode now lowers DMD `null` to `Value.null_`
+  and checks the dot-call receiver before emitting the function call, reporting
+  `function call through null class reference `null``.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

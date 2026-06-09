@@ -326,6 +326,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.throwIfNullClassMethod:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (stack[$ - 1] == Value.null_)
+                    throw new Exception(
+                        "function call through null class reference `null`",
+                    );
+
+                ++ip;
+                break;
+
             case Op.assertCompare:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -483,6 +495,7 @@ private bool comparisonHolds(
         case Op.negate:
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
+        case Op.throwIfNullClassMethod:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
@@ -531,6 +544,7 @@ private string inverseComparisonOperator(
         case Op.negate:
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
+        case Op.throwIfNullClassMethod:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:

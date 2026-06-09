@@ -172,6 +172,14 @@ private struct Compiler {
             return;
         }
 
+        if (expression.isNullExp !is null) {
+            program.instructions ~= Instruction(
+                Op.literal,
+                Value.null_,
+            );
+            return;
+        }
+
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
             if (variable is null)
@@ -552,6 +560,8 @@ private struct Compiler {
             if (function_.fbody is null)
                 throw new Exception(noAvailableSourceMessage(function_));
 
+            compileClassMethodReceiverCheck(call);
+
             if (call.arguments !is null)
                 foreach (index, argument; *call.arguments)
                     compileCallArgument(function_, index, argument);
@@ -565,6 +575,16 @@ private struct Compiler {
         }
 
         compileBuiltinCall(call);
+    }
+
+    private void compileClassMethodReceiverCheck(CallExp call) {
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return;
+
+        compileExpression(dot.e1);
+        program.instructions ~= Instruction(Op.throwIfNullClassMethod);
+        program.instructions ~= Instruction(Op.pop);
     }
 
     private void compileBuiltinCall(CallExp call) {
