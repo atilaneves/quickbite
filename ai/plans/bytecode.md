@@ -308,6 +308,11 @@ Lua-specific bytecode shape.
   `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: bytecode already preserves bool operands in equality
   assertion diagnostics and reports `true != false`.
+- `charAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed that bytecode assertion diagnostics rendered char operands as their
+  integer code units. Bytecode now formats comparisons between two char
+  operands as D char literals, such as `'a' != 'b'`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

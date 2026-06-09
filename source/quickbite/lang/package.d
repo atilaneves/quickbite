@@ -212,7 +212,7 @@ public struct Value {
         );
     }
 
-    private bool isChar() const @safe pure {
+    public bool isChar() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -221,7 +221,7 @@ public struct Value {
         );
     }
 
-    private char asChar() const @safe pure {
+    public char asChar() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(

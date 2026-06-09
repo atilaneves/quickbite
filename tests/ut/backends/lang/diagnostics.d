@@ -360,7 +360,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -370,7 +370,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("'a' != 'b'");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

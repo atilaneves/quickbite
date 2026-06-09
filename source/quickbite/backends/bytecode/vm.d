@@ -433,12 +433,13 @@ private string assertCompareMessage(
 ) @safe pure {
     import std.conv: text;
 
+    const displayOperandsAsChars = lhs.isChar && rhs.isChar;
     return text(
-        compareOperandMessage(lhs),
+        compareOperandMessage(lhs, displayOperandsAsChars),
         " ",
         inverseComparisonOperator(comparison),
         " ",
-        compareOperandMessage(rhs),
+        compareOperandMessage(rhs, displayOperandsAsChars),
     );
 }
 
@@ -558,6 +559,7 @@ private string assertTrueMessage(
 
 private string compareOperandMessage(
     in imported!"quickbite.lang".Value value,
+    in bool displayChar = false,
 ) @safe pure {
     import std.conv: text;
 
@@ -566,6 +568,9 @@ private string compareOperandMessage(
 
     if (value == imported!"quickbite.lang".Value(true))
         return "true";
+
+    if (displayChar)
+        return text("'", value.asChar, "'");
 
     return text(value.asLong);
 }
