@@ -875,7 +875,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -889,7 +889,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {

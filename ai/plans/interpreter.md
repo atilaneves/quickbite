@@ -534,6 +534,12 @@ change was required. Signal was verified by temporarily routing Interpreter
 `signbit` through `isNaN`, which failed the focused test because the fixture
 no longer threw.
 
+Math progress: `doesNotTreatUserNamedIsNaNAsMathIntrinsic` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily treating any function
+named `isNaN` as the Interpreter math builtin, which failed the focused test
+with `false != true`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
