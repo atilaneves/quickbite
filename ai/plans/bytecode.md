@@ -136,10 +136,12 @@ Lua-specific bytecode shape.
 - `doesNotTreatUserNamedIsNaNAsMathIntrinsic` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap: bytecode already calls the user-defined `isNaN` function
-  instead of treating it as the `std.math.isNaN` builtin. In the current
-  checkout, `math.d` is not complete for `Bytecode` because
-  `doesNotTreatUserNamedPowAsMathIntrinsic` still uses
-  `backendsWith!Interpreter`.
+  instead of treating it as the `std.math.isNaN` builtin.
+- `doesNotTreatUserNamedPowAsMathIntrinsic` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap: bytecode already calls the user-defined `pow` function instead
+  of treating it as the `std.math.pow` builtin. In the current checkout,
+  `math.d` is now complete for `Bytecode`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
