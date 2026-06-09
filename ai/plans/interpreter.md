@@ -304,6 +304,12 @@ narrow `concatenateElemAssign` handling for appending one evaluated element to
 a local dynamic array value; slices, ref parameter mutation, append-array, and
 bounds diagnostics remain unpromoted.
 
+Arrays progress: `ubyteArrayAppendAssignFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating the local
+dynamic array append handler, which made this promoted failure-message test and
+the existing positive append test fail.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
