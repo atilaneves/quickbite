@@ -202,7 +202,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -220,7 +220,9 @@ static foreach (backend; backends) {
         repl.submit("}").should == Value.void_;
         repl.submit("answer()").should == Value(42);
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

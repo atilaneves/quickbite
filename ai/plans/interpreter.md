@@ -336,6 +336,13 @@ through the shared buffered-input error recovery path; signal was verified by
 temporarily removing the pending-input clear after a failed buffered
 declaration, which made the final `42` submission return `void`.
 
+REPL progress:
+`repl.backend.commandsDoNotAbandonPendingInput` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared pending-command guard and existing function declaration
+execution; signal was verified by temporarily disabling the guard, which made
+the focused test fail because `:q` no longer threw while input was pending.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
