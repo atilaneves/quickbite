@@ -4,7 +4,7 @@ module ut.backends.lang.arrays;
 import ut.backends;
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceWritesPropagateToOriginalArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -17,6 +17,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+
+static foreach (backend; backends) {
 
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.0." ~ backend.stringof)
     unittest {

@@ -760,6 +760,12 @@ green through existing null dynamic array, append, index-read, and equality
 assertion message support; signal was verified by temporarily mutating the
 Interpreter array append handler.
 
+Arrays progress: `nestedSliceWritesPropagateToOriginalArray` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow `SliceExp` evaluation for dynamic array values plus local slice-alias
+writeback so an indexed write through a nested slice updates the original
+array local.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`

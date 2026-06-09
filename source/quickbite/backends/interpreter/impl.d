@@ -436,6 +436,7 @@ private struct EvalModuleInterpreter {
 
     private Value[VarDeclaration] locals;
     private bool[VarDeclaration] uninitializedLocals;
+    private SliceAlias[VarDeclaration] sliceAliases;
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
@@ -576,6 +577,9 @@ private struct EvalModuleInterpreter {
 
         if (auto arrayLength = expression.isArrayLengthExp)
             return Value(runExpression(arrayLength.e1).length);
+
+        if (auto slice = expression.isSliceExp)
+            return runSliceExpression(slice);
 
         if (auto index = expression.isIndexExp)
             return runExpression(index.e1)[
@@ -749,12 +753,14 @@ private struct EvalModuleInterpreter {
     ) {
         auto savedLocals = locals.dup;
         auto savedUninitializedLocals = uninitializedLocals.dup;
+        auto savedSliceAliases = sliceAliases.dup;
         const savedResult = result;
         const savedRunningCalledFunction = runningCalledFunction;
         auto savedCurrentFunction = currentFunction;
 
         locals = null;
         uninitializedLocals = null;
+        sliceAliases = null;
         result = Value(false);
         runningCalledFunction = true;
         currentFunction = function_;
@@ -766,6 +772,7 @@ private struct EvalModuleInterpreter {
 
         locals = savedLocals;
         uninitializedLocals = savedUninitializedLocals;
+        sliceAliases = savedSliceAliases;
         result = savedResult;
         runningCalledFunction = savedRunningCalledFunction;
         currentFunction = savedCurrentFunction;
@@ -882,6 +889,7 @@ private struct EvalModuleInterpreter {
         const value = runExpression(assign.e2);
         locals[variable] = value;
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return value;
     }
 
@@ -904,6 +912,7 @@ private struct EvalModuleInterpreter {
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const value = runExpression(rhs);
         locals[variable] = current.withArrayElement(arrayIndex, value);
+        writeThroughSliceAlias(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
     }
@@ -926,6 +935,7 @@ private struct EvalModuleInterpreter {
         const value = runExpression(assign.e2);
         locals[variable] = current.withAppendedArrayElement(value);
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return locals[variable];
     }
 
@@ -986,6 +996,73 @@ private struct EvalModuleInterpreter {
         return Value.arrayValue(values);
     }
 
+    private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {
+        size_t lower;
+        return runSliceExpression(slice, lower);
+    }
+
+    private Value runSliceExpression(
+        imported!"dmd.expression".SliceExp slice,
+        out size_t lower,
+    ) {
+        const source = runExpression(slice.e1);
+        lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? source.length
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        Value[] values;
+        foreach (index; lower .. upper)
+            values ~= source[index];
+
+        return Value.arrayValue(values);
+    }
+
+    private void recordSliceAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".SliceExp slice,
+        in size_t lower,
+    ) {
+        auto var = slice.e1.isVarExp;
+        if (var is null) {
+            sliceAliases.remove(variable);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            sliceAliases.remove(variable);
+            return;
+        }
+
+        if (auto alias_ = source in sliceAliases)
+            sliceAliases[variable] = SliceAlias(
+                alias_.source,
+                alias_.lower + lower,
+            );
+        else
+            sliceAliases[variable] = SliceAlias(source, lower);
+    }
+
+    private void writeThroughSliceAlias(
+        VarDeclaration variable,
+        in size_t index,
+        in Value value,
+    ) {
+        auto alias_ = variable in sliceAliases;
+        if (alias_ is null)
+            return;
+
+        auto source = alias_.source in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter slice assignment target.");
+
+        locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
+        uninitializedLocals.remove(alias_.source);
+    }
+
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
         char[] values;
         foreach (index; 0 .. string_.numberOfCodeUnits)
@@ -1043,12 +1120,23 @@ private struct EvalModuleInterpreter {
             auto value = Value.arrayValue([]);
             locals[variable] = value;
             uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            return value;
+        }
+
+        if (auto slice = initializer.isSliceExp) {
+            size_t lower;
+            auto value = runSliceExpression(slice, lower);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            recordSliceAlias(variable, slice, lower);
             return value;
         }
 
         auto value = runExpression(initializer);
         locals[variable] = value;
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return value;
     }
 
@@ -1420,6 +1508,13 @@ private struct EvalModuleInterpreter {
         );
     }
 }
+
+
+private struct SliceAlias {
+    public imported!"dmd.declaration".VarDeclaration source;
+    public size_t lower;
+}
+
 
 private void log(A...)(auto ref A args) {
     version(unittest) {
