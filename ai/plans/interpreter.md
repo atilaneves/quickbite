@@ -644,6 +644,12 @@ green through existing direct free-function call dispatch over DMD's
 instantiated function template; signal was verified by temporarily changing the
 promoted test expectation.
 
+Arrays progress: `arrayLengthFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing array-length expression support and equality assertion
+message formatting; signal was verified by temporarily mutating the
+Interpreter array-length handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
