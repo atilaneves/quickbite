@@ -280,6 +280,10 @@ Lua-specific bytecode shape.
   assignment, records local reference arguments for calls, writes ref parameter
   locals back to caller locals on return, and reports the final failed
   comparison as `42 != 43`.
+- `inFunctionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: bytecode already treats
+  `in int` parameters as value parameters, evaluates the integer addition in
+  the callee, and reports the failed equality assertion as `43 != 42`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
