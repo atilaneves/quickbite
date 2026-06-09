@@ -119,6 +119,10 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `fabs` builtin slice: the existing bytecode
   unary native-call path already executes positive runtime `double` inputs
   correctly.
+- `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
+  support, so bytecode now recognizes DMD's `isnan` builtin and executes it
+  through the existing unary native-call path.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration

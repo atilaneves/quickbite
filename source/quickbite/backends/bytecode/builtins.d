@@ -4,6 +4,7 @@ private:
 
 package enum BytecodeBuiltin: size_t {
     fabs,
+    isNaN,
     pow,
     sqrt,
 }
@@ -20,6 +21,9 @@ package BytecodeBuiltin bytecodeBuiltin(
     with (BUILTIN) switch (isBuiltin(function_)) {
         case fabs:
             return BytecodeBuiltin.fabs;
+
+        case isnan:
+            return BytecodeBuiltin.isNaN;
 
         case pow:
             return BytecodeBuiltin.pow;
@@ -41,6 +45,9 @@ package size_t bytecodeBuiltinArgumentCount(
         case fabs:
             return 1;
 
+        case isNaN:
+            return 1;
+
         case pow:
             return 2;
 
@@ -54,11 +61,15 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     in imported!"quickbite.lang".Value value,
 ) {
     import std.math: mathFabs = fabs;
+    import std.math: mathIsNaN = isNaN;
     import std.math: mathSqrt = sqrt;
 
     with (BytecodeBuiltin) final switch (builtin) {
         case fabs:
             return value.unaryFloating!mathFabs;
+
+        case isNaN:
+            return value.unaryFloating!mathIsNaN;
 
         case pow:
             break;
@@ -79,6 +90,9 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
 
     with (BytecodeBuiltin) final switch (builtin) {
         case fabs:
+            break;
+
+        case isNaN:
             break;
 
         case pow:

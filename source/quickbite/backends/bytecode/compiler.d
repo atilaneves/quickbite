@@ -752,6 +752,7 @@ private struct Compiler {
 
         with (BUILTIN) switch (isBuiltin(function_)) {
             case fabs:
+            case isnan:
             case pow:
             case sqrt:
                 return true;
