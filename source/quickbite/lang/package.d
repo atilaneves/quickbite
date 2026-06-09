@@ -348,6 +348,23 @@ public struct Value {
         );
     }
 
+    public bool isIntegerCompatibleScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+        import std.traits: Unqual, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isIntegral!T || is(T == bool)) {
+                    return true;
+                } else {
+                    return false;
+                }
+            },
+        );
+    }
+
     public size_t length() const @safe pure {
         import std.sumtype: match;
 

@@ -163,7 +163,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -181,7 +181,9 @@ static foreach (backend; backends) {
 
         output.should == ["42"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -198,7 +200,9 @@ static foreach (backend; backends) {
         );
         repl.submit("42").should == Value(42);
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -216,7 +220,23 @@ static foreach (backend; backends) {
         repl.submit("}").should == Value.void_;
         repl.submit("answer()").should == Value(42);
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
+    @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["import std.algorithm;", "min(3, 1)", ":q"],
+        );
+
+        output.should == ["1"];
+    }
+}
+
+static foreach (backend; backends) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -273,7 +293,23 @@ static foreach (backend; backends) {
 
         output.should == ["<undisplayable>"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
+    @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["delegate int(){ return 42; }", ":q"],
+        );
+
+        output.should == ["<undisplayable>"];
+    }
+}
+
+static foreach (backend; backends) {
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -289,7 +325,9 @@ static foreach (backend; backends) {
 
         output.should == ["[0, 2, 4]"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -301,7 +339,9 @@ static foreach (backend; backends) {
 
         output.should == ["[[1, 2], [3, 4]]"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -313,7 +353,9 @@ static foreach (backend; backends) {
 
         output.should == [`["a", "b"]`];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -325,7 +367,9 @@ static foreach (backend; backends) {
 
         output.should == [`["", "a"]`];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -337,7 +381,9 @@ static foreach (backend; backends) {
 
         output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -353,7 +399,9 @@ static foreach (backend; backends) {
 
         output.should == [`"ab"`, `"ab"`];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

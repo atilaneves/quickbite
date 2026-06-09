@@ -363,6 +363,72 @@ by temporarily making Interpreter equality always report success, which made
 the promoted fixture stop throwing the expected `[1, 2, 3] != [1, 2, 4]`
 assertion message.
 
+REPL progress:
+`repl.backend.multilineStructDeclarationsBufferUntilComplete` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing frontend REPL buffering and eval-cell expression execution;
+signal was verified by temporarily mutating the Interpreter integer literal
+handler, which changed the displayed result from `42` to `41`.
+
+REPL progress:
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared buffered-input error recovery path; signal was verified by
+temporarily removing the pending-input clear after a failed buffered
+declaration, which made the final `42` submission return `void`.
+
+REPL progress:
+`repl.backend.commandsDoNotAbandonPendingInput` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared pending-command guard and existing function declaration
+execution; signal was verified by temporarily disabling the guard, which made
+the focused test fail because `:q` no longer threw while input was pending.
+
+REPL progress:
+`repl.backend.importDeclarationsPersistWithoutDisplay` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD conditional expressions and numeric comparisons,
+which is the AST produced for the imported `std.algorithm.min(3, 1)` call.
+
+REPL progress:
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD function-literal expressions by returning the
+existing `<undisplayable>` value.
+
+REPL progress:
+`repl.backend.displaysNestedArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD array-literal expressions by recursively evaluating
+their elements into existing `Value.arrayValue` values.
+
+REPL progress:
+`repl.backend.displaysStaticStringArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL local declaration, string-literal, and array display
+support; signal was verified by temporarily mutating the Interpreter string
+literal helper, which changed the displayed result from `["a", "b"]` to
+`["b", "c"]`.
+
+REPL progress:
+`repl.backend.displaysNestedEmptyStringValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required
+preserving string display metadata for empty D string literals by constructing
+interpreter string values through `Value.stringValue`.
+
+REPL progress:
+`repl.backend.displaysWideStringValues` in `tests/ut/backends/api/repl.d` now
+runs on `Interpreter`. This required encoding DMD wide string-literal code
+units as UTF-8 before constructing interpreter string values.
+
+REPL progress:
+`repl.backend.displaysWideCharacterArrayValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL string display for character arrays and UTF-8 conversion
+for wide character values; signal was verified by temporarily mutating the
+`wchar` conversion path, which changed the first displayed result from `"ab"`
+to `"bc"`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
