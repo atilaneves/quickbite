@@ -356,6 +356,13 @@ signal was verified by temporarily mutating `Array.opEquals` to ignore length
 differences, which made the promoted test fail because the expected assertion
 exception was no longer thrown.
 
+Arrays progress: `arrayEqualFalse` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+equality and generic array assertion message formatting; signal was verified
+by temporarily making Interpreter equality always report success, which made
+the promoted fixture stop throwing the expected `[1, 2, 3] != [1, 2, 4]`
+assertion message.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
