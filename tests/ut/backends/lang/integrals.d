@@ -18,8 +18,8 @@ private alias IntegralTypes = AliasSeq!(
 );
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
-    static foreach (T; IntegralTypes) {
+static foreach (T; IntegralTypes) {
+    static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         unittest {
             runBackendSourceFixtureTests!backend(text(

@@ -23,6 +23,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -41,6 +44,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -60,6 +66,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedField." ~ backend.stringof)
     unittest {
@@ -81,6 +90,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -101,6 +113,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -122,6 +137,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structPassedToFunction." ~ backend.stringof)
     unittest {
@@ -143,6 +161,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structPassedToFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -164,6 +185,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structPassedToFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -185,6 +209,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 41");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructPassedToFunction." ~ backend.stringof)
     unittest {
@@ -204,6 +231,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructPassedToFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -223,6 +253,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructPassedToFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -242,6 +275,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeak." ~ backend.stringof)
     unittest {
@@ -256,6 +292,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeakFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -270,6 +309,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("5 != 99");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueMutationDoesNotLeakFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -284,6 +326,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeak." ~ backend.stringof)
     unittest {
@@ -303,6 +348,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeakFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -322,6 +370,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldMutationDoesNotLeakFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -342,6 +393,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaks." ~ backend.stringof)
     unittest {
@@ -362,6 +416,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaksFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -382,6 +439,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("99 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structByValueArrayFieldElementMutationLeaksFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -402,6 +462,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 99");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scopeDestructorRunsAtCtfe." ~ backend.stringof)
     unittest {
@@ -427,6 +490,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("scopeDestructorRunsAtCtfeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -452,6 +518,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scopeDestructorRunsAtCtfeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -477,6 +546,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structStaticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     unittest {
@@ -514,6 +586,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structStaticArrayCopyRunsPostblitAndDtorsFailureMessage.0." ~
         backend.stringof)
@@ -549,6 +624,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structStaticArrayCopyRunsPostblitAndDtorsFailureMessage.1." ~
         backend.stringof)
@@ -584,6 +662,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructField." ~ backend.stringof)
     unittest {
@@ -599,6 +680,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -614,6 +698,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("scalarStructFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -629,6 +716,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("struct_." ~ backend.stringof)
     unittest {
@@ -650,6 +740,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("struct_FailureMessage.0." ~ backend.stringof)
     unittest {
@@ -671,6 +764,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("struct_FailureMessage.1." ~ backend.stringof)
     unittest {
@@ -692,6 +788,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructInstanceUsesRuntimeShapedFields." ~ backend.stringof)
     unittest {
@@ -718,6 +817,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructInstanceUsesRuntimeShapedFieldsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -744,6 +846,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("15 != 18");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructInstanceUsesRuntimeShapedFieldsFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -770,6 +875,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("13 != 12");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructLocalGotoRestartsInsideBody." ~ backend.stringof)
     unittest {
@@ -795,6 +903,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructLocalGotoRestartsInsideBodyFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -820,6 +931,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withStructLocalGotoRestartsInsideBodyFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -845,6 +959,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 108");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withEnumExecutesBody." ~ backend.stringof)
     unittest {
@@ -868,6 +985,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("withEnumExecutesBodyFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -891,6 +1011,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+}
+
+static foreach (backend; backends) {
 
     @("withEnumExecutesBodyFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -914,6 +1037,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("11 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structFieldDefaultsToZero." ~ backend.stringof)
     unittest {
@@ -934,6 +1060,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structFieldDefaultsToZeroFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -954,6 +1083,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structFieldDefaultsToZeroFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -974,6 +1106,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmpty." ~ backend.stringof)
     unittest {
@@ -988,6 +1123,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmptyFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1002,6 +1140,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structArrayFieldDefaultsToEmptyFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1017,6 +1158,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 0");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refStructArrayFieldParameter." ~ backend.stringof)
     unittest {
@@ -1037,6 +1181,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("refStructArrayFieldParameterFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1056,6 +1203,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refStructArrayFieldParameterFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1075,6 +1225,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsField." ~ backend.stringof)
     unittest {
@@ -1094,6 +1247,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1113,6 +1269,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1132,6 +1291,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRef." ~ backend.stringof)
     unittest {
@@ -1156,6 +1318,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRefFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1179,6 +1344,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPassesFieldByRefFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1202,6 +1370,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRef." ~ backend.stringof)
     unittest {
@@ -1226,6 +1397,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRefFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1249,6 +1423,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structTemplateMethodPassesFieldByRefFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1272,6 +1449,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayField." ~ backend.stringof)
     unittest {
@@ -1292,6 +1472,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1312,6 +1495,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodIndexWritesArrayFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1332,6 +1518,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodAppendsArrayField." ~ backend.stringof)
     unittest {
@@ -1352,6 +1541,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodAppendsArrayFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1371,6 +1563,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodAppendsArrayFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1390,6 +1585,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodCallsStructMethod." ~ backend.stringof)
     unittest {
@@ -1415,6 +1613,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodCallsStructMethodFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1439,6 +1640,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodCallsStructMethodFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1463,6 +1667,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameter." ~ backend.stringof)
     unittest {
@@ -1492,6 +1699,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameterFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1519,6 +1729,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structConstructorStoresDynamicArrayParameterFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1546,6 +1759,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 40");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerInitializesFields." ~ backend.stringof)
     unittest {
@@ -1563,6 +1779,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerInitializesFieldsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1580,6 +1799,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerInitializesFieldsFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1597,6 +1819,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("15 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructAllocatesMutableInstance." ~ backend.stringof)
     unittest {
@@ -1621,6 +1846,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructAllocatesMutableInstanceFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1645,6 +1873,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("83 != 84");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructAllocatesMutableInstanceFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1669,6 +1900,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("31 != 28");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerRunsConstructor." ~ backend.stringof)
     unittest {
@@ -1689,6 +1923,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerRunsConstructorFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1709,6 +1946,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newStructPointerRunsConstructorFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1729,6 +1969,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("nestedStructReadsCapturedLocalThroughDefaultInit." ~ backend.stringof)
     unittest {
@@ -1750,6 +1993,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structLiteralFillsStaticArrayFieldFromScalar." ~ backend.stringof)
     unittest {
@@ -1770,6 +2016,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structLiteralFillsStaticArrayFieldFromScalarFailureMessage.0." ~
         backend.stringof)
@@ -1789,6 +2038,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structLiteralFillsStaticArrayFieldFromScalarFailureMessage.1." ~
         backend.stringof)
@@ -1808,6 +2060,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structLiteralDefaultsMissingFieldToZero." ~ backend.stringof)
     unittest {
@@ -1828,6 +2083,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValue." ~ backend.stringof)
     unittest {
@@ -1858,6 +2116,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1886,6 +2147,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1914,6 +2178,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructField." ~ backend.stringof)
     unittest {
@@ -1949,6 +2216,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructFieldFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1982,6 +2252,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayReturnValueAssignsStructFieldFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2015,6 +2288,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResult." ~ backend.stringof)
     unittest {
@@ -2041,6 +2317,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResultFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2067,6 +2346,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("dynamicArrayStructFieldReturnValueIndexesCallResultFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2093,6 +2375,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValue." ~ backend.stringof)
     unittest {
@@ -2115,6 +2400,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2136,6 +2424,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodPostIncrementsSizeTFieldRuntimeValueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2158,6 +2449,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValue." ~ backend.stringof)
     unittest {
@@ -2185,6 +2479,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2211,6 +2508,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReadsArrayFieldAtPostIncrementedFieldRuntimeValueFailureMessage.1." ~ backend.stringof)
     unittest {

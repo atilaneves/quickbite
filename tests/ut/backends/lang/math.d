@@ -46,6 +46,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("16 != 17");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -64,7 +67,6 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 <= 3.001");
     }
-
 }
 
 static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
@@ -304,6 +306,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("4 != 5");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -1071,6 +1076,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -1115,6 +1123,9 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+}
+
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
 
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)

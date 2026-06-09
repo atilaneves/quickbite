@@ -248,6 +248,9 @@ static foreach (backend; backends) {
 
         output.should == ["1"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
@@ -264,6 +267,9 @@ static foreach (backend; backends) {
 
         output.should == ["[2, 4, 6]"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
     unittest {
@@ -281,6 +287,9 @@ static foreach (backend; backends) {
 
         output.should == ["MapResult([1, 2, 3])"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
@@ -413,6 +422,9 @@ static foreach (backend; backends) {
 
         output.should == ["[1:10, 2:20]"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.displaysEnumValues." ~ backend.stringof)
     unittest {
@@ -435,6 +447,9 @@ static foreach (backend; backends) {
             "7",
         ];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -447,6 +462,9 @@ static foreach (backend; backends) {
 
         output.should == ["int"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -466,6 +484,9 @@ static foreach (backend; backends) {
 
         output.should == ["string", "int", "Widget"];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.displaysStringValues." ~ backend.stringof)
     unittest {
@@ -478,6 +499,9 @@ static foreach (backend; backends) {
 
         output.should == [`"hello"`];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.specialTokenValuesHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -490,6 +514,9 @@ static foreach (backend; backends) {
 
         output.should == [`"<repl>"`, `"<repl>"`, `"<repl>"`];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
@@ -527,6 +554,9 @@ static foreach (backend; backends) {
             "3.8: real",
         ];
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
@@ -538,6 +568,9 @@ static foreach (backend; backends) {
         repl.submit("++x;").should == Value.void_;
         repl.submit("x").should == Value(1);
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -548,6 +581,9 @@ static foreach (backend; backends) {
         repl.submit("unittest { assert(2 + 2 == 4); }").should == Value.void_;
         repl.submit(":t").should == Value.void_;
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
     unittest {
@@ -557,6 +593,9 @@ static foreach (backend; backends) {
 
         repl.submit(":t").should == Value.void_;
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -571,6 +610,9 @@ static foreach (backend; backends) {
         runTests.shouldThrow.msg.should ==
             "unittest at <repl>(1) failed: 1 != 2";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -588,6 +630,9 @@ static foreach (backend; backends) {
         runTests.shouldThrow.msg.should ==
             "unittest at <repl>(3) failed: 41 != 42";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
@@ -617,6 +662,9 @@ static foreach (backend; backends) {
         message.canFind("unittest at <repl>(7) failed: 3 != 4").should ==
             true;
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -627,6 +675,9 @@ static foreach (backend; backends) {
         repl.loadModuleSource("unittest { assert(2 + 2 == 4); }");
         repl.submit(":t").should == Value.void_;
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
@@ -643,6 +694,9 @@ static foreach (backend; backends) {
         runTests.shouldThrow.msg.should ==
             "unittest at <repl>(1) failed: 1 != 2";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
         backend.stringof)
@@ -675,6 +729,9 @@ static foreach (backend; backends) {
         runTests.shouldThrow.msg.should ==
             "unittest at " ~ filePath ~ "(6) failed: 41 != 42";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -704,6 +761,9 @@ static foreach (backend; backends) {
         message.canFind("snippet_").should == false;
         message.canFind("answer").should == true;
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
@@ -721,6 +781,9 @@ static foreach (backend; backends) {
         );
         repl.submit("good + 1").should == Value(42);
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
     unittest {
@@ -739,6 +802,9 @@ static foreach (backend; backends) {
         outOfBoundsIndex.shouldThrow.msg.should ==
             "array index 10 is out of bounds `[1, 2, 3][0 .. 3]`";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
     unittest {
@@ -753,6 +819,9 @@ static foreach (backend; backends) {
         outOfBoundsIndex.shouldThrow.msg.should ==
             "array index 99 is out of bounds `[0..3]`";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -767,6 +836,9 @@ static foreach (backend; backends) {
         duplicateDeclaration.shouldThrow.msg.should ==
             "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
     unittest {
@@ -782,6 +854,9 @@ static foreach (backend; backends) {
             "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
         repl.submit("twice(21)").should == Value(42);
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -795,6 +870,9 @@ static foreach (backend; backends) {
         syntaxError.shouldThrow.msg.should ==
             "expression expected, not `End of File`";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
     unittest {
@@ -807,6 +885,9 @@ static foreach (backend; backends) {
         }
         failWithFunctionName.shouldThrow.msg.should == "<repl>";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
@@ -822,6 +903,9 @@ static foreach (backend; backends) {
             "function `twice` is not callable using argument types `(string)`\n" ~
             "Candidate: int twice(int i)";
     }
+}
+
+static foreach (backend; backends) {
 
     @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
     unittest {
