@@ -511,6 +511,12 @@ change was required. Signal was verified by temporarily routing Interpreter
 `signbit` through `fabs`, which failed the focused test with `0 != 0` instead
 of `1 != 0`.
 
+Math progress: `evaluatesRuntimeSignbitDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily making Interpreter
+`signbit` return `1`, which failed the focused test because the fixture no
+longer threw.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
