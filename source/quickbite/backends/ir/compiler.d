@@ -206,6 +206,9 @@ private struct Compiler {
         if (auto divide = expression.isDivExp)
             return compileBinaryExpression(divide, BinaryOperation.divide);
 
+        if (auto bitwiseOr = expression.isOrExp)
+            return compileBinaryExpression(bitwiseOr, BinaryOperation.bitwiseOr);
+
         import std.string: fromStringz;
 
         throw new Exception(

@@ -4,7 +4,7 @@ module ut.backends.lang.logic;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

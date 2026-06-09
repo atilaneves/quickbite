@@ -267,6 +267,15 @@ The promoted `malloc.IR` runtime cstdlib test added the minimal IR compiler
 diagnostic for resolved non-builtin function calls whose DMD declaration has no
 body. This reports the same unavailable-source message as the other current
 backends before any IR execution is attempted.
+The promoted `assertNonzeroIntCondition.IR`,
+`assertNonzeroIntConditionFailureMessage.0.IR`, and
+`assertNonzeroIntConditionFailureMessage.1.IR` tests in `logic.d` added the
+minimal IR support for DMD `OrExp` as a typed `bitwiseOr` binary operation on
+`i32` values. The diagnostic variants also exposed that child function
+execution reused the caller's value and local slots; the VM now saves the
+caller scalar/local storage around a direct call and copies only the callee's
+return value into the call result slot. This is still a narrow call-frame
+isolation step, not a full activation-record or recursive-call model.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -281,10 +290,12 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Move to the next module in `ai/plans/backend-test-modules-order.md` after
-`tests/ut/backends/api/runner.d`. Verify in the current checkout which backend
-matrices still exclude `IR`, then choose the smallest honest promotion from
-that module.
+Continue in `tests/ut/backends/lang/logic.d`. The first backend matrix now
+includes `IR`; verify the current checkout, then promote the next smallest
+remaining matrix that still excludes `IR`. Prefer the next existing test or
+small family that forces one language behavior, and avoid jumping straight to
+short-circuit control flow unless the earlier call/boolean result cases are
+already green.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

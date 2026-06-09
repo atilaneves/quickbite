@@ -129,8 +129,13 @@ private struct Machine {
     }
 
     private void execute(const Call call) {
-        scalarValues[call.result.id] =
-            execute(functions[call.functionIndex], call.arguments);
+        // Needs mutable array storage when restored after callee execution.
+        auto callerScalarValues = scalarValues.dup;
+        auto callerLocalScalarValues = localScalarValues.dup;
+        const result = execute(functions[call.functionIndex], call.arguments);
+        scalarValues = callerScalarValues;
+        localScalarValues = callerLocalScalarValues;
+        scalarValues[call.result.id] = result;
     }
 
     private void execute(const AssertTrue assert_) {
@@ -304,6 +309,9 @@ private struct Machine {
             case divide:
                 executeDivide(binary);
                 break;
+            case bitwiseOr:
+                executeBitwiseOr(binary);
+                break;
             case pow:
                 executePow(binary);
                 break;
@@ -382,6 +390,24 @@ private struct Machine {
             case i32:
                 scalarValues[binary.result.id] =
                     cast(int) scalarValues[binary.lhs] /
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeBitwiseOr(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] |
                     cast(int) scalarValues[binary.rhs];
                 break;
             case i1:
@@ -484,6 +510,7 @@ private struct Machine {
             case subtract:
             case multiply:
             case divide:
+            case bitwiseOr:
             case pow:
                 assert(0);
         }
@@ -527,6 +554,7 @@ private struct Machine {
             case subtract:
             case multiply:
             case divide:
+            case bitwiseOr:
             case pow:
                 assert(0);
         }

@@ -40,6 +40,7 @@ package enum BinaryOperation {
     subtract,
     multiply,
     divide,
+    bitwiseOr,
     pow,
     equal,
 }
