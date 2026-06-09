@@ -906,7 +906,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isNaN(double value) {
+                return true;
+            }
+
+            unittest {
+                double input = 21.0;
+                assert(!isNaN(input));
+            }
+        }).shouldThrowWithMessage("true == true");
+    }
+}
+
+static foreach (backend; backends) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -921,7 +940,26 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isNaN(double value) {
+                return true;
+            }
+
+            unittest {
+                double input = double.nan;
+                assert(!isNaN(input));
+            }
+        }).shouldThrowWithMessage("true == true");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("callsUserNamedIsNaNForNanInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -935,7 +973,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -949,7 +989,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backends) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -963,7 +1005,25 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool isNaN(double value) {
+                return false;
+            }
+
+            unittest {
+                double input = 21.0;
+                assert(isNaN(input));
+            }
+        }).shouldThrowWithMessage("false != true");
+    }
+}
+
+static foreach (backend; backendsWith!Interpreter) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -982,7 +1042,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -1010,6 +1072,46 @@ static foreach (backend; backends) {
         "DMD CTFE returns <double not supported> because druntime's " ~
         "assert formatter uses sprintf",
     )
+    @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double sqrt(double value) {
+                return value + 1.0;
+            }
+
+            double fabs(double value) {
+                return value + 2.0;
+            }
+
+            unittest {
+                double input = 9.0;
+                assert(fabs(input) == 12.0);
+            }
+        }).shouldThrowWithMessage("11 != 12");
+    }
+}
+
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+    @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double sqrt(double value) {
+                return value + 1.0;
+            }
+
+            double fabs(double value) {
+                return value + 2.0;
+            }
+
+            unittest {
+                double input = 9.0;
+                assert(sqrt(input) == 11.0);
+            }
+        }).shouldThrowWithMessage("10 != 11");
+    }
+
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)
     unittest {
