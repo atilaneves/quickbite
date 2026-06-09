@@ -5,6 +5,7 @@ private:
 package enum BytecodeBuiltin: size_t {
     fabs,
     pow,
+    sqrt,
 }
 
 package BytecodeBuiltin bytecodeBuiltin(
@@ -23,6 +24,9 @@ package BytecodeBuiltin bytecodeBuiltin(
         case pow:
             return BytecodeBuiltin.pow;
 
+        case sqrt:
+            return BytecodeBuiltin.sqrt;
+
         default:
             break;
     }
@@ -39,6 +43,9 @@ package size_t bytecodeBuiltinArgumentCount(
 
         case pow:
             return 2;
+
+        case sqrt:
+            return 1;
     }
 }
 
@@ -47,6 +54,7 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     in imported!"quickbite.lang".Value value,
 ) {
     import std.math: mathFabs = fabs;
+    import std.math: mathSqrt = sqrt;
 
     with (BytecodeBuiltin) final switch (builtin) {
         case fabs:
@@ -54,6 +62,9 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
 
         case pow:
             break;
+
+        case sqrt:
+            return value.unaryFloating!mathSqrt;
     }
 
     throw new Exception("Unsupported bytecode unary builtin call.");
@@ -72,6 +83,9 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
 
         case pow:
             return lhs.binaryFloating!mathPow(rhs);
+
+        case sqrt:
+            break;
     }
 
     throw new Exception("Unsupported bytecode binary builtin call.");

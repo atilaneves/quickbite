@@ -92,6 +92,10 @@ Lua-specific bytecode shape.
   supported them through its existing eval compiler, VM local/value-stack
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
+- `evaluatesRuntimeSqrtInput` in `tests/ut/backends/lang/math.d` now covers
+  `Bytecode`. The promotion exposed missing unary `std.math.sqrt` builtin
+  support, so bytecode now recognizes DMD's `sqrt` builtin and executes it
+  through the existing unary native-call path.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
