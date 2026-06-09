@@ -760,6 +760,19 @@ green through existing null dynamic array, append, index-read, and equality
 assertion message support; signal was verified by temporarily mutating the
 Interpreter array append handler.
 
+REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
+in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
+green through the backend-agnostic `pendingInput` buffering in `frontend.cell`
+(`isIncompleteCell`) plus the existing direct free-function call dispatch and
+`isMulExp` handler; signal was verified by temporarily changing the
+`EvalFunctionWalker` `isMulExp` handler from multiply to add, which failed the
+focused test with `["17"]` instead of `["42"]`, then reverting the mutation. The
+two remaining CTFE-only tests in `repl.d`
+(`multilineStructDeclarationsBufferUntilComplete` and
+`failedBufferedDeclarationDoesNotPoisonSession`) are deferred: the first needs
+struct support and the second needs buffered-declaration error recovery, both
+larger than the next available slice.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
