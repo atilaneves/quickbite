@@ -4,20 +4,37 @@ module ut.backends.lang.exceptions;
 import ut.backends;
 
 
+/++
+    Throwing and basic catch semantics.
++/
 static foreach (backend; backends) {
-    @("throwingTest." ~ backend.stringof)
+    @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 throw new Exception("boom");
             }
-        }).shouldThrowWithMessage("uncaught CTFE exception `object.Exception(\"boom\")`");
+        }).shouldThrowWithMessage(
+            "uncaught CTFE exception `object.Exception(\"boom\")`",
+        );
     }
 }
 
 static foreach (backend; backends) {
+    @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                throw new Exception("domain failure");
+            }
+        }).shouldThrowWithMessage(
+            "uncaught CTFE exception `object.Exception(\"domain failure\")`",
+        );
+    }
+}
 
-    @("catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
+static foreach (backend; backends) {
+    @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -31,17 +48,18 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownException." ~ backend.stringof)
+    @("exception.catchExceptionCatchesThrownException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
+
                 try {
                     throw new Exception("expected");
                 } catch (Exception) {
                     value = 42;
                 }
+
                 assert(value == 42);
             }
         });
@@ -49,53 +67,18 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownExceptionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    value = 42;
-                }
-                assert(value == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownExceptionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    value = 7;
-                }
-                assert(value == 8);
-            }
-        }).shouldThrowWithMessage("7 != 8");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionBindsCaughtObject." ~ backend.stringof)
+    @("exception.catchExceptionBindsCaughtObject." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 int length;
+
                 try {
                     throw new Exception("expected");
                 } catch (Exception caught) {
                     length = cast(int) caught.msg.length;
                 }
+
                 assert(length == 8);
             }
         });
@@ -103,44 +86,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchExceptionBindsCaughtObjectFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int length;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception caught) {
-                    length = cast(int) caught.msg.length;
-                }
-                assert(length == 9);
-            }
-        }).shouldThrowWithMessage("8 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionBindsCaughtObjectFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int length;
-                try {
-                    throw new Exception("other");
-                } catch (Exception caught) {
-                    length = cast(int) caught.msg.length;
-                }
-                assert(length == 8);
-            }
-        }).shouldThrowWithMessage("5 != 8");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchSkipsNonMatchingSiblingException." ~ backend.stringof)
+    @("exception.catchSkipsNonMatchingSiblingException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Expected : Exception {
@@ -157,6 +103,7 @@ static foreach (backend; backends) {
 
             unittest {
                 int value = 1;
+
                 try {
                     throw new Expected("expected");
                 } catch (Other) {
@@ -164,6 +111,7 @@ static foreach (backend; backends) {
                 } catch (Exception caught) {
                     value += cast(int) caught.msg.length;
                 }
+
                 assert(value == 9);
             }
         });
@@ -171,72 +119,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchSkipsNonMatchingSiblingExceptionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Expected : Exception {
-                this(string msg) {
-                    super(msg);
-                }
-            }
-
-            class Other : Exception {
-                this(string msg) {
-                    super(msg);
-                }
-            }
-
-            unittest {
-                int value = 1;
-                try {
-                    throw new Expected("expected");
-                } catch (Other) {
-                    value = 100;
-                } catch (Exception caught) {
-                    value += cast(int) caught.msg.length;
-                }
-                assert(value == 10);
-            }
-        }).shouldThrowWithMessage("9 != 10");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchSkipsNonMatchingSiblingExceptionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Expected : Exception {
-                this(string msg) {
-                    super(msg);
-                }
-            }
-
-            class Other : Exception {
-                this(string msg) {
-                    super(msg);
-                }
-            }
-
-            unittest {
-                int value = 1;
-                try {
-                    throw new Expected("other");
-                } catch (Other) {
-                    value = 100;
-                } catch (Exception caught) {
-                    value += cast(int) caught.msg.length;
-                }
-                assert(value == 9);
-            }
-        }).shouldThrowWithMessage("6 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("throwExpressionInConditionalIsCaught." ~ backend.stringof)
+    @("exception.throwExpressionInConditionalIsCaught." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             string makeMessage(int value) {
@@ -252,9 +135,11 @@ static foreach (backend; backends) {
             unittest {
                 int seed;
                 int normal = choose(seed + 7, seed != 0);
+
                 assert(normal == 8);
 
                 int length;
+
                 try {
                     choose(normal - 1, normal == 8);
                 } catch (Exception caught) {
@@ -268,64 +153,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("throwExpressionInConditionalIsCaughtFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            string makeMessage(int value) {
-                return value == 7 ? "expected" : "other";
-            }
-
-            int choose(int value, bool shouldThrow) {
-                return shouldThrow
-                    ? throw new Exception(makeMessage(value))
-                    : value + 1;
-            }
-
-            unittest {
-                int seed;
-                int normal = choose(seed + 7, seed != 0);
-
-                int length;
-                try {
-                    choose(normal - 1, normal == 8);
-                } catch (Exception caught) {
-                    length = cast(int) caught.msg.length;
-                }
-
-                assert(length == 9);
-            }
-        }).shouldThrowWithMessage("8 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("throwExpressionInConditionalIsCaughtFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            string makeMessage(int value) {
-                return value == 7 ? "expected" : "other";
-            }
-
-            int choose(int value, bool shouldThrow) {
-                return shouldThrow
-                    ? throw new Exception(makeMessage(value))
-                    : value + 1;
-            }
-
-            unittest {
-                int seed;
-                int normal = choose(seed + 7, seed != 0);
-                assert(normal == 9);
-            }
-        }).shouldThrowWithMessage("8 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownExceptionFromCalledFunction." ~ backend.stringof)
+    @("exception.catchExceptionCatchesThrownExceptionFromCalledFunction." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void f() {
@@ -334,64 +163,25 @@ static foreach (backend; backends) {
 
             unittest {
                 int value;
+
                 try {
                     f;
                 } catch (Exception) {
                     value = 42;
                 }
+
                 assert(value == 42);
             }
         });
     }
 }
 
+
+/++
+    Throws from callees after side effects.
++/
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownExceptionFromCalledFunctionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f() {
-                throw new Exception("expected");
-            }
-
-            unittest {
-                int value;
-                try {
-                    f;
-                } catch (Exception) {
-                    value = 42;
-                }
-                assert(value == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrownExceptionFromCalledFunctionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f() {
-                throw new Exception("expected");
-            }
-
-            unittest {
-                int value;
-                try {
-                    f;
-                } catch (Exception) {
-                    value = 7;
-                }
-                assert(value == 8);
-            }
-        }).shouldThrowWithMessage("7 != 8");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrowAfterCalleeSideEffect." ~ backend.stringof)
+    @("exception.catchThrowAfterCalleeSideEffect." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void f(ref int marker) {
@@ -401,9 +191,11 @@ static foreach (backend; backends) {
 
             unittest {
                 int marker;
+
                 assert(marker == 0);
 
                 int caught;
+
                 try {
                     f(marker);
                 } catch (Exception) {
@@ -418,60 +210,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrowAfterCalleeSideEffectFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f(ref int marker) {
-                marker = 1;
-                throw new Exception("expected");
-            }
-
-            unittest {
-                int marker;
-
-                int caught;
-                try {
-                    f(marker);
-                } catch (Exception) {
-                    caught = 1;
-                }
-
-                assert(caught == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesThrowAfterCalleeSideEffectFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f(ref int marker) {
-                marker = 1;
-                throw new Exception("expected");
-            }
-
-            unittest {
-                int marker;
-
-                int caught;
-                try {
-                    f(marker);
-                } catch (Exception) {
-                    caught = 1;
-                }
-
-                assert(marker == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesNestedBranchThrowFromCalledFunction." ~ backend.stringof)
+    @("exception.catchNestedBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void g(ref int marker, bool shouldThrow) {
@@ -490,12 +229,15 @@ static foreach (backend; backends) {
 
             unittest {
                 int marker;
+
                 assert(marker == 0);
 
                 g(marker, false);
+
                 assert(marker == 2);
 
                 int caught;
+
                 try {
                     f(marker);
                 } catch (Exception) {
@@ -510,72 +252,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesNestedBranchThrowFromCalledFunctionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void g(ref int marker, bool shouldThrow) {
-                if (shouldThrow) {
-                    marker = 1;
-                    throw new Exception("expected");
-                }
-
-                marker = 2;
-            }
-
-            void f(ref int marker) {
-                g(marker, true);
-                marker = 3;
-            }
-
-            unittest {
-                int marker;
-
-                g(marker, false);
-                assert(marker == 3);
-            }
-        }).shouldThrowWithMessage("2 != 3");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesNestedBranchThrowFromCalledFunctionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void g(ref int marker, bool shouldThrow) {
-                if (shouldThrow) {
-                    marker = 1;
-                    throw new Exception("expected");
-                }
-
-                marker = 2;
-            }
-
-            void f(ref int marker) {
-                g(marker, true);
-                marker = 3;
-            }
-
-            unittest {
-                int marker;
-
-                int caught;
-                try {
-                    f(marker);
-                } catch (Exception) {
-                    caught = 1;
-                }
-
-                assert(marker == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunction." ~ backend.stringof)
+    @("exception.catchRuntimeBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void f(ref int marker, int value) {
@@ -589,18 +266,51 @@ static foreach (backend; backends) {
 
             unittest {
                 int marker;
+
                 assert(marker == 0);
 
                 int caught;
                 int runtimeValue = caught + 1;
+
                 try {
                     f(marker, runtimeValue);
                 } catch (Exception) {
                     caught = 1;
                 }
 
-                // Runtime data selects the branch, so lowering cannot
-                // prove the throw path syntactically.
+                // Runtime data selects the branch, so lowering cannot prove the
+                // throw path syntactically.
+                assert(caught == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; backends) {
+    @("exception.throwAfterRuntimeBranchPreservesRefSideEffect." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void f(ref int marker, int value) {
+                if (value == 1) {
+                    marker = 1;
+                    throw new Exception("expected");
+                }
+
+                marker = 2;
+            }
+
+            unittest {
+                int marker;
+                int caught;
+                int runtimeValue = caught + 1;
+
+                try {
+                    f(marker, runtimeValue);
+                } catch (Exception) {
+                    caught = 1;
+                }
+
                 assert(caught == 1);
                 assert(marker == 1);
             }
@@ -608,88 +318,18 @@ static foreach (backend; backends) {
     }
 }
 
+
+/++
+    Finally.
++/
 static foreach (backend; backends) {
-
-    @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunctionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f(ref int marker, int value) {
-                if (value == 1) {
-                    marker = 1;
-                    throw new Exception("expected");
-                }
-
-                marker = 2;
-            }
-
-            unittest {
-                int marker;
-                int caught;
-                int runtimeValue = caught + 1;
-                try {
-                    f(marker, runtimeValue);
-                } catch (Exception) {
-                    caught = 1;
-                }
-
-                assert(caught == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchExceptionCatchesRuntimeBranchThrowFromCalledFunctionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void f(ref int marker, int value) {
-                if (value == 1) {
-                    marker = 1;
-                    throw new Exception("expected");
-                }
-
-                marker = 2;
-            }
-
-            unittest {
-                int marker;
-                int caught;
-                int runtimeValue = caught + 1;
-                try {
-                    f(marker, runtimeValue);
-                } catch (Exception) {
-                    caught = 1;
-                }
-
-                assert(marker == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("throwPreservesExceptionMessage." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                throw new Exception("domain failure");
-            }
-        }).shouldThrowWithMessage(
-            "uncaught CTFE exception `object.Exception(\"domain failure\")`"
-        );
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbody." ~ backend.stringof)
+    @("finally.runsFinalbody." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 int step = value + 2;
+
                 try {
                     value = step + 3;
                 } finally {
@@ -703,54 +343,14 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbodyFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                int step = value + 2;
-                try {
-                    value = step + 3;
-                } finally {
-                    value += step * 4;
-                }
-
-                assert(value == 14);
-            }
-        }).shouldThrowWithMessage("13 != 14");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbodyFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                int step = value + 3;
-                try {
-                    value = step + 3;
-                } finally {
-                    value += step * 4;
-                }
-
-                assert(value == 13);
-            }
-        }).shouldThrowWithMessage("18 != 13");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbodyBeforeCatch." ~ backend.stringof)
+    @("finally.runsFinalbodyBeforeCatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 int value;
                 int length;
                 int step = value + 2;
+
                 try {
                     try {
                         value = step + 3;
@@ -770,222 +370,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                int length;
-                int step = value + 2;
-                try {
-                    try {
-                        value = step + 3;
-                        throw new Exception("expected");
-                    } finally {
-                        value += step * 4;
-                    }
-                } catch (Exception caught) {
-                    length = cast(int) caught.msg.length;
-                }
-
-                assert(length == 9);
-            }
-        }).shouldThrowWithMessage("8 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyRunsFinalbodyBeforeCatchFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                int length;
-                int step = value + 2;
-                try {
-                    try {
-                        value = step + 3;
-                        throw new Exception("expected");
-                    } finally {
-                        value += step * 4;
-                    }
-                } catch (Exception caught) {
-                    length = cast(int) caught.msg.length;
-                }
-
-                assert(value == 14);
-            }
-        }).shouldThrowWithMessage("13 != 14");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoWithinBodyRunsFinallyOnce." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    total += bump(2);
-                    goto resumed;
-                    total += bump(99);
-                resumed:
-                    total += bump(3);
-                } finally {
-                    total += bump(4);
-                }
-
-                assert(total == 14);
-            }
-        });
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoWithinBodyRunsFinallyOnceFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    total += bump(2);
-                    goto resumed;
-                    total += bump(99);
-                resumed:
-                    total += bump(3);
-                } finally {
-                    total += bump(4);
-                }
-
-                assert(total == 15);
-            }
-        }).shouldThrowWithMessage("14 != 15");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoWithinBodyRunsFinallyOnceFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(2);
-                try {
-                    total += bump(2);
-                    goto resumed;
-                    total += bump(99);
-                resumed:
-                    total += bump(3);
-                } finally {
-                    total += bump(4);
-                }
-
-                assert(total == 14);
-            }
-        }).shouldThrowWithMessage("15 != 14");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoOutOfBodyRunsFinally." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                } finally {
-                    total += bump(3);
-                }
-
-            outside:
-                total += bump(4);
-                assert(total == 14);
-            }
-        });
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoOutOfBodyRunsFinallyFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                } finally {
-                    total += bump(3);
-                }
-
-            outside:
-                total += bump(4);
-                assert(total == 15);
-            }
-        }).shouldThrowWithMessage("14 != 15");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("tryFinallyGotoOutOfBodyRunsFinallyFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(2);
-                try {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                } finally {
-                    total += bump(3);
-                }
-
-            outside:
-                total += bump(4);
-                assert(total == 14);
-            }
-        }).shouldThrowWithMessage("15 != 14");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyRunsAfterReturn." ~ backend.stringof)
+    @("finally.runsAfterReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int setAndReturn(ref int value) {
@@ -998,6 +383,7 @@ static foreach (backend; backends) {
 
             unittest {
                 int value;
+
                 assert(setAndReturn(value) == 1);
                 assert(value == 42);
             }
@@ -1006,51 +392,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("finallyRunsAfterReturnFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int setAndReturn(ref int value) {
-                try {
-                    return 1;
-                } finally {
-                    value = 42;
-                }
-            }
-
-            unittest {
-                int value;
-                assert(setAndReturn(value) == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyRunsAfterReturnFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int setAndReturn(ref int value) {
-                try {
-                    return 1;
-                } finally {
-                    value = 42;
-                }
-            }
-
-            unittest {
-                int value;
-                setAndReturn(value);
-                assert(value == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyReturnCapturesValueBeforeFinally." ~ backend.stringof)
+    @("finally.returnCapturesValueBeforeFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int readThenMutate(ref int value) {
@@ -1063,6 +405,7 @@ static foreach (backend; backends) {
 
             unittest {
                 int value = 1;
+
                 assert(readThenMutate(value) == 1);
                 assert(value == 2);
             }
@@ -1071,51 +414,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("finallyReturnCapturesValueBeforeFinallyFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int readThenMutate(ref int value) {
-                try {
-                    return value;
-                } finally {
-                    value = 2;
-                }
-            }
-
-            unittest {
-                int value = 1;
-                assert(readThenMutate(value) == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyReturnCapturesValueBeforeFinallyFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int readThenMutate(ref int value) {
-                try {
-                    return value;
-                } finally {
-                    value = 2;
-                }
-            }
-
-            unittest {
-                int value = 1;
-                readThenMutate(value);
-                assert(value == 1);
-            }
-        }).shouldThrowWithMessage("2 != 1");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyBranchReturnsCaptureValueBeforeFinally." ~ backend.stringof)
+    @("finally.branchReturnsCaptureValueBeforeFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int readBranchThenMutate(ref int value, bool chooseFirst) {
@@ -1131,10 +430,12 @@ static foreach (backend; backends) {
 
             unittest {
                 int value = 1;
+
                 assert(readBranchThenMutate(value, true) == 11);
                 assert(value == 2);
 
                 value = 3;
+
                 assert(readBranchThenMutate(value, false) == 23);
                 assert(value == 2);
             }
@@ -1143,218 +444,7 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("finallyBranchReturnsCaptureValueBeforeFinallyFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int readBranchThenMutate(ref int value, bool chooseFirst) {
-                try {
-                    if (chooseFirst)
-                        return value + 10;
-                    else
-                        return value + 20;
-                } finally {
-                    value = 2;
-                }
-            }
-
-            unittest {
-                int value = 1;
-                assert(readBranchThenMutate(value, true) == 12);
-            }
-        }).shouldThrowWithMessage("11 != 12");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyBranchReturnsCaptureValueBeforeFinallyFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int readBranchThenMutate(ref int value, bool chooseFirst) {
-                try {
-                    if (chooseFirst)
-                        return value + 10;
-                    else
-                        return value + 20;
-                } finally {
-                    value = 2;
-                }
-            }
-
-            unittest {
-                int value = 3;
-                assert(readBranchThenMutate(value, false) == 24);
-            }
-        }).shouldThrowWithMessage("23 != 24");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoResumesInsideHandler." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(1);
-                    goto handled;
-                    total += bump(99);
-                handled:
-                    total += bump(3);
-                }
-
-                assert(total == 6);
-            }
-        });
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoResumesInsideHandlerFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(1);
-                    goto handled;
-                    total += bump(99);
-                handled:
-                    total += bump(3);
-                }
-
-                assert(total == 7);
-            }
-        }).shouldThrowWithMessage("6 != 7");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoResumesInsideHandlerFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(2);
-                    goto handled;
-                    total += bump(99);
-                handled:
-                    total += bump(3);
-                }
-
-                assert(total == 6);
-            }
-        }).shouldThrowWithMessage("7 != 6");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoLeavesHandler." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                }
-
-            outside:
-                total += bump(3);
-                assert(total == 9);
-            }
-        });
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoLeavesHandlerFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(1);
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                }
-
-            outside:
-                total += bump(3);
-                assert(total == 10);
-            }
-        }).shouldThrowWithMessage("9 != 10");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerGotoLeavesHandlerFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int bump(int value) {
-                return value + 1;
-            }
-
-            unittest {
-                int total = bump(2);
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    total += bump(2);
-                    goto outside;
-                    total += bump(99);
-                }
-
-            outside:
-                total += bump(3);
-                assert(total == 9);
-            }
-        }).shouldThrowWithMessage("10 != 9");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyThrowChainsBodyException." ~ backend.stringof)
+    @("finally.throwChainsBodyException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int length(string value) {
@@ -1363,6 +453,7 @@ static foreach (backend; backends) {
 
             unittest {
                 int encoded;
+
                 try {
                     try {
                         throw new Exception("body");
@@ -1380,112 +471,118 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
 
-    @("finallyThrowChainsBodyExceptionFailureMessage.0." ~ backend.stringof)
+/++
+    Goto through try/finally and catch handlers.
++/
+static foreach (backend; backends) {
+    @("finally.gotoWithinBodyRunsFinallyOnce." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            int length(string value) {
-                return cast(int) value.length;
+            int bump(int value) {
+                return value + 1;
             }
 
             unittest {
-                int encoded;
+                int total = bump(1);
+
                 try {
-                    try {
-                        throw new Exception("body");
-                    } finally {
-                        throw new Exception("finally");
-                    }
-                } catch (Exception caught) {
-                    encoded = length(caught.msg) * 10
-                        + length(caught.next.msg);
+                    total += bump(2);
+                    goto resumed;
+                    total += bump(99);
+
+                resumed:
+                    total += bump(3);
+                } finally {
+                    total += bump(4);
                 }
 
-                assert(encoded == 48);
-            }
-        }).shouldThrowWithMessage("47 != 48");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("finallyThrowChainsBodyExceptionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            int length(string value) {
-                return cast(int) value.length;
-            }
-
-            unittest {
-                int encoded;
-                try {
-                    try {
-                        throw new Exception("other");
-                    } finally {
-                        throw new Exception("finally");
-                    }
-                } catch (Exception caught) {
-                    encoded = length(caught.msg) * 10
-                        + length(caught.next.msg);
-                }
-
-                assert(encoded == 47);
-            }
-        }).shouldThrowWithMessage("57 != 47");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("catchHandlerRuns." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    value = 42;
-                }
-                assert(value == 42);
+                assert(total == 14);
             }
         });
     }
 }
 
 static foreach (backend; backends) {
-
-    @("catchHandlerRunsFailureMessage.0." ~ backend.stringof)
+    @("finally.gotoOutOfBodyRunsFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            unittest {
-                int value;
-                try {
-                    throw new Exception("expected");
-                } catch (Exception) {
-                    value = 42;
-                }
-                assert(value == 43);
+            int bump(int value) {
+                return value + 1;
             }
-        }).shouldThrowWithMessage("42 != 43");
+
+            unittest {
+                int total = bump(1);
+
+                try {
+                    total += bump(2);
+                    goto outside;
+                    total += bump(99);
+                } finally {
+                    total += bump(3);
+                }
+
+            outside:
+                total += bump(4);
+
+                assert(total == 14);
+            }
+        });
     }
 }
 
 static foreach (backend; backends) {
-
-    @("catchHandlerRunsFailureMessage.1." ~ backend.stringof)
+    @("catch.gotoResumesInsideHandler." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
             unittest {
-                int value;
+                int total;
+
                 try {
                     throw new Exception("expected");
                 } catch (Exception) {
-                    value = 7;
+                    total += bump(1);
+                    goto handled;
+                    total += bump(99);
+
+                handled:
+                    total += bump(3);
                 }
-                assert(value == 8);
+
+                assert(total == 6);
             }
-        }).shouldThrowWithMessage("7 != 8");
+        });
+    }
+}
+
+static foreach (backend; backends) {
+    @("catch.gotoLeavesHandler." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bump(int value) {
+                return value + 1;
+            }
+
+            unittest {
+                int total = bump(1);
+
+                try {
+                    throw new Exception("expected");
+                } catch (Exception) {
+                    total += bump(2);
+                    goto outside;
+                    total += bump(99);
+                }
+
+            outside:
+                total += bump(3);
+
+                assert(total == 9);
+            }
+        });
     }
 }
