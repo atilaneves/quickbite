@@ -338,14 +338,22 @@ Lua-specific bytecode shape.
   `` null pointer dereference evaluating typeid. `thing` is `null` `` for a
   null class reference, and keeps general TypeInfo behavior outside this
   slice.
+- `voidInitializedScalarReadReportsUninitialized` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`, completing the
+  module. The promotion exposed missing `= void` local tracking. Bytecode now
+  marks void-initialized scalar locals with `Value.void_` and reports CTFE-style
+  uninitialized-read diagnostics such as
+  `` cannot read uninitialized variable `.answer.value` in ctfe `` when the
+  local is loaded.
 
 ## Current Next Step
-Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
+Continue with `tests/ut/backends/lang/math.d`, the next module in
 `ai/plans/backend-test-modules-order.md`.
 
 Do not return to `tests/ut/backends/lang/integrals.d`,
 `tests/ut/backends/api/runner.d`, `tests/ut/backends/runtime/cstdlib.d`, or
-`tests/ut/backends/lang/logic.d` unless new tests are added there. Their
+`tests/ut/backends/lang/logic.d`, or
+`tests/ut/backends/lang/diagnostics.d` unless new tests are added there. Their
 current backend-matrix test families all include `Bytecode`.
 
 ## Test Plan

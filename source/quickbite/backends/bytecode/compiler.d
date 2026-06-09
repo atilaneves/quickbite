@@ -69,6 +69,7 @@ private struct Compiler {
     // the bytecode function table in Program.functions.
     private FuncDeclaration[] functions;
     private size_t[FuncDeclaration] functionIndices;
+    private FuncDeclaration currentFunction;
 
     private void compileUnitTest(FuncDeclaration unitTest) {
         compileFunctionBody(unitTest);
@@ -82,6 +83,7 @@ private struct Compiler {
 
     private void compileFunctionBody(FuncDeclaration function_) {
         locals = null;
+        currentFunction = function_;
         registerParameters(function_);
         compileStatement(function_.fbody);
     }
@@ -445,12 +447,32 @@ private struct Compiler {
     private void compileVariableDeclaration(
         VarDeclaration variable,
     ) {
+        if (variable._init !is null &&
+            variable._init.isVoidInitializer !is null) {
+            program.instructions ~= Instruction(
+                Op.initializeLocal,
+                Value.void_,
+                localIndex(variable),
+            );
+            return;
+        }
+
         if (variable._init !is null) {
             auto initializer = variable._init.isExpInitializer;
             if (initializer is null)
                 throw new Exception("Unsupported bytecode initializer.");
 
-            compileExpression(initializerExpression(initializer.exp));
+            auto expression = initializerExpression(initializer.exp);
+            if (expression.isVoidInitExp !is null) {
+                program.instructions ~= Instruction(
+                    Op.initializeLocal,
+                    Value.void_,
+                    localIndex(variable),
+                );
+                return;
+            }
+
+            compileExpression(expression);
 
             program.instructions ~= Instruction(
                 Op.storeLocal,
@@ -472,8 +494,24 @@ private struct Compiler {
     ) {
         program.instructions ~= Instruction(
             Op.loadLocal,
-            Value.void_,
+            Value(uninitializedVariableMessage(variable)),
             localIndex(variable),
+        );
+    }
+
+    private string uninitializedVariableMessage(VarDeclaration variable) {
+        import std.conv: text;
+
+        const functionName = currentFunction is null
+            ? "<unknown>"
+            : currentFunction.ident.toString;
+
+        return text(
+            "cannot read uninitialized variable `.",
+            functionName,
+            ".",
+            variable.ident.toString,
+            "` in ctfe",
         );
     }
 

@@ -98,6 +98,9 @@ private RunResult run(
                 if (instruction.operand >= locals.length)
                     throw new Exception("Bytecode local out of bounds");
 
+                if (locals[instruction.operand] == Value.void_)
+                    throw new Exception(instruction.value.asCharArrayString);
+
                 stack ~= locals[instruction.operand];
                 ++ip;
                 break;
