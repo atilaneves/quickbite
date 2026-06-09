@@ -375,6 +375,11 @@ REPL progress:
 preserving string display metadata for empty D string literals by constructing
 interpreter string values through `Value.stringValue`.
 
+REPL progress:
+`repl.backend.displaysWideStringValues` in `tests/ut/backends/api/repl.d` now
+runs on `Interpreter`. This required encoding DMD wide string-literal code
+units as UTF-8 before constructing interpreter string values.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

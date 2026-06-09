@@ -369,7 +369,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -381,7 +381,9 @@ static foreach (backend; backends) {
 
         output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
