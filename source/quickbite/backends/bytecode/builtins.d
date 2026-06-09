@@ -7,6 +7,7 @@ package enum BytecodeBuiltin: size_t {
     isInfinity,
     isNaN,
     pow,
+    signbit,
     sqrt,
 }
 
@@ -39,6 +40,9 @@ package BytecodeBuiltin bytecodeBuiltin(
             break;
     }
 
+    if (function_.ident !is null && function_.ident.toString == "signbit")
+        return BytecodeBuiltin.signbit;
+
     throw new Exception("Unsupported bytecode call target.");
 }
 
@@ -58,6 +62,9 @@ package size_t bytecodeBuiltinArgumentCount(
         case pow:
             return 2;
 
+        case signbit:
+            return 1;
+
         case sqrt:
             return 1;
     }
@@ -70,6 +77,7 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
     import std.math: mathFabs = fabs;
     import std.math: mathIsInfinity = isInfinity;
     import std.math: mathIsNaN = isNaN;
+    import std.math: mathSignbit = signbit;
     import std.math: mathSqrt = sqrt;
 
     with (BytecodeBuiltin) final switch (builtin) {
@@ -84,6 +92,9 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
 
         case pow:
             break;
+
+        case signbit:
+            return value.unaryFloating!mathSignbit;
 
         case sqrt:
             return value.unaryFloating!mathSqrt;
@@ -111,6 +122,9 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
 
         case pow:
             return lhs.binaryFloating!mathPow(rhs);
+
+        case signbit:
+            break;
 
         case sqrt:
             break;

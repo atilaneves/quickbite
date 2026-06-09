@@ -759,8 +759,13 @@ private struct Compiler {
                 return true;
 
             default:
-                return false;
+                break;
         }
+
+        if (function_.ident !is null && function_.ident.toString == "signbit")
+            return true;
+
+        return false;
     }
 
     private void compileAssert(AssertExp assert_) {

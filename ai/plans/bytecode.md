@@ -148,6 +148,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `isInfinity` builtin slice: the existing
   bytecode `isInfinity` builtin and bool equality assertion diagnostics
   already report `false != true`.
+- `evaluatesRuntimeSignbitDoubleInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
+  missing `std.math.signbit` builtin support, so bytecode now recognizes
+  DMD's `signbit` helper by identifier and executes it through the existing
+  unary native-call path.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
