@@ -662,6 +662,12 @@ green through existing empty array literal, array-length expression, and
 equality assertion message support; signal was verified by temporarily
 mutating the Interpreter array-length handler.
 
+Arrays progress: `emptyArrayLengthFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nonempty array literal, array-length expression, and
+equality assertion message support; signal was verified by temporarily
+mutating the active Interpreter array-length handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
