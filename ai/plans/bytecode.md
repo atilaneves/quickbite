@@ -304,6 +304,10 @@ Lua-specific bytecode shape.
   runtime truth assertions and reports the failed bool relation as
   `false != true`, while preserving explicit assertion messages and literal
   `assert(false)` diagnostics.
+- `boolAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: bytecode already preserves bool operands in equality
+  assertion diagnostics and reports `true != false`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in
