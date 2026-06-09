@@ -117,6 +117,12 @@ private string locChars(imported!"dmd.location".Loc loc) @trusted {
     return loc.toChars.fromStringz.idup;
 }
 
+private bool hasNoAvailableSource(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    return function_.fbody is null;
+}
+
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
@@ -195,6 +201,8 @@ private struct Evaluator {
 
         if (allowControlFlow) {
             if (auto if_ = statement.isIfStatement) {
+                import quickbite.backends.interpreter.messages: isTruthy;
+
                 if (isTruthy(runExpression(if_.condition)))
                     runStatement(if_.ifbody);
                 else
@@ -202,8 +210,11 @@ private struct Evaluator {
                 return;
             }
 
-            if (auto throw_ = statement.isThrowStatement)
+            if (auto throw_ = statement.isThrowStatement) {
+                import quickbite.backends.interpreter.messages: thrownExceptionMessage;
+
                 throw new Exception(thrownExceptionMessage(throw_.exp));
+            }
         }
 
         import std.conv: text;
@@ -230,13 +241,22 @@ private struct Evaluator {
             return arrayValue(array);
 
         if (auto assert_ = expression.isAssertExp) {
+            import quickbite.backends.interpreter.messages:
+                assertFailureMessage,
+                isTruthy;
+
             if (!isTruthy(runExpression(assert_.e1)))
-                throw new Exception(assertFailureMessage(assert_));
+                throw new Exception(
+                    assertFailureMessage(assert_, runningCalledFunction, &runExpression),
+                );
             return Value(true);
         }
 
-        if (auto not = expression.isNotExp)
+        if (auto not = expression.isNotExp) {
+            import quickbite.backends.interpreter.messages: isTruthy;
+
             return Value(!isTruthy(runExpression(not.e1)));
+        }
 
         if (auto logical = expression.isLogicalExp) {
             if (logical.op == EXP.andAnd)
@@ -331,8 +351,11 @@ private struct Evaluator {
             if (variable is null)
                 assert(0);
 
-            if (variable in uninitializedLocals)
-                throw new Exception(uninitializedVariableMessage(variable));
+            if (variable in uninitializedLocals) {
+                import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
+
+                throw new Exception(uninitializedVariableMessage(variable, currentFunction));
+            }
 
             if (auto current = variable in locals)
                 return *current;
@@ -347,6 +370,8 @@ private struct Evaluator {
     private Value runLogicalAndExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
+        import quickbite.backends.interpreter.messages: isTruthy;
+
         const left = isTruthy(runExpression(logical.e1));
         if (!left)
             return Value(false);
@@ -358,6 +383,8 @@ private struct Evaluator {
     private Value runLogicalOrExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
+        import quickbite.backends.interpreter.messages: isTruthy;
+
         const left = isTruthy(runExpression(logical.e1));
         if (left)
             return Value(true);
@@ -453,6 +480,8 @@ private struct Evaluator {
                 );
 
         if (call.f !is null) {
+            import quickbite.backends.interpreter.messages: noAvailableSourceMessage;
+
             if (hasNoAvailableSource(call.f))
                 throw new Exception(noAvailableSourceMessage(call.f));
             return runFunction(call.f, arguments, argumentVariables);
@@ -463,25 +492,6 @@ private struct Evaluator {
                 return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported eval call.");
-    }
-
-    private bool hasNoAvailableSource(
-        imported!"dmd.func".FuncDeclaration function_,
-    ) {
-        return function_.fbody is null;
-    }
-
-    private string noAvailableSourceMessage(
-        imported!"dmd.func".FuncDeclaration function_,
-    ) {
-        import std.conv: text;
-
-        return text(
-            "`",
-            function_.toChars,
-            "` cannot be interpreted at compile time, ",
-            "because it has no available source code",
-        );
     }
 
     private Value runFunction(
@@ -563,6 +573,7 @@ private struct Evaluator {
     }
 
     private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+        import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
         if (runExpression(dot.e1) == Value.null_)
@@ -579,6 +590,7 @@ private struct Evaluator {
         imported!"dmd.expression".TypeidExp typeid_,
     ) {
         import dmd.dtemplate: isExpression;
+        import quickbite.backends.interpreter.messages: isClassExpression, receiverName;
         import std.conv: text;
 
         auto expression = isExpression(typeid_.obj);
@@ -684,24 +696,9 @@ private struct Evaluator {
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
     }
 
-    private string receiverName(imported!"dmd.expression".Expression receiver) {
-        auto var = receiver.isVarExp;
-        if (var is null)
-            return "null";
-
-        return var.var.ident.toString.idup;
-    }
-
-    private bool isClassExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        const type = expression.type is null ? null : expression.type.toBasetype;
-        return type !is null && type.ty == TY.Tclass;
-    }
-
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
+        import quickbite.backends.interpreter.messages: stringChars;
+
         return Value(stringChars(string_));
     }
 
@@ -714,28 +711,6 @@ private struct Evaluator {
                 values ~= runExpression(element);
 
         return Value.arrayValue(values);
-    }
-
-    private char[] stringChars(imported!"dmd.expression".StringExp string_) {
-        char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
-
-        return values;
-    }
-
-    private string thrownExceptionMessage(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        auto new_ = expression is null ? null : expression.isNewExp;
-        if (new_ is null || new_.arguments is null || new_.arguments.length == 0)
-            return "Unittest assertion failed.";
-
-        auto message = (*new_.arguments)[0].isStringExp;
-        if (message is null)
-            return "Unittest assertion failed.";
-
-        return stringChars(message).idup;
     }
 
     private Value runDeclarationExpression(
@@ -780,374 +755,6 @@ private struct Evaluator {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         return value;
-    }
-
-    private string uninitializedVariableMessage(VarDeclaration variable) {
-        import std.conv: text;
-
-        const functionName =
-            currentFunction is null ? "<unknown>" : currentFunction.ident.toString;
-
-        return text(
-            "cannot read uninitialized variable `.",
-            functionName,
-            ".",
-            variable.ident.toString,
-            "` in ctfe",
-        );
-    }
-
-    private bool isTruthy(in Value value) {
-        if (value == Value(false))
-            return false;
-
-        if (value == Value(true))
-            return true;
-
-        return value.castTo!bool == Value(true);
-    }
-
-    private string assertFailureMessage(
-        imported!"dmd.expression".AssertExp assert_,
-    ) {
-        if (assert_.msg !is null) {
-            if (assert_.msg.isStringExp !is null)
-                return assertMessage(assert_.msg);
-
-            if (auto message = dmdAssertFailBoolMessage(assert_.msg))
-                return message;
-        }
-
-        if (assert_.msg !is null) {
-            const message = dmdAssertFailMessage(assert_.msg);
-            if (message !is null)
-                return message;
-
-            if (isVariableMessage(assert_.msg))
-                return assertMessage(assert_.msg);
-        }
-
-        if (auto integer = assert_.e1.isIntegerExp)
-            if (!isBoolExpression(integer))
-                return "`assert(0)` failed";
-
-        if (auto not = assert_.e1.isNotExp) {
-            import std.conv: text;
-
-            if (isBoolExpression(not.e1) || isLogicalExpression(not.e1))
-                return text(
-                    equalityOperandMessage(runExpression(not.e1), true, not.e1),
-                    " == true",
-                );
-        }
-
-        if (auto equal = assert_.e1.isEqualExp)
-            return equalFailureMessage(equal);
-
-        if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
-            import std.conv: text;
-
-            return text(isTruthy(runExpression(assert_.e1)), " != true");
-        }
-
-        if (runningCalledFunction) {
-            if (auto integer = assert_.e1.isIntegerExp) {
-                if (integer.toInteger == 0)
-                    return "`assert(0)` failed";
-            }
-        }
-
-        return "`assert(false)` failed";
-    }
-
-    private string equalFailureMessage(
-        imported!"dmd.expression".EqualExp equal,
-    ) {
-        import dmd.tokens: EXP;
-        import std.conv: text;
-
-        const operator = equal.op == EXP.notEqual ? "==" : "!=";
-        const left = runExpression(equal.e1);
-        const right = runExpression(equal.e2);
-        const useBoolMessage =
-            isBoolValue(left) ||
-            isBoolValue(right) ||
-            isBoolExpression(equal.e1) ||
-            isBoolExpression(equal.e2) ||
-            isLogicalNotExpression(equal.e1) ||
-            isLogicalNotExpression(equal.e2) ||
-            isLogicalExpression(equal.e1) ||
-            isLogicalExpression(equal.e2);
-        return text(
-            equalityOperandMessage(left, useBoolMessage, equal.e1),
-            " ",
-            operator,
-            " ",
-            equalityOperandMessage(right, useBoolMessage, equal.e2),
-        );
-    }
-
-    private string dmdAssertFailMessage(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.id: Id;
-        import std.conv: text;
-
-        auto call = expression.isCallExp;
-        if (call is null ||
-            call.f is null ||
-            call.f.ident != Id._d_assert_fail ||
-            call.arguments is null ||
-            call.arguments.length != 3)
-            return null;
-
-        auto operatorLiteral = (*call.arguments)[0].isStringExp;
-        if (operatorLiteral is null)
-            return null;
-
-        const operator = invertedEqualityOperator(operatorLiteral.peekString);
-        if (operator is null)
-            return null;
-
-        auto left = (*call.arguments)[1];
-        auto right = (*call.arguments)[2];
-        const useBoolMessage =
-            isBoolExpression(left) ||
-            isBoolExpression(right) ||
-            isLogicalNotExpression(left) ||
-            isLogicalNotExpression(right) ||
-            isLogicalExpression(left) ||
-            isLogicalExpression(right);
-        const leftValue = runExpression(left);
-        const rightValue = runExpression(right);
-
-        return text(
-            equalityOperandMessage(leftValue, useBoolMessage, left),
-            " ",
-            operator,
-            " ",
-            equalityOperandMessage(rightValue, useBoolMessage, right),
-        );
-    }
-
-    private string invertedEqualityOperator(in char[] operator) {
-        if (operator == "==")
-            return "!=";
-
-        if (operator == "!=")
-            return "==";
-
-        if (operator == "<")
-            return ">=";
-
-        if (operator == "<=")
-            return ">";
-
-        if (operator == ">")
-            return "<=";
-
-        if (operator == ">=")
-            return "<";
-
-        return null;
-    }
-
-    private string equalityOperandMessage(
-        in Value value,
-        in bool useBoolMessage,
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import quickbite.frontend.dmd.types: isIntegralExpression;
-        import std.conv: text;
-
-        if (useBoolMessage)
-            return text(isTruthy(value));
-
-        if (isCharExpression(expression))
-            return text("'", value, "'");
-
-        if (isUnsignedLongExpression(expression))
-            return text(value.asLong);
-
-        if (isIntegralExpression(expression))
-            return text(value.asLong);
-
-        return text(value);
-    }
-
-    private bool isCharExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        const type = expression.type is null ? null : expression.type.toBasetype;
-        return type !is null && type.ty == TY.Tchar;
-    }
-
-    private bool isUnsignedLongExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        const type = expression.type is null ? null : expression.type.toBasetype;
-        return type !is null && type.ty == TY.Tuns64;
-    }
-
-    private bool isBoolValue(in Value value) {
-        return value == Value(false) || value == Value(true);
-    }
-
-    private bool isBoolExpression(imported!"dmd.expression".Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto cast_ = expression.isCastExp)
-            if (isBoolExpression(cast_.e1))
-                return true;
-
-        auto type = expression.type;
-        if (auto cast_ = expression.isCastExp)
-            type = cast_.to;
-
-        return type !is null && type.toBasetype.ty == TY.Tbool;
-    }
-
-    private bool isLogicalNotExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        while (auto cast_ = expression.isCastExp)
-            expression = cast_.e1;
-
-        if (auto comma = expression.isCommaExp)
-            return isLogicalNotExpression(comma.e2);
-
-        if (auto var = expression.isVarExp) {
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null ||
-                variable._init is null ||
-                variable._init.isExpInitializer is null)
-                return false;
-
-            auto initializer = variable._init.isExpInitializer.exp;
-            if (auto assign = initializer.isAssignExp)
-                initializer = assign.e2;
-            else if (auto construct = initializer.isConstructExp)
-                initializer = construct.e2;
-            else if (auto blit = initializer.isBlitExp)
-                initializer = blit.e2;
-
-            return isLogicalNotExpression(initializer);
-        }
-
-        return expression.isNotExp !is null;
-    }
-
-    private bool isLogicalExpression(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        while (auto cast_ = expression.isCastExp)
-            expression = cast_.e1;
-
-        if (auto comma = expression.isCommaExp)
-            return isLogicalExpression(comma.e2);
-
-        if (auto var = expression.isVarExp) {
-            auto variable = var.var.isVarDeclaration;
-            if (variable is null ||
-                variable._init is null ||
-                variable._init.isExpInitializer is null)
-                return false;
-
-            auto initializer = variable._init.isExpInitializer.exp;
-            if (auto assign = initializer.isAssignExp)
-                initializer = assign.e2;
-            else if (auto construct = initializer.isConstructExp)
-                initializer = construct.e2;
-            else if (auto blit = initializer.isBlitExp)
-                initializer = blit.e2;
-
-            return isLogicalExpression(initializer);
-        }
-
-        return expression.isLogicalExp !is null;
-    }
-
-    private string assertMessage(imported!"dmd.expression".Expression expression) {
-        if (auto literal = expression.isStringExp)
-            return literal.peekString.idup;
-
-        if (expression.isVarExp !is null)
-            return runExpression(expression).asCharArrayString;
-
-        if (auto cast_ = expression.isCastExp)
-            if (cast_.e1.isVarExp !is null)
-                return runExpression(expression).asCharArrayString;
-
-        assert(0);
-    }
-
-    private bool isVariableMessage(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        if (expression.isVarExp !is null)
-            return true;
-
-        if (auto cast_ = expression.isCastExp)
-            return cast_.e1.isVarExp !is null;
-
-        return false;
-    }
-
-    private string dmdAssertFailBoolMessage(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        auto call = expression.isCallExp;
-        if (call is null ||
-            call.f is null ||
-            call.f.ident.toString != "_d_assert_fail" ||
-            call.arguments is null)
-            return null;
-
-        return dmdAssertFailBoolMessage(call);
-    }
-
-    private string dmdAssertFailBoolMessage(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import std.conv: text;
-
-        if (call.arguments.length != 3)
-            return null;
-
-        auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null)
-            return null;
-
-        const operatorText = operator.peekString.idup;
-        if (operatorText != "==" && operatorText != "!=")
-            return null;
-
-        auto left = (*call.arguments)[1].isIntegerExp;
-        auto right = (*call.arguments)[2].isIntegerExp;
-        if (left is null || right is null)
-            return null;
-
-        const inverseOperator = operatorText == "==" ? "!=" : "==";
-        if (left.toInteger > 1 || right.toInteger > 1)
-            return text(
-                left.toInteger,
-                " ",
-                inverseOperator,
-                " ",
-                right.toInteger,
-            );
-
-        return text(
-            left.toInteger != 0,
-            " ",
-            inverseOperator,
-            " ",
-            right.toInteger != 0,
-        );
     }
 
     private Value runPostIncrementExpression(
