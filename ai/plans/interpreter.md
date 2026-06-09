@@ -478,6 +478,12 @@ extending `assert(!expr)` failure messages to bool-typed expressions, so
 `assert(!isNaN(notANumber))` reports `true == true` instead of the lowered
 boolean assertion message `false != true`.
 
+Math progress: `evaluatesRuntimeIsNaNDoubleInputFailureMessage.1` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. No production
+change was required. Signal was verified by temporarily mutating the
+Interpreter bool assertion formatter, which failed the focused test with
+`false != false` instead of `false != true`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
