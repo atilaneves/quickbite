@@ -349,6 +349,13 @@ formatting; signal was verified by temporarily mutating the Interpreter
 equality operand formatter, which changed the promoted failure message to
 `<mutated> != <mutated>`.
 
+Arrays progress: `arrayEqualTrueFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and array assertion message formatting;
+signal was verified by temporarily mutating `Array.opEquals` to ignore length
+differences, which made the promoted test fail because the expected assertion
+exception was no longer thrown.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

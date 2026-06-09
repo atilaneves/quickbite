@@ -184,7 +184,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualTrueFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -195,7 +195,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("[1, 2] != [1, 2, 3]");
     }
+}
 
+
+static foreach (backend; backends) {
     @("arrayEqualFalse." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
