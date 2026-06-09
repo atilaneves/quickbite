@@ -241,18 +241,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("3 != 4");
     }
 
-    @("localDynamicArrayAppendFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] values;
-                ubyte value = 42;
-                values ~= value;
-                assert(values[0] == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-
     @("arrayLiteralElements." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2126,6 +2114,21 @@ static foreach (backend; backendsWith!Interpreter) {
                 assert(values.length == 2);
             }
         }).shouldThrowWithMessage("1 != 2");
+    }
+}
+
+
+static foreach (backend; backendsWith!Interpreter) {
+    @("localDynamicArrayAppendFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values;
+                ubyte value = 42;
+                values ~= value;
+                assert(values[0] == 43);
+            }
+        }).shouldThrowWithMessage("42 != 43");
     }
 }
 

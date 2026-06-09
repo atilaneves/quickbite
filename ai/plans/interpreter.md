@@ -754,6 +754,12 @@ green through existing null dynamic array, append, length, and equality
 assertion message support; signal was verified by temporarily mutating the
 Interpreter array append handler.
 
+Arrays progress: `localDynamicArrayAppendFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing null dynamic array, append, index-read, and equality
+assertion message support; signal was verified by temporarily mutating the
+Interpreter array append handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
