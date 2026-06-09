@@ -6,6 +6,7 @@ package enum InterpreterBuiltin: size_t {
     fabs,
     isInfinity,
     pow,
+    signbit,
     sqrt,
 }
 
@@ -37,8 +38,15 @@ package bool tryInterpreterBuiltin(
             return true;
 
         default:
-            return false;
+            break;
     }
+
+    if (function_.ident !is null && function_.ident.toString == "signbit") {
+        builtin = InterpreterBuiltin.signbit;
+        return true;
+    }
+
+    return false;
 }
 
 package size_t interpreterBuiltinArgumentCount(
@@ -47,6 +55,7 @@ package size_t interpreterBuiltinArgumentCount(
     with (InterpreterBuiltin) final switch (builtin) {
         case fabs:
         case isInfinity:
+        case signbit:
         case sqrt:
             return 1;
 
@@ -61,6 +70,7 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
 ) {
     import std.math: mathFabs = fabs;
     import std.math: mathIsInfinity = isInfinity;
+    import std.math: mathSignbit = signbit;
     import std.math: mathSqrt = sqrt;
 
     with (InterpreterBuiltin) final switch (builtin) {
@@ -69,6 +79,9 @@ package imported!"quickbite.lang".Value unaryBuiltinCall(
 
         case isInfinity:
             return value.unaryFloating!mathIsInfinity;
+
+        case signbit:
+            return value.unaryFloating!mathSignbit;
 
         case sqrt:
             return value.unaryFloating!mathSqrt;
@@ -90,6 +103,7 @@ package imported!"quickbite.lang".Value binaryBuiltinCall(
     with (InterpreterBuiltin) final switch (builtin) {
         case fabs:
         case isInfinity:
+        case signbit:
         case sqrt:
             break;
 

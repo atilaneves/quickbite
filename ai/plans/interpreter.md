@@ -501,6 +501,10 @@ change was required. Signal was verified by temporarily routing Interpreter
 `isInfinity` through `fabs`, which failed the focused test because the fixture
 no longer threw.
 
+Math progress: `evaluatesRuntimeSignbitDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+adding narrow `std.math.signbit` handling to the Interpreter builtins module.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
