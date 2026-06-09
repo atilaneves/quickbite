@@ -875,7 +875,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
