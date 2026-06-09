@@ -298,6 +298,12 @@ lowering and added narrow signed `i32` comparison support for DMD `<` and `>`.
 Those comparison operations produce `bool` IR values and currently support only
 the operand type observed by this group. The promoted failure-message variants
 reuse the existing bool equality assertion diagnostic path.
+The promoted later local-variable logical-and group in `logic.d`
+(`logicalAndShortCircuit.IR`, `logicalAndFailureMessage.1.IR`,
+`logicalAndFailureMessage.0.IR`, and `logicalAnd.IR`) passed without new
+production code. Existing bool-local storage, logical-and CFG lowering,
+division short-circuiting, and bool equality diagnostics already covered that
+group.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -312,7 +318,7 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/lang/logic.d`. The first four backend matrices
+Continue in `tests/ut/backends/lang/logic.d`. The first five backend matrices
 now include `IR`; verify the current checkout, then promote the next smallest
 remaining matrix that still excludes `IR`. Prefer the next existing test or
 small family that forces one language behavior, and keep CFG/general
