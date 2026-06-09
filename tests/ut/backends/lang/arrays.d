@@ -36,8 +36,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
-
+static foreach (backend; backendsWith!Interpreter) {
     @("nestedSliceWritesPropagateToOriginalArrayFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -50,6 +49,10 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("98 != 99");
     }
+}
+
+
+static foreach (backend; backends) {
 
     @("nestedSliceAppendKeepsOriginalArrayTail." ~ backend.stringof)
     unittest {

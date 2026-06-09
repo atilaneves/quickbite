@@ -277,6 +277,13 @@ green through existing nested slice alias write-through; signal was verified by
 temporarily disabling that write-through, which changed the promoted failure
 message from `99 != 100` to `1 != 100`.
 
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through with accumulated slice
+offsets; signal was verified by temporarily dropping the accumulated offset,
+which changed the promoted failure message from `98 != 99` to `2 != 99`.
+
 Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
 now runs on `Interpreter`. This required narrow module-backed
 `ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
