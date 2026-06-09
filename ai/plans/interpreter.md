@@ -544,6 +544,11 @@ REPL progress: `repl.backend.evaluatesExpressionCellsUntilQuit` in
 `tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
 expression-cell `evalRepl` dispatch through the existing eval function walker.
 
+REPL progress: `repl.backend.functionDeclarationsPersistWithoutSemicolon` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This only needed the
+existing direct free-function call path plus the integer multiplication fix in
+the function walker.
+
 REPL progress: `repl.backend.skipsCommentOnlyLines` in
 `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
 through the shared REPL loop comment filter; signal was verified by temporarily

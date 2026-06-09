@@ -197,6 +197,9 @@ private struct EvalFunctionWalker {
         if (auto sub = expression.isMinExp)
             return runExpression(sub.e1) - runExpression(sub.e2);
 
+        if (auto mul = expression.isMulExp)
+            return runExpression(mul.e1) * runExpression(mul.e2);
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
@@ -274,7 +277,43 @@ private struct EvalFunctionWalker {
             }
         }
 
+        if (call.f !is null)
+            return runDirectFunctionCall(call.f, call.arguments);
+
+        if (auto var = call.e1.isVarExp)
+            if (auto function_ = var.var.isFuncDeclaration)
+                return runDirectFunctionCall(function_, call.arguments);
+
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runDirectFunctionCall(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.root.array".Array!(imported!"dmd.expression".Expression)*
+            arguments,
+    ) {
+        if (function_.fbody is null)
+            throw new Exception("Unsupported eval call.");
+
+        if (
+            function_.parameters is null ||
+            function_.parameters.length != 1 ||
+            arguments is null ||
+            arguments.length != 1
+        )
+            throw new Exception("Unsupported eval call argument count.");
+
+        auto savedLocals = locals.dup;
+        const savedResult = result;
+        locals = null;
+        locals[(*function_.parameters)[0]] = runExpression((*arguments)[0]);
+
+        runStatement(function_.fbody);
+        const value = result;
+
+        locals = savedLocals;
+        result = savedResult;
+        return value;
     }
 
     private Value runPostIncrementExpression(
