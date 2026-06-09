@@ -959,7 +959,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("callsUserNamedIsNaNForNanInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -973,7 +973,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+static foreach (backend; backends) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
