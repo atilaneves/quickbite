@@ -105,6 +105,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `4 != 5`.
+- `evaluatesDifferentRuntimeSqrtInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `6 != 7`.
 - `evaluatesRuntimeNonIntegerSqrtInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
