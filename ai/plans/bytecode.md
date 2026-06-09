@@ -176,6 +176,11 @@ Lua-specific bytecode shape.
   scalar access. Bytecode now keeps existing integer-compatible assertion
   messages but renders floating operands through `Value` so runtime `pow`
   equality failures report `16 != 17`.
+- `evaluatesRuntimePowDoubleInputsFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `pow` and floating assertion-diagnostic
+  slices: the existing bytecode binary native-call path and comparison
+  assertion diagnostics already report `3 <= 3.001`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
