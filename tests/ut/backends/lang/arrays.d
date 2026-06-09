@@ -226,16 +226,6 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("42 != 43");
     }
 
-    @("arrayLengthFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                ubyte[] arr = [1, 2];
-                assert(arr.length == 3);
-            }
-        }).shouldThrowWithMessage("2 != 3");
-    }
-
     @("emptyArrayLengthFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -2272,6 +2262,16 @@ static foreach (backend; backendsWith!Interpreter) {
                 assert(arr.length == 4);
             }
         }).shouldThrowWithMessage("3 != 4");
+    }
+
+    @("arrayLengthFailureMessage.1." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] arr = [1, 2];
+                assert(arr.length == 3);
+            }
+        }).shouldThrowWithMessage("2 != 3");
     }
 
     @("emptyArrayLength." ~ backend.stringof)
