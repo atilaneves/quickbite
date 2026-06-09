@@ -481,13 +481,13 @@ private bool comparisonHolds(
         case Op.notEqual:
             return lhs != rhs;
         case Op.lessThan:
-            return lhs.asLong < rhs.asLong;
+            return lhs.asReal < rhs.asReal;
         case Op.lessOrEqual:
-            return lhs.asLong <= rhs.asLong;
+            return lhs.asReal <= rhs.asReal;
         case Op.greaterThan:
-            return lhs.asLong > rhs.asLong;
+            return lhs.asReal > rhs.asReal;
         case Op.greaterOrEqual:
-            return lhs.asLong >= rhs.asLong;
+            return lhs.asReal >= rhs.asReal;
         case Op.literal:
         case Op.call:
         case Op.jump:

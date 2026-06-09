@@ -92,6 +92,100 @@ Lua-specific bytecode shape.
   supported them through its existing eval compiler, VM local/value-stack
   operations, scalar casts, floating arithmetic, and narrow `std.math`
   builtin bridge.
+- `evaluatesRuntimeSqrtInput` in `tests/ut/backends/lang/math.d` now covers
+  `Bytecode`. The promotion exposed missing unary `std.math.sqrt` builtin
+  support, so bytecode now recognizes DMD's `sqrt` builtin and executes it
+  through the existing unary native-call path.
+- `evaluatesDifferentRuntimeSqrtInput` in `tests/ut/backends/lang/math.d`
+  now covers `Bytecode`. This was a stale coverage gap after the runtime
+  `sqrt` builtin slice: the existing bytecode unary native-call path already
+  executed a different runtime `sqrt` input correctly.
+- `evaluatesRuntimeNonIntegerSqrtInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
+  unary native-call path already executed the non-integer runtime `sqrt` input
+  correctly.
+- `evaluatesRuntimeNonPerfectSqrtInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` builtin slice: the existing bytecode
+  unary native-call path already executed the non-perfect runtime `sqrt` input
+  and comparison assertions correctly.
+- `evaluatesRuntimeFabsDoubleInput` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. This was a stale coverage gap: the existing bytecode
+  unary native-call path already recognizes and executes DMD's `fabs` builtin
+  for negative runtime `double` inputs.
+- `evaluatesRuntimeFabsPositiveDoubleInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `fabs` builtin slice: the existing bytecode
+  unary native-call path already executes positive runtime `double` inputs
+  correctly.
+- `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
+  support, so bytecode now recognizes DMD's `isnan` builtin and executes it
+  through the existing unary native-call path.
+- `evaluatesRuntimeIsNaNDoubleInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isNaN` builtin slice: the existing bytecode
+  logical-not and bool equality assertion diagnostics already report
+  `true == true`.
+- `evaluatesRuntimeIsNaNDoubleInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isNaN` builtin slice: the existing bytecode
+  `isNaN` builtin and bool equality assertion diagnostics already report
+  `false != true`.
+- `doesNotTreatUserNamedIsNaNAsMathIntrinsic` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap: bytecode already calls the user-defined `isNaN` function
+  instead of treating it as the `std.math.isNaN` builtin.
+- `doesNotTreatUserNamedPowAsMathIntrinsic` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap: bytecode already calls the user-defined `pow` function instead
+  of treating it as the `std.math.pow` builtin. In the current checkout,
+  `math.d` is now complete for `Bytecode`.
+- `evaluatesRuntimeIsInfinityDoubleInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
+  missing `std.math.isInfinity` builtin support and non-runtime declaration
+  expressions in the fixture, so bytecode now treats non-var declarations as
+  no-ops and executes `isInfinity` through the existing unary native-call path.
+- `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isInfinity` builtin slice: the existing
+  bytecode logical-not and bool equality assertion diagnostics already report
+  `true == true`.
+- `evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `isInfinity` builtin slice: the existing
+  bytecode `isInfinity` builtin and bool equality assertion diagnostics
+  already report `false != true`.
+- `evaluatesRuntimeSignbitDoubleInput` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
+  missing `std.math.signbit` builtin support, so bytecode now recognizes
+  DMD's `signbit` helper by identifier and executes it through the existing
+  unary native-call path.
+- `evaluatesRuntimeSignbitDoubleInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `signbit` builtin slice: the existing bytecode
+  integer equality assertion diagnostics already report `1 != 0` for negative
+  zero.
+- `evaluatesRuntimeSignbitDoubleInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `signbit` builtin slice: the existing bytecode
+  integer equality assertion diagnostics already report `0 == 0` for positive
+  zero.
+- `evaluatesRuntimeSignbitNanInput` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. This was a stale coverage gap after the runtime `signbit`
+  builtin slice: the existing bytecode unary native-call path already preserves
+  sign bits for positive and negative NaN inputs.
+- `evaluatesRuntimeSignbitNanInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `signbit` builtin slice: the existing bytecode
+  `signbit` builtin and integer equality assertion diagnostics already report
+  `1 != 0` for a negative NaN input.
+- `evaluatesRuntimeSignbitNanInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `signbit` builtin slice: the existing bytecode
+  `signbit` builtin and integer equality assertion diagnostics already report
+  `0 == 0` for a positive NaN input.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
@@ -345,6 +439,11 @@ Lua-specific bytecode shape.
   uninitialized-read diagnostics such as
   `` cannot read uninitialized variable `.answer.value` in ctfe `` when the
   local is loaded.
+- `evaluatesRuntimePowDoubleInputs` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. The promotion exposed that bytecode assertion comparisons
+  only accepted integer-compatible operands; bytecode now compares numeric
+  operands through `Value.asReal`, allowing the existing `std.math.pow` builtin
+  bridge to handle runtime `double` inputs and fractional bounds.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/math.d`, the next module in
