@@ -2,15 +2,6 @@ module quickbite.backends.ir.compiler;
 
 private:
 
-package imported!"quickbite.backends.ir.language".Function compileExpression(
-    in string expr,
-)
-{
-    import quickbite.frontend.compiler: parseExpression;
-
-    return compileExpression(parseExpression(expr));
-}
-
 package imported!"quickbite.backends.ir.language".Function compileEvalSource(
     in string source,
 )
@@ -25,14 +16,6 @@ package imported!"quickbite.backends.ir.language".Function compileUnitTest(
 ) {
     Compiler compiler;
     return compiler.compileEntryFunction(unitTest);
-}
-
-private imported!"quickbite.backends.ir.language".Function compileExpression(
-    imported!"dmd.expression".Expression expression,
-) {
-    Compiler compiler;
-    const result = compiler.compileExpression(expression);
-    return compiler.makeFunction(result);
 }
 
 private imported!"quickbite.backends.ir.language".Function compileFunction(
@@ -76,13 +59,12 @@ private struct Compiler {
 
     private Instruction[] instructions;
     private uint[VarDeclaration] locals;
-    private Value[VarDeclaration] localValues;
+    private LocalInfo[VarDeclaration] localInfos;
     private FuncDeclaration[] functions;
     private uint[FuncDeclaration] functionIndices;
     private Function[] compiledFunctions;
     private Block[] blocks;
     private Value[] currentBlockParams;
-    private uint currentBlockId;
     private uint nextValueId;
 
     private Function compileEntryFunction(FuncDeclaration function_) {
@@ -98,16 +80,15 @@ private struct Compiler {
     private Function compileFunctionBody(FuncDeclaration function_) {
         instructions = null;
         locals = null;
-        localValues = null;
+        localInfos = null;
         blocks = null;
         currentBlockParams = null;
-        currentBlockId = 0;
         nextValueId = 0;
         registerParameters(function_);
 
         const result = compileStatement(function_.fbody);
         assert(result.hasValue);
-        return makeFunction(result.value, parameterCount(function_));
+        return makeFunction(result.value);
     }
 
     private OptionalValue compileStatement(
@@ -160,8 +141,7 @@ private struct Compiler {
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
             assert(variable !is null);
-            compileVariableDeclaration(variable);
-            return localValue(variable);
+            return compileVariableDeclaration(variable);
         }
 
         if (auto variable = expression.isVarExp) {
@@ -369,6 +349,7 @@ private struct Compiler {
                 operation,
                 lhs.type,
                 lhs.resultKind,
+                result.id,
                 lhs.id,
                 rhs.id,
             ),
@@ -376,7 +357,7 @@ private struct Compiler {
         return result;
     }
 
-    private void compileVariableDeclaration(VarDeclaration variable) {
+    private Value compileVariableDeclaration(VarDeclaration variable) {
         const value = variable._init is null ?
             compileDefaultValue(variable.type) :
             compileInitializer(variable._init);
@@ -387,11 +368,12 @@ private struct Compiler {
                 value.id,
             ),
         );
-        localValues[variable] = Value(0, value.type, value.resultKind);
+        localInfos[variable] = LocalInfo(value.type, value.resultKind);
+        return value;
     }
 
     private Value compileVariableLoad(VarDeclaration variable) {
-        const local = localValue(variable);
+        const local = localInfo(variable);
         const result = nextValue(local.type, local.resultKind);
         instructions ~= Instruction(
             Load(
@@ -421,7 +403,6 @@ private struct Compiler {
         instructions ~= Instruction(
             Cast(
                 source.type,
-                result.type,
                 source.id,
                 result,
             ),
@@ -606,17 +587,12 @@ private struct Compiler {
             ),
         ));
 
-        currentBlockId = rhsBlock;
-        currentBlockParams = null;
         const rhs = compileExpression(expression.e2);
         finishBlock(Terminator(Branch(joinBlock, [rhs.id])));
 
-        currentBlockId = falseBlock;
-        currentBlockParams = null;
         const false_ = compileIntegerLiteral(0, Type.i1, ResultKind.bool_);
         finishBlock(Terminator(Branch(joinBlock, [false_.id])));
 
-        currentBlockId = joinBlock;
         const result = nextValue(Type.i1, ResultKind.bool_);
         currentBlockParams = [result];
         return result;
@@ -637,17 +613,12 @@ private struct Compiler {
             ),
         ));
 
-        currentBlockId = trueBlock;
-        currentBlockParams = null;
         const true_ = compileIntegerLiteral(1, Type.i1, ResultKind.bool_);
         finishBlock(Terminator(Branch(joinBlock, [true_.id])));
 
-        currentBlockId = rhsBlock;
-        currentBlockParams = null;
         const rhs = compileExpression(expression.e2);
         finishBlock(Terminator(Branch(joinBlock, [rhs.id])));
 
-        currentBlockId = joinBlock;
         const result = nextValue(Type.i1, ResultKind.bool_);
         currentBlockParams = [result];
         return result;
@@ -708,12 +679,9 @@ private struct Compiler {
 
     private void finishBlock(Terminator terminator) {
         blocks ~= Block(
-            currentBlockId,
             currentBlockParams,
             instructions,
             terminator,
-            false,
-            0,
         );
         instructions = null;
         currentBlockParams = null;
@@ -757,68 +725,33 @@ private struct Compiler {
         return null;
     }
 
-    private uint parameterCount(FuncDeclaration function_) {
-        return function_.parameters is null ?
-            0 :
-            cast(uint) function_.parameters.length;
-    }
-
     private void registerParameters(FuncDeclaration function_) {
         if (function_.parameters is null)
             return;
 
         foreach (parameter; *function_.parameters) {
             localIndex(parameter);
-            localValues[parameter] = Value(
-                0,
+            localInfos[parameter] = LocalInfo(
                 valueType(parameter.type),
                 resultKind(parameter.type),
             );
         }
     }
 
-    private Value localValue(VarDeclaration variable) {
-        if (auto existing = variable in localValues)
+    private LocalInfo localInfo(VarDeclaration variable) {
+        if (auto existing = variable in localInfos)
             return *existing;
 
-        return Value(0, valueType(variable.type), resultKind(variable.type));
+        return LocalInfo(valueType(variable.type), resultKind(variable.type));
     }
 
-    private Function makeFunction(in Value result, in uint parameterCount = 0) {
-        if (blocks.length != 0) {
-            blocks ~= Block(
-                currentBlockId,
-                currentBlockParams,
-                instructions,
-                Terminator(ReturnValue(result.id)),
-                false,
-                0,
-            );
-            return Function(
-                blocks,
-                result.resultKind,
-                nextValueId,
-                cast(uint) locals.length,
-                parameterCount,
-                [],
-            );
-        }
-
+    private Function makeFunction(in Value result) {
+        finishBlock(Terminator(ReturnValue(result.id)));
         return Function(
-            [
-                Block(
-                    0,
-                    [],
-                    instructions,
-                    Terminator(ReturnValue(result.id)),
-                    false,
-                    0,
-                ),
-            ],
+            blocks,
             result.resultKind,
             nextValueId,
             cast(uint) locals.length,
-            parameterCount,
             [],
         );
     }
@@ -918,6 +851,11 @@ private imported!"quickbite.backends.ir.language".Function withFunctions(
 private struct OptionalValue {
     public imported!"quickbite.backends.ir.language".Value value;
     public bool hasValue;
+}
+
+private struct LocalInfo {
+    public imported!"quickbite.backends.ir.language".Type type;
+    public imported!"quickbite.backends.ir.language".ResultKind resultKind;
 }
 
 private imported!"dmd.expression".Expression initializerExpression(

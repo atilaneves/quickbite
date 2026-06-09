@@ -29,6 +29,64 @@ public bool isIntegralType(imported!"dmd.mtype".Type type) {
     }
 }
 
+public bool isCharacterType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+
+    auto basetype = type.toBasetype;
+    if (basetype is null)
+        return false;
+
+    with (TY) switch (basetype.ty) {
+        case Tchar:
+        case Twchar:
+        case Tdchar:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+public bool isCharacterExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    return expression !is null && isCharacterType(expression.type);
+}
+
+public bool isCharacterArrayType(imported!"dmd.mtype".Type type) {
+    if (type is null)
+        return false;
+
+    auto elementType = arrayElementType(type);
+    return elementType !is null && isCharacterType(elementType);
+}
+
+public imported!"dmd.mtype".Type arrayElementType(
+    imported!"dmd.mtype".Type type,
+) {
+    if (type is null)
+        return null;
+
+    auto basetype = type.toBasetype;
+    if (basetype is null)
+        return null;
+
+    if (auto dynamicArray = basetype.isTypeDArray)
+        return dynamicArray.nextOf;
+
+    if (auto staticArray = basetype.isTypeSArray)
+        return staticArray.nextOf;
+
+    return null;
+}
+
+public bool isArrayType(imported!"dmd.mtype".Type type) {
+    return arrayElementType(type) !is null;
+}
+
 public template dmdScalarType(imported!"dmd.astenums".TY type) {
     import dmd.astenums: TY;
 

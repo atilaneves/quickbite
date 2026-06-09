@@ -90,7 +90,6 @@ package struct UnaryIntrinsicOp {
 
 package struct Cast {
     public Type sourceType;
-    public Type targetType;
     public uint source;
     public Value result;
 }
@@ -114,6 +113,7 @@ package struct AssertCompare {
     public BinaryOperation operation;
     public Type type;
     public ResultKind resultKind;
+    public uint condition;
     public uint lhs;
     public uint rhs;
 }
@@ -177,12 +177,9 @@ package alias Terminator = imported!"std.sumtype".SumType!(
 );
 
 package struct Block {
-    public uint id;
     public Value[] params;
     public Instruction[] instructions;
     public Terminator terminator;
-    public bool hasExceptionSuccessor;
-    public uint exceptionSuccessor;
 }
 
 package struct Function {
@@ -190,6 +187,5 @@ package struct Function {
     public ResultKind returnType;
     public uint valueCount;
     public uint localCount;
-    public uint parameterCount;
     public Function[] functions;
 }
