@@ -336,6 +336,12 @@ change was required; signal was verified by temporarily mutating the local
 dynamic array append handler, which changed the promoted failure message from
 `3 != 4` to `1 != 4`.
 
+Arrays progress: `arrayEqualTrue` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+evaluation and `Value.arrayValue` equality; signal was verified by temporarily
+mutating `Array.opEquals`, which failed the promoted Interpreter test with
+`[1, 2, 3] != [1, 2, 3]`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

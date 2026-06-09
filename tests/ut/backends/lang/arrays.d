@@ -156,7 +156,7 @@ static foreach (backend; backendsWith!Interpreter) {
 }
 
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("arrayEqualTrue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -167,7 +167,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backends) {
     @("arrayEqualTrueFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
