@@ -33,6 +33,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intAdditionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -52,6 +55,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intAdditionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -71,6 +77,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intSubtraction." ~ backend.stringof)
     unittest {
@@ -90,6 +99,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intSubtractionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -109,6 +121,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intSubtractionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -128,6 +143,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intMultiplication." ~ backend.stringof)
     unittest {
@@ -147,6 +165,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intMultiplicationFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -166,6 +187,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intMultiplicationFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -185,6 +209,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intDivision." ~ backend.stringof)
     unittest {
@@ -204,6 +231,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intDivisionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -223,6 +253,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intDivisionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -242,6 +275,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intModulo." ~ backend.stringof)
     unittest {
@@ -261,6 +297,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intModuloFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -280,6 +319,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intModuloFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -299,6 +341,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftRight." ~ backend.stringof)
     unittest {
@@ -318,6 +363,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftRightFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -337,6 +385,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("32 != 33");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftRightFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -356,6 +407,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftLeft." ~ backend.stringof)
     unittest {
@@ -375,6 +429,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftLeftFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -394,6 +451,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("32 != 33");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intShiftLeftFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -413,6 +473,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseOr." ~ backend.stringof)
     unittest {
@@ -432,6 +495,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseOrFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -451,6 +517,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("46 != 47");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseOrFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -470,6 +539,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseAnd." ~ backend.stringof)
     unittest {
@@ -489,6 +561,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseAndFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -508,6 +583,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseAndFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -527,6 +605,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseXor." ~ backend.stringof)
     unittest {
@@ -546,6 +627,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseXorFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -565,6 +649,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseXorFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -584,6 +671,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intLessThan." ~ backend.stringof)
     unittest {
@@ -599,6 +689,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intLessThanFailureMessage." ~ backend.stringof)
     unittest {
@@ -614,6 +707,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 >= 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intLessOrEqual." ~ backend.stringof)
     unittest {
@@ -629,6 +725,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intLessOrEqualFailureMessage." ~ backend.stringof)
     unittest {
@@ -644,6 +743,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 > 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intGreaterThan." ~ backend.stringof)
     unittest {
@@ -659,6 +761,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intGreaterThanFailureMessage." ~ backend.stringof)
     unittest {
@@ -674,6 +779,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 <= 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intGreaterOrEqual." ~ backend.stringof)
     unittest {
@@ -689,6 +797,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intGreaterOrEqualFailureMessage." ~ backend.stringof)
     unittest {
@@ -704,6 +815,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("41 < 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intNotEqual." ~ backend.stringof)
     unittest {
@@ -719,6 +833,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intNotEqualFailureMessage." ~ backend.stringof)
     unittest {
@@ -747,6 +864,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -762,6 +882,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.5 != 2.5");
     }
+}
+
+static foreach (backend; backends) {
 
     @("evaluatesPow." ~ backend.stringof)
     unittest {
@@ -773,6 +896,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -788,6 +914,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intUnaryMinus." ~ backend.stringof)
     unittest {
@@ -805,6 +934,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intUnaryMinusFailureMessage." ~ backend.stringof)
     unittest {
@@ -822,6 +954,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("-42 != -43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseComplement." ~ backend.stringof)
     unittest {
@@ -832,6 +967,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intBitwiseComplementFailureMessage." ~ backend.stringof)
     unittest {
@@ -842,6 +980,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("-43 != -44");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intOrAssign." ~ backend.stringof)
     unittest {
@@ -853,6 +994,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intOrAssignFailureMessage." ~ backend.stringof)
     unittest {
@@ -864,6 +1008,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intSubtractAssign." ~ backend.stringof)
     unittest {
@@ -875,6 +1022,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intSubtractAssignFailureMessage." ~ backend.stringof)
     unittest {
@@ -886,6 +1036,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("intAddAssign." ~ backend.stringof)
     unittest {
@@ -897,6 +1050,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("intAddAssignFailureMessage." ~ backend.stringof)
     unittest {
@@ -908,6 +1064,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("commaExpressionSequencesOperands." ~ backend.stringof)
     unittest {
@@ -927,6 +1086,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("commaExpressionSequencesOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -946,6 +1108,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("commaExpressionSequencesOperandsFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -965,6 +1130,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("typeidClassReferenceUsesDynamicClass." ~ backend.stringof)
     unittest {
@@ -982,6 +1150,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("typeidClassReferenceUsesDynamicClassFailureMessage.0." ~
         backend.stringof)
@@ -1000,6 +1171,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("typeidClassReferenceUsesDynamicClassFailureMessage.1." ~
         backend.stringof)
@@ -1018,6 +1192,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("classVirtualCallUsesDynamicClass." ~ backend.stringof)
     unittest {
@@ -1050,6 +1227,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("classVirtualCallUsesDynamicClassFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1082,6 +1262,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("12 != 13");
     }
+}
+
+static foreach (backend; backends) {
 
     @("classVirtualCallUsesDynamicClassFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1114,6 +1297,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9 != 12");
     }
+}
+
+static foreach (backend; backends) {
 
     @("interfaceVirtualCallUsesRuntimeDispatch." ~ backend.stringof)
     unittest {
@@ -1144,6 +1330,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("typeidTypeNameReturnsIdentifier." ~ backend.stringof)
     unittest {
@@ -1160,6 +1349,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("typeidTypeNameReturnsIdentifierFailureMessage." ~ backend.stringof)
     unittest {
@@ -1176,6 +1368,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage(`"Widget" != "onlineapp.Widget"`);
     }
+}
+
+static foreach (backend; backends) {
 
     @("nestedDelegateCallUsesCapturedValue." ~ backend.stringof)
     unittest {
@@ -1197,6 +1392,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("nestedDelegateCallUsesCapturedValueFailureMessage.0." ~
         backend.stringof)
@@ -1219,6 +1417,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("21 != 22");
     }
+}
+
+static foreach (backend; backends) {
 
     @("nestedDelegateCallUsesCapturedValueFailureMessage.1." ~
         backend.stringof)
@@ -1241,6 +1442,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("23 != 21");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMemberDelegateCallUsesReceiver." ~ backend.stringof)
     unittest {
@@ -1264,6 +1468,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMemberDelegateCallUsesReceiverFailureMessage.0." ~
         backend.stringof)
@@ -1288,6 +1495,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMemberDelegateCallUsesReceiverFailureMessage.1." ~
         backend.stringof)
@@ -1312,6 +1522,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("11 != 10");
     }
+}
+
+static foreach (backend; backends) {
 
     @("delegatePtrPropertyIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
@@ -1339,6 +1552,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage(
             "`dg.ptr` cannot be evaluated at compile time");
     }
+}
+
+static foreach (backend; backends) {
 
     @("delegateFuncptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
@@ -1366,6 +1582,9 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage(
             "`dg.funcptr` cannot be evaluated at compile time");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
@@ -1377,6 +1596,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ubyteAddAssignWrapsOnStoreFailureMessage." ~ backend.stringof)
     unittest {
@@ -1388,6 +1610,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitLessThan." ~ backend.stringof)
     unittest {
@@ -1398,6 +1623,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitLessThanFailureMessage." ~ backend.stringof)
     unittest {
@@ -1408,6 +1636,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 < 9255003132036915216");
     }
+}
+
+static foreach (backend; backends) {
 
     @("longLiteral." ~ backend.stringof)
     unittest {
@@ -1421,6 +1652,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("longLiteralFailureMessage." ~ backend.stringof)
     unittest {
@@ -1434,6 +1668,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2147483648 > 0");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitLessOrEqual." ~ backend.stringof)
     unittest {
@@ -1444,6 +1681,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitLessOrEqualFailureMessage." ~ backend.stringof)
     unittest {
@@ -1454,6 +1694,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 <= 9255003132036915216");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitGreaterOrEqual." ~ backend.stringof)
     unittest {
@@ -1464,6 +1707,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitGreaterOrEqualFailureMessage." ~ backend.stringof)
     unittest {
@@ -1474,6 +1720,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9255003132036915216 >= 0");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitGreaterThan." ~ backend.stringof)
     unittest {
@@ -1484,6 +1733,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongHighBitGreaterThanFailureMessage." ~ backend.stringof)
     unittest {
@@ -1494,6 +1746,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9255003132036915216 > 0");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ulongDoubleComparisonUsesNumericUnsignedValue." ~ backend.stringof)
     unittest {
@@ -1510,6 +1765,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -1527,6 +1785,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9223372036854775808 == 9.22337e+18");
     }
+}
+
+static foreach (backend; backends) {
 
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
@@ -1537,6 +1798,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("castsFloatingValueNumericallyFailureMessage." ~ backend.stringof)
     unittest {
@@ -1547,6 +1811,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <float not supported> because druntime's " ~
@@ -1564,6 +1831,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <float not supported> because druntime's " ~
@@ -1580,6 +1850,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.67772e+07 == 1.67772e+07");
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
@@ -1597,6 +1870,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
@@ -1615,6 +1891,9 @@ static foreach (backend; backends) {
             "18446744073709551615 == 18446744073709551615",
         );
     }
+}
+
+static foreach (backend; backends) {
 
     @("integerFloatEqualityIsNumeric." ~ backend.stringof)
     unittest {
@@ -1627,6 +1906,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <double not supported> because druntime's " ~
@@ -1643,6 +1925,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("4607182418800017408 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("realComparisonPreservesRealPrecision." ~ backend.stringof)
     unittest {
@@ -1655,6 +1940,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
@@ -1671,6 +1959,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1.18973e+4932 < inf");
     }
+}
+
+static foreach (backend; backends) {
 
     @("castUbyteRuntimeValueTruncates." ~ backend.stringof)
     unittest {
@@ -1681,6 +1972,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("castUbyteRuntimeValueTruncatesFailureMessage." ~ backend.stringof)
     unittest {
@@ -1691,6 +1985,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("hexStringCastToUshortArrayUsesBigEndianWords." ~ backend.stringof)
     unittest {
@@ -1704,6 +2001,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.0." ~
         backend.stringof)
@@ -1716,6 +2016,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("4660 != 13330");
     }
+}
+
+static foreach (backend; backends) {
 
     @("hexStringCastToUshortArrayUsesBigEndianWordsFailureMessage.1." ~
         backend.stringof)
@@ -1728,6 +2031,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("22136 != 30806");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ubyteLocalTruncatesOnStore." ~ backend.stringof)
     unittest {
@@ -1739,6 +2045,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ubyteLocalTruncatesOnStoreFailureMessage." ~ backend.stringof)
     unittest {
@@ -1750,6 +2059,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("complexLiteralWithRuntimeParts." ~ backend.stringof)
     unittest {
@@ -1767,6 +2079,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("complexLiteralWithRuntimePartsFailureMessage." ~ backend.stringof)
     unittest {
@@ -1783,6 +2098,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("sliceCastToPointerDereferencesFirstElement." ~ backend.stringof)
     unittest {
@@ -1802,6 +2120,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("sliceCastToPointerDereferencesFirstElementFailureMessage." ~
         backend.stringof)
@@ -1822,6 +2143,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayPointerCastDereferencesFirstElement." ~ backend.stringof)
     unittest {
@@ -1842,6 +2166,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayPointerCastDereferencesFirstElementFailureMessage.0." ~
         backend.stringof)
@@ -1862,6 +2189,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayPointerCastDereferencesFirstElementFailureMessage.1." ~
         backend.stringof)
@@ -1882,6 +2212,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayElementAddressCastsToStaticArrayPointer." ~ backend.stringof)
     unittest {
@@ -1901,6 +2234,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayElementAddressCastsToStaticArrayPointerFailureMessage.0." ~
         backend.stringof)
@@ -1920,6 +2256,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("arrayElementAddressCastsToStaticArrayPointerFailureMessage.1." ~
         backend.stringof)
@@ -1939,6 +2278,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 44");
     }
+}
+
+static foreach (backend; backends) {
 
     @("castExpTypePaintedSliceFromVoidPointer." ~ backend.stringof)
     unittest {
@@ -1959,6 +2301,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("pointerCastToBoolReflectsNullness." ~ backend.stringof)
     unittest {
@@ -1978,6 +2323,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("pointerCastToBoolReflectsNullnessFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1995,6 +2343,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
+
+static foreach (backend; backends) {
 
     @("pointerCastToBoolReflectsNullnessFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2006,6 +2357,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
+
+static foreach (backend; backends) {
 
     @("conditionalExpressionTreatsNonNullPointerAsTrue." ~ backend.stringof)
     unittest {
@@ -2022,6 +2376,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.0." ~
         backend.stringof)
@@ -2039,6 +2396,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("conditionalExpressionTreatsNonNullPointerAsTrueFailureMessage.1." ~
         backend.stringof)
@@ -2056,6 +2416,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newScalarPointerDereferencesRuntimeValue." ~ backend.stringof)
     unittest {
@@ -2071,6 +2434,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("newScalarPointerDereferencesRuntimeValueFailureMessage.0." ~
         backend.stringof)
@@ -2087,6 +2453,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("newScalarPointerDereferencesRuntimeValueFailureMessage.1." ~
         backend.stringof)
@@ -2103,6 +2472,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("vectorScalarCastSplatsToStaticArray." ~ backend.stringof)
     unittest {
@@ -2129,6 +2501,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("vectorScalarCastSplatsToStaticArrayFailureMessage.0." ~
         backend.stringof)
@@ -2153,6 +2528,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("vectorScalarCastSplatsToStaticArrayFailureMessage.1." ~
         backend.stringof)
@@ -2177,6 +2555,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("runtimePointerOffsetReadsElement." ~ backend.stringof)
     unittest {
@@ -2197,6 +2578,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("runtimePointerDifferenceReadsElement." ~ backend.stringof)
     unittest {
@@ -2218,6 +2602,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("postIncrementUsesRuntimeSeed." ~ backend.stringof)
     unittest {

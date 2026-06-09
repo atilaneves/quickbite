@@ -93,14 +93,16 @@ code.
 
 # Testing
 
-Run `dub test -- --random` after every editing session. If the sandbox blocks
-`dub test`, request escalation for `dub test` instead of trying alternate test
-runners. Do not substitute `ut`, `./ut`, or `bin/ut` for the required
-`dub test -- --random` command unless the user explicitly asks for a focused
-unit-threaded run. We're using `--random` because in this project the tests run
-serially. If there's a test failure, first check with `--seed` (using the seed
-in the output to the last `dub test --random`) to investigate the cause of
-failure in that particular ordering.
+Run `dub run reggae --compiler=ldc -- -b ninja` if `build.ninja` does not
+exist, then `ninja bin/ut`, then `bin/ut --random` after every editing session.
+If the sandbox blocks these commands, request escalation for the same command
+instead of trying alternate test runners. Do not substitute `ut`, `./ut`, or
+another build command for the required `ninja bin/ut` and `bin/ut --random`
+commands unless the user explicitly asks for a focused unit-threaded run. We're
+using `--random` because in this project the tests run serially. If there's a
+test failure, first check with `--seed` (using the seed in the output to the
+last `bin/ut --random`) to investigate the cause of failure in that particular
+ordering.
 
 Run `ci.sh` before creating a PR. If the benchmarks fail to run
 properly for any backend, identify why and come up with a D language

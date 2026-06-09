@@ -112,9 +112,9 @@ private string locChars(imported!"dmd.location".Loc loc) @trusted {
 }
 
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
+    import quickbite.frontend.dmd.types: isArrayType;
 
-    return type.ty == TY.Tarray || type.ty == TY.Tsarray;
+    return isArrayType(type);
 }
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) {
@@ -181,6 +181,7 @@ private struct EvalFunctionWalker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.tokens: EXP;
         import quickbite.frontend.dmd.values: integerValue, realValue;
 
         if (auto integer = expression.isIntegerExp)
@@ -191,6 +192,9 @@ private struct EvalFunctionWalker {
 
         if (auto string_ = expression.isStringExp)
             return stringValue(string_);
+
+        if (auto array = expression.isArrayLiteralExp)
+            return arrayValue(array);
 
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
@@ -210,11 +214,30 @@ private struct EvalFunctionWalker {
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+        if (
+            expression.op == EXP.lessThan ||
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual
+        ) {
+            auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+            if (comparison is null)
+                assert(0);
+
+            return runComparisonExpression(comparison);
+        }
+
+        if (auto conditional = expression.isCondExp)
+            return runConditionalExpression(conditional);
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
+
+        if (expression.isFuncExp)
+            return Value.undisplayable;
 
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
@@ -232,6 +255,41 @@ private struct EvalFunctionWalker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
+    }
+
+    private Value runComparisonExpression(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = runExpression(comparison.e1).asReal;
+        const right = runExpression(comparison.e2).asReal;
+
+        if (comparison.op == EXP.lessThan)
+            return Value(left < right);
+        if (comparison.op == EXP.lessOrEqual)
+            return Value(left <= right);
+        if (comparison.op == EXP.greaterThan)
+            return Value(left > right);
+        return Value(left >= right);
+    }
+
+    private Value runConditionalExpression(
+        imported!"dmd.expression".CondExp conditional,
+    ) {
+        return isTruthy(runExpression(conditional.econd)) ?
+            runExpression(conditional.e1) :
+            runExpression(conditional.e2);
+    }
+
+    private bool isTruthy(in Value value) {
+        if (value == Value(false))
+            return false;
+
+        if (value == Value(true))
+            return true;
+
+        return value.castTo!bool == Value(true);
     }
 
     private Value runCallExpression(
@@ -416,13 +474,34 @@ private struct EvalFunctionWalker {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
+    }
+
+    private Value arrayValue(
+        imported!"dmd.expression".ArrayLiteralExp array,
+    ) {
+        Value[] values;
+        if (array.elements !is null)
+            foreach (element; *array.elements)
+                values ~= runExpression(element);
+
+        return Value.arrayValue(values);
     }
 
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        import std.utf: encode;
+
         char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
+        foreach (index; 0 .. string_.numberOfCodeUnits) {
+            const codeUnit = string_.getIndex(index);
+            if (string_.sz == 1) {
+                values ~= cast(char) codeUnit;
+            } else {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) codeUnit);
+                values ~= encoded[0 .. length];
+            }
+        }
 
         return values;
     }
@@ -436,6 +515,7 @@ private struct EvalModuleInterpreter {
 
     private Value[VarDeclaration] locals;
     private bool[VarDeclaration] uninitializedLocals;
+    private SliceAlias[VarDeclaration] sliceAliases;
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
@@ -576,6 +656,9 @@ private struct EvalModuleInterpreter {
 
         if (auto arrayLength = expression.isArrayLengthExp)
             return Value(runExpression(arrayLength.e1).length);
+
+        if (auto slice = expression.isSliceExp)
+            return runSliceExpression(slice);
 
         if (auto index = expression.isIndexExp)
             return runExpression(index.e1)[
@@ -749,12 +832,14 @@ private struct EvalModuleInterpreter {
     ) {
         auto savedLocals = locals.dup;
         auto savedUninitializedLocals = uninitializedLocals.dup;
+        auto savedSliceAliases = sliceAliases.dup;
         const savedResult = result;
         const savedRunningCalledFunction = runningCalledFunction;
         auto savedCurrentFunction = currentFunction;
 
         locals = null;
         uninitializedLocals = null;
+        sliceAliases = null;
         result = Value(false);
         runningCalledFunction = true;
         currentFunction = function_;
@@ -766,6 +851,7 @@ private struct EvalModuleInterpreter {
 
         locals = savedLocals;
         uninitializedLocals = savedUninitializedLocals;
+        sliceAliases = savedSliceAliases;
         result = savedResult;
         runningCalledFunction = savedRunningCalledFunction;
         currentFunction = savedCurrentFunction;
@@ -882,6 +968,7 @@ private struct EvalModuleInterpreter {
         const value = runExpression(assign.e2);
         locals[variable] = value;
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return value;
     }
 
@@ -904,6 +991,7 @@ private struct EvalModuleInterpreter {
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         const value = runExpression(rhs);
         locals[variable] = current.withArrayElement(arrayIndex, value);
+        writeThroughSliceAlias(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
     }
@@ -926,6 +1014,7 @@ private struct EvalModuleInterpreter {
         const value = runExpression(assign.e2);
         locals[variable] = current.withAppendedArrayElement(value);
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return locals[variable];
     }
 
@@ -972,7 +1061,7 @@ private struct EvalModuleInterpreter {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        return Value(stringChars(string_));
+        return Value.stringValue(stringChars(string_));
     }
 
     private Value arrayValue(
@@ -986,10 +1075,87 @@ private struct EvalModuleInterpreter {
         return Value.arrayValue(values);
     }
 
+    private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {
+        size_t lower;
+        return runSliceExpression(slice, lower);
+    }
+
+    private Value runSliceExpression(
+        imported!"dmd.expression".SliceExp slice,
+        out size_t lower,
+    ) {
+        const source = runExpression(slice.e1);
+        lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? source.length
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        Value[] values;
+        foreach (index; lower .. upper)
+            values ~= source[index];
+
+        return Value.arrayValue(values);
+    }
+
+    private void recordSliceAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".SliceExp slice,
+        in size_t lower,
+    ) {
+        auto var = slice.e1.isVarExp;
+        if (var is null) {
+            sliceAliases.remove(variable);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            sliceAliases.remove(variable);
+            return;
+        }
+
+        if (auto alias_ = source in sliceAliases)
+            sliceAliases[variable] = SliceAlias(
+                alias_.source,
+                alias_.lower + lower,
+            );
+        else
+            sliceAliases[variable] = SliceAlias(source, lower);
+    }
+
+    private void writeThroughSliceAlias(
+        VarDeclaration variable,
+        in size_t index,
+        in Value value,
+    ) {
+        auto alias_ = variable in sliceAliases;
+        if (alias_ is null)
+            return;
+
+        auto source = alias_.source in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter slice assignment target.");
+
+        locals[alias_.source] = source.withArrayElement(alias_.lower + index, value);
+        uninitializedLocals.remove(alias_.source);
+    }
+
     private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+        import std.utf: encode;
+
         char[] values;
-        foreach (index; 0 .. string_.numberOfCodeUnits)
-            values ~= cast(char) string_.getIndex(index);
+        foreach (index; 0 .. string_.numberOfCodeUnits) {
+            const codeUnit = string_.getIndex(index);
+            if (string_.sz == 1) {
+                values ~= cast(char) codeUnit;
+            } else {
+                char[4] encoded;
+                const length = encode(encoded, cast(dchar) codeUnit);
+                values ~= encoded[0 .. length];
+            }
+        }
 
         return values;
     }
@@ -1043,12 +1209,23 @@ private struct EvalModuleInterpreter {
             auto value = Value.arrayValue([]);
             locals[variable] = value;
             uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            return value;
+        }
+
+        if (auto slice = initializer.isSliceExp) {
+            size_t lower;
+            auto value = runSliceExpression(slice, lower);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            recordSliceAlias(variable, slice, lower);
             return value;
         }
 
         auto value = runExpression(initializer);
         locals[variable] = value;
         uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
         return value;
     }
 
@@ -1420,6 +1597,13 @@ private struct EvalModuleInterpreter {
         );
     }
 }
+
+
+private struct SliceAlias {
+    public imported!"dmd.declaration".VarDeclaration source;
+    public size_t lower;
+}
+
 
 private void log(A...)(auto ref A args) {
     version(unittest) {

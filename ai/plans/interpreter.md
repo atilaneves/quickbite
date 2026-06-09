@@ -270,6 +270,20 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through; signal was verified by
+temporarily disabling that write-through, which changed the promoted failure
+message from `99 != 100` to `1 != 100`.
+
+Arrays progress:
+`nestedSliceWritesPropagateToOriginalArrayFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested slice alias write-through with accumulated slice
+offsets; signal was verified by temporarily dropping the accumulated offset,
+which changed the promoted failure message from `98 != 99` to `2 != 99`.
+
 Arrays progress: `arrayLength` in `tests/ut/backends/lang/arrays.d`
 now runs on `Interpreter`. This required narrow module-backed
 `ArrayLiteralExp` evaluation into `Value.arrayValue` and `ArrayLengthExp`
@@ -321,6 +335,187 @@ Arrays progress: `ubyteArrayAppendAssignFailureMessage.1` in
 change was required; signal was verified by temporarily mutating the local
 dynamic array append handler, which changed the promoted failure message from
 `3 != 4` to `1 != 4`.
+
+Arrays progress: `arrayEqualTrue` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+evaluation and `Value.arrayValue` equality; signal was verified by temporarily
+mutating `Array.opEquals`, which failed the promoted Interpreter test with
+`[1, 2, 3] != [1, 2, 3]`.
+
+Arrays progress: `arrayEqualTrueFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and generic equality assertion message
+formatting; signal was verified by temporarily mutating the Interpreter
+equality operand formatter, which changed the promoted failure message to
+`<mutated> != <mutated>`.
+
+Arrays progress: `arrayEqualTrueFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing slice equality and array assertion message formatting;
+signal was verified by temporarily mutating `Array.opEquals` to ignore length
+differences, which made the promoted test fail because the expected assertion
+exception was no longer thrown.
+
+Arrays progress: `arrayEqualFalse` in `tests/ut/backends/lang/arrays.d`
+now runs on `Interpreter`. It was already green through existing slice
+equality and generic array assertion message formatting; signal was verified
+by temporarily making Interpreter equality always report success, which made
+the promoted fixture stop throwing the expected `[1, 2, 3] != [1, 2, 4]`
+assertion message.
+
+REPL progress:
+`repl.backend.multilineStructDeclarationsBufferUntilComplete` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing frontend REPL buffering and eval-cell expression execution;
+signal was verified by temporarily mutating the Interpreter integer literal
+handler, which changed the displayed result from `42` to `41`.
+
+REPL progress:
+`repl.backend.failedBufferedDeclarationDoesNotPoisonSession` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared buffered-input error recovery path; signal was verified by
+temporarily removing the pending-input clear after a failed buffered
+declaration, which made the final `42` submission return `void`.
+
+REPL progress:
+`repl.backend.commandsDoNotAbandonPendingInput` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared pending-command guard and existing function declaration
+execution; signal was verified by temporarily disabling the guard, which made
+the focused test fail because `:q` no longer threw while input was pending.
+
+REPL progress:
+`repl.backend.importDeclarationsPersistWithoutDisplay` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD conditional expressions and numeric comparisons,
+which is the AST produced for the imported `std.algorithm.min(3, 1)` call.
+
+REPL progress:
+`repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD function-literal expressions by returning the
+existing `<undisplayable>` value.
+
+REPL progress:
+`repl.backend.displaysNestedArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required narrow
+REPL eval support for DMD array-literal expressions by recursively evaluating
+their elements into existing `Value.arrayValue` values.
+
+REPL progress:
+`repl.backend.displaysStaticStringArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL local declaration, string-literal, and array display
+support; signal was verified by temporarily mutating the Interpreter string
+literal helper, which changed the displayed result from `["a", "b"]` to
+`["b", "c"]`.
+
+REPL progress:
+`repl.backend.displaysNestedEmptyStringValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required
+preserving string display metadata for empty D string literals by constructing
+interpreter string values through `Value.stringValue`.
+
+REPL progress:
+`repl.backend.displaysWideStringValues` in `tests/ut/backends/api/repl.d` now
+runs on `Interpreter`. This required encoding DMD wide string-literal code
+units as UTF-8 before constructing interpreter string values.
+
+REPL progress:
+`repl.backend.displaysWideCharacterArrayValues` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL string display for character arrays and UTF-8 conversion
+for wide character values; signal was verified by temporarily mutating the
+`wchar` conversion path, which changed the first displayed result from `"ab"`
+to `"bc"`.
+
+REPL promotion probe:
+All remaining CTFE-backed backend-matrix tests in
+`tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
+branch `interpreter-api-repl-plan`. The two previously split Interpreter-only
+copies of `importDeclarationsPersistWithoutDisplay` and
+`displaysUndisplayablePlaceholderForFunctionLiterals` were folded back into the
+shared matrix to avoid duplicate test names.
+
+The promoted suite was run with `dub test -- --random`; the failing seed was
+`963603312`. Re-running with `dub test -- --seed 963603312` left exactly these
+new Interpreter failures:
+
+- `importStdExposesPhobosSymbols`: `Unsupported eval statement: UnrolledLoop`.
+- `displaysFiniteRangeResults`: `Unsupported DMD default value`.
+- `displaysFilteredArrayResults`: `Unsupported eval statement: If`.
+- `displaysAssocArrayResults`: `Unsupported eval expression:
+  assocArrayLiteral`.
+- `displaysEnumValues`: displayed `["7", "[7, 8]", "7"]` instead of
+  `["E.a", "[E.a, E.b]", "7"]`.
+- `runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`: reported
+  `Unsupported eval call.` instead of the no-available-source `malloc`
+  diagnostic.
+- `expressionCtfeErrorsReportDiagnostics`: reported `Unsupported eval
+  expression: index` instead of the array-bounds diagnostic.
+- `diagnosticsHideSyntheticWrapperNames`: reported `Unsupported eval
+  expression: assert_` instead of evaluating the explicit `__FUNCTION__`
+  assertion message to `<repl>`.
+
+The remaining promoted Interpreter cases were already green:
+`displaysStringValues`, `specialTokenValuesHideWrapperInternals`,
+`numericScalarDisplayUsesDLiteralSuffixes`, `noDisplayCellsReturnVoid`,
+`runLoadedUnittestBlocks`, `runLoadedTestsWithNothingLoadedReturnsVoid`,
+`loadedUnittestFailuresReportReplLocation`,
+`laterLoadedUnittestFailuresReportReplLocation`,
+`runLoadedTestsReportsEveryFailedUnittest`, `runLoadedFileUnittestBlocks`,
+`loadedSourceDoesNotAdvanceTypedReplLocations`,
+`loadedFileUnittestFailuresReportFileLocation`,
+`loadModuleFileErrorsHideSyntheticNames`,
+`duplicateDeclarationsHideSyntheticNames`,
+`failedModuleNoDisplayCellsDoNotPoisonSession`,
+`syntaxErrorsHideWrapperInternals`,
+`functionCallMismatchShowsCandidateSignature`, and
+`functionCallMismatchShowsOverloadSignatures`.
+
+Fix plan for the failing REPL probe:
+
+1. Start with the narrow REPL walker parity cases before Phobos ranges. Add
+   `EvalFunctionWalker` support for `AssertExp`, using the existing module
+   interpreter assertion-message helpers as the reference but only for the
+   explicit-message REPL shape required by
+   `diagnosticsHideSyntheticWrapperNames`. This should evaluate
+   `assert(false, __FUNCTION__)` to the sanitized `<repl>` message.
+
+2. Add `EvalFunctionWalker` external-source call diagnostics to match
+   `EvalModuleInterpreter.runCallExpression`: when a resolved `call.f` has no
+   body, report the mechanically-derived no-available-source message before
+   falling through to generic unsupported-call diagnostics. This should make
+   the `malloc` REPL cell fail with the CTFE-compatible diagnostic while
+   preserving session state.
+
+3. Add read-only REPL `IndexExp` support for local and literal dynamic arrays,
+   including DMD-compatible bounds messages for the two promoted REPL shapes:
+   literal `[1, 2, 3][10]` and local `arr[99]`. Reuse `Value` array indexing
+   where it already reports the desired diagnostic; otherwise add a small
+   helper that formats the existing CTFE messages without adding writes,
+   slices, or pointer indexing.
+
+4. Add REPL `AssocArrayLiteralExp` support by evaluating DMD literal keys and
+   values into `Value.assocArrayValue`. Keep this literal-only and display-only
+   for `displaysAssocArrayResults`; do not add associative-array indexing,
+   mutation, `.keys`, `.values`, or runtime druntime hooks until a promoted
+   test requires them.
+
+5. Preserve enum display metadata in REPL expression evaluation. When DMD
+   represents an enum member as an `IntegerExp` with enum type, construct
+   `Value.enumValue` from the original expression spelling, matching the CTFE
+   backend's `ctfeValue` behavior. Ensure casts to integral types still discard
+   the enum display wrapper so `cast(int) E.a` remains `7`.
+
+6. Tackle Phobos range expressions last. First add `UnrolledLoopStatement`
+   sequencing and the narrow `IfStatement` behavior observed in the lowered
+   `std`/`std.algorithm` template bodies. Then inspect the
+   `Unsupported DMD default value` path from `displaysFiniteRangeResults`;
+   likely fixes are limited default-value support for the Phobos range wrapper
+   types or returning an undisplayable/default display value for fields that
+   cannot be materialized. Do not implement a broad range engine or generic
+   Phobos interpreter without another promoted red test forcing each step.
 
 ### Math Slice Lessons
 
@@ -759,6 +954,34 @@ Arrays progress: `localDynamicArrayAppendFailureMessage.1` in
 green through existing null dynamic array, append, index-read, and equality
 assertion message support; signal was verified by temporarily mutating the
 Interpreter array append handler.
+
+Arrays progress: `nestedSliceWritesPropagateToOriginalArray` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. This required
+narrow `SliceExp` evaluation for dynamic array values plus local slice-alias
+writeback so an indexed write through a nested slice updates the original
+array local.
+
+Arrays progress: `nestedSliceAppendKeepsOriginalArrayTail` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation and local array append
+detachment; signal was verified by temporarily mutating the fixture's expected
+tail value.
+
+Arrays progress:
+`nestedSliceAppendKeepsOriginalArrayTailFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation, local array append detachment,
+index-read, and equality assertion message support; signal was verified by
+temporarily mutating the Interpreter `IndexExp` handler, which made the
+promoted fixture stop throwing the expected `3 != 4` message.
+
+Arrays progress:
+`nestedSliceAppendKeepsOriginalArrayTailFailureMessage.1` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
+green through existing nested-slice evaluation, local array append detachment,
+index-read, and equality assertion message support; signal was verified by
+temporarily mutating the append handler to write through the slice alias, which
+made the promoted fixture fail before the expected `4 != 5` assertion message.
 
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already

@@ -19,6 +19,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsContinueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -34,6 +37,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("4 != 5");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsContinueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -49,6 +55,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsSwitch." ~ backend.stringof)
     unittest {
@@ -71,6 +80,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsSwitchFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -93,6 +105,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("20 != 21");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsSwitchFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -115,6 +130,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("30 != 31");
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchFallsThroughToDefault." ~ backend.stringof)
     unittest {
@@ -137,6 +155,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchFallsThroughToDefaultFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -159,6 +180,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("12 != 13");
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchFallsThroughToDefaultFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -181,6 +205,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoCase." ~ backend.stringof)
     unittest {
@@ -203,6 +230,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoCaseFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -225,6 +255,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("30 != 31");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoCaseFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -247,6 +280,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("20 != 30");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoDefault." ~ backend.stringof)
     unittest {
@@ -269,6 +305,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoDefaultFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -291,6 +330,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("40 != 41");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsGotoDefaultFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -313,6 +355,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("20 != 40");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDirectGotoLabel." ~ backend.stringof)
     unittest {
@@ -331,6 +376,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDirectGotoLabelFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -349,6 +397,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDirectGotoLabelFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -367,6 +418,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("9 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsExpressionStatement." ~ backend.stringof)
     unittest {
@@ -385,6 +439,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsCompoundStatement." ~ backend.stringof)
     unittest {
@@ -405,6 +462,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsBreakStatement." ~ backend.stringof)
     unittest {
@@ -427,6 +487,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsContinueStatement." ~ backend.stringof)
     unittest {
@@ -449,6 +512,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoCaseUsesRuntimeSelector." ~ backend.stringof)
     unittest {
@@ -477,6 +543,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoDefaultUsesRuntimeSelector." ~ backend.stringof)
     unittest {
@@ -505,6 +574,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsBreakStatementInTryFinally." ~ backend.stringof)
     unittest {
@@ -530,6 +602,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsContinueStatementInTryFinally." ~ backend.stringof)
     unittest {
@@ -555,6 +630,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsGotoStatementInTryFinally." ~ backend.stringof)
     unittest {
@@ -580,6 +658,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsGotoCaseStatementInTryFinally." ~ backend.stringof)
     unittest {
@@ -613,6 +694,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("gotoRestartsGotoDefaultStatementInTryFinally." ~ backend.stringof)
     unittest {
@@ -646,6 +730,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("catchHandlerGotoRestartsBreakStatement." ~ backend.stringof)
     unittest {
@@ -671,6 +758,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("catchHandlerGotoRestartsContinueStatement." ~ backend.stringof)
     unittest {
@@ -696,6 +786,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("catchHandlerGotoRestartsGotoStatement." ~ backend.stringof)
     unittest {
@@ -721,6 +814,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDoWhileBreakAndContinue." ~ backend.stringof)
     unittest {
@@ -740,6 +836,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDoWhileBreakAndContinueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -759,6 +858,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("8 != 9");
     }
+}
+
+static foreach (backend; backends) {
 
     @("supportsDoWhileBreakAndContinueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -778,6 +880,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledContinueSkipsToOuterForIncrement." ~ backend.stringof)
     unittest {
@@ -801,6 +906,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledContinueSkipsToOuterForIncrementFailureMessage.0." ~
         backend.stringof)
@@ -825,6 +933,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledContinueSkipsToOuterForIncrementFailureMessage.1." ~
         backend.stringof)
@@ -849,6 +960,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 6");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetected." ~ backend.stringof)
     unittest {
@@ -868,6 +982,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetectedFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -887,6 +1004,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerHashCollisionDetectedFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -906,6 +1026,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCallees." ~ backend.stringof)
     unittest {
@@ -926,6 +1049,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCalleesFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -946,6 +1072,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("11 != 12");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerDispatchesToDistinctCalleesFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -966,6 +1095,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("22 != 23");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCallee." ~ backend.stringof)
     unittest {
@@ -990,6 +1122,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCalleeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1014,6 +1149,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("17 != 18");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionPointerCallCanEnterFunctionWithCalleeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1038,6 +1176,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("18 != 17");
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturn." ~ backend.stringof)
     unittest {
@@ -1052,6 +1193,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturnFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1066,6 +1210,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturnFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1080,6 +1227,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunction." ~ backend.stringof)
     unittest {
@@ -1091,6 +1241,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunctionFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1104,6 +1257,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunctionFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1116,6 +1272,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachExpressionTupleBreakAndContinue." ~ backend.stringof)
     unittest {
@@ -1142,6 +1301,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachExpressionTupleBreakAndContinueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1168,6 +1330,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachExpressionTupleBreakAndContinueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1194,6 +1359,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachArray." ~ backend.stringof)
     unittest {
@@ -1207,6 +1375,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachArrayFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1220,6 +1391,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachArrayFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1233,6 +1407,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachUtf8String." ~ backend.stringof)
     unittest {
@@ -1254,6 +1431,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachUtf16String." ~ backend.stringof)
     unittest {
@@ -1275,6 +1455,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachUtf32StringEncodesAsUtf8." ~ backend.stringof)
     unittest {
@@ -1296,6 +1479,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachReverseUtf16String." ~ backend.stringof)
     unittest {
@@ -1317,6 +1503,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachUtf8StringFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1336,6 +1525,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachUtf8StringFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1355,6 +1547,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("'a' != 'b'");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachEmptyArray." ~ backend.stringof)
     unittest {
@@ -1368,6 +1563,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachEmptyArrayFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1381,6 +1579,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("0 != 1");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachEmptyArrayFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1394,6 +1595,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileNeverRuns." ~ backend.stringof)
     unittest {
@@ -1411,6 +1615,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileNeverRunsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1428,6 +1635,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileNeverRunsFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1445,6 +1655,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileRunsOnce." ~ backend.stringof)
     unittest {
@@ -1464,6 +1677,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileRunsOnceFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1483,6 +1699,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileRunsOnceFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1502,6 +1721,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("while_." ~ backend.stringof)
     unittest {
@@ -1521,6 +1743,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1540,6 +1765,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1559,6 +1787,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledBreakExitsOuterForLoop." ~ backend.stringof)
     unittest {
@@ -1583,6 +1814,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledBreakExitsOuterForLoopFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1607,6 +1841,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("labeledBreakExitsOuterForLoopFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1631,6 +1868,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchBreaksOuterLoop." ~ backend.stringof)
     unittest {
@@ -1659,6 +1899,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchBreaksOuterLoopFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1687,6 +1930,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("14 != 15");
     }
+}
+
+static foreach (backend; backends) {
 
     @("switchBreaksOuterLoopFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1715,6 +1961,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("11 != 14");
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturn." ~ backend.stringof)
     unittest {
@@ -1728,6 +1977,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturnFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1742,6 +1994,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
+
+static foreach (backend; backends) {
 
     @("voidFunctionExplicitReturnFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1757,6 +2012,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameter." ~ backend.stringof)
     unittest {
@@ -1770,6 +2028,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameterFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1783,6 +2044,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameterFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1796,6 +2060,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameters." ~ backend.stringof)
     unittest {
@@ -1809,6 +2076,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParametersFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1822,6 +2092,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParametersFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1835,6 +2108,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParameter." ~ backend.stringof)
     unittest {
@@ -1850,6 +2126,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParameterFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1865,6 +2144,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParameterFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1880,6 +2162,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifBodyAssignment." ~ backend.stringof)
     unittest {
@@ -1896,6 +2181,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifBodyAssignmentFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1912,6 +2200,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("2 != 3");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifBodyAssignmentFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1928,6 +2219,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 4");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElse." ~ backend.stringof)
     unittest {
@@ -1945,6 +2239,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -1962,6 +2259,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -1979,6 +2279,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 44");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseUntakenBranch." ~ backend.stringof)
     unittest {
@@ -1999,6 +2302,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseUntakenBranchFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2019,6 +2325,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseUntakenBranchFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2039,6 +2348,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("earlyReturn." ~ backend.stringof)
     unittest {
@@ -2056,6 +2368,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("earlyReturnFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2073,6 +2388,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("earlyReturnFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2090,6 +2408,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 44");
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleEarlyReturns." ~ backend.stringof)
     unittest {
@@ -2111,6 +2432,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleEarlyReturnsFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2132,6 +2456,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("41 != 42");
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleEarlyReturnsFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2153,6 +2480,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("43 != 44");
     }
+}
+
+static foreach (backend; backends) {
 
     @("inFunctionParameters." ~ backend.stringof)
     unittest {
@@ -2166,6 +2496,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("inFunctionParametersFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2179,6 +2512,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("inFunctionParametersFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2192,6 +2528,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleRefParameters." ~ backend.stringof)
     unittest {
@@ -2207,6 +2546,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleRefParametersFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2222,6 +2564,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("multipleRefParametersFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2237,6 +2582,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refSizeTParameter." ~ backend.stringof)
     unittest {
@@ -2252,6 +2600,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("refSizeTParameterFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2267,6 +2618,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refSizeTParameterFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2282,6 +2636,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShape." ~ backend.stringof)
     unittest {
@@ -2296,6 +2653,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2310,6 +2670,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("localIntReturnDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2324,6 +2687,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShape." ~ backend.stringof)
     unittest {
@@ -2337,6 +2703,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2350,6 +2719,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("functionParameterDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2363,6 +2735,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShape." ~ backend.stringof)
     unittest {
@@ -2381,6 +2756,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2399,6 +2777,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("ifElseDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2417,6 +2798,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileDmdCodegenShape." ~ backend.stringof)
     unittest {
@@ -2429,6 +2813,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileDmdCodegenShapeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2441,6 +2828,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("whileDmdCodegenShapeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2453,6 +2843,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachRange." ~ backend.stringof)
     unittest {
@@ -2465,6 +2858,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachRangeFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2477,6 +2873,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 4");
     }
+}
+
+static foreach (backend; backends) {
 
     @("foreachRangeFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2489,6 +2888,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturn." ~ backend.stringof)
     unittest {
@@ -2503,6 +2905,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2517,6 +2922,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("3 != 4");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2531,6 +2939,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValues." ~ backend.stringof)
     unittest {
@@ -2545,6 +2956,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValuesFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2559,6 +2973,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithReturnDifferentValuesFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2573,6 +2990,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParam." ~ backend.stringof)
     unittest {
@@ -2588,6 +3008,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2603,6 +3026,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2618,6 +3044,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElement." ~ backend.stringof)
     unittest {
@@ -2633,6 +3062,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElementFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2648,6 +3080,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("20 != 21");
     }
+}
+
+static foreach (backend; backends) {
 
     @("freeFunctionCallWithArrayParamSecondElementFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2663,6 +3098,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWriteback." ~ backend.stringof)
     unittest {
@@ -2678,6 +3116,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWritebackFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2693,6 +3134,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("6 != 7");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWritebackFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2708,6 +3152,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValue." ~ backend.stringof)
     unittest {
@@ -2723,6 +3170,9 @@ static foreach (backend; backends) {
             }
         });
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValueFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -2738,6 +3188,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("11 != 12");
     }
+}
+
+static foreach (backend; backends) {
 
     @("refParamWritebackDifferentValueFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -2753,6 +3206,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
+
+static foreach (backend; backends) {
 
     @("structMethodReturnDoesNotSkipCallerStatements." ~ backend.stringof)
     unittest {

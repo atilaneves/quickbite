@@ -188,24 +188,10 @@ private string testFailureDiagnostics(
 private bool functionReturnsString(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.astenums: TY;
+    import quickbite.frontend.dmd.types: isCharacterArrayType;
 
     auto returnType = function_.type is null ? null : function_.type.nextOf;
-    if (returnType is null)
-        return false;
-
-    auto array = returnType.toBasetype.isTypeDArray;
-    if (array is null || array.nextOf is null)
-        return false;
-
-    switch (array.nextOf.toBasetype.ty) with (TY) {
-        case Tchar:
-        case Twchar:
-        case Tdchar:
-            return true;
-        default:
-            return false;
-    }
+    return isCharacterArrayType(returnType);
 }
 
 public string[] runReplLoop(
