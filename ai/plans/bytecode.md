@@ -143,6 +143,11 @@ Lua-specific bytecode shape.
   coverage gap after the REPL expression-side-effects slice: bytecode already
   executes no-display statement cells immediately through the existing
   pre-increment local mutation path.
+- `repl.backend.functionDeclarationsPersistWithoutSemicolon` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  missing queued function-body emission for eval/REPL bytecode programs, so
+  bytecode now emits the entry body, halts, and then drains called functions for
+  REPL evaluation just as it already did for unittest execution.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it

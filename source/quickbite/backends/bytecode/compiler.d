@@ -48,7 +48,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     Compiler compiler;
-    compiler.compileStatement(function_.fbody);
+    compiler.compileEntryFunction(function_);
     return compiler.program;
 }
 
@@ -79,7 +79,11 @@ private struct Compiler {
     private FuncDeclaration currentFunction;
 
     private void compileUnitTest(FuncDeclaration unitTest) {
-        compileFunctionBody(unitTest);
+        compileEntryFunction(unitTest);
+    }
+
+    private void compileEntryFunction(FuncDeclaration function_) {
+        compileFunctionBody(function_);
         program.instructions ~= Instruction(Op.halt);
 
         // Compiling one deferred function can discover more called functions,
