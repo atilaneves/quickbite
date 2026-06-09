@@ -323,7 +323,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -336,7 +336,9 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
             }
         }).shouldThrowWithMessage("4 != 5");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
