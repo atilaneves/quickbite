@@ -59,7 +59,7 @@ private struct Compiler {
     import dmd.func: FuncDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        DotVarExp, Expression, LogicalExp, PreExp;
+        DotVarExp, Expression, IdentityExp, LogicalExp, PreExp, TypeidExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -219,6 +219,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto identity = expression.isIdentityExp) {
+            compileBinaryExpression(identity, identityOp(identity));
+            return;
+        }
+
         if (auto logical = expression.isLogicalExp) {
             if (isAndAnd(logical)) {
                 compileAndAnd(logical);
@@ -306,6 +311,11 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp) {
             compileCall(call);
+            return;
+        }
+
+        if (auto typeid_ = expression.isTypeidExp) {
+            compileTypeid(typeid_);
             return;
         }
 
@@ -606,6 +616,35 @@ private struct Compiler {
         program.instructions ~= Instruction(Op.throw_);
     }
 
+    private void compileTypeid(TypeidExp typeid_) {
+        import dmd.dtemplate: isExpression;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression !is null) {
+            compileExpression(expression);
+            program.instructions ~= Instruction(
+                Op.throwIfNullClassField,
+                Value(nullTypeidMessage(expression)),
+            );
+            program.instructions ~= Instruction(Op.pop);
+        }
+
+        program.instructions ~= Instruction(
+            Op.literal,
+            Value.typeName("bytecode.typeid"),
+        );
+    }
+
+    private string nullTypeidMessage(Expression expression) {
+        import std.conv: text;
+
+        return text(
+            "null pointer dereference evaluating typeid. `",
+            receiverName(expression),
+            "` is `null`",
+        );
+    }
+
     private string nullClassFieldMessage(DotVarExp dot) {
         import std.conv: text;
 
@@ -815,6 +854,12 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return equal.op == EXP.notEqual ? Op.notEqual : Op.equal;
+    }
+
+    private Op identityOp(IdentityExp identity) {
+        import dmd.tokens: EXP;
+
+        return identity.op == EXP.notIdentity ? Op.notEqual : Op.equal;
     }
 
     private Value assertMessageValue(AssertExp assert_) {

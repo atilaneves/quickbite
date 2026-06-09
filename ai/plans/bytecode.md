@@ -331,6 +331,13 @@ Lua-specific bytecode shape.
   evaluates the field receiver and reports the null-receiver diagnostic
   `` class `thing` is `null` and cannot be dereferenced `` before leaving
   non-null class field reads unsupported.
+- `typeidNullClassReferenceReportsDiagnostic` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing DMD `TypeidExp` and `IdentityExp` lowering for this
+  diagnostic path. Bytecode now evaluates expression-backed `typeid`, reports
+  `` null pointer dereference evaluating typeid. `thing` is `null` `` for a
+  null class reference, and keeps general TypeInfo behavior outside this
+  slice.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

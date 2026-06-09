@@ -420,7 +420,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -433,7 +433,9 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage(
             "null pointer dereference evaluating typeid. `thing` is `null`");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(
