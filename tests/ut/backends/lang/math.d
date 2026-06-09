@@ -1111,4 +1111,23 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
             }
         }).shouldThrowWithMessage("10 != 11");
     }
+
+    @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double sqrt(double value) {
+                return value + 1.0;
+            }
+
+            double fabs(double value) {
+                return value + 2.0;
+            }
+
+            unittest {
+                double input = 9.0;
+                assert(fabs(input) == 12.0);
+            }
+        }).shouldThrowWithMessage("11 != 12");
+    }
 }
