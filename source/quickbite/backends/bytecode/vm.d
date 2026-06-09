@@ -30,6 +30,7 @@ private RunResult run(
     import quickbite.lang: Value;
 
     Value[] stack;
+    size_t[] refStack;
     Value[] locals;
     Frame[] frames;
     size_t ip;
@@ -48,6 +49,7 @@ private RunResult run(
 
                 const function_ = program.functions[instruction.operand];
                 Value[] calleeLocals;
+                RefArgument[] refArguments;
                 calleeLocals.length = function_.parameterCount;
                 foreach_reverse (index; 0 .. function_.parameterCount) {
                     if (stack.length < 1)
@@ -55,9 +57,17 @@ private RunResult run(
 
                     calleeLocals[index] = stack[$ - 1];
                     stack.length -= 1;
+
+                    if (function_.refParameters[index]) {
+                        if (refStack.length < 1)
+                            throw new Exception("Bytecode ref stack underflow");
+
+                        refArguments ~= RefArgument(index, refStack[$ - 1]);
+                        refStack.length -= 1;
+                    }
                 }
 
-                frames ~= Frame(ip + 1, locals);
+                frames ~= Frame(ip + 1, locals, refArguments);
                 locals = calleeLocals;
                 ip = function_.entry;
                 break;
@@ -89,6 +99,15 @@ private RunResult run(
                     throw new Exception("Bytecode local out of bounds");
 
                 stack ~= locals[instruction.operand];
+                ++ip;
+                break;
+
+            case Op.loadLocalReference:
+                if (instruction.operand >= locals.length)
+                    throw new Exception("Bytecode local out of bounds");
+
+                stack ~= locals[instruction.operand];
+                refStack ~= instruction.operand;
                 ++ip;
                 break;
 
@@ -141,6 +160,18 @@ private RunResult run(
                 stack.length -= 2;
 
                 stack ~= Value(lhs == rhs);
+                ++ip;
+                break;
+
+            case Op.notEqual:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs != rhs);
                 ++ip;
                 break;
 
@@ -216,6 +247,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.lessOrEqual:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong <= rhs.asLong);
+                ++ip;
+                break;
+
             case Op.greaterThan:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -225,6 +268,18 @@ private RunResult run(
                 stack.length -= 2;
 
                 stack ~= Value(lhs.asLong > rhs.asLong);
+                ++ip;
+                break;
+
+            case Op.greaterOrEqual:
+                if (stack.length < 2)
+                    throw new Exception("Bytecode stack underflow");
+
+                const rhs = stack[$ - 1];
+                const lhs = stack[$ - 2];
+                stack.length -= 2;
+
+                stack ~= Value(lhs.asLong >= rhs.asLong);
                 ++ip;
                 break;
 
@@ -279,8 +334,13 @@ private RunResult run(
                 const lhs = stack[$ - 2];
                 stack.length -= 2;
 
-                if (lhs != rhs)
-                    throw new Exception(assertCompareMessage(lhs, rhs));
+                const comparison = cast(Op) instruction.operand;
+                if (!comparisonHolds(lhs, rhs, comparison))
+                    throw new Exception(assertCompareMessage(
+                        lhs,
+                        rhs,
+                        comparison,
+                    ));
 
                 ++ip;
                 break;
@@ -328,6 +388,16 @@ private RunResult run(
 
                 auto frame = frames[$ - 1];
                 frames.length -= 1;
+                foreach (refArgument; frame.refArguments) {
+                    if (refArgument.parameterIndex >= locals.length)
+                        throw new Exception("Bytecode local out of bounds");
+
+                    if (refArgument.callerLocalIndex >= frame.locals.length)
+                        throw new Exception("Bytecode local out of bounds");
+
+                    frame.locals[refArgument.callerLocalIndex] =
+                        locals[refArgument.parameterIndex];
+                }
                 locals = frame.locals;
                 ip = frame.returnIp;
                 break;
@@ -348,15 +418,126 @@ private struct RunResult {
 private struct Frame {
     size_t returnIp;
     imported!"quickbite.lang".Value[] locals;
+    RefArgument[] refArguments;
+}
+
+private struct RefArgument {
+    size_t parameterIndex;
+    size_t callerLocalIndex;
 }
 
 private string assertCompareMessage(
     in imported!"quickbite.lang".Value lhs,
     in imported!"quickbite.lang".Value rhs,
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
 ) @safe pure {
     import std.conv: text;
 
-    return text(compareOperandMessage(lhs), " != ", compareOperandMessage(rhs));
+    return text(
+        compareOperandMessage(lhs),
+        " ",
+        inverseComparisonOperator(comparison),
+        " ",
+        compareOperandMessage(rhs),
+    );
+}
+
+private bool comparisonHolds(
+    in imported!"quickbite.lang".Value lhs,
+    in imported!"quickbite.lang".Value rhs,
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
+) @safe pure {
+    import quickbite.backends.bytecode.instructions: Op;
+
+    final switch (comparison) {
+        case Op.equal:
+            return lhs == rhs;
+        case Op.notEqual:
+            return lhs != rhs;
+        case Op.lessThan:
+            return lhs.asLong < rhs.asLong;
+        case Op.lessOrEqual:
+            return lhs.asLong <= rhs.asLong;
+        case Op.greaterThan:
+            return lhs.asLong > rhs.asLong;
+        case Op.greaterOrEqual:
+            return lhs.asLong >= rhs.asLong;
+        case Op.literal:
+        case Op.call:
+        case Op.jump:
+        case Op.jumpIfFalse:
+        case Op.pop:
+        case Op.loadLocal:
+        case Op.loadLocalReference:
+        case Op.initializeLocal:
+        case Op.storeLocal:
+        case Op.incrementLocal:
+        case Op.cast_:
+        case Op.add:
+        case Op.subtract:
+        case Op.multiply:
+        case Op.divide:
+        case Op.bitOr:
+        case Op.not_:
+        case Op.negate:
+        case Op.unaryNativeCall:
+        case Op.binaryNativeCall:
+        case Op.assertCompare:
+        case Op.assertFalse:
+        case Op.assertTrue:
+        case Op.throw_:
+        case Op.ret:
+        case Op.halt:
+            assert(0, "Unsupported bytecode assert comparison.");
+    }
+}
+
+private string inverseComparisonOperator(
+    in imported!"quickbite.backends.bytecode.instructions".Op comparison,
+) @safe pure {
+    import quickbite.backends.bytecode.instructions: Op;
+
+    final switch (comparison) {
+        case Op.equal:
+            return "!=";
+        case Op.notEqual:
+            return "==";
+        case Op.lessThan:
+            return ">=";
+        case Op.lessOrEqual:
+            return ">";
+        case Op.greaterThan:
+            return "<=";
+        case Op.greaterOrEqual:
+            return "<";
+        case Op.literal:
+        case Op.call:
+        case Op.jump:
+        case Op.jumpIfFalse:
+        case Op.pop:
+        case Op.loadLocal:
+        case Op.loadLocalReference:
+        case Op.initializeLocal:
+        case Op.storeLocal:
+        case Op.incrementLocal:
+        case Op.cast_:
+        case Op.add:
+        case Op.subtract:
+        case Op.multiply:
+        case Op.divide:
+        case Op.bitOr:
+        case Op.not_:
+        case Op.negate:
+        case Op.unaryNativeCall:
+        case Op.binaryNativeCall:
+        case Op.assertCompare:
+        case Op.assertFalse:
+        case Op.assertTrue:
+        case Op.throw_:
+        case Op.ret:
+        case Op.halt:
+            assert(0, "Unsupported bytecode assert comparison.");
+    }
 }
 
 private string assertFalseMessage(

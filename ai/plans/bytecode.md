@@ -212,6 +212,74 @@ Lua-specific bytecode shape.
   inside logical expressions, so bytecode now lowers the required integer `<`
   and `>` comparisons to bool results while preserving bool equality assertion
   diagnostics such as `true != false` and `false != true`.
+- `voidFunctionReturnsToCaller` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: the existing bytecode module test path already handled a
+  called `void` function returning to its unittest caller before reporting the
+  following failed integer equality assertion as `1 != 2`.
+- `intLessThanOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing bytecode assertion diagnostics for
+  failed `<` assertions: bytecode now tags assertion comparisons with the
+  comparison operation and reports the inverse failed relation, such as
+  `42 >= 42`, instead of a generic failed assertion string.
+- `intLessOrEqualOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing DMD `<=` lowering in bytecode, so
+  the VM now evaluates a narrow `lessOrEqual` opcode and formats failed
+  assertion diagnostics with the inverse operator, such as `43 > 42`.
+- `intGreaterThanOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed that `>` expression execution already
+  existed, but assertion-specific comparison lowering did not tag failed `>`
+  assertions. Bytecode now emits `Op.greaterThan` for that path and reports the
+  inverse failed relation, such as `42 <= 42`.
+- `intGreaterOrEqualOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing DMD `>=` lowering in bytecode, so
+  the VM now evaluates a narrow `greaterOrEqual` opcode and formats failed
+  assertion diagnostics with the inverse operator, such as `41 < 42`.
+- `intNotEqualOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed that DMD `EqualExp` lowering did not yet
+  distinguish `!=` from `==`, so bytecode now emits and evaluates a `notEqual`
+  opcode and reports failed `!=` assertions with the inverse operator, such as
+  `42 == 42`.
+- `ok` in `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This
+  was a stale coverage gap: the existing bytecode function-call, return, and
+  equality assertion path already handled the passing assertion.
+- `oops` in `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This
+  was a stale coverage gap: the existing bytecode equality assertion diagnostic
+  path already reported the failed function-return comparison as `42 != 43`.
+- `okFailureMessage.0` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode equality
+  assertion diagnostic path already reported the failed function-return
+  comparison as `7 != 8`.
+- `localIntReturnOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode local
+  declaration, load, function-return, and equality assertion diagnostic path
+  already reported the failed comparison as `42 != 43`.
+- `voidFunctionOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode call-frame
+  and integer assertion-failure path already propagated the failure from a
+  called `void` function as `` `assert(0)` failed ``.
+- `functionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: the existing bytecode
+  parameter binding, integer addition, return, and equality assertion
+  diagnostic path already reported the failed comparison as `43 != 42`.
+- `tenFunctionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: the existing bytecode call
+  frame parameter binding handled the wider ten-argument call and reported the
+  failed summed comparison as `56 != 42`.
+- `functionParameterOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing bytecode single
+  parameter binding, integer addition, return, and equality assertion
+  diagnostic path already reported the failed comparison as `42 != 43`.
+- `ifElseOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing DMD `IfStatement` lowering in the
+  bytecode compiler, so bytecode now emits narrow branch control flow using the
+  existing jump opcodes and reports the selected branch result as `43 != 42`.
+- `refParameterOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. The promotion exposed missing local assignment lowering and
+  scalar local `ref` argument writeback. Bytecode now lowers simple local
+  assignment, records local reference arguments for calls, writes ref parameter
+  locals back to caller locals on return, and reports the final failed
+  comparison as `42 != 43`.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

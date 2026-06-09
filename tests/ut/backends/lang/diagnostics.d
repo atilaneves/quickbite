@@ -6,7 +6,7 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -24,7 +24,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("1 != 2");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intLessThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -39,7 +41,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 >= 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intLessOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -54,7 +58,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 > 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intGreaterThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -69,7 +75,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 <= 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -84,7 +92,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("41 < 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -99,7 +109,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 == 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -112,7 +124,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         });
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -125,7 +139,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -138,7 +154,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("7 != 8");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -152,7 +170,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -165,7 +185,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(0)` failed");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("functionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -178,7 +200,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -203,7 +227,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("56 != 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -216,7 +242,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("ifElseOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -232,7 +260,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -247,7 +277,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("inFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -58,8 +58,8 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, Expression,
-        LogicalExp, PreExp;
+        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
+        Expression, LogicalExp, PreExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -127,6 +127,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            compileIfStatement(if_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             compileThrow(throw_);
             return;
@@ -134,6 +139,23 @@ private struct Compiler {
 
         import std.conv: text;
         throw new Exception(text("Unsupported bytecode statement: ", statement.stmt));
+    }
+
+    private void compileIfStatement(
+        imported!"dmd.statement".IfStatement if_,
+    ) {
+        compileExpression(if_.condition);
+        const falseJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+
+        compileStatement(if_.ifbody);
+        const endJump = emitJump(Op.jump);
+
+        patchJump(falseJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileStatement(if_.elsebody);
+
+        patchJump(endJump);
     }
 
     private void compileExpression(
@@ -185,7 +207,7 @@ private struct Compiler {
         }
 
         if (auto equal = expression.isEqualExp) {
-            compileBinaryExpression(equal, Op.equal);
+            compileBinaryExpression(equal, equalityOp(equal));
             return;
         }
 
@@ -208,6 +230,11 @@ private struct Compiler {
 
         if (auto addAssign = expression.isAddAssignExp) {
             compileAddAssign(addAssign);
+            return;
+        }
+
+        if (auto assignment = expression.isAssignExp) {
+            compileAssign(assignment);
             return;
         }
 
@@ -285,6 +312,16 @@ private struct Compiler {
         program.instructions ~= Instruction(op);
     }
 
+    private void compileAssertComparison(BinExp expression, in Op op) {
+        compileExpression(expression.e1);
+        compileExpression(expression.e2);
+        program.instructions ~= Instruction(
+            Op.assertCompare,
+            Value.void_,
+            op,
+        );
+    }
+
     private void compileComparisonExpression(CmpExp expression) {
         import dmd.tokens: EXP;
 
@@ -293,8 +330,18 @@ private struct Compiler {
             return;
         }
 
+        if (expression.op == EXP.lessOrEqual) {
+            compileBinaryExpression(expression, Op.lessOrEqual);
+            return;
+        }
+
         if (expression.op == EXP.greaterThan) {
             compileBinaryExpression(expression, Op.greaterThan);
+            return;
+        }
+
+        if (expression.op == EXP.greaterOrEqual) {
+            compileBinaryExpression(expression, Op.greaterOrEqual);
             return;
         }
 
@@ -350,7 +397,9 @@ private struct Compiler {
         import dmd.tokens: EXP;
 
         return expression.op == EXP.lessThan ||
-            expression.op == EXP.greaterThan;
+            expression.op == EXP.lessOrEqual ||
+            expression.op == EXP.greaterThan ||
+            expression.op == EXP.greaterOrEqual;
     }
 
     private CmpExp castComparisonExpression(Expression expression) {
@@ -445,6 +494,25 @@ private struct Compiler {
         );
     }
 
+    private void compileAssign(
+        AssignExp assignment,
+    ) {
+        auto variable = assignment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception("Unsupported bytecode assignment target.");
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception("Unsupported bytecode assignment target.");
+
+        compileExpression(assignment.e2);
+        program.instructions ~= Instruction(
+            Op.storeLocal,
+            Value.void_,
+            localIndex(declaration),
+        );
+    }
+
     private void compileCast(CastExp cast_) {
         compileExpression(cast_.e1);
 
@@ -485,8 +553,8 @@ private struct Compiler {
                 throw new Exception(noAvailableSourceMessage(function_));
 
             if (call.arguments !is null)
-                foreach (argument; *call.arguments)
-                    compileExpression(argument);
+                foreach (index, argument; *call.arguments)
+                    compileCallArgument(function_, index, argument);
 
             program.instructions ~= Instruction(
                 Op.call,
@@ -563,8 +631,33 @@ private struct Compiler {
             return;
 
         if (auto equal = assert_.e1.isEqualExp) {
-            compileBinaryExpression(equal, Op.assertCompare);
+            compileAssertComparison(equal, equalityOp(equal));
             return;
+        }
+
+        if (isComparisonExpression(assert_.e1)) {
+            import dmd.tokens: EXP;
+
+            auto comparison = castComparisonExpression(assert_.e1);
+            if (comparison.op == EXP.lessThan) {
+                compileAssertComparison(comparison, Op.lessThan);
+                return;
+            }
+
+            if (comparison.op == EXP.lessOrEqual) {
+                compileAssertComparison(comparison, Op.lessOrEqual);
+                return;
+            }
+
+            if (comparison.op == EXP.greaterThan) {
+                compileAssertComparison(comparison, Op.greaterThan);
+                return;
+            }
+
+            if (comparison.op == EXP.greaterOrEqual) {
+                compileAssertComparison(comparison, Op.greaterOrEqual);
+                return;
+            }
         }
 
         if (auto not = assert_.e1.isNotExp) {
@@ -606,8 +699,18 @@ private struct Compiler {
 
         compileExpression((*call.arguments)[1]);
         compileExpression((*call.arguments)[2]);
-        program.instructions ~= Instruction(Op.assertCompare);
+        program.instructions ~= Instruction(
+            Op.assertCompare,
+            Value.void_,
+            Op.equal,
+        );
         return true;
+    }
+
+    private Op equalityOp(imported!"dmd.expression".EqualExp equal) {
+        import dmd.tokens: EXP;
+
+        return equal.op == EXP.notEqual ? Op.notEqual : Op.equal;
     }
 
     private Value assertMessageValue(AssertExp assert_) {
@@ -632,8 +735,37 @@ private struct Compiler {
         const index = functions.length;
         functions ~= function_;
         functionIndices[function_] = index;
-        program.functions ~= Function(0, parameterCount(function_));
+        program.functions ~= Function(
+            0,
+            parameterCount(function_),
+            refParameters(function_),
+        );
         return index;
+    }
+
+    private void compileCallArgument(
+        FuncDeclaration function_,
+        in size_t index,
+        Expression argument,
+    ) {
+        if (!parameterIsRef(function_, index)) {
+            compileExpression(argument);
+            return;
+        }
+
+        auto variable = argument.isVarExp;
+        if (variable is null)
+            throw new Exception("Unsupported bytecode ref argument.");
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception("Unsupported bytecode ref argument.");
+
+        program.instructions ~= Instruction(
+            Op.loadLocalReference,
+            Value.void_,
+            localIndex(declaration),
+        );
     }
 
     private FuncDeclaration callFunction(CallExp call) {
@@ -651,12 +783,40 @@ private struct Compiler {
         return function_.parameters is null ? 0 : function_.parameters.length;
     }
 
+    private bool[] refParameters(FuncDeclaration function_) {
+        bool[] result;
+        if (function_.parameters is null)
+            return result;
+
+        foreach (parameter; *function_.parameters)
+            result ~= declarationIsRef(parameter);
+
+        return result;
+    }
+
+    private bool parameterIsRef(
+        FuncDeclaration function_,
+        in size_t index,
+    ) {
+        if (function_.parameters is null || index >= function_.parameters.length)
+            return false;
+
+        return declarationIsRef((*function_.parameters)[index]);
+    }
+
     private void registerParameters(FuncDeclaration function_) {
         if (function_.parameters is null)
             return;
 
         foreach (parameter; *function_.parameters)
             localIndex(parameter);
+    }
+
+    private bool declarationIsRef(VarDeclaration parameter) {
+        import dmd.astenums: STC;
+
+        enum refLike = STC.ref_ | STC.out_;
+        return (parameter.storage_class & refLike) != STC.none;
     }
 
     private CastTarget castTarget(CastExp cast_) {
