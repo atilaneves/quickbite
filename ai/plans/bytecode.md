@@ -153,6 +153,11 @@ Lua-specific bytecode shape.
   missing `std.math.signbit` builtin support, so bytecode now recognizes
   DMD's `signbit` helper by identifier and executes it through the existing
   unary native-call path.
+- `evaluatesRuntimeSignbitDoubleInputFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `signbit` builtin slice: the existing bytecode
+  integer equality assertion diagnostics already report `1 != 0` for negative
+  zero.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
