@@ -333,7 +333,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -346,7 +346,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

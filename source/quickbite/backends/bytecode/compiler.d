@@ -627,7 +627,7 @@ private struct Compiler {
     }
 
     private void compileAssert(AssertExp assert_) {
-        if (compileDmdAssertFailEqualMessage(assert_.msg))
+        if (compileDmdAssertFailMessage(assert_.msg))
             return;
 
         if (auto equal = assert_.e1.isEqualExp) {
@@ -669,7 +669,7 @@ private struct Compiler {
         compileExpression(assert_.e1);
         program.instructions ~= Instruction(
             Op.assertTrue,
-            assertMessageValue(assert_),
+            assertTrueMessageValue(assert_),
         );
     }
 
@@ -682,7 +682,7 @@ private struct Compiler {
         program.instructions ~= Instruction(Op.throw_);
     }
 
-    private bool compileDmdAssertFailEqualMessage(Expression message) {
+    private bool compileDmdAssertFailMessage(Expression message) {
         if (message is null)
             return false;
 
@@ -694,7 +694,11 @@ private struct Compiler {
             return false;
 
         auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null || stringChars(operator) != "==")
+        if (operator is null)
+            return false;
+
+        const operatorText = stringChars(operator);
+        if (operatorText != "==" && operatorText != "!=")
             return false;
 
         compileExpression((*call.arguments)[1]);
@@ -702,7 +706,7 @@ private struct Compiler {
         program.instructions ~= Instruction(
             Op.assertCompare,
             Value.void_,
-            Op.equal,
+            operatorText == "==" ? Op.equal : Op.notEqual,
         );
         return true;
     }
@@ -726,6 +730,16 @@ private struct Compiler {
             assert_.e1.toChars.fromStringz.idup ~
             ")` failed";
         return Value(message.dup);
+    }
+
+    private Value assertTrueMessageValue(AssertExp assert_) {
+        if (assert_.msg !is null && assert_.msg.isStringExp is null)
+            return Value.void_;
+
+        if (assert_.msg is null && assert_.e1.isIntegerExp is null)
+            return Value.void_;
+
+        return assertMessageValue(assert_);
     }
 
     private size_t functionIndex(FuncDeclaration function_) {

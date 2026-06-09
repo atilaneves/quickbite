@@ -297,6 +297,13 @@ Lua-specific bytecode shape.
   `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
   stale coverage gap: bytecode already reports a literal false assertion as
   `` `assert(false)` failed ``.
+- `runtimeBoolAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed that DMD lowers runtime truth assertions through an internal
+  assertion temporary. Bytecode now suppresses that lowered temp text for
+  runtime truth assertions and reports the failed bool relation as
+  `false != true`, while preserving explicit assertion messages and literal
+  `assert(false)` diagnostics.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

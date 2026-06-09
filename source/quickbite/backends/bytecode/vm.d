@@ -369,7 +369,7 @@ private RunResult run(
                             instruction.value.asCharArrayString,
                         );
 
-                    throw new Exception("Unittest assertion failed.");
+                    throw new Exception(assertTrueMessage(value));
                 }
 
                 ++ip;
@@ -546,6 +546,14 @@ private string assertFalseMessage(
     import std.conv: text;
 
     return text(compareOperandMessage(value), " == true");
+}
+
+private string assertTrueMessage(
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import std.conv: text;
+
+    return text(compareOperandMessage(value), " != true");
 }
 
 private string compareOperandMessage(
