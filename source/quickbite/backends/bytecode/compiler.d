@@ -22,6 +22,12 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileEvalS
     return compileFunction(parseEvalSource(source).function_);
 }
 
+package imported!"quickbite.backends.bytecode.instructions".Program compileEvalCell(
+    imported!"quickbite.frontend.cell".EvalCell cell,
+) {
+    return compileFunction(cell.function_);
+}
+
 package imported!"quickbite.backends.bytecode.instructions".Program compileUnitTest(
     imported!"dmd.declaration".UnitTestDeclaration unitTest,
 ) {
@@ -42,7 +48,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileFunct
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     Compiler compiler;
-    compiler.compileStatement(function_.fbody);
+    compiler.compileEntryFunction(function_);
     return compiler.program;
 }
 
@@ -59,7 +65,8 @@ private struct Compiler {
     import dmd.func: FuncDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        DotVarExp, Expression, IdentityExp, LogicalExp, PreExp, TypeidExp;
+        DotVarExp, Expression, IdentityExp, LogicalExp, PostExp, PreExp,
+        TypeidExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -72,7 +79,11 @@ private struct Compiler {
     private FuncDeclaration currentFunction;
 
     private void compileUnitTest(FuncDeclaration unitTest) {
-        compileFunctionBody(unitTest);
+        compileEntryFunction(unitTest);
+    }
+
+    private void compileEntryFunction(FuncDeclaration function_) {
+        compileFunctionBody(function_);
         program.instructions ~= Instruction(Op.halt);
 
         // Compiling one deferred function can discover more called functions,
@@ -240,6 +251,11 @@ private struct Compiler {
 
         if (auto increment = expression.isPreExp) {
             compilePreIncrement(increment);
+            return;
+        }
+
+        if (auto increment = expression.isPostExp) {
+            compilePostIncrement(increment);
             return;
         }
 
@@ -526,6 +542,30 @@ private struct Compiler {
         if (declaration is null)
             throw new Exception("Unsupported bytecode pre-increment target.");
 
+        program.instructions ~= Instruction(
+            Op.incrementLocal,
+            Value(1),
+            localIndex(declaration),
+        );
+    }
+
+    private void compilePostIncrement(
+        PostExp increment,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (increment.op != EXP.plusPlus)
+            throw new Exception("Unsupported bytecode post-increment.");
+
+        auto variable = increment.e1.isVarExp;
+        if (variable is null)
+            throw new Exception("Unsupported bytecode post-increment target.");
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            throw new Exception("Unsupported bytecode post-increment target.");
+
+        compileVariableLoad(declaration);
         program.instructions ~= Instruction(
             Op.incrementLocal,
             Value(1),

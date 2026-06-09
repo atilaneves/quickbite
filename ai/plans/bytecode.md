@@ -119,6 +119,35 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `fabs` builtin slice: the existing bytecode
   unary native-call path already executes positive runtime `double` inputs
   correctly.
+- `repl.backend.skipsCommentOnlyLines` in `tests/ut/backends/api/repl.d` now
+  covers `Bytecode`. This was a stale coverage gap after the REPL expression
+  loop slice: the shared REPL loop already skips comment-only input before
+  dispatching cells to the backend.
+- `repl.backend.evaluatesStandaloneMixinExpression` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. This was a stale
+  coverage gap: the existing REPL frontend already classifies standalone mixin
+  expression statements as expression cells, and bytecode already executes the
+  mixed-in expression through the existing eval path.
+- `repl.backend.declarationCellsPersistWithoutDisplay` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. This was a stale
+  coverage gap: the existing REPL session history already preserves module
+  declaration cells without display, and bytecode already evaluates the
+  persisted scalar declaration through the following expression cell.
+- `repl.backend.expressionSideEffectsPersist` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  missing local post-increment expression support, so bytecode now lowers
+  `x++` by loading the old local value for the expression result and mutating
+  the persisted local through the existing increment opcode.
+- `repl.backend.statementsExecuteImmediately` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. This was a stale
+  coverage gap after the REPL expression-side-effects slice: bytecode already
+  executes no-display statement cells immediately through the existing
+  pre-increment local mutation path.
+- `repl.backend.functionDeclarationsPersistWithoutSemicolon` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  missing queued function-body emission for eval/REPL bytecode programs, so
+  bytecode now emits the entry body, halts, and then drains called functions for
+  REPL evaluation just as it already did for unittest execution.
 - `evaluatesRuntimeIsNaNDoubleInput` in `tests/ut/backends/lang/math.d` now
   covers `Bytecode`. The promotion exposed missing `std.math.isNaN` builtin
   support, so bytecode now recognizes DMD's `isnan` builtin and executes it
@@ -255,6 +284,11 @@ Lua-specific bytecode shape.
   path emitted the ordinary `Op.call` and the VM executed the call frame and
   returned `int` without production changes. The import-path plumbing already
   flowed through the shared fixture parse helpers.
+- `repl.backend.evaluatesExpressionCellsUntilQuit` in
+  `tests/ut/backends/api/repl.d` now covers `Bytecode`. The promotion exposed
+  the missing bytecode `evalRepl` API, so Bytecode now compiles an already
+  parsed REPL eval cell and runs expression cells through the existing VM
+  eval path.
 - `malloc` in `tests/ut/backends/runtime/cstdlib.d` now covers `Bytecode`,
   completing that module. The promotion exposed the missing
   no-available-source diagnostic: `malloc` resolves to a `FuncDeclaration`
