@@ -489,29 +489,17 @@ private struct Evaluator {
         in Value[] arguments,
         VarDeclaration[] argumentVariables,
     ) {
-        auto savedLocals = locals.dup;
-        auto savedUninitializedLocals = uninitializedLocals.dup;
-        const savedResult = result;
-        const savedRunningCalledFunction = runningCalledFunction;
-        auto savedCurrentFunction = currentFunction;
+        Evaluator child;
+        child.allowZeroArgumentCalls = allowZeroArgumentCalls;
+        child.allowControlFlow = allowControlFlow;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        child.result = Value(false);
+        child.bindFunctionParameters(function_, arguments);
 
-        locals = null;
-        uninitializedLocals = null;
-        result = Value(false);
-        runningCalledFunction = true;
-        currentFunction = function_;
-        bindFunctionParameters(function_, arguments);
-
-        runStatement(function_.fbody);
-        const value = result;
-        writeBackRefParameters(function_, argumentVariables, savedLocals);
-
-        locals = savedLocals;
-        uninitializedLocals = savedUninitializedLocals;
-        result = savedResult;
-        runningCalledFunction = savedRunningCalledFunction;
-        currentFunction = savedCurrentFunction;
-        return value;
+        child.runStatement(function_.fbody);
+        child.writeBackRefParameters(function_, argumentVariables, locals);
+        return child.result;
     }
 
     private void bindFunctionParameters(
