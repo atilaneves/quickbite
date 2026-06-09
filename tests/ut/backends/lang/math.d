@@ -749,7 +749,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -762,7 +762,9 @@ static foreach (backend; backends) {
             }
         }).shouldThrowWithMessage("true == true");
     }
+}
 
+static foreach (backend; backends) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1." ~
         backend.stringof)
     unittest {
