@@ -361,6 +361,14 @@ REPL progress:
 REPL eval support for DMD array-literal expressions by recursively evaluating
 their elements into existing `Value.arrayValue` values.
 
+REPL progress:
+`repl.backend.displaysStaticStringArrayResults` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing REPL local declaration, string-literal, and array display
+support; signal was verified by temporarily mutating the Interpreter string
+literal helper, which changed the displayed result from `["a", "b"]` to
+`["b", "c"]`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
