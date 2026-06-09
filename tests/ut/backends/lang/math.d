@@ -137,7 +137,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {

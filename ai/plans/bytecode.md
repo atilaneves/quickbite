@@ -181,6 +181,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `pow` and floating assertion-diagnostic
   slices: the existing bytecode binary native-call path and comparison
   assertion diagnostics already report `3 <= 3.001`.
+- `doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the user-defined `pow` and floating equality-diagnostic
+  slices: bytecode already calls the user-defined function and reports
+  `6 != 7`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
