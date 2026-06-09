@@ -386,7 +386,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
