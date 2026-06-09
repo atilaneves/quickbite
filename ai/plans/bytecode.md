@@ -96,6 +96,10 @@ Lua-specific bytecode shape.
   `Bytecode`. The promotion exposed missing unary `std.math.sqrt` builtin
   support, so bytecode now recognizes DMD's `sqrt` builtin and executes it
   through the existing unary native-call path.
+- `evaluatesDifferentRuntimeSqrtInput` in `tests/ut/backends/lang/math.d`
+  now covers `Bytecode`. This was a stale coverage gap after the runtime
+  `sqrt` builtin slice: the existing bytecode unary native-call path already
+  executed a different runtime `sqrt` input correctly.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration
