@@ -196,6 +196,11 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `sqrt` and floating equality-diagnostic
   slices: the existing bytecode unary native-call path and assertion
   diagnostics already report `3 != 4`.
+- `evaluatesRuntimeSqrtInputFailureMessage.1` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
+  coverage gap after the runtime `sqrt` and floating equality-diagnostic
+  slices: the existing bytecode unary native-call path and assertion
+  diagnostics already report `5 != 6`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration
