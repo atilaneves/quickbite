@@ -112,9 +112,9 @@ private string locChars(imported!"dmd.location".Loc loc) @trusted {
 }
 
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
+    import quickbite.frontend.dmd.types: isArrayType;
 
-    return type.ty == TY.Tarray || type.ty == TY.Tsarray;
+    return isArrayType(type);
 }
 
 private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) {

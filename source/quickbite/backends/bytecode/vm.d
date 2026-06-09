@@ -351,6 +351,21 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.arrayLiteral:
+                if (stack.length < instruction.operand)
+                    throw new Exception("Bytecode stack underflow");
+
+                Value[] elements;
+                foreach (index; 0 .. instruction.operand)
+                    elements ~= stack[stack.length - instruction.operand + index];
+
+                stack.length -= instruction.operand;
+                stack ~= instruction.value == Value(true)
+                    ? Value.characterArrayValue(elements)
+                    : Value.arrayValue(elements);
+                ++ip;
+                break;
+
             case Op.assertCompare:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -510,6 +525,7 @@ private bool comparisonHolds(
         case Op.binaryNativeCall:
         case Op.throwIfNullClassMethod:
         case Op.throwIfNullClassField:
+        case Op.arrayLiteral:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
@@ -560,6 +576,7 @@ private string inverseComparisonOperator(
         case Op.binaryNativeCall:
         case Op.throwIfNullClassMethod:
         case Op.throwIfNullClassField:
+        case Op.arrayLiteral:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:

@@ -64,9 +64,9 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        DotVarExp, Expression, IdentityExp, LogicalExp, PostExp, PreExp,
-        TypeidExp;
+        AddAssignExp, ArrayLiteralExp, AssertExp, AssignExp, BinExp, CallExp,
+        CastExp, CmpExp, CondExp, DotVarExp, Expression, IdentityExp,
+        LogicalExp, PostExp, PreExp, TypeidExp;
     import dmd.statement: Statement;
 
     private Program program;
@@ -293,6 +293,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto array = expression.isArrayLiteralExp) {
+            compileArrayLiteral(array);
+            return;
+        }
+
         if (auto add = expression.isAddExp) {
             compileBinaryExpression(add, Op.add);
             return;
@@ -340,6 +345,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto conditional = expression.isCondExp) {
+            compileConditional(conditional);
+            return;
+        }
+
         if (auto typeid_ = expression.isTypeidExp) {
             compileTypeid(typeid_);
             return;
@@ -359,6 +369,51 @@ private struct Compiler {
         compileExpression(expression.e1);
         compileExpression(expression.e2);
         program.instructions ~= Instruction(op);
+    }
+
+    private void compileArrayLiteral(ArrayLiteralExp array) {
+        if (array.elements !is null)
+            foreach (element; *array.elements)
+                compileExpression(element);
+
+        program.instructions ~= Instruction(
+            Op.arrayLiteral,
+            Value(arrayElementsAreCharacters(array)),
+            array.elements is null ? 0 : array.elements.length,
+        );
+    }
+
+    private bool arrayElementsAreCharacters(ArrayLiteralExp array) {
+        import quickbite.frontend.dmd.types:
+            isCharacterArrayType,
+            isCharacterExpression;
+
+        if (isCharacterArrayType(array.type))
+            return true;
+
+        if (array.elements is null || array.elements.length == 0)
+            return isCharacterExpression(array.basis);
+
+        foreach (element; *array.elements)
+            if (!isCharacterExpression(element))
+                return false;
+
+        return true;
+    }
+
+    private void compileConditional(CondExp conditional) {
+        compileExpression(conditional.econd);
+        const falseJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+
+        compileExpression(conditional.e1);
+        const endJump = emitJump(Op.jump);
+
+        patchJump(falseJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileExpression(conditional.e2);
+
+        patchJump(endJump);
     }
 
     private bool isUndisplayableFunctionLiteral(Expression expression) {
@@ -638,7 +693,16 @@ private struct Compiler {
     private void compileCast(CastExp cast_) {
         compileExpression(cast_.e1);
 
+        if (isTransparentArrayCastTarget(cast_.to))
+            return;
+
         emitCast(castTarget(cast_));
+    }
+
+    private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
+        import quickbite.frontend.dmd.types: isArrayType;
+
+        return isArrayType(type);
     }
 
     private void emitBoolCast() {
@@ -1125,13 +1189,23 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
-    return Value(stringChars(string_));
+    return Value.stringValue(stringChars(string_));
 }
 
 private char[] stringChars(imported!"dmd.expression".StringExp string_) {
+    import std.utf: encode;
+
     char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(char) string_.getIndex(index);
+    foreach (index; 0 .. string_.numberOfCodeUnits) {
+        const codeUnit = string_.getIndex(index);
+        if (string_.sz == 1) {
+            values ~= cast(char) codeUnit;
+        } else {
+            char[4] encoded;
+            const length = encode(encoded, cast(dchar) codeUnit);
+            values ~= encoded[0 .. length];
+        }
+    }
 
     return values;
 }

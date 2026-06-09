@@ -71,6 +71,10 @@ public struct Value {
         return Value(Array(values, ArrayDisplay.string));
     }
 
+    public static Value characterArrayValue(in Value[] elements) @safe pure {
+        return Value(Array(elements, ArrayDisplay.string));
+    }
+
     public static Value assocArrayValue(
         in Value[] keys,
         in Value[] values,
@@ -217,6 +221,17 @@ public struct Value {
 
         return data.match!(
             (const(char) value) => true,
+            (_) => false,
+        );
+    }
+
+    public bool isCharacter() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(char) value) => true,
+            (const(wchar) value) => true,
+            (const(dchar) value) => true,
             (_) => false,
         );
     }
@@ -652,24 +667,15 @@ private struct Array {
     public string dText() const @safe pure {
         final switch (display) with (ArrayDisplay) {
             case normal:
-                if (!isNonEmptyCharArray)
-                    return toString;
-                return `"` ~ charArrayString ~ `"`;
+                return toString;
             case string:
                 return `"` ~ charArrayString ~ `"`;
         }
     }
 
-    private bool isNonEmptyCharArray() const @safe pure {
-        if (elements.length == 0)
-            return false;
-
-        return isCharArray;
-    }
-
     private bool isCharArray() const @safe pure {
         foreach (element; elements)
-            if (!element.isChar)
+            if (!element.isCharacter)
                 return false;
 
         return true;
@@ -681,7 +687,7 @@ private struct Array {
 
         char[] result;
         foreach (element; elements)
-            result ~= element.asChar;
+            result ~= element.asUtf8Character;
 
         return result.idup;
     }
