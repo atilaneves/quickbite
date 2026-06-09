@@ -349,7 +349,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
