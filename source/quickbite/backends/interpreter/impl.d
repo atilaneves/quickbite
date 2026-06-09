@@ -117,6 +117,10 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return type.ty == TY.Tarray || type.ty == TY.Tsarray;
 }
 
+private bool typeIsDynamicArray(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeDArray !is null;
+}
+
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
     bool allowZeroArgumentCalls = false,
@@ -1033,6 +1037,13 @@ private struct EvalModuleInterpreter {
         if (initializer.isVoidInitExp !is null) {
             uninitializedLocals[variable] = true;
             return Value.void_;
+        }
+
+        if (initializer.isNullExp !is null && typeIsDynamicArray(variable.type)) {
+            auto value = Value.arrayValue([]);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            return value;
         }
 
         auto value = runExpression(initializer);
