@@ -263,6 +263,10 @@ honours caller-supplied import paths; a temporary expected-value mutation
 confirmed the promoted test executes the imported function through IR.
 `tests/ut/backends/api/runner.d` is complete for current IR coverage: no
 backend matrices in that module still exclude `IR`.
+The promoted `malloc.IR` runtime cstdlib test added the minimal IR compiler
+diagnostic for resolved non-builtin function calls whose DMD declaration has no
+body. This reports the same unavailable-source message as the other current
+backends before any IR execution is attempted.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
