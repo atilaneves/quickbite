@@ -163,6 +163,10 @@ Lua-specific bytecode shape.
   coverage gap after the runtime `signbit` builtin slice: the existing bytecode
   integer equality assertion diagnostics already report `0 == 0` for positive
   zero.
+- `evaluatesRuntimeSignbitNanInput` in `tests/ut/backends/lang/math.d` now
+  covers `Bytecode`. This was a stale coverage gap after the runtime `signbit`
+  builtin slice: the existing bytecode unary native-call path already preserves
+  sign bits for positive and negative NaN inputs.
 - `tests/ut/backends/lang/integrals.d` now covers `Bytecode` for
   every integral type behavior test from `type.byte` through `type.ulong`.
   These are one parametrized behavior family, not eight meaningful migration

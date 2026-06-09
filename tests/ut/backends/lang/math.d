@@ -830,7 +830,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitNanInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
