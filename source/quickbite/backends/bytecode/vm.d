@@ -326,6 +326,18 @@ private RunResult run(
                 ++ip;
                 break;
 
+            case Op.throwIfNullClassMethod:
+                if (stack.length < 1)
+                    throw new Exception("Bytecode stack underflow");
+
+                if (stack[$ - 1] == Value.null_)
+                    throw new Exception(
+                        "function call through null class reference `null`",
+                    );
+
+                ++ip;
+                break;
+
             case Op.assertCompare:
                 if (stack.length < 2)
                     throw new Exception("Bytecode stack underflow");
@@ -369,7 +381,7 @@ private RunResult run(
                             instruction.value.asCharArrayString,
                         );
 
-                    throw new Exception("Unittest assertion failed.");
+                    throw new Exception(assertTrueMessage(value));
                 }
 
                 ++ip;
@@ -433,12 +445,13 @@ private string assertCompareMessage(
 ) @safe pure {
     import std.conv: text;
 
+    const displayOperandsAsChars = lhs.isChar && rhs.isChar;
     return text(
-        compareOperandMessage(lhs),
+        compareOperandMessage(lhs, displayOperandsAsChars),
         " ",
         inverseComparisonOperator(comparison),
         " ",
-        compareOperandMessage(rhs),
+        compareOperandMessage(rhs, displayOperandsAsChars),
     );
 }
 
@@ -482,6 +495,7 @@ private bool comparisonHolds(
         case Op.negate:
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
+        case Op.throwIfNullClassMethod:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
@@ -530,6 +544,7 @@ private string inverseComparisonOperator(
         case Op.negate:
         case Op.unaryNativeCall:
         case Op.binaryNativeCall:
+        case Op.throwIfNullClassMethod:
         case Op.assertCompare:
         case Op.assertFalse:
         case Op.assertTrue:
@@ -548,8 +563,17 @@ private string assertFalseMessage(
     return text(compareOperandMessage(value), " == true");
 }
 
+private string assertTrueMessage(
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import std.conv: text;
+
+    return text(compareOperandMessage(value), " != true");
+}
+
 private string compareOperandMessage(
     in imported!"quickbite.lang".Value value,
+    in bool displayChar = false,
 ) @safe pure {
     import std.conv: text;
 
@@ -558,6 +582,9 @@ private string compareOperandMessage(
 
     if (value == imported!"quickbite.lang".Value(true))
         return "true";
+
+    if (displayChar)
+        return text("'", value.asChar, "'");
 
     return text(value.asLong);
 }

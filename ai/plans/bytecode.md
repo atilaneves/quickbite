@@ -280,6 +280,51 @@ Lua-specific bytecode shape.
   assignment, records local reference arguments for calls, writes ref parameter
   locals back to caller locals on return, and reports the final failed
   comparison as `42 != 43`.
+- `inFunctionParametersOops` in `tests/ut/backends/lang/diagnostics.d` now
+  covers `Bytecode`. This was a stale coverage gap: bytecode already treats
+  `in int` parameters as value parameters, evaluates the integer addition in
+  the callee, and reports the failed equality assertion as `43 != 42`.
+- `refSizeTParameterOops` in `tests/ut/backends/lang/diagnostics.d` now covers
+  `Bytecode`. This was a stale coverage gap: the existing scalar `ref`
+  parameter writeback path already handles `size_t`, so bytecode increments
+  the caller local and reports the final failed comparison as `42 != 43`.
+- `explicitAssertMessageOverridesContext` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: bytecode already gives an explicit assertion message
+  priority over generated comparison context, so `assert(1 == 2, "oops")`
+  reports `oops`.
+- `literalFalseAssertionMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: bytecode already reports a literal false assertion as
+  `` `assert(false)` failed ``.
+- `runtimeBoolAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed that DMD lowers runtime truth assertions through an internal
+  assertion temporary. Bytecode now suppresses that lowered temp text for
+  runtime truth assertions and reports the failed bool relation as
+  `false != true`, while preserving explicit assertion messages and literal
+  `assert(false)` diagnostics.
+- `boolAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. This was a
+  stale coverage gap: bytecode already preserves bool operands in equality
+  assertion diagnostics and reports `true != false`.
+- `charAssertionContextMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed that bytecode assertion diagnostics rendered char operands as their
+  integer code units. Bytecode now formats comparisons between two char
+  operands as D char literals, such as `'a' != 'b'`.
+- `dynamicAssertMessageMatchesDmd` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing dynamic assertion-message handling: bytecode now evaluates a
+  variable assertion message only on the failing branch, unwraps DMD's cast
+  wrapper around that message expression, and throws the evaluated string
+  `oops`.
+- `nullClassMethodCallReportsDiagnostic` in
+  `tests/ut/backends/lang/diagnostics.d` now covers `Bytecode`. The promotion
+  exposed missing `null` expression support and missing receiver diagnostics
+  for dot-call class methods. Bytecode now lowers DMD `null` to `Value.null_`
+  and checks the dot-call receiver before emitting the function call, reporting
+  `function call through null class reference `null``.
 
 ## Current Next Step
 Continue with `tests/ut/backends/lang/diagnostics.d`, the next module in

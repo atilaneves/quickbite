@@ -172,6 +172,14 @@ private struct Compiler {
             return;
         }
 
+        if (expression.isNullExp !is null) {
+            program.instructions ~= Instruction(
+                Op.literal,
+                Value.null_,
+            );
+            return;
+        }
+
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
             if (variable is null)
@@ -552,6 +560,8 @@ private struct Compiler {
             if (function_.fbody is null)
                 throw new Exception(noAvailableSourceMessage(function_));
 
+            compileClassMethodReceiverCheck(call);
+
             if (call.arguments !is null)
                 foreach (index, argument; *call.arguments)
                     compileCallArgument(function_, index, argument);
@@ -565,6 +575,16 @@ private struct Compiler {
         }
 
         compileBuiltinCall(call);
+    }
+
+    private void compileClassMethodReceiverCheck(CallExp call) {
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return;
+
+        compileExpression(dot.e1);
+        program.instructions ~= Instruction(Op.throwIfNullClassMethod);
+        program.instructions ~= Instruction(Op.pop);
     }
 
     private void compileBuiltinCall(CallExp call) {
@@ -627,7 +647,10 @@ private struct Compiler {
     }
 
     private void compileAssert(AssertExp assert_) {
-        if (compileDmdAssertFailEqualMessage(assert_.msg))
+        if (compileDmdAssertFailMessage(assert_.msg))
+            return;
+
+        if (compileDynamicAssertMessage(assert_))
             return;
 
         if (auto equal = assert_.e1.isEqualExp) {
@@ -669,8 +692,48 @@ private struct Compiler {
         compileExpression(assert_.e1);
         program.instructions ~= Instruction(
             Op.assertTrue,
-            assertMessageValue(assert_),
+            assertTrueMessageValue(assert_),
         );
+    }
+
+    private bool compileDynamicAssertMessage(AssertExp assert_) {
+        if (!isVariableAssertMessage(assert_.msg))
+            return false;
+
+        compileExpression(assert_.e1);
+        const messageJump = emitJump(Op.jumpIfFalse);
+        program.instructions ~= Instruction(Op.pop);
+        const endJump = emitJump(Op.jump);
+
+        patchJump(messageJump);
+        program.instructions ~= Instruction(Op.pop);
+        compileAssertMessageExpression(assert_.msg);
+        program.instructions ~= Instruction(Op.throw_);
+
+        patchJump(endJump);
+        return true;
+    }
+
+    private bool isVariableAssertMessage(Expression expression) {
+        if (expression is null)
+            return false;
+
+        if (expression.isVarExp !is null)
+            return true;
+
+        if (auto cast_ = expression.isCastExp)
+            return isVariableAssertMessage(cast_.e1);
+
+        return false;
+    }
+
+    private void compileAssertMessageExpression(Expression expression) {
+        if (auto cast_ = expression.isCastExp) {
+            compileAssertMessageExpression(cast_.e1);
+            return;
+        }
+
+        compileExpression(expression);
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
@@ -682,7 +745,7 @@ private struct Compiler {
         program.instructions ~= Instruction(Op.throw_);
     }
 
-    private bool compileDmdAssertFailEqualMessage(Expression message) {
+    private bool compileDmdAssertFailMessage(Expression message) {
         if (message is null)
             return false;
 
@@ -694,7 +757,11 @@ private struct Compiler {
             return false;
 
         auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null || stringChars(operator) != "==")
+        if (operator is null)
+            return false;
+
+        const operatorText = stringChars(operator);
+        if (operatorText != "==" && operatorText != "!=")
             return false;
 
         compileExpression((*call.arguments)[1]);
@@ -702,7 +769,7 @@ private struct Compiler {
         program.instructions ~= Instruction(
             Op.assertCompare,
             Value.void_,
-            Op.equal,
+            operatorText == "==" ? Op.equal : Op.notEqual,
         );
         return true;
     }
@@ -726,6 +793,16 @@ private struct Compiler {
             assert_.e1.toChars.fromStringz.idup ~
             ")` failed";
         return Value(message.dup);
+    }
+
+    private Value assertTrueMessageValue(AssertExp assert_) {
+        if (assert_.msg !is null && assert_.msg.isStringExp is null)
+            return Value.void_;
+
+        if (assert_.msg is null && assert_.e1.isIntegerExp is null)
+            return Value.void_;
+
+        return assertMessageValue(assert_);
     }
 
     private size_t functionIndex(FuncDeclaration function_) {

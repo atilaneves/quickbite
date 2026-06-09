@@ -279,7 +279,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!Interpreter) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("inFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -292,7 +292,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("43 != 42");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("refSizeTParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -307,7 +309,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("42 != 43");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -316,7 +320,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("oops");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -325,7 +331,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -338,7 +346,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("false != true");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -348,7 +358,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("true != false");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -358,7 +370,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("'a' != 'b'");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -368,7 +382,9 @@ static foreach (backend; backendsWith!Interpreter) {
             }
         }).shouldThrowWithMessage("oops");
     }
+}
 
+static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -385,7 +401,9 @@ static foreach (backend; backendsWith!Interpreter) {
         }).shouldThrowWithMessage(
             "function call through null class reference `null`");
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
