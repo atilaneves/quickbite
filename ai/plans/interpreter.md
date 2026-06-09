@@ -322,6 +322,13 @@ change was required; signal was verified by temporarily mutating the local
 dynamic array append handler, which changed the promoted failure message from
 `3 != 4` to `1 != 4`.
 
+REPL progress:
+`repl.backend.multilineStructDeclarationsBufferUntilComplete` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing frontend REPL buffering and eval-cell expression execution;
+signal was verified by temporarily mutating the Interpreter integer literal
+handler, which changed the displayed result from `42` to `41`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
