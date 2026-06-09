@@ -484,6 +484,11 @@ change was required. Signal was verified by temporarily mutating the
 Interpreter bool assertion formatter, which failed the focused test with
 `false != false` instead of `false != true`.
 
+Math progress: `evaluatesRuntimeIsInfinityDoubleInput` in
+`tests/ut/backends/lang/math.d` now runs on `Interpreter`. This required
+adding `std.math.isInfinity` to the Interpreter builtins module so the backend
+does not fall through into unsupported druntime expression interpretation.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

@@ -224,6 +224,7 @@ private struct EvalFunctionWalker {
         if (tryInterpreterBuiltin(call.f, builtin)) {
             with (InterpreterBuiltin) final switch (builtin) {
                 case fabs:
+                case isInfinity:
                     if (
                         call.arguments.length !=
                         interpreterBuiltinArgumentCount(builtin)
@@ -565,6 +566,7 @@ private struct EvalModuleInterpreter {
             ) {
                 with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
+                    case isInfinity:
                     case sqrt:
                         return unaryBuiltinCall(
                             builtin,
