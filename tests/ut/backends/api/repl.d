@@ -55,7 +55,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -67,7 +67,9 @@ static foreach (backend; backends) {
 
         output.should == ["0"];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

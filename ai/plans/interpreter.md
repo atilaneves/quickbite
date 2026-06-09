@@ -554,6 +554,11 @@ REPL progress: `repl.backend.evaluatesStandaloneMixinExpression` in
 through existing expression-cell `evalRepl` dispatch; signal was verified by
 temporarily forcing Interpreter REPL expression cells to return `0`.
 
+REPL progress: `repl.backend.declarationCellsPersistWithoutDisplay` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+executing no-display EvalCells through the existing eval function walker and
+returning `Value.void_` so the REPL suppresses display.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

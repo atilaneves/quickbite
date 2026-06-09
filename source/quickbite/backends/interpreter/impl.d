@@ -29,9 +29,8 @@ public class Interpreter: imported!"quickbite.backends".Backend {
                     "Incomplete REPL cell reached Interpreter backend.",
                 );
             case noDisplay:
-                throw new Exception(
-                    "Unsupported Interpreter REPL no-display cell.",
-                );
+                evalFunction(cell.function_);
+                return Value.void_;
             case expression:
                 return evalFunction(cell.function_);
         }
