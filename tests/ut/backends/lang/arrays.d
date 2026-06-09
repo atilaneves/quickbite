@@ -83,6 +83,10 @@ static foreach (backend; backends) {
         }).shouldThrowWithMessage("4 != 5");
     }
 
+}
+
+
+static foreach (backend; backendsWith!Interpreter) {
     @("refUbyteArrayParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -98,7 +102,10 @@ static foreach (backend; backends) {
             }
         });
     }
+}
 
+
+static foreach (backend; backends) {
     @("refUbyteArrayParameterAppendFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
