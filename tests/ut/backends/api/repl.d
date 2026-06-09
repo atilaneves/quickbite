@@ -83,7 +83,7 @@ static foreach (backend; backendsWith!Interpreter) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -95,7 +95,9 @@ static foreach (backend; backends) {
 
         output.should == ["1"];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

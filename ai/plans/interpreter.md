@@ -564,6 +564,12 @@ REPL progress: `repl.backend.expressionSideEffectsPersist` in
 narrow local-variable postfix `++` support in the eval function walker so a
 single REPL session can persist `int x;`, `x++`, then `x`.
 
+REPL progress: `repl.backend.statementsExecuteImmediately` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing no-display EvalCell execution and narrow local-variable
+increment-assign support; signal was verified by temporarily disabling the
+Interpreter increment-assign handler.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
