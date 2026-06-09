@@ -67,7 +67,7 @@ static foreach (backend; backends) {
 
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -80,7 +80,9 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
             }
         }).shouldThrowWithMessage("16 != 17");
     }
+}
 
+static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

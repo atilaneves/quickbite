@@ -169,8 +169,13 @@ Lua-specific bytecode shape.
 - `doesNotTreatUserNamedPowAsMathIntrinsic` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. This was a stale
   coverage gap: bytecode already calls the user-defined `pow` function instead
-  of treating it as the `std.math.pow` builtin. In the current checkout,
-  `math.d` is now complete for `Bytecode`.
+  of treating it as the `std.math.pow` builtin.
+- `evaluatesRuntimePowDoubleInputsFailureMessage.0` in
+  `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
+  bytecode assertion diagnostics formatting floating operands through integer
+  scalar access. Bytecode now keeps existing integer-compatible assertion
+  messages but renders floating operands through `Value` so runtime `pow`
+  equality failures report `16 != 17`.
 - `evaluatesRuntimeIsInfinityDoubleInput` in
   `tests/ut/backends/lang/math.d` now covers `Bytecode`. The promotion exposed
   missing `std.math.isInfinity` builtin support and non-runtime declaration

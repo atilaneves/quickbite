@@ -601,5 +601,8 @@ private string compareOperandMessage(
     if (displayChar)
         return text("'", value.asChar, "'");
 
-    return text(value.asLong);
+    if (value.isIntegerCompatibleScalar)
+        return text(value.asLong);
+
+    return text(value);
 }
