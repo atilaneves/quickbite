@@ -304,6 +304,14 @@ The promoted later local-variable logical-and group in `logic.d`
 production code. Existing bool-local storage, logical-and CFG lowering,
 division short-circuiting, and bool equality diagnostics already covered that
 group.
+The promoted logical-not group in `logic.d`
+(`logicalNotCallFailureMessage.0.IR`, `logicalNotCallFailureMessage.1.IR`,
+`logicalNotFailureMessage.1.IR`, `logicalNotFailureMessage.0.IR`,
+`logicalNotCall.IR`, and `logicalNot.IR`) passed without new production code.
+Existing unary logical-not lowering, direct calls, bool locals, and bool
+diagnostics already covered that group. `tests/ut/backends/lang/logic.d` is
+complete for current IR coverage: no backend matrices in that module still
+exclude `IR`.
 
 The next implementation slice should move to the next module in
 `ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
@@ -318,11 +326,10 @@ progress notes can go stale.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/lang/logic.d`. The first five backend matrices
-now include `IR`; verify the current checkout, then promote the next smallest
-remaining matrix that still excludes `IR`. Prefer the next existing test or
-small family that forces one language behavior, and keep CFG/general
-diagnostic expansion tied to the exact promoted failures.
+Move to the next module in `ai/plans/backend-test-modules-order.md` after
+`tests/ut/backends/lang/logic.d`. Verify the current checkout before editing,
+then promote the next smallest existing backend matrix that still excludes
+`IR`.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
