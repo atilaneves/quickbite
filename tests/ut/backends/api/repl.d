@@ -13,7 +13,7 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
-static foreach (backend; backends) {
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -25,7 +25,9 @@ static foreach (backend; backends) {
 
         output.should == ["1", "2"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -37,7 +39,9 @@ static foreach (backend; backends) {
 
         output.should == ["3"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -49,7 +53,9 @@ static foreach (backend; backends) {
 
         output.should == ["3"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -61,7 +67,9 @@ static foreach (backend; backends) {
 
         output.should == ["0"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -73,7 +81,9 @@ static foreach (backend; backends) {
 
         output.should == ["0", "1"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -85,7 +95,9 @@ static foreach (backend; backends) {
 
         output.should == ["1"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -97,7 +109,9 @@ static foreach (backend; backends) {
 
         output.should == ["42"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -109,7 +123,9 @@ static foreach (backend; backends) {
 
         output.should == ["42"];
     }
+}
 
+static foreach (backend; backendsWith!Interpreter) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -125,7 +141,9 @@ static foreach (backend; backends) {
 
         output.should == ["42"];
     }
+}
 
+static foreach (backend; backends) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

@@ -20,8 +20,20 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         return evalFunction(parseEvalSource(expr).function_);
     }
 
-    public override Value evalRepl(in EvalCell cell) {
-        assert(0);
+    public override Value evalRepl(EvalCell cell) {
+        import quickbite.frontend.cell: EvalCellKind;
+
+        final switch (cell.kind) with (EvalCellKind) {
+            case incomplete:
+                throw new Exception(
+                    "Incomplete REPL cell reached Interpreter backend.",
+                );
+            case noDisplay:
+                evalFunction(cell.function_, true);
+                return Value.void_;
+            case expression:
+                return evalFunction(cell.function_, true);
+        }
     }
 
     public override void runTests(Module module_) {
@@ -107,8 +119,10 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
 
 private imported!"quickbite.lang".Value evalFunction(
     imported!"dmd.func".FuncDeclaration function_,
+    bool allowZeroArgumentCalls = false,
 ) {
     EvalFunctionWalker walker;
+    walker.allowZeroArgumentCalls = allowZeroArgumentCalls;
     walker.runStatement(function_.fbody);
     return walker.result;
 }
@@ -120,6 +134,7 @@ private struct EvalFunctionWalker {
 
     private Value[VarDeclaration] locals;
     private Value result;
+    private bool allowZeroArgumentCalls;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -176,11 +191,20 @@ private struct EvalFunctionWalker {
         if (auto cast_ = expression.isCastExp)
             return castValue(cast_);
 
+        if (auto post = expression.isPostExp)
+            return runPostIncrementExpression(post);
+
         if (auto addAssign = expression.isAddAssignExp)
             return runIncrementAssignExpression(addAssign);
 
+        if (auto add = expression.isAddExp)
+            return runExpression(add.e1) + runExpression(add.e2);
+
         if (auto sub = expression.isMinExp)
             return runExpression(sub.e1) - runExpression(sub.e2);
+
+        if (auto mul = expression.isMulExp)
+            return runExpression(mul.e1) * runExpression(mul.e2);
 
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
@@ -215,8 +239,7 @@ private struct EvalFunctionWalker {
             tryInterpreterBuiltin,
             unaryBuiltinCall;
 
-        if (call.arguments is null || call.arguments.length == 0)
-            throw new Exception("Unsupported eval call argument count.");
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
 
         import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -227,7 +250,7 @@ private struct EvalFunctionWalker {
                 case isInfinity:
                 case signbit:
                     if (
-                        call.arguments.length !=
+                        argumentCount !=
                         interpreterBuiltinArgumentCount(builtin)
                     )
                         throw new Exception(
@@ -241,7 +264,7 @@ private struct EvalFunctionWalker {
 
                 case pow:
                     if (
-                        call.arguments.length !=
+                        argumentCount !=
                         interpreterBuiltinArgumentCount(builtin)
                     )
                         throw new Exception(
@@ -259,7 +282,71 @@ private struct EvalFunctionWalker {
             }
         }
 
+        if (argumentCount == 0 && !allowZeroArgumentCalls)
+            throw new Exception("Unsupported eval call argument count.");
+
+        if (call.f !is null)
+            return runDirectFunctionCall(call.f, call.arguments);
+
+        if (auto var = call.e1.isVarExp)
+            if (auto function_ = var.var.isFuncDeclaration)
+                return runDirectFunctionCall(function_, call.arguments);
+
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runDirectFunctionCall(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.root.array".Array!(imported!"dmd.expression".Expression)*
+            arguments,
+    ) {
+        if (function_.fbody is null)
+            throw new Exception("Unsupported eval call.");
+
+        const argumentCount = arguments is null ? 0 : arguments.length;
+        if (
+            function_.parameters is null && argumentCount != 0 ||
+            function_.parameters !is null &&
+                function_.parameters.length != argumentCount
+        )
+            throw new Exception("Unsupported eval call argument count.");
+
+        auto savedLocals = locals.dup;
+        const savedResult = result;
+        locals = null;
+        if (argumentCount != 0) {
+            foreach (index, parameter; *function_.parameters)
+                locals[parameter] = runExpression((*arguments)[index]);
+        }
+
+        runStatement(function_.fbody);
+        const value = result;
+
+        locals = savedLocals;
+        result = savedResult;
+        return value;
+    }
+
+    private Value runPostIncrementExpression(
+        imported!"dmd.expression".PostExp post,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (post.op != EXP.plusPlus)
+            throw new Exception("Unsupported eval post expression.");
+
+        auto var = post.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported eval post expression target.");
+
+        auto current = variable in locals;
+        const oldValue = current is null ? defaultValue(variable) : *current;
+        locals[variable] = oldValue + Value(cast(int) 1);
+        return oldValue;
     }
 
     private Value runDeclarationExpression(

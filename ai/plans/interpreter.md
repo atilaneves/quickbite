@@ -540,6 +540,53 @@ change was required. Signal was verified by temporarily treating any function
 named `isNaN` as the Interpreter math builtin, which failed the focused test
 with `false != true`.
 
+REPL progress: `repl.backend.evaluatesExpressionCellsUntilQuit` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+expression-cell `evalRepl` dispatch through the existing eval function walker.
+
+REPL progress: `repl.backend.functionDeclarationsPersistWithoutSemicolon` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This only needed the
+existing direct free-function call path plus the integer multiplication fix in
+the function walker.
+
+REPL progress: `repl.backend.skipsCommentOnlyLines` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through the shared REPL loop comment filter; signal was verified by temporarily
+disabling that filter.
+
+REPL progress: `repl.backend.evaluatesStandaloneMixinExpression` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing expression-cell `evalRepl` dispatch; signal was verified by
+temporarily forcing Interpreter REPL expression cells to return `0`.
+
+REPL progress: `repl.backend.declarationCellsPersistWithoutDisplay` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+executing no-display EvalCells through the existing eval function walker and
+returning `Value.void_` so the REPL suppresses display.
+
+REPL progress: `repl.backend.expressionSideEffectsPersist` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This required only
+narrow local-variable postfix `++` support in the eval function walker so a
+single REPL session can persist `int x;`, `x++`, then `x`.
+
+REPL progress: `repl.backend.statementsExecuteImmediately` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already green
+through existing no-display EvalCell execution and narrow local-variable
+increment-assign support; signal was verified by temporarily disabling the
+Interpreter increment-assign handler.
+
+REPL progress: `repl.backend.userDefinedFunctionDoesNotCollideWithWrapper` in
+`tests/ut/backends/api/repl.d` now runs on `Interpreter`. This needed the
+REPL-only zero-argument direct call path plus the existing addition dispatch in
+the eval walker; signal was verified with the focused slice and the random
+suite.
+
+REPL progress: `repl.backend.templateFunctionDeclarationsPersistWithoutDisplay`
+in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
+green through existing direct free-function call dispatch over DMD's
+instantiated function template; signal was verified by temporarily changing the
+promoted test expectation.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
