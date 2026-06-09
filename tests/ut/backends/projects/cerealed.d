@@ -5,7 +5,8 @@ import ut.backends;
 
 
 static foreach (backend; backends) {
-    @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~ backend.stringof)
+    @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -20,6 +21,7 @@ static foreach (backend; backends) {
                 Writer writer;
                 ubyte value = cast(ubyte) 40;
                 value += 2;
+
                 writer.write(value);
 
                 assert(writer.bytes.length == 1);
@@ -30,57 +32,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Writer {
-                ubyte[] bytes;
-
-                void write(ubyte value) {
-                    bytes ~= value;
-                }
-            }
-
-            unittest {
-                Writer writer;
-                ubyte value = cast(ubyte) 40;
-                value += 2;
-                writer.write(value);
-
-                assert(writer.bytes.length == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByteFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Writer {
-                ubyte[] bytes;
-
-                void write(ubyte value) {
-                    bytes ~= value;
-                }
-            }
-
-            unittest {
-                Writer writer;
-                ubyte value = cast(ubyte) 40;
-                value += 2;
-                writer.write(value);
-
-                assert(writer.bytes[0] == 43);
-            }
-        }).shouldThrowWithMessage("42 != 43");
-    }
-}
-
-static foreach (backend; backends) {
-
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -106,58 +57,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            ubyte readByte(ubyte[] bytes, ref size_t position) {
-                const value = bytes[position];
-                ++position;
-                return value;
-            }
-
-            unittest {
-                ubyte first = cast(ubyte) 10;
-                ubyte second = cast(ubyte)(first + 32);
-                ubyte[] input = [first, second];
-                size_t position = input.length - 1;
-
-                const value = readByte(input, position);
-
-                assert(value == first);
-            }
-        }).shouldThrowWithMessage("42 != 10");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.refCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            ubyte readByte(ubyte[] bytes, ref size_t position) {
-                const value = bytes[position];
-                ++position;
-                return value;
-            }
-
-            unittest {
-                ubyte first = cast(ubyte) 10;
-                ubyte second = cast(ubyte)(first + 32);
-                ubyte[] input = [first, second];
-                size_t position = input.length - 1;
-
-                readByte(input, position);
-
-                assert(position == input.length - 1);
-            }
-        }).shouldThrowWithMessage("2 != 1");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~ backend.stringof)
+    @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
@@ -180,58 +81,13 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            ubyte readByte(ubyte[] bytes, ref size_t position) {
-                return bytes[position++];
-            }
-
-            unittest {
-                ubyte first = cast(ubyte) 10;
-                ubyte second = cast(ubyte)(first + 32);
-                ubyte[] input = [first, second];
-                size_t position = input.length - 1;
-
-                const value = readByte(input, position);
-
-                assert(value == first);
-            }
-        }).shouldThrowWithMessage("42 != 10");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.postIncrementCursorReadAdvancesPositionFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            ubyte readByte(ubyte[] bytes, ref size_t position) {
-                return bytes[position++];
-            }
-
-            unittest {
-                ubyte first = cast(ubyte) 10;
-                ubyte second = cast(ubyte)(first + 32);
-                ubyte[] input = [first, second];
-                size_t position = input.length - 1;
-
-                readByte(input, position);
-
-                assert(position == input.length - 1);
-            }
-        }).shouldThrowWithMessage("2 != 1");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~ backend.stringof)
+    @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(T) length;
+
                 foreach (i; 0 .. T.sizeof)
                     bytes ~= cast(ubyte)(narrowed >> (i * 8));
             }
@@ -252,55 +108,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.0." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void writeLength(T)(ref ubyte[] bytes, size_t length) {
-                const narrowed = cast(T) length;
-                foreach (i; 0 .. T.sizeof)
-                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
-            }
-
-            unittest {
-                ubyte[] bytes;
-                size_t length = 250;
-                length += 8;
-
-                writeLength!ushort(bytes, length);
-
-                assert(bytes.length == 3);
-            }
-        }).shouldThrowWithMessage("2 != 3");
-    }
-}
-
-static foreach (backend; backends) {
-
-    @("projects.cerealed.templateLengthPrefixUsesRequestedWidthFailureMessage.1." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void writeLength(T)(ref ubyte[] bytes, size_t length) {
-                const narrowed = cast(T) length;
-                foreach (i; 0 .. T.sizeof)
-                    bytes ~= cast(ubyte)(narrowed >> (i * 8));
-            }
-
-            unittest {
-                ubyte[] bytes;
-                size_t length = 250;
-                length += 8;
-
-                writeLength!ushort(bytes, length);
-
-                assert(bytes[1] == 2);
-            }
-        }).shouldThrowWithMessage("1 != 2");
-    }
-}
-
-static foreach (backend; backends) {
-
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -328,7 +135,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -359,7 +165,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -383,10 +188,12 @@ static foreach (backend; backends) {
             unittest {
                 Writer writer;
                 bool[] values = [true, true, false, false, true];
+
                 foreach (value; values)
                     writer.writeBool(value);
 
                 auto reader = Reader(writer.bytes);
+
                 foreach (value; values)
                     assert(reader.readBool == value);
             }
@@ -395,7 +202,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -410,6 +216,7 @@ static foreach (backend; backends) {
 
                 void writeEnum(MyEnum value) {
                     const intValue = cast(int) value;
+
                     foreach_reverse (i; 0 .. int.sizeof)
                         bytes ~= cast(ubyte)(intValue >> (i * 8));
                 }
@@ -421,10 +228,12 @@ static foreach (backend; backends) {
 
                 MyEnum readEnum() {
                     int intValue;
+
                     foreach (_; 0 .. int.sizeof) {
                         intValue <<= 8;
                         intValue |= bytes[index++];
                     }
+
                     return cast(MyEnum) intValue;
                 }
             }
@@ -441,6 +250,7 @@ static foreach (backend; backends) {
                 );
 
                 auto reader = Reader(writer.bytes);
+
                 assert(reader.readEnum == MyEnum.bar);
                 assert(reader.readEnum == MyEnum.baz);
                 assert(reader.readEnum == MyEnum.foo);
@@ -450,7 +260,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -460,17 +269,21 @@ static foreach (backend; backends) {
 
             ubyte[] cerealize(Foo value) {
                 ubyte[] bytes;
+
                 foreach_reverse (i; 0 .. int.sizeof)
                     bytes ~= cast(ubyte)(value.i >> (i * 8));
+
                 return bytes;
             }
 
             T decerealize(T)(const(ubyte)[] bytes) if (is(T == Foo)) {
                 int value;
+
                 foreach (byte_; bytes) {
                     value <<= 8;
                     value |= byte_;
                 }
+
                 return T(value);
             }
 
@@ -486,12 +299,13 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~ backend.stringof)
+    @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeLength(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(ushort) length;
+
                 foreach_reverse (i; 0 .. ushort.sizeof)
                     bytes ~= cast(ubyte)(narrowed >> (i * 8));
             }
@@ -503,12 +317,16 @@ static foreach (backend; backends) {
 
             ubyte[] encode(int[][] values) {
                 ubyte[] bytes;
+
                 writeLength(bytes, values.length);
+
                 foreach (row; values) {
                     writeLength(bytes, row.length);
+
                     foreach (value; row)
                         writeInt(bytes, value);
                 }
+
                 return bytes;
             }
 
@@ -536,8 +354,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~ backend.stringof)
+    @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Nested {
@@ -546,6 +364,7 @@ static foreach (backend; backends) {
 
             void writeLength(ref ubyte[] bytes, size_t length) {
                 const narrowed = cast(ushort) length;
+
                 foreach_reverse (i; 0 .. ushort.sizeof)
                     bytes ~= cast(ubyte)(narrowed >> (i * 8));
             }
@@ -557,6 +376,7 @@ static foreach (backend; backends) {
 
             void writeNested(ref ubyte[] bytes, Nested nested) {
                 writeLength(bytes, nested.aa.length);
+
                 foreach (key, value; nested.aa) {
                     writeInt(bytes, key);
                     writeNested(bytes, value);
@@ -565,9 +385,12 @@ static foreach (backend; backends) {
 
             ubyte[] encode(Nested[] nesteds) {
                 ubyte[] bytes;
+
                 writeLength(bytes, nesteds.length);
+
                 foreach (nested; nesteds)
                     writeNested(bytes, nested);
+
                 return bytes;
             }
 
@@ -586,7 +409,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.pointerToIntWritesPointeeBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -597,7 +419,9 @@ static foreach (backend; backends) {
 
             ubyte[] encode(int* value) {
                 ubyte[] bytes;
+
                 writeInt(bytes, *value);
+
                 return bytes;
             }
 
@@ -612,12 +436,13 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~ backend.stringof)
+    @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeArray(ref ubyte[] bytes, ubyte[] values) {
                 bytes ~= cast(ubyte) values.length;
+
                 foreach (value; values)
                     bytes ~= value;
             }
@@ -625,8 +450,10 @@ static foreach (backend; backends) {
             ubyte[] readArray(ubyte[] bytes, ref size_t index) {
                 const length = bytes[index++];
                 ubyte[] values;
+
                 foreach (_; 0 .. length)
                     values ~= bytes[index++];
+
                 return values;
             }
 
@@ -640,6 +467,7 @@ static foreach (backend; backends) {
                 assert(bytes[0] == values.length);
 
                 size_t index;
+
                 assert(readArray(bytes, index) == values);
                 assert(index == bytes.length);
             }
@@ -648,7 +476,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -672,38 +499,46 @@ static foreach (backend; backends) {
 
             ushort readUshort(ubyte[] bytes, ref size_t index) {
                 ushort value;
+
                 foreach (_; 0 .. ushort.sizeof) {
                     value <<= 8;
                     value |= bytes[index++];
                 }
+
                 return value;
             }
 
             ubyte[] encode(Packet packet) {
                 ubyte[] bytes;
+
                 bytes ~= packet.ub1;
                 writeUshort(bytes, packet.length);
                 bytes ~= packet.ub2;
+
                 foreach (unit; packet.units) {
                     writeUshort(bytes, unit.us);
                     bytes ~= unit.ub1;
                     bytes ~= unit.ub2;
                 }
+
                 return bytes;
             }
 
             Packet decode(ubyte[] bytes) {
                 size_t index;
                 Packet packet;
+
                 packet.ub1 = bytes[index++];
                 packet.length = readUshort(bytes, index);
                 packet.ub2 = bytes[index++];
+
                 foreach (_; 0 .. packet.length)
                     packet.units ~= Unit(
                         readUshort(bytes, index),
                         bytes[index++],
                         bytes[index++],
                     );
+
                 return packet;
             }
 
@@ -736,7 +571,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -787,7 +621,6 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -814,17 +647,21 @@ static foreach (backend; backends) {
 
             void writeLength(ref ubyte[] bytes, ulong length) {
                 const narrowed = cast(ushort) length;
+
                 foreach_reverse (i; 0 .. ushort.sizeof)
                     bytes ~= cast(ubyte)(narrowed >> (i * 8));
             }
 
             ubyte[] encode(CounterRange range) {
                 ubyte[] bytes;
+
                 writeLength(bytes, range.length);
+
                 while (!range.empty) {
                     bytes ~= range.front;
                     range.popFront;
                 }
+
                 return bytes;
             }
 
@@ -838,8 +675,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~ backend.stringof)
+    @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Reader {
@@ -848,21 +685,25 @@ static foreach (backend; backends) {
 
                 int readInt() {
                     int value;
+
                     foreach (_; 0 .. int.sizeof) {
                         value <<= 8;
                         value |= bytes[0];
                         bytes = bytes[1 .. $];
                     }
+
                     return value;
                 }
 
                 short readShort() {
                     short value;
+
                     foreach (_; 0 .. short.sizeof) {
                         value <<= 8;
                         value |= bytes[0];
                         bytes = bytes[1 .. $];
                     }
+
                     return value;
                 }
 
@@ -887,10 +728,12 @@ static foreach (backend; backends) {
                 assert(reader.bytes.length == 0);
 
                 reader.reset;
+
                 assert(reader.bytes == bytes1);
 
                 ubyte[] bytes2 = [3, 6, 9, 12];
                 reader.reset(bytes2);
+
                 assert(reader.bytes == bytes2);
             }
         });
@@ -898,8 +741,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~ backend.stringof)
+    @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeInt(ref ubyte[] bytes, int value) {
@@ -909,25 +752,31 @@ static foreach (backend; backends) {
 
             int readInt(ubyte[] bytes, ref size_t index) {
                 int value;
+
                 foreach (_; 0 .. int.sizeof) {
                     value <<= 8;
                     value |= bytes[index++];
                 }
+
                 return value;
             }
 
             ubyte[] encode(int[2] values) {
                 ubyte[] bytes;
+
                 foreach (value; values)
                     writeInt(bytes, value);
+
                 return bytes;
             }
 
             int[2] decode(ubyte[] bytes) {
                 int[2] values;
                 size_t index;
+
                 foreach (ref value; values)
                     value = readInt(bytes, index);
+
                 return values;
             }
 
@@ -949,9 +798,13 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
 
-    @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
+/++
+    Project-shaped diagnostics.
++/
+static foreach (backend; backends) {
+    @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             private enum MyEnum {
@@ -965,6 +818,7 @@ static foreach (backend; backends) {
 
                 void writeEnum(MyEnum value) {
                     const intValue = cast(int) value;
+
                     foreach_reverse (i; 0 .. int.sizeof)
                         bytes ~= cast(ubyte)(intValue >> (i * 8));
                 }
@@ -976,10 +830,12 @@ static foreach (backend; backends) {
 
                 MyEnum readEnum() {
                     int intValue;
+
                     foreach (_; 0 .. int.sizeof) {
                         intValue <<= 8;
                         intValue |= bytes[index++];
                     }
+
                     return cast(MyEnum) intValue;
                 }
             }
@@ -1002,8 +858,8 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
+    @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -1026,10 +882,12 @@ static foreach (backend; backends) {
             unittest {
                 Writer writer;
                 bool[] values = [true, true, false, false, true];
+
                 foreach (value; values)
                     writer.writeBool(value);
 
                 auto reader = Reader(writer.bytes);
+
                 foreach (value; values)
                     reader.readBool;
 
@@ -1040,7 +898,36 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
+    @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                ubyte[] bytes;
+                size_t index;
 
+                bool readBool() {
+                    return bytes[index++] == 1;
+                }
+            }
+
+            unittest {
+                auto reader = Reader([1, 0, 1, 0, 0, 1]);
+
+                foreach (_; 0 .. 6)
+                    reader.readBool;
+
+                reader.readBool;
+            }
+        }).shouldThrowWithMessage("array index 6 is out of bounds `[0..6]`");
+    }
+}
+
+
+/++
+    Known project-shaped gaps.
++/
+static foreach (backend; backends) {
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1049,6 +936,7 @@ static foreach (backend; backends) {
 
                 void writeFloat(float value) {
                     const intValue = *cast(uint*) &value;
+
                     foreach_reverse (i; 0 .. intValue.sizeof)
                         bytes ~= cast(ubyte)(intValue >> (i * 8));
                 }
@@ -1067,36 +955,11 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backends) {
-
-    @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Reader {
-                ubyte[] bytes;
-                size_t index;
-
-                bool readBool() {
-                    return bytes[index++] == 1;
-                }
-            }
-
-            unittest {
-                auto reader = Reader([1, 0, 1, 0, 0, 1]);
-                foreach (_; 0 .. 6)
-                    reader.readBool;
-
-                reader.readBool;
-            }
-        }).shouldThrowWithMessage("array index 6 is out of bounds `[0..6]`");
-    }
-}
-
-static foreach (backend; backends) {
-
     @ShouldFail(
         "DMD CTFE cannot read a static child-class registry at compile time",
     )
-    @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~ backend.stringof)
+    @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~
+        backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Message {
