@@ -292,6 +292,12 @@ narrow indexed assignment for local array variables by replacing one
 slices, append, ref parameter mutation, and bounds diagnostics remain
 unpromoted.
 
+Arrays progress: `ubyteArrayIndexWriteFailureMessage.0` in
+`tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. No production
+change was required; signal was verified by temporarily mutating indexed array
+assignment writeback, which changed the promoted failure message from
+`42 != 43` to `0 != 43`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

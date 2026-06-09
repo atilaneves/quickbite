@@ -2193,6 +2193,17 @@ static foreach (backend; backends) {
 }
 
 static foreach (backend; backendsWith!Interpreter) {
+    @("ubyteArrayIndexWriteFailureMessage.0." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] values = [0x29u, 0x00u];
+                values[1] = 0x2au;
+                assert(values[1] == 0x2bu);
+            }
+        }).shouldThrowWithMessage("42 != 43");
+    }
+
     @("ubyteArrayIndexWrite." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
