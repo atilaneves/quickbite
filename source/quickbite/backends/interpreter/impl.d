@@ -98,11 +98,15 @@ private struct Walker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
         import quickbite.frontend.dmd.values: integerValue, realValue;
 
-        if (auto integer = expression.isIntegerExp)
+        if (auto integer = expression.isIntegerExp) {
+            if (integer.type !is null && integer.type.ty == TY.Tenum)
+                return Value.enumValue(expressionChars(integer));
             return integerValue(integer);
+        }
 
         if (auto real_ = expression.isRealExp)
             return realValue(real_);
@@ -802,6 +806,16 @@ private struct Walker {
         *current = *current + Value(cast(int) 1);
         return *current;
     }
+}
+
+
+// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
+// string owned by the AST node, which we copy with `idup` before returning,
+// so no unsafe pointer escapes.
+private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
+    import std.string: fromStringz;
+
+    return expression.toChars.fromStringz.idup;
 }
 
 
