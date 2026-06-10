@@ -236,7 +236,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
