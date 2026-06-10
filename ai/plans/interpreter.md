@@ -996,6 +996,83 @@ two remaining CTFE-only tests in `repl.d`
 struct support and the second needs buffered-declaration error recovery, both
 larger than the next available slice.
 
+### CT Arrays Promotion Probe
+
+All 48 backend-matrix blocks in `tests/ut/backends/runner/ct/arrays.d` (the
+current home of the former `lang/arrays.d` coverage) were promoted from
+`AliasSeq!(Ctfe)` to `AliasSeq!(Ctfe, Interpreter)` in branch
+`interpreter-ct-arrays`. 20 promotions passed and were kept; 28 failed and
+were reverted to `AliasSeq!(Ctfe)`. The full suite is green with
+`bin/ut --random` after the reverts.
+
+Kept (already green on `Interpreter`, no production change):
+`assertDiagnostic.integerEquality`, `assertDiagnostic.booleanEquality`,
+`assertDiagnostic.arrayElementMismatch`,
+`assertDiagnostic.arrayLengthMismatch`, `dynamicArray.lengthCases`,
+`dynamicArray.literalElements`, `dynamicArray.ubyteLiteralTruncatesElements`,
+`dynamicArray.indexReadWrite`, `dynamicArray.postIncrementIndex`,
+`dynamicArray.mutableStringLiteralCopiesDoNotShareWrites`,
+`dynamicArray.localAppend`, `dynamicArray.appendToNonEmptyArray`,
+`dynamicArray.refParameterAppend`, `dynamicArray.sliceFromRuntimeBounds`,
+`dynamicArray.nullZeroLengthSlice`,
+`dynamicArray.nestedSliceWritesPropagateToOriginalArray`,
+`dynamicArray.nestedSliceAppendKeepsOriginalArrayTail`,
+`dynamicArray.returnValue`, `dynamicArray.sliceReturnValue`, and
+`dynamicArray.indexesCallResult`. These were bulk promotions; none has had
+individual mutation-based signal verification yet, so treat each as
+needing signal verification before relying on it as a regression guard.
+
+Reverted, by failure category (each is a future slice candidate):
+
+- `assertDiagnostic.characterEquality`: Interpreter formats char-typed
+  assert operands as integers — `101 != 102` instead of `'e' != 'f'`.
+  Missing char-aware equality assertion message formatting.
+- All 8 `assocArray.*` tests: `Unsupported eval expression:
+  assocArrayLiteral` in the module interpreter.
+  `readMissingKeyThrowsDiagnostic` additionally needs the missing-key
+  diagnostic once literals work.
+- `dynamicArray.concatenation` and
+  `dynamicArray.elementConcatenatesWithArray`: `Unsupported eval
+  expression: concatenate` (`CatExp`).
+- `dynamicArray.newUsesRuntimeLength`,
+  `newCharArrayUsesRuntimeLengthAndDefaultFill`, and
+  `newMultidimensionalUsesRuntimeLengths`: `Unsupported eval expression:
+  new_` (`NewExp` array allocation).
+- `dynamicArray.lengthAssignmentResizesArray`: `Unsupported eval
+  expression: loweredAssignExp` (`arr.length = n` lowering).
+- `dynamicArray.sliceAssignmentUpdatesArray`,
+  `dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe`, and
+  `staticArray.multidimensionalSliceBlockAssignRepeatsRow`:
+  `Unsupported interpreter assignment target.` (slice/block assignment
+  LHS). The overlapping test also needs the overlap diagnostic.
+- `dynamicArray.arrayOperationAddsRuntimeElements`: `Unsupported eval
+  statement: UnrolledLoop` (DMD lowering of `sums[] = left[] + right[]`).
+- `staticArray.copyFromRuntimeArrayUsesArrayCtor`: `Expected array.` —
+  a default-initialised static array local is not materialised as an
+  array value, so the copy and indexed writes fail.
+- `pointer.arithmeticOverDynamicArray`, `pointer.comparisonWithinArray`,
+  `pointer.sliceFromDynamicArray`, and
+  `pointer.slicePastAllocatedBlockDiagnostic`: `Unsupported eval
+  expression: address` (`AddrExp`, `&values[0]`).
+- `pointer.indexReadsDynamicArray` and
+  `pointer.relationsAcrossArraysReturnFalse`: crash, not a diagnostic —
+  `AssertError` in `source/quickbite/backends/casts.d:58` `castTarget`
+  when the fixture casts/converts through a pointer type (`values.ptr`).
+  `castTarget` should report an unsupported-cast diagnostic instead of
+  asserting.
+- `dynamicArray.indexPastLengthDiagnostic` and
+  `dynamicArray.sliceIndexPastLengthDiagnostic`: crash, not a
+  diagnostic — host `core.exception.ArrayIndexError` from
+  `Value.opIndex` (`source/quickbite/lang/package.d:399`). The
+  interpreter passes an out-of-bounds index straight into the host
+  array instead of emitting the CTFE-style bounds message
+  (`array index 3 is out of bounds [0..2]` /
+  `index 3 exceeds array length 2`).
+
+The two crash categories are robustness bugs independent of feature
+support: unsupported input must produce an interpreter diagnostic, never
+a host-runtime `Error`.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
