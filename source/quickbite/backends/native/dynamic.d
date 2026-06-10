@@ -63,12 +63,7 @@ private void emitObjectFile(
     initialiseBackend;
 
     module_.objfile = FileName(objPath);
-
-    const oldAllInst = global.params.allInst;
-    scope(exit) global.params.allInst = oldAllInst;
-    // Emit all template instances (notably `_d_assert_fail`) into this object
-    // so the shared library does not rely on other objects providing them.
-    global.params.allInst = true;
+    removeForeignTemplateInstances(module_);
 
     enum noLibModules = (const(char)*[]).init;
     enum noLibName = "";
@@ -92,6 +87,48 @@ private void emitObjectFile(
     );
     if (global.errors != 0)
         throw new Exception("codegen failed: " ~ objPath);
+}
+
+// Template instances and TypeInfo declarations from *every* compilation in
+// the process get appended to the first root module's members
+// (TemplateInstance.appendToModuleMember and typinf.getTypeInfoType both
+// redirect non-root modules through importedFrom). Emitting those would make
+// the object reference symbols from other modules, so only keep what this
+// module produced itself.
+private void removeForeignTemplateInstances(imported!"dmd.dmodule".Module module_) {
+    if (module_.members is null)
+        return;
+
+    size_t numKept = 0;
+    foreach (member; *module_.members) {
+        if (auto instance = member.isTemplateInstance) {
+            if (instance.minst !is module_)
+                continue;
+        }
+        if (auto typeInfo = member.isTypeInfoDeclaration) {
+            if (typeModule(typeInfo.tinfo) !is module_)
+                continue;
+        }
+        (*module_.members)[numKept++] = member;
+    }
+    module_.members.setDim(numKept);
+}
+
+// The module a type's TypeInfo belongs in: the one declaring the aggregate at
+// the bottom of the type. Null for basic types, whose TypeInfos druntime
+// already exports.
+private imported!"dmd.dmodule".Module typeModule(imported!"dmd.mtype".Type type) {
+    for (;;) {
+        if (auto structType = type.isTypeStruct)
+            return structType.sym.getModule;
+        if (auto classType = type.isTypeClass)
+            return classType.sym.getModule;
+        if (auto next = type.nextOf) {
+            type = next;
+            continue;
+        }
+        return null;
+    }
 }
 
 private void initialiseBackend() {

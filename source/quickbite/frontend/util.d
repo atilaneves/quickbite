@@ -23,7 +23,12 @@ private void foreachUnitTestDeclaration(
     if (symbols is null)
         return;
 
-    foreach (symbol; (*symbols)[]) {
+    // By index on purpose: running a unittest from the visit callback can
+    // instantiate templates, which DMD appends to this very array (root
+    // modules collect speculative instances via importedFrom). A slice would
+    // keep pointing at the old buffer after the append reallocates it.
+    for (size_t i = 0; i < symbols.length; ++i) {
+        auto symbol = (*symbols)[i];
         if (auto unitTest = symbol.isUnitTestDeclaration) {
             visit(unitTest);
             continue;

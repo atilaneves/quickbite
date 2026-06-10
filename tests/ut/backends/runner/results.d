@@ -20,8 +20,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("runTests.reportsThrownExceptionMessages." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
             @("quickbite regression")
@@ -52,8 +53,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("runBackendSourceFixtureTests.importPathsRetryAfterFailure." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
 
         with(immutable Sandbox()) {
@@ -122,8 +124,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("runTests.countsAllPassingUnittests." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
             unittest {
@@ -211,8 +214,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("runTests.runsTestsInEachModule." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         auto module1 = parseModule(q{
             unittest {

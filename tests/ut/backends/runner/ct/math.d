@@ -29,7 +29,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -44,7 +44,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -77,7 +77,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -95,7 +95,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -127,7 +127,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -141,7 +141,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -169,7 +169,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -184,7 +184,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -213,7 +213,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -228,7 +228,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -259,7 +259,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -275,7 +275,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -307,7 +307,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -321,7 +321,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -349,7 +349,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -364,7 +364,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -692,7 +692,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -713,7 +713,7 @@ static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; imported!"std.meta".AliasSeq!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)
     unittest {

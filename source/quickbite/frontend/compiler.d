@@ -57,6 +57,13 @@ public ModuleParseResult parseModuleWithCheckActionContext(
     return compiler.parseModuleWithCheckActionContext(source, importPaths);
 }
 
+public ModuleParseResult parseModuleWithCheckActionContextUncached(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleWithCheckActionContextUncached(source, importPaths);
+}
+
 public ModuleParseResult parseModuleFileWithCheckActionContext(
     in string filePath,
     in string[] importPaths,
@@ -230,6 +237,23 @@ final class Compiler {
         scope(exit) global.params.checkAction = originalCheckAction;
 
         return parseModuleLocked(source, importPaths, "checkaction=context", true);
+    }
+
+    ModuleParseResult parseModuleWithCheckActionContextUncached(
+        in string source,
+        in string[] importPaths,
+    ) {
+        import dmd.astenums: CHECKACTION;
+        import dmd.globals: global;
+
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        const originalCheckAction = global.params.checkAction;
+        global.params.checkAction = CHECKACTION.context;
+        scope(exit) global.params.checkAction = originalCheckAction;
+
+        return parseModuleLocked(source, importPaths, "checkaction=context", false);
     }
 
     ModuleParseResult parseModuleFileWithCheckActionContext(

@@ -9,13 +9,14 @@ public import quickbite.backends.interpreter;
 public import quickbite.backends.bytecode;
 public import quickbite.backends.ir;
 public import quickbite.backends.native;
+public import std.meta: AliasSeq;
 
 
-alias backends = imported!"std.meta".AliasSeq!(
+alias backends = AliasSeq!(
     Ctfe,
 );
 
-alias backendsWith(Extra...) = imported!"std.meta".AliasSeq!(
+alias backendsWith(Extra...) = AliasSeq!(
     backends,
     Extra,
 );
@@ -47,12 +48,20 @@ public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+    import quickbite.frontend.compiler:
+        parseModuleWithCheckActionContext,
+        parseModuleWithCheckActionContextUncached;
 
-    auto moduleResult = parseModuleWithCheckActionContext(
-        moduleSource,
-        importPaths,
-    );
+    // DynamicLibrary compiles the module to an object file, so it must get a
+    // fresh parse: a cached module accumulates other compilations' speculative
+    // template instances and TypeInfos (DMD appends them to root modules via
+    // importedFrom), which codegen would then emit as dangling references.
+    static if (is(T == DynamicLibrary))
+        alias parse = parseModuleWithCheckActionContextUncached;
+    else
+        alias parse = parseModuleWithCheckActionContext;
+
+    auto moduleResult = parse(moduleSource, importPaths);
     auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }

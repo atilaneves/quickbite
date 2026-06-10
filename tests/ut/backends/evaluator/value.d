@@ -1,7 +1,7 @@
 module ut.backends.evaluator.value;
 
 
-import unit_threaded; // replace with `ut` later when we can due to `Value`
+import ut.backends;
 import std.conv: text;
 import quickbite.lang;
 
@@ -28,7 +28,7 @@ import quickbite.lang;
 
 static foreach(
     T;
-    imported!"std.meta".AliasSeq!(
+    AliasSeq!(
         ubyte, byte, short, ushort, int, uint, long, ulong,
     )
 )
@@ -41,7 +41,7 @@ static foreach(
     }
 }
 
-static foreach(T; imported!"std.meta".AliasSeq!(char, wchar, dchar)) {
+static foreach(T; AliasSeq!(char, wchar, dchar)) {
     @("value.char." ~ T.stringof)
     @safe pure unittest {
         const val = cast(T) 42;
@@ -51,7 +51,7 @@ static foreach(T; imported!"std.meta".AliasSeq!(char, wchar, dchar)) {
 }
 
 
-static foreach(T; imported!"std.meta".AliasSeq!(float, double, real)) {
+static foreach(T; AliasSeq!(float, double, real)) {
     @("value.float." ~ T.stringof)
     @safe pure unittest {
         const val = cast(T) 42;

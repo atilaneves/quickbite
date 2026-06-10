@@ -49,8 +49,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             bool left() {
@@ -87,8 +88,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalAndCall." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             bool left() {
@@ -192,8 +194,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalOrBoolResult." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -258,6 +261,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 
 static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalOrOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -269,8 +273,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalOrShortCircuit." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -308,8 +313,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalOr." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -321,8 +327,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int input() {
@@ -407,9 +414,10 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
 
     @("logicalAnd." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
