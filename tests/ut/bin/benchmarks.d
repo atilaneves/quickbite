@@ -1,4 +1,4 @@
-module ut.benchmarks;
+module ut.bin.benchmarks;
 
 
 import benchmarks.cli;

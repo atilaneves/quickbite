@@ -1,4 +1,4 @@
-module ut.backends.lang.exceptions;
+module ut.backends.runner.ct.exceptions;
 
 
 import ut.backends;

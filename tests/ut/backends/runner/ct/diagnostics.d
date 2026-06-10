@@ -1,4 +1,4 @@
-module ut.backends.lang.diagnostics;
+module ut.backends.runner.ct.diagnostics;
 
 
 import ut.backends;

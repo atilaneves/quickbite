@@ -57,20 +57,20 @@ the normal test-approval stop.
 
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
-| 1 | 3.0 | `tests/ut/backends/lang/eval.d` |
-| 2 | 4.0 | `tests/ut/backends/lang/integrals.d` |
-| 3 | 4.5 | `tests/ut/backends/api/runner.d` |
-| 4 | 4.5 | `tests/ut/backends/runtime/cstdlib.d` |
-| 5 | 5.0 | `tests/ut/backends/lang/logic.d` |
-| 6 | 6.0 | `tests/ut/backends/lang/diagnostics.d` |
-| 7 | 6.5 | `tests/ut/backends/lang/math.d` |
-| 8 | 7.5 | `tests/ut/backends/api/repl.d` |
-| 9 | 8.0 | `tests/ut/backends/lang/arrays.d` |
-| 10 | 8.5 | `tests/ut/backends/lang/structs.d` |
-| 11 | 9.0 | `tests/ut/backends/lang/control_flow.d` |
-| 12 | 9.5 | `tests/ut/backends/lang/expressions.d` |
-| 13 | 10.0 | `tests/ut/backends/lang/exceptions.d` |
-| 14 | 10.5 | `tests/ut/backends/projects/cerealed.d` |
+| 1 | 3.0 | `tests/ut/backends/evaluator/eval.d` |
+| 2 | 4.0 | `tests/ut/backends/runner/ct/integrals.d` |
+| 3 | 4.5 | `tests/ut/backends/runner/results.d` |
+| 4 | 4.5 | `tests/ut/backends/runner/rt/cstdlib.d` |
+| 5 | 5.0 | `tests/ut/backends/runner/ct/logic.d` |
+| 6 | 6.0 | `tests/ut/backends/runner/ct/diagnostics.d` |
+| 7 | 6.5 | `tests/ut/backends/runner/ct/math.d` |
+| 8 | 7.5 | `tests/ut/bin/repl/package.d` |
+| 9 | 8.0 | `tests/ut/backends/runner/ct/arrays.d` |
+| 10 | 8.5 | `tests/ut/backends/runner/ct/structs.d` |
+| 11 | 9.0 | `tests/ut/backends/runner/ct/control_flow.d` |
+| 12 | 9.5 | `tests/ut/backends/runner/ct/expressions.d` |
+| 13 | 10.0 | `tests/ut/backends/runner/ct/exceptions.d` |
+| 14 | 10.5 | `tests/ut/backends/runner/ct/cerealed.d` |
 
 ## Classification Notes
 
@@ -79,14 +79,14 @@ the normal test-approval stop.
 - `integrals.d`: All integral widths and signedness, runtime casts and
   truncation, typed locals, aliases, enum constants, function parameters and
   returns, and signed/unsigned assertion formatting.
-- `api/runner.d`: Module-backed unittest execution, attributed unittests, thrown
-  unittests, import paths, multiple modules, assertion failure handling,
+- `runner/results.d`: Module-backed unittest execution, attributed unittests,
+  thrown unittests, import paths, multiple modules, assertion failure handling,
   summary counts, DMD unittest symbols, and source/file locations.
 - `cstdlib.d`: A single `malloc`/`free` test whose only backend requirement is
   to fail when a called function has no available body; the pointer casts,
   indexing, and `scope(exit)` in the source are never reached. Asserts the
   diagnostic that such a function cannot be interpreted at compile time. Gated
-  by `api/runner`'s unittest-execution surface, not by any pointer behavior.
+  by `runner`'s unittest-execution surface, not by any pointer behavior.
 - `logic.d`: Boolean and non-boolean truthiness, `!`, `&&`, `||`,
   short-circuiting, comparisons inside logical expressions, operand calls, and
   assertion diagnostics.
@@ -96,7 +96,7 @@ the normal test-approval stop.
 - `math.d`: `std.math` imports and intrinsic-like calls such as `pow`, `sqrt`,
   `fabs`, `isNaN`, `isInfinity`, and `signbit`; NaN, infinity, sign-bit, and
   floating assertion diagnostics.
-- `api/repl.d`: `evalRepl`, persistent cell state, expression and no-display
+- `bin/repl/package.d`: `evalRepl`, persistent cell state, expression and no-display
   cells, declarations, functions, templates, imports, Phobos-visible calls,
   scalar/string/array/associative-array/enum/range display values, loaded
   unittest execution, location rewriting, and diagnostic cleanup.
@@ -123,7 +123,7 @@ the normal test-approval stop.
   exception member access, propagation across calls and branches, unwinding,
   `finally` ordering, return-value capture before `finally`, catch-handler
   `goto`, and exception chaining.
-- `projects/cerealed.d`: Integration stress coverage combining arrays,
+- `cerealed.d`: Integration stress coverage combining arrays,
   structs, methods, `ref` cursors, post-increment indexing, templates,
   `T.sizeof`, constraints, loops, bit operations, casts, enum round trips,
   nested arrays, associative arrays, pointers, `new`, static arrays, input
@@ -132,9 +132,6 @@ the normal test-approval stop.
 
 ## Not Behavior Targets
 
-`tests/ut/backends/package.d` is promotion plumbing, not a behavior target.
-`tests/ut/backends/architecture.d` is a global architecture guard and does not
-execute the backend matrix. `tests/ut/backends/ctfe.d` and
-`tests/ut/backends/interpreter.d` are backend-specific tests with hardcoded
-backend names; they do not use the `static foreach (backend; backends)` matrix
-and are not promotable shared-behavior targets.
+`tests/ut/backends/package.d` is promotion plumbing, not a behavior target: it
+defines the `backends` matrix, `backendsWith`, `newBackend`, and the fixture
+helpers. It does not execute any test itself.

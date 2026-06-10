@@ -1,4 +1,4 @@
-module ut.backends.lang.structs;
+module ut.backends.runner.ct.structs;
 
 
 import ut.backends;

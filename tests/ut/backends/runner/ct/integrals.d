@@ -1,4 +1,4 @@
-module ut.backends.lang.integrals;
+module ut.backends.runner.ct.integrals;
 
 
 import ut.backends;

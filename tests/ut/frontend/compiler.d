@@ -1,4 +1,4 @@
-module ut.compiler;
+module ut.frontend.compiler;
 
 
 import ut;

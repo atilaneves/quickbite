@@ -1,4 +1,4 @@
-module ut.backends.lang.arrays;
+module ut.backends.runner.ct.arrays;
 
 
 import ut.backends;

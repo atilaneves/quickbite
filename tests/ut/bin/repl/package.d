@@ -1,4 +1,4 @@
-module ut.backends.api.repl;
+module ut.bin.repl;
 
 
 import ut.backends;

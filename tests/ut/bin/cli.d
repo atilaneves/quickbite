@@ -1,4 +1,4 @@
-module ut.repl_cli;
+module ut.bin.cli;
 
 
 import ut;
