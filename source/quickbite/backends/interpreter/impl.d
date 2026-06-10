@@ -510,6 +510,9 @@ private struct Walker {
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
+        if (auto slice = assign.e1.isSliceExp)
+            return runSliceAssignExpression(slice, assign.e2);
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -578,6 +581,102 @@ private struct Walker {
         );
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private Value runSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = slice.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? current.length
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        rejectOverlappingSliceAssignment(variable, rhs, lower, upper, current.length);
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        Value[] elements;
+        foreach (index; 0 .. current.length)
+            elements ~= index < lower || index >= upper
+                ? (*current)[index]
+                : block ? copyArrayValue(value) : value[index - lower];
+
+        locals[variable] = Value.arrayValue(elements);
+        uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private void rejectOverlappingSliceAssignment(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression rhs,
+        in size_t lower,
+        in size_t upper,
+        in size_t length,
+    ) {
+        auto source = rhs.isSliceExp;
+        if (source is null)
+            return;
+
+        auto var = source.e1.isVarExp;
+        if (var is null)
+            return;
+
+        if (var.var.isVarDeclaration !is variable)
+            return;
+
+        const sourceLower = source.lwr is null
+            ? 0
+            : cast(size_t) runExpression(source.lwr).asLong;
+        const sourceUpper = source.upr is null
+            ? length
+            : cast(size_t) runExpression(source.upr).asLong;
+
+        if (lower < sourceUpper && sourceLower < upper) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "overlapping slice assignment `[", lower, "..", upper,
+                "] = [", sourceLower, "..", sourceUpper, "]`",
+            ));
+        }
+    }
+
+    private bool isBlockSliceAssignment(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.frontend.dmd.types: arrayElementType, isArrayType;
+
+        auto elementType = arrayElementType(slice.type);
+        if (elementType is null || !isArrayType(elementType))
+            return false;
+
+        return rhs.type !is null &&
+            rhs.type.toBasetype.equals(elementType.toBasetype);
+    }
+
+    private Value copyArrayValue(in Value value) {
+        Value[] elements;
+        foreach (index; 0 .. value.length)
+            elements ~= value[index];
+
+        return Value.arrayValue(elements);
     }
 
     private Value runLoweredAssignExpression(
@@ -867,8 +966,20 @@ private struct Walker {
             initializer = assign.e2;
         else if (auto construct = initializer.isConstructExp)
             initializer = construct.e2;
-        else if (auto blit = initializer.isBlitExp)
+        else if (auto blit = initializer.isBlitExp) {
+            import quickbite.frontend.dmd.types: isStaticArrayType;
+
+            // DMD default-initialises static array locals with `variable[] = 0`
+            if (isStaticArrayType(variable.type) && blit.e1.isSliceExp !is null) {
+                const value = defaultValue(variable);
+                locals[variable] = value;
+                uninitializedLocals.remove(variable);
+                sliceAliases.remove(variable);
+                return value;
+            }
+
             initializer = blit.e2;
+        }
 
         if (initializer.isVoidInitExp !is null) {
             uninitializedLocals[variable] = true;
