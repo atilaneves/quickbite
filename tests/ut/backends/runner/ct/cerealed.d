@@ -4,7 +4,7 @@ module ut.backends.runner.ct.cerealed;
 import ut.backends;
 
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
         backend.stringof)
     unittest {
@@ -31,7 +31,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -56,7 +56,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~
         backend.stringof)
     unittest {
@@ -80,7 +80,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~
         backend.stringof)
     unittest {
@@ -107,7 +107,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -134,7 +134,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -164,7 +164,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -201,7 +201,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -259,7 +259,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -298,7 +298,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~
         backend.stringof)
     unittest {
@@ -353,7 +353,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
     unittest {
@@ -408,7 +408,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.pointerToIntWritesPointeeBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -435,7 +435,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~
         backend.stringof)
     unittest {
@@ -475,7 +475,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -570,7 +570,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -620,7 +620,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -674,7 +674,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~
         backend.stringof)
     unittest {
@@ -740,7 +740,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~
         backend.stringof)
     unittest {
@@ -802,7 +802,7 @@ static foreach (backend; backends) {
 /++
     Project-shaped diagnostics.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     unittest {
@@ -857,7 +857,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     unittest {
@@ -897,7 +897,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     unittest {
@@ -927,7 +927,7 @@ static foreach (backend; backends) {
 /++
     Known project-shaped gaps.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -954,7 +954,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @ShouldFail(
         "DMD CTFE cannot read a static child-class registry at compile time",
     )

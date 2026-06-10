@@ -6,7 +6,7 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -26,7 +26,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("intLessThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -43,7 +43,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("intLessOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -60,7 +60,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("intGreaterThanOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -77,7 +77,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -94,7 +94,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("intNotEqualOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -111,7 +111,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("ok." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -126,7 +126,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("oops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -141,7 +141,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("okFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -156,7 +156,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("localIntReturnOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -172,7 +172,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("voidFunctionOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -187,7 +187,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("functionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -202,7 +202,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -229,7 +229,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("functionParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -244,7 +244,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("ifElseOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -262,7 +262,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("refParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -279,7 +279,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("inFunctionParametersOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -294,7 +294,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("refSizeTParameterOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -311,7 +311,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -323,7 +323,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -334,7 +334,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -349,7 +349,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -361,7 +361,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -373,7 +373,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -386,7 +386,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -405,7 +405,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("nullClassFieldReadReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -422,7 +422,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("typeidNullClassReferenceReportsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -437,7 +437,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(

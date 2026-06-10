@@ -12,16 +12,6 @@ public import quickbite.backends.native;
 public import std.meta: AliasSeq;
 
 
-alias backends = AliasSeq!(
-    Ctfe,
-);
-
-alias backendsWith(Extra...) = AliasSeq!(
-    backends,
-    Extra,
-);
-
-
 auto newBackend(T)() {
     return new T;
 }

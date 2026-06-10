@@ -8,7 +8,7 @@ import std.conv: text;
 import std.path: buildPath;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runBackendSourceFixtureTests.throwsOnUnittestFailure." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -20,7 +20,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.reportsThrownExceptionMessages." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -37,7 +37,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runTests.reportsAssertFailureMessages." ~ backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
@@ -53,7 +53,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runBackendSourceFixtureTests.importPathsRetryAfterFailure." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -98,7 +98,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runTests.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
@@ -124,7 +124,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.countsAllPassingUnittests." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -145,7 +145,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runTests.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
@@ -162,7 +162,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runTests.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
@@ -181,7 +181,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runTests.reportsFileBackedUnittestLocations." ~
         backend.stringof)
     unittest {
@@ -214,7 +214,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.runsTestsInEachModule." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -242,7 +242,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {
@@ -271,7 +271,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
     unittest {
         with(immutable Sandbox()) {

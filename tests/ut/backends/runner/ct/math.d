@@ -4,7 +4,7 @@ module ut.backends.runner.ct.math;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimePowDoubleInputs." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -60,7 +60,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -113,7 +113,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -155,7 +155,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesDifferentRuntimeSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -199,7 +199,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -243,7 +243,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeNonPerfectSqrtInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -291,7 +291,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -335,7 +335,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeFabsPositiveDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -379,7 +379,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsNaNDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -396,7 +396,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -410,7 +410,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -424,7 +424,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsInfinityDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -447,7 +447,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -462,7 +462,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -477,7 +477,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitDoubleInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -500,7 +500,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -514,7 +514,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -528,7 +528,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitNanInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -545,7 +545,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -559,7 +559,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -573,7 +573,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -589,7 +589,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     unittest {
@@ -606,7 +606,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     unittest {
@@ -623,7 +623,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("callsUserNamedIsNaNForNanInput." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -639,7 +639,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -655,7 +655,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -671,7 +671,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

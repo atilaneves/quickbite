@@ -4,7 +4,7 @@ module ut.backends.runner.ct.logic;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntCondition." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -19,7 +19,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntConditionFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -34,7 +34,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("assertNonzeroIntConditionFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -49,7 +49,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalAndCallFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -69,7 +69,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -88,7 +88,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalAndCall." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -108,7 +108,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -121,7 +121,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -134,7 +134,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -154,7 +154,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -174,7 +174,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -194,7 +194,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalOrBoolResult." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -206,7 +206,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrBoolResultFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -217,7 +217,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrBoolResultFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -233,7 +233,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -246,7 +246,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -259,7 +259,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalOrOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -273,7 +273,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalOrShortCircuit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -287,7 +287,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrShortCircuitFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -300,7 +300,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalOrShortCircuitFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -313,7 +313,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalOr." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -327,7 +327,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("logicalAndComparisonOperands." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -343,7 +343,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndComparisonOperandsFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -358,7 +358,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndComparisonOperandsFailureMessage.1." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -373,7 +373,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalAndShortCircuit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -386,7 +386,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalAndFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -400,7 +400,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalAndFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -414,7 +414,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
 
     @("logicalAnd." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -429,7 +429,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker))
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("logicalNotCallFailureMessage.0." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -444,7 +444,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalNotCallFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -460,7 +460,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalNotFailureMessage.1." ~ backend.stringof)
     unittest {
@@ -473,7 +473,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalNotFailureMessage.0." ~ backend.stringof)
     unittest {
@@ -486,7 +486,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalNotCall." ~ backend.stringof)
     unittest {
@@ -502,7 +502,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
 
     @("logicalNot." ~ backend.stringof)
     unittest {

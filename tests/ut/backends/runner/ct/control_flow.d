@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Basic functions, parameters, and returns.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.localIntReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -23,7 +23,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.parameter." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -38,7 +38,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.parameters." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -53,7 +53,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.inParameters." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -68,7 +68,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.refParameter." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -87,7 +87,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.multipleRefParameters." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -106,7 +106,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.refSizeTParameter." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -125,7 +125,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.voidFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -138,7 +138,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.voidFunctionExplicitReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -153,7 +153,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.explicitReturnSkipsFollowingStatements." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -169,7 +169,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
     unittest {
@@ -189,7 +189,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.freeFunctionCallWithReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -206,7 +206,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.freeFunctionCallWithDifferentOperation." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -223,7 +223,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.freeFunctionCallWithArrayParam." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -249,7 +249,7 @@ static foreach (backend; backends) {
 /++
     If/else and returns.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("if.bodyAssignment." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -268,7 +268,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("if.elseBranches." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -287,7 +287,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("if.elseUntakenBranchDoesNotRun." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -309,7 +309,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("if.earlyReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -328,7 +328,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("if.multipleEarlyReturns." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -355,7 +355,7 @@ static foreach (backend; backends) {
 /++
     While, do-while, for, break, and continue.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("while.neverRuns." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -376,7 +376,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("while.runsOnce." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -399,7 +399,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("while.runsMultipleTimes." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -422,7 +422,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("while.codegenShape." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -438,7 +438,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("for.continue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -458,7 +458,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("doWhile.breakAndContinue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -484,7 +484,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("labeledBreak.exitsOuterForLoop." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -511,7 +511,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("labeledContinue.skipsToOuterForIncrement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -544,7 +544,7 @@ static foreach (backend; backends) {
 /++
     Switch, switch control transfer, and labeled breaks.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.caseMatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -572,7 +572,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.defaultCase." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -600,7 +600,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.gotoCase." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -628,7 +628,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.gotoDefault." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -656,7 +656,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.gotoCaseUsesRuntimeSelector." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -688,7 +688,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.gotoDefaultUsesRuntimeSelector." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -720,7 +720,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("switch.breaksOuterLoop." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -756,7 +756,7 @@ static foreach (backend; backends) {
 /++
     Goto and restart points.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.directLabel." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -780,7 +780,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsExpressionStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -804,7 +804,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsCompoundStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -830,7 +830,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsBreakStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -857,7 +857,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsContinueStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -888,7 +888,7 @@ static foreach (backend; backends) {
 /++
     Goto, catch, and finally.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsBreakStatementInTryFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -918,7 +918,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsContinueStatementInTryFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -948,7 +948,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsGotoStatementInTryFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -979,7 +979,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsGotoCaseStatementInTryFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1018,7 +1018,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("goto.restartsGotoDefaultStatementInTryFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1057,7 +1057,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("catch.gotoRestartsBreakStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1087,7 +1087,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("catch.gotoRestartsContinueStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1117,7 +1117,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("catch.gotoRestartsGotoStatement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1152,7 +1152,7 @@ static foreach (backend; backends) {
 /++
     Foreach.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.array." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1169,7 +1169,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.emptyArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1186,7 +1186,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.range." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1202,7 +1202,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.expressionTupleBreakAndContinue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1234,7 +1234,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.utf8StringDecodesDchars." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1258,7 +1258,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.utf16StringDecodesDchars." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1282,7 +1282,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.utf32StringEncodesAsUtf8WhenIteratingChar." ~
         backend.stringof)
     unittest {
@@ -1307,7 +1307,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("foreach.reverseUtf16String." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1335,7 +1335,7 @@ static foreach (backend; backends) {
 /++
     Function pointers.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("functionPointer.hashCollisionUsesCorrectCallee." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1357,7 +1357,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("functionPointer.dispatchesToDistinctCallees." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1380,7 +1380,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("functionPointer.callCanEnterFunctionWithCallee." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

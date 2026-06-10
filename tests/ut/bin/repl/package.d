@@ -13,7 +13,7 @@ unittest {
     session.submit("typeof(1) + 2").kind.should == ReplCellKind.expression;
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -27,7 +27,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -41,7 +41,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.evaluatesStandaloneMixinExpression." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -55,7 +55,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -69,7 +69,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -83,7 +83,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.statementsExecuteImmediately." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -97,7 +97,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.functionDeclarationsPersistWithoutSemicolon." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -111,7 +111,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -125,7 +125,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.templateFunctionDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -143,7 +143,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.multilineFunctionDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -163,7 +163,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.multilineStructDeclarationsBufferUntilComplete." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -183,7 +183,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.failedBufferedDeclarationDoesNotPoisonSession." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -202,7 +202,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.commandsDoNotAbandonPendingInput." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -222,7 +222,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -236,7 +236,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -250,7 +250,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
@@ -269,7 +269,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.displaysFiniteRangeResults." ~ backend.stringof)
     unittest {
@@ -289,7 +289,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
@@ -304,7 +304,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -318,7 +318,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -336,7 +336,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysNestedArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -350,7 +350,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysStaticStringArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -364,7 +364,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysNestedEmptyStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -378,7 +378,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysWideStringValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -392,7 +392,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.displaysWideCharacterArrayValues." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -410,7 +410,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -424,7 +424,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.displaysEnumValues." ~ backend.stringof)
     unittest {
@@ -449,7 +449,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -464,7 +464,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -486,7 +486,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.displaysStringValues." ~ backend.stringof)
     unittest {
@@ -501,7 +501,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.specialTokenValuesHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -516,7 +516,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
@@ -556,7 +556,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
@@ -570,7 +570,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -583,7 +583,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
     unittest {
@@ -595,7 +595,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -612,7 +612,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -632,7 +632,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
@@ -664,7 +664,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -677,7 +677,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
@@ -696,7 +696,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
         backend.stringof)
@@ -731,7 +731,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -763,7 +763,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
@@ -783,7 +783,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
     unittest {
@@ -804,7 +804,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
     unittest {
@@ -821,7 +821,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -838,7 +838,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
     unittest {
@@ -856,7 +856,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -872,7 +872,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
     unittest {
@@ -887,7 +887,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
@@ -905,7 +905,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
     unittest {

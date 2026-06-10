@@ -21,7 +21,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
     operators are worth keeping here because the failure messages encode the
     negated operator.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assertDiagnostic.lessThan." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -36,7 +36,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assertDiagnostic.lessOrEqual." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -51,7 +51,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assertDiagnostic.greaterThan." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -66,7 +66,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assertDiagnostic.greaterOrEqual." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -81,7 +81,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assertDiagnostic.notEqual." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -100,7 +100,7 @@ static foreach (backend; backends) {
 /++
     Integer arithmetic and bitwise operators.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.arithmeticOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -129,7 +129,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.shiftOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -149,7 +149,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.bitwiseOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -174,7 +174,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.relationalOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -193,7 +193,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.unaryOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -211,7 +211,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.assignmentOperators." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -233,7 +233,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.commaExpressionSequencesOperands." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -254,7 +254,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("int.postIncrementUsesRuntimeSeed." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -277,7 +277,7 @@ static foreach (backend; backends) {
 /++
     Integer widths, wrapping, casts, and mixed numeric comparisons.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.ubyteCastTruncatesRuntimeValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -290,7 +290,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.ubyteLocalTruncatesOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -304,7 +304,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -319,7 +319,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.longLiteral." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -334,7 +334,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.ulongHighBitComparisonsUseUnsignedValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -350,7 +350,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.ulongDoubleComparisonUsesNumericUnsignedValue." ~
         backend.stringof)
     unittest {
@@ -369,7 +369,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("integer.floatEqualityIsNumeric." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -387,7 +387,7 @@ static foreach (backend; backends) {
 /++
     Floating-point, real, complex, and std.math expressions.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("floating.distinguishesFloatingPointValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -401,7 +401,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("floating.evaluatesPow." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -414,7 +414,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("floating.castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -427,7 +427,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @ShouldFail(
         "DMD CTFE returns <float not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -446,7 +446,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -465,7 +465,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("floating.realComparisonPreservesRealPrecision." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -479,7 +479,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("complex.literalWithRuntimeParts." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -502,7 +502,7 @@ static foreach (backend; backends) {
 /++
     Typeid, virtual dispatch, interfaces, and delegates.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.classReferenceUsesDynamicClass." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -521,7 +521,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -539,7 +539,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("class.virtualCallUsesDynamicClass." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -573,7 +573,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("interface.virtualCallUsesRuntimeDispatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -605,7 +605,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.nestedCallUsesCapturedValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -629,7 +629,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.structMemberCallUsesReceiver." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -655,7 +655,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.ptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -687,7 +687,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.funcptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -723,7 +723,7 @@ static foreach (backend; backends) {
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.hexStringToUshortArrayUsesBigEndianWords." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -738,7 +738,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.sliceToPointerDereferencesFirstElement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -759,7 +759,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.arrayPointerRoundTripsThroughVoidPointer." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -781,7 +781,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -802,7 +802,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.expTypePaintedSliceFromVoidPointer." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -828,7 +828,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("cast.pointerToBoolReflectsNullness." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -853,7 +853,7 @@ static foreach (backend; backends) {
 /++
     Conditional expressions, `new`, pointer arithmetic, and vectors.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("conditional.nonNullPointerIsTrue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -871,7 +871,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("new.scalarPointerDereferencesRuntimeValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -888,7 +888,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.runtimeOffsetReadsElement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -910,7 +910,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.runtimeDifferenceReadsElement." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -933,7 +933,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("vector.scalarCastSplatsToStaticArray." ~ backend.stringof)
     unittest {
         runSse2BackendSourceFixtureTests!backend(q{

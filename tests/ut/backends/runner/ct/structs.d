@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Struct fields, defaults, and basic value construction.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.scalarFieldReadWrite." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -26,7 +26,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -49,7 +49,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -71,7 +71,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.arrayFieldDefaultsToEmpty." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -88,7 +88,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.literalDefaultsMissingFieldToZero." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -110,7 +110,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.literalFillsStaticArrayFieldFromScalar." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -136,7 +136,7 @@ static foreach (backend; backends) {
 /++
     Passing structs by value.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.scalarStructPassedToFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -158,7 +158,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.multiFieldStructPassedToFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -182,7 +182,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.byValueScalarFieldMutationDoesNotLeak." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -206,7 +206,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.byValueArrayDescriptorMutationDoesNotLeak." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -235,7 +235,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.byValueArrayElementMutationLeaksThroughSlice." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -263,7 +263,7 @@ static foreach (backend; backends) {
 /++
     Struct methods.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodReadsField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -285,7 +285,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodPostIncrementsSizeTField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -307,7 +307,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodPostIncrementsRuntimeSizeTField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -331,7 +331,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodReadsArrayFieldAtPostIncrementedField." ~
         backend.stringof)
     unittest {
@@ -356,7 +356,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodReadsArrayFieldAtRuntimePostIncrementedField." ~
         backend.stringof)
     unittest {
@@ -386,7 +386,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodIndexWritesArrayField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -410,7 +410,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodAppendsArrayField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -434,7 +434,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodCallsStructMethod." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -466,7 +466,7 @@ static foreach (backend; backends) {
 /++
     Ref parameters involving struct fields.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.arrayFieldPassedByRef." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -490,7 +490,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.methodPassesFieldByRef." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -518,7 +518,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.templateMethodPassesFieldByRef." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -550,7 +550,7 @@ static foreach (backend; backends) {
 /++
     Constructors, `new`, and mutable struct pointers.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.constructorStoresDynamicArrayParameter." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -581,7 +581,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.newPointerInitializesFields." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -602,7 +602,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.newPointerAllocatesMutableInstance." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -628,7 +628,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.newPointerRunsConstructor." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -654,7 +654,7 @@ static foreach (backend; backends) {
 /++
     Dynamic array struct field return values.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.dynamicArrayFieldReturnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -686,7 +686,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.dynamicArrayReturnValueAssignsField." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -723,7 +723,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.dynamicArrayFieldReturnValueIndexesCallResult." ~
         backend.stringof)
     unittest {
@@ -756,7 +756,7 @@ static foreach (backend; backends) {
 /++
     `with`.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("with.structInstanceUsesRuntimeShapedFields." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -786,7 +786,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("with.structLocalGotoRestartsInsideBody." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -816,7 +816,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("with.enumExecutesBody." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -847,7 +847,7 @@ static foreach (backend; backends) {
 /++
     Destructors, postblits, and lifetime effects.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.scopeDestructorRunsAtCtfe." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -876,7 +876,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -920,7 +920,7 @@ static foreach (backend; backends) {
 /++
     Nested structs.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("struct.nestedReadsCapturedLocalThroughDefaultInit." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

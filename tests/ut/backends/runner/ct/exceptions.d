@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Throwing and basic catch semantics.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -20,7 +20,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -33,7 +33,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -47,7 +47,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionCatchesThrownException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -66,7 +66,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionBindsCaughtObject." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -85,7 +85,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchSkipsNonMatchingSiblingException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -118,7 +118,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.throwExpressionInConditionalIsCaught." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -152,7 +152,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionCatchesThrownExceptionFromCalledFunction." ~
         backend.stringof)
     unittest {
@@ -180,7 +180,7 @@ static foreach (backend; backends) {
 /++
     Throws from callees after side effects.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchThrowAfterCalleeSideEffect." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -209,7 +209,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchNestedBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -251,7 +251,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchRuntimeBranchThrowFromCalledFunction." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -286,7 +286,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.throwAfterRuntimeBranchPreservesRefSideEffect." ~
         backend.stringof)
     unittest {
@@ -322,7 +322,7 @@ static foreach (backend; backends) {
 /++
     Finally.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.runsFinalbody." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -342,7 +342,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.runsFinalbodyBeforeCatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -369,7 +369,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.runsAfterReturn." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -391,7 +391,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.returnCapturesValueBeforeFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -413,7 +413,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.branchReturnsCaptureValueBeforeFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -443,7 +443,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.throwChainsBodyException." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -475,7 +475,7 @@ static foreach (backend; backends) {
 /++
     Goto through try/finally and catch handlers.
 +/
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.gotoWithinBodyRunsFinallyOnce." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -503,7 +503,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("finally.gotoOutOfBodyRunsFinally." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -531,7 +531,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("catch.gotoResumesInsideHandler." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -559,7 +559,7 @@ static foreach (backend; backends) {
     }
 }
 
-static foreach (backend; backends) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("catch.gotoLeavesHandler." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

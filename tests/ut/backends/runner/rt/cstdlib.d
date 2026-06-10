@@ -4,7 +4,7 @@ module ut.backends.runner.rt.cstdlib;
 import ut.backends;
 
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     @("malloc." ~ backend.stringof)
     unittest {
         const msg =
