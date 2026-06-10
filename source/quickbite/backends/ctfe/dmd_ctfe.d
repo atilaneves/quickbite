@@ -5,11 +5,7 @@ private:
 
 
 public class Ctfe: imported!"quickbite.backends".Backend {
-    import quickbite.backends:
-        TestCaseResult,
-        TestOutcome,
-        TestRunResult,
-        TestSummary;
+    import quickbite.backends: TestResult;
     import quickbite.lang: Value;
 
     public override Value eval(in string str) {
@@ -37,50 +33,30 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override void runTests(
+    public override TestResult[] runTestResults(
         imported!"dmd.dmodule".Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
+        TestResult[] cases;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            if (const failure = ctfeFailureMessage(callExpression(unitTest)))
-                throw new Exception(failure);
-        });
-    }
-
-    public override TestRunResult runTestResults(
-        imported!"dmd.dmodule".Module module_,
-    ) {
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
-
-        TestRunResult result;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            ++result.summary.total;
             if (const failure = ctfeFailureMessage(callExpression(unitTest))) {
-                ++result.summary.failed;
-                result.cases ~= TestCaseResult(
-                    TestOutcome.failed,
+                cases ~= TestResult(
+                    false,
                     symbolName(unitTest),
                     locChars(unitTest.loc),
                     failure,
                 );
             } else {
-                ++result.summary.passed;
-                result.cases ~= TestCaseResult(
-                    TestOutcome.passed,
+                cases ~= TestResult(
+                    true,
                     symbolName(unitTest),
                     locChars(unitTest.loc),
                     null,
                 );
             }
         });
-        return result;
-    }
-
-    public override TestSummary runTestSummary(
-        imported!"dmd.dmodule".Module module_,
-    ) {
-        return runTestResults(module_).summary;
+        return cases;
     }
 }
 

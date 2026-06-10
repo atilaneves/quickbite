@@ -1,7 +1,7 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends: Backend;
+import quickbite.backends: Backend, runTests;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;

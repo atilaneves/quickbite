@@ -5,11 +5,7 @@ private:
 public class Bytecode: imported!"quickbite.backends".Backend {
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends:
-        TestCaseResult,
-        TestOutcome,
-        TestRunResult,
-        TestSummary;
+    import quickbite.backends: TestResult;
     import dmd.dmodule: Module;
 
     public override Value eval(in string expr) {
@@ -38,62 +34,31 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override void runTests(Module module_) {
+    public override TestResult[] runTestResults(Module module_) {
         import quickbite.backends.bytecode.compiler: compileUnitTest;
         import quickbite.backends.bytecode.vm: execute;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
+        TestResult[] cases;
         foreachUnitTestDeclaration(module_, (unitTest) {
-            execute(compileUnitTest(unitTest));
-        });
-    }
-
-    public override TestRunResult runTestResults(Module module_) {
-        import quickbite.backends.bytecode.compiler: compileUnitTest;
-        import quickbite.backends.bytecode.vm: execute;
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
-
-        TestRunResult result;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            ++result.summary.total;
             try {
                 execute(compileUnitTest(unitTest));
-                ++result.summary.passed;
-                result.cases ~= TestCaseResult(
-                    TestOutcome.passed,
+                cases ~= TestResult(
+                    true,
                     symbolName(unitTest),
                     locChars(unitTest.loc),
                     null,
                 );
             } catch (Exception e) {
-                ++result.summary.failed;
-                result.cases ~= TestCaseResult(
-                    TestOutcome.failed,
+                cases ~= TestResult(
+                    false,
                     symbolName(unitTest),
                     locChars(unitTest.loc),
                     e.msg,
                 );
             }
         });
-        return result;
-    }
-
-    public override TestSummary runTestSummary(Module module_) {
-        import quickbite.backends.bytecode.compiler: compileUnitTest;
-        import quickbite.backends.bytecode.vm: execute;
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
-
-        TestSummary summary;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            ++summary.total;
-            try {
-                execute(compileUnitTest(unitTest));
-                ++summary.passed;
-            } catch (Exception) {
-                ++summary.failed;
-            }
-        });
-        return summary;
+        return cases;
     }
 }
 

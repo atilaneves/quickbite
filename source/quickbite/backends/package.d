@@ -2,27 +2,11 @@ module quickbite.backends;
 
 private:
 
-public struct TestSummary {
-    public size_t total;
-    public size_t passed;
-    public size_t failed;
-}
-
-public enum TestOutcome {
-    passed,
-    failed,
-}
-
-public struct TestCaseResult {
-    public TestOutcome outcome;
+public struct TestResult {
+    public bool passed;
     public string name;
     public string location;
     public string message;
-}
-
-public struct TestRunResult {
-    public TestSummary summary;
-    public TestCaseResult[] cases;
 }
 
 public interface Backend {
@@ -32,9 +16,16 @@ public interface Backend {
 
     public Value eval(in string expr);
     public Value evalRepl(EvalCell cell);
-    public void runTests(Module module_);
-    public TestRunResult runTestResults(Module module_);
-    public TestSummary runTestSummary(Module module_);
+    public TestResult[] runTestResults(Module module_);
+}
+
+public void runTests(
+    Backend backend,
+    imported!"dmd.dmodule".Module module_,
+) {
+    foreach (testCase; backend.runTestResults(module_))
+        if (!testCase.passed)
+            throw new Exception(testCase.message);
 }
 
 public void runModulesTests(

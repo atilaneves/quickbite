@@ -106,7 +106,7 @@ public struct Repl {
             )
                 .module_,
         );
-        const failureDiagnostic = testFailureDiagnostics(result.cases);
+        const failureDiagnostic = testFailureDiagnostics(result);
         if (failureDiagnostic !is null)
             throw new Exception(failureDiagnostic);
 
@@ -157,29 +157,21 @@ private ReplDisplay replDisplay(
         ReplDisplay.value;
 }
 
-private bool failed(
-    ref const(imported!"quickbite.backends".TestCaseResult) testCase,
-) @safe pure nothrow {
-    import quickbite.backends: TestOutcome;
-
-    return testCase.outcome == TestOutcome.failed;
-}
-
 private string testFailureDiagnostic(
-    ref const(imported!"quickbite.backends".TestCaseResult) testCase,
+    ref const(imported!"quickbite.backends".TestResult) testCase,
 ) @safe pure {
     return "unittest at " ~ testCase.location ~ " failed: " ~
         testCase.message;
 }
 
 private string testFailureDiagnostics(
-    const(imported!"quickbite.backends".TestCaseResult)[] testCases,
+    const(imported!"quickbite.backends".TestResult)[] testCases,
 ) @safe pure {
     import std.array: join;
 
     string[] diagnostics;
     foreach (ref testCase; testCases)
-        if (testCase.failed)
+        if (!testCase.passed)
             diagnostics ~= testFailureDiagnostic(testCase);
 
     return diagnostics.join("\n");

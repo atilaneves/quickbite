@@ -3,6 +3,7 @@ module ut.backends.api.runner;
 
 import ut.backends;
 import quickbite.frontend.compiler: parseModule;
+import std.algorithm: count;
 import std.conv: text;
 import std.path: buildPath;
 
@@ -77,10 +78,10 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
 }
 
 static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
-    @("runTestSummary.countsAttributedPassingAndFailingUnittests." ~
+    @("runTestResults.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
     unittest {
-        const summary = runBackendSourceFixtureTestSummary!backend(q{
+        const results = runBackendSourceFixtureTestResults!backend(q{
             @("passes")
             unittest {
                 assert(1 == 1);
@@ -96,16 +97,16 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
 
-        summary.total.should == 3;
-        summary.passed.should == 2;
-        summary.failed.should == 1;
+        results.length.should == 3;
+        results.count!(result => result.passed).should == 2;
+        results.count!(result => !result.passed).should == 1;
     }
 }
 
 static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
-    @("runTestSummary.countsAllPassingUnittests." ~ backend.stringof)
+    @("runTestResults.countsAllPassingUnittests." ~ backend.stringof)
     unittest {
-        const summary = runBackendSourceFixtureTestSummary!backend(q{
+        const results = runBackendSourceFixtureTestResults!backend(q{
             unittest {
                 assert(1 == 1);
             }
@@ -116,16 +117,16 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
 
-        summary.total.should == 2;
-        summary.passed.should == 2;
-        summary.failed.should == 0;
+        results.length.should == 2;
+        results.count!(result => result.passed).should == 2;
+        results.count!(result => !result.passed).should == 0;
     }
 }
 
 static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
-    @("runTestSummary.countsAssertErrorsAsFailures." ~ backend.stringof)
+    @("runTestResults.countsAssertErrorsAsFailures." ~ backend.stringof)
     unittest {
-        const summary = runBackendSourceFixtureTestSummary!backend(q{
+        const results = runBackendSourceFixtureTestResults!backend(q{
             import core.exception: AssertError;
 
             unittest {
@@ -133,9 +134,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
 
-        summary.total.should == 1;
-        summary.passed.should == 0;
-        summary.failed.should == 1;
+        results.length.should == 1;
+        results.count!(result => result.passed).should == 0;
+        results.count!(result => !result.passed).should == 1;
     }
 }
 
@@ -152,9 +153,9 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
             }
         });
 
-        result.cases.length.should == 2;
-        result.cases[0].name.should == "__unittest_L2_C13";
-        result.cases[1].name.should == "__unittest_L6_C13";
+        result.length.should == 2;
+        result[0].name.should == "__unittest_L2_C13";
+        result[1].name.should == "__unittest_L6_C13";
     }
 }
 
@@ -185,8 +186,8 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
                 [],
             );
 
-            result.cases.length.should == 1;
-            result.cases[0].location.should == fixturePath ~ "(1)";
+            result.length.should == 1;
+            result[0].location.should == fixturePath ~ "(1)";
         }
     }
 }
