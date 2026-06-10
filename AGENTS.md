@@ -69,6 +69,7 @@ code.
 - Omit empty parens: `doStuff;` not `doStuff();`.
 - Variables as close to their usage as possible.
 - Use `with` in `switch`/`final switch` with enums for more readability.
+- private variables start with an underscore, e.g. `_member`.
 
 ### Production code (in `source`)
 
