@@ -3,19 +3,21 @@ module quickbite.backends.bytecode.impl;
 private:
 
 public class Bytecode: imported!"quickbite.backends".Backend {
+    import quickbite.backends: Backend;
     import quickbite.lang: Value;
     import quickbite.frontend.cell: EvalCell;
-    import quickbite.backends: TestResult;
-    import dmd.dmodule: Module;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
-    public override Value eval(in string expr) {
-        import quickbite.backends.bytecode.compiler: compileEvalSource;
+    public alias eval = Backend.eval;
+
+    public override Value eval(FuncDeclaration function_) {
+        import quickbite.backends.bytecode.compiler: compileFunction;
         import quickbite.backends.bytecode.vm: eval;
 
-        return eval(compileEvalSource(expr));
+        return eval(compileFunction(function_));
     }
 
-    public override Value evalRepl(EvalCell cell) {
+    public override Value eval(EvalCell cell) {
         import quickbite.backends.bytecode.compiler: compileEvalCell;
         import quickbite.backends.bytecode.vm: eval, execute;
         import quickbite.frontend.cell: EvalCellKind;
@@ -34,48 +36,10 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override TestResult[] runTests(Module module_) {
+    public override void runUnitTest(UnitTestDeclaration unitTest) {
         import quickbite.backends.bytecode.compiler: compileUnitTest;
         import quickbite.backends.bytecode.vm: execute;
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        TestResult[] cases;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            try {
-                execute(compileUnitTest(unitTest));
-                cases ~= TestResult(
-                    true,
-                    symbolName(unitTest),
-                    locChars(unitTest.loc),
-                    null,
-                );
-            } catch (Exception e) {
-                cases ~= TestResult(
-                    false,
-                    symbolName(unitTest),
-                    locChars(unitTest.loc),
-                    e.msg,
-                );
-            }
-        });
-        return cases;
+        execute(compileUnitTest(unitTest));
     }
-}
-
-private string symbolName(
-    imported!"dmd.declaration".UnitTestDeclaration unitTest,
-) @trusted {
-    import std.string: fromStringz;
-
-    // `ident.toChars` returns DMD-owned null-terminated storage; `idup`
-    // immediately copies it into a D string.
-    return unitTest.ident.toChars.fromStringz.idup;
-}
-
-private string locChars(imported!"dmd.location".Loc loc) @trusted {
-    import std.string: fromStringz;
-
-    // `loc.toChars` returns DMD-owned null-terminated storage; `idup`
-    // immediately copies it into a D string.
-    return loc.toChars.fromStringz.idup;
 }

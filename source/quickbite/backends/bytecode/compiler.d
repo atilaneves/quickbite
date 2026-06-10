@@ -13,15 +13,6 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileExpre
     return compileExpression(parseExpression(expr));
 }
 
-package imported!"quickbite.backends.bytecode.instructions".Program compileEvalSource(
-    in string source,
-)
-{
-    import quickbite.frontend.cell: parseEvalSource;
-
-    return compileFunction(parseEvalSource(source).function_);
-}
-
 package imported!"quickbite.backends.bytecode.instructions".Program compileEvalCell(
     imported!"quickbite.frontend.cell".EvalCell cell,
 ) {
@@ -44,7 +35,7 @@ private imported!"quickbite.backends.bytecode.instructions".Program compileExpre
     return compiler.program;
 }
 
-private imported!"quickbite.backends.bytecode.instructions".Program compileFunction(
+package imported!"quickbite.backends.bytecode.instructions".Program compileFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     Compiler compiler;

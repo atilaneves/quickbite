@@ -2,15 +2,6 @@ module quickbite.backends.ir.compiler;
 
 private:
 
-package imported!"quickbite.backends.ir.language".Function compileEvalSource(
-    in string source,
-)
-{
-    import quickbite.frontend.cell: parseEvalSource;
-
-    return compileFunction(parseEvalSource(source).function_);
-}
-
 package imported!"quickbite.backends.ir.language".Function compileUnitTest(
     imported!"dmd.declaration".UnitTestDeclaration unitTest,
 ) {
@@ -18,7 +9,7 @@ package imported!"quickbite.backends.ir.language".Function compileUnitTest(
     return compiler.compileEntryFunction(unitTest);
 }
 
-private imported!"quickbite.backends.ir.language".Function compileFunction(
+package imported!"quickbite.backends.ir.language".Function compileFunction(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     Compiler compiler;

@@ -119,7 +119,7 @@ public struct Repl {
         import quickbite.frontend.repl: ReplCellKind;
         import quickbite.lang: Value;
 
-        const value = backend.evalRepl(cell.evalCell);
+        const value = backend.eval(cell.evalCell);
         if (cell.kind == ReplCellKind.typeExpression)
             return Value.typeName(value.asCharArrayString);
 

@@ -14,6 +14,7 @@ import quickbite.backends: Backend, TestResult;
 import quickbite.lang: Value;
 import quickbite.frontend.cell: EvalCell;
 import dmd.dmodule: Module;
+import dmd.func: FuncDeclaration, UnitTestDeclaration;
 import ut;
 
 
@@ -127,22 +128,26 @@ unittest {
 @("benchmark.checkBackendResultsRejectsDisagreeingBackends")
 unittest {
     Backend[string] backends;
-    backends["good"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
-    backends["bad"] = new StubBackend([TestResult(false, "t0", "loc", "1 != 2")]);
+    backends["good"] = new StubBackend(null);
+    backends["bad"] = new StubBackend("1 != 2");
 
-    checkBackendResults(backends, ["good", "bad"], [BenchmarkRun("fixture")])
+    checkBackendResults(
+        backends,
+        ["good", "bad"],
+        [BenchmarkRun("fixture", testModule)],
+    )
         .shouldThrow;
 }
 
 @("benchmark.checkBackendResultsSkipsFailingFixtures")
 unittest {
     Backend[string] backends;
-    backends["a"] = new StubBackend([TestResult(false, "t0", "loc", "1 != 2")]);
+    backends["a"] = new StubBackend("1 != 2");
 
     const check = checkBackendResults(
         backends,
         ["a"],
-        [BenchmarkRun("fixture")],
+        [BenchmarkRun("fixture", testModule)],
     );
 
     check.passingPairs.length.should == 0;
@@ -153,13 +158,13 @@ unittest {
 @("benchmark.checkBackendResultsAcceptsAgreeingBackends")
 unittest {
     Backend[string] backends;
-    backends["a"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
-    backends["b"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
+    backends["a"] = new StubBackend(null);
+    backends["b"] = new StubBackend(null);
 
     const check = checkBackendResults(
         backends,
         ["a", "b"],
-        [BenchmarkRun("fixture")],
+        [BenchmarkRun("fixture", testModule)],
     );
 
     check.skipped.length.should == 0;
@@ -167,22 +172,33 @@ unittest {
     check.passingPairs.get(pairKey("fixture", "b"), false).should == true;
 }
 
+private Module testModule() {
+    import quickbite.frontend.compiler: parseModule;
+
+    return parseModule(q{
+        unittest {
+            assert(1 == 1);
+        }
+    }).module_;
+}
+
 private final class StubBackend: Backend {
-    private TestResult[] results;
+    private string failureMessage;
 
-    this(TestResult[] results) {
-        this.results = results;
+    this(string failureMessage) {
+        this.failureMessage = failureMessage;
     }
 
-    public override Value eval(in string) {
+    public override Value eval(FuncDeclaration) {
         assert(false);
     }
 
-    public override Value evalRepl(EvalCell) {
+    public override Value eval(EvalCell) {
         assert(false);
     }
 
-    public override TestResult[] runTests(Module) {
-        return results;
+    public override void runUnitTest(UnitTestDeclaration) {
+        if (failureMessage !is null)
+            throw new Exception(failureMessage);
     }
 }

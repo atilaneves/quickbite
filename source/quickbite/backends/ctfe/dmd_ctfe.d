@@ -5,16 +5,18 @@ private:
 
 
 public class Ctfe: imported!"quickbite.backends".Backend {
-    import quickbite.backends: TestResult;
+    import quickbite.backends: Backend;
     import quickbite.lang: Value;
+    import quickbite.frontend.cell: EvalCell;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
-    public override Value eval(in string str) {
-        return ctfeValue(interpretCtfe(evalCall(str)));
+    public alias eval = Backend.eval;
+
+    public override Value eval(FuncDeclaration function_) {
+        return ctfeValue(interpretCtfe(callExpression(function_)));
     }
 
-    public override Value evalRepl(
-        imported!"quickbite.frontend.cell".EvalCell cell,
-    ) {
+    public override Value eval(EvalCell cell) {
         import quickbite.frontend.cell: EvalCellKind;
 
         final switch (cell.kind) with (EvalCellKind) {
@@ -33,45 +35,10 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override TestResult[] runTests(
-        imported!"dmd.dmodule".Module module_,
-    ) {
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
-
-        TestResult[] cases;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            if (const failure = ctfeFailureMessage(callExpression(unitTest))) {
-                cases ~= TestResult(
-                    false,
-                    symbolName(unitTest),
-                    locChars(unitTest.loc),
-                    failure,
-                );
-            } else {
-                cases ~= TestResult(
-                    true,
-                    symbolName(unitTest),
-                    locChars(unitTest.loc),
-                    null,
-                );
-            }
-        });
-        return cases;
+    public override void runUnitTest(UnitTestDeclaration unitTest) {
+        if (const failure = ctfeFailureMessage(callExpression(unitTest)))
+            throw new Exception(failure);
     }
-}
-
-private string symbolName(
-    imported!"dmd.declaration".UnitTestDeclaration unitTest,
-) @trusted {
-    import std.string: fromStringz;
-
-    return unitTest.ident.toChars.fromStringz.idup;
-}
-
-private string locChars(imported!"dmd.location".Loc loc) @trusted {
-    import std.string: fromStringz;
-
-    return loc.toChars.fromStringz.idup;
 }
 
 private string ctfeFailureMessage(
@@ -106,12 +73,6 @@ private string diagnosticMessage() {
         return "DMD reported an error without a diagnostic message.";
 
     return messages.join("\n");
-}
-
-private imported!"dmd.expression".CallExp evalCall(in string str) {
-    import quickbite.frontend.cell: parseEvalSource;
-
-    return callExpression(parseEvalSource(str).function_);
 }
 
 private imported!"quickbite.lang".Value evalReplSource(
