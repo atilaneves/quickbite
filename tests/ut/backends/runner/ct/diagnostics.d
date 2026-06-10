@@ -311,7 +311,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
     @("explicitAssertMessageOverridesContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -373,7 +373,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, SystemLinker)) {
     @("dynamicAssertMessageMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

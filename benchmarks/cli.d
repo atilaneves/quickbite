@@ -4,6 +4,7 @@ import benchmarks.harness: measure, Result;
 import quickbite.backends.runner: Runner, TestResult;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
+import quickbite.backends.native: SystemLinker;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;
 import dmd.dmodule: Module;
 
@@ -31,7 +32,7 @@ public void run(string[] args) {
         "warmup",       "untimed iterations before sampling",          &warmup,
         "iterations",   "timed iterations per measurement",            &iterations,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
-        "backend",      "backend to measure (repeatable)",             &backendNames,
+        "b|backend",    "backend to measure (repeatable)",             &backendNames,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
     );
     if (info.helpWanted) {
@@ -67,6 +68,7 @@ public void run(string[] args) {
 
     Runner[string] runners;
     runners["ctfe"] = new Ctfe;
+    runners["system-linker"] = new SystemLinker;
 
     if (backendNames.length == 0)
         backendNames = ["ctfe"];

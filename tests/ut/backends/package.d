@@ -52,11 +52,11 @@ public TestResult[] runBackendSourceFixtureTestResults(T)(
         parseModuleWithCheckActionContext,
         parseModuleWithCheckActionContextUncached;
 
-    // DynamicLibrary compiles the module to an object file, so it must get a
+    // SystemLinker compiles the module to an object file, so it must get a
     // fresh parse: a cached module accumulates other compilations' speculative
     // template instances and TypeInfos (DMD appends them to root modules via
     // importedFrom), which codegen would then emit as dangling references.
-    static if (is(T == DynamicLibrary))
+    static if (is(T == SystemLinker))
         alias parse = parseModuleWithCheckActionContextUncached;
     else
         alias parse = parseModuleWithCheckActionContext;

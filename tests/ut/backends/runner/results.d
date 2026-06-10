@@ -20,7 +20,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.reportsThrownExceptionMessages." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -53,7 +53,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
     @("runBackendSourceFixtureTests.importPathsRetryAfterFailure." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -124,7 +124,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.countsAllPassingUnittests." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -214,7 +214,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.runsTestsInEachModule." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

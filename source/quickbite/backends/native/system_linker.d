@@ -1,10 +1,10 @@
-module quickbite.backends.native.dynamic;
+module quickbite.backends.native.system_linker;
 
 
 private:
 
 
-public class DynamicLibrary: imported!"quickbite.backends.runner".Runner {
+public class SystemLinker: imported!"quickbite.backends.runner".Runner {
     import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
 
