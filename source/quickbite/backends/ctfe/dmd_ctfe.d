@@ -58,23 +58,6 @@ private string diagnosticMessage() {
     return messages.join("\n");
 }
 
-private imported!"quickbite.lang".Value evalReplTypeSource(
-    imported!"quickbite.frontend.cell".Cell cell,
-) {
-    import std.conv: text;
-    import quickbite.lang: Value;
-
-    auto interpreted = interpretCtfe(callExpression(cell.function_));
-    auto string_ = interpreted.isStringExp;
-    if (string_ is null)
-        throw new Exception(text(
-            "Unsupported CTFE type result: ",
-            interpreted.op,
-        ));
-
-    return Value.typeName(stringChars(string_).idup);
-}
-
 private imported!"dmd.expression".CallExp callExpression(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
@@ -91,19 +74,6 @@ private imported!"dmd.expression".CallExp callExpression(
     callExp.f = function_;
 
     return callExp;
-}
-
-private imported!"dmd.expression".Expression interpretCtfe(
-    imported!"dmd.expression".Expression expression,
-) {
-    import quickbite.frontend.compiler: withCompilerLock;
-    import dmd.dinterpret: ctfeInterpret;
-
-    imported!"dmd.expression".Expression result;
-    withCompilerLock(() {
-        result = ctfeInterpret(expression);
-    });
-    return result;
 }
 
 private imported!"quickbite.lang".Value ctfeValue(
