@@ -190,11 +190,15 @@ private imported!"quickbite.backends.runner".TestResult runUnitTest(
     import quickbite.backends.runner: TestResult;
     import core.sys.posix.dlfcn: dlsym;
     import dmd.mangle: mangleExact;
+    import std.conv: text;
     import std.string: fromStringz;
 
     auto test = cast(void function()) dlsym(library, mangleExact(unitTest));
     if (test is null)
-        throw new Exception("unittest symbol not found in shared library");
+        throw new Exception(text(
+            "unittest symbol not found in shared library: ",
+            mangleExact(unitTest).fromStringz,
+        ));
 
     auto result = TestResult(
         true,

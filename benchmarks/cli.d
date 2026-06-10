@@ -486,6 +486,13 @@ public BenchmarkRun[] prepareFixtureRuns(
         const source      = readText(path);
         const displayName = moduleDisplayName(path, importPaths);
         try {
+            // The kept module must be parsed before the timed uncached
+            // parses: the first parse of a source claims process-wide
+            // ownership of its template instances (TemplateInstance.minst),
+            // and only the owner's codegen emits them. SystemLinker links
+            // with -z defs, so handing it a module that does not own its
+            // instances fails the link with undefined template symbols.
+            auto module_ = parseModule(source, importPaths).module_;
             const frontend = measure(
                 () {
                     parseModuleUncached(source, importPaths);
@@ -493,7 +500,6 @@ public BenchmarkRun[] prepareFixtureRuns(
                 warmup,
                 iterations,
             );
-            auto module_ = parseModule(source, importPaths).module_;
             runs ~= BenchmarkRun(displayName, module_, frontend);
         } catch (Exception e) {
             import std.stdio: stderr;
