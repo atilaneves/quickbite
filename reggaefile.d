@@ -5,7 +5,11 @@ alias utCov = dubBuild!(
     Configuration("unittest-cov"),
     CompilerFlags("-unittest -cov"),
 );
-alias bench = dubBuild!(Configuration("benchmark"));
+// the flags mirror dub's `benchmark-opt` build type
+alias bench = dubBuild!(
+    Configuration("benchmark"),
+    CompilerFlags("-O -release -boundscheck=off"),
+);
 alias qb = dubBuild!(Configuration("qb"));
 
 mixin build!(
