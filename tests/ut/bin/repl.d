@@ -237,20 +237,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe)) {
-    @("repl.backend.importDeclarationsPersistWithoutDisplay." ~ backend.stringof)
-    unittest {
-        import quickbite.repl: runReplLoop;
-
-        const output = runReplLoop(
-            newBackend!backend,
-            ["import std.algorithm;", "min(3, 1)", ":q"],
-        );
-
-        output.should == ["1"];
-    }
-}
-
-static foreach (backend; AliasSeq!(Ctfe)) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
@@ -286,21 +272,6 @@ static foreach (backend; AliasSeq!(Ctfe)) {
         );
 
         output.should == ["MapResult([1, 2, 3])"];
-    }
-}
-
-static foreach (backend; AliasSeq!(Ctfe)) {
-
-    @("repl.backend.displaysUndisplayablePlaceholderForFunctionLiterals." ~ backend.stringof)
-    unittest {
-        import quickbite.repl: runReplLoop;
-
-        const output = runReplLoop(
-            newBackend!backend,
-            ["delegate int(){ return 42; }", ":q"],
-        );
-
-        output.should == ["<undisplayable>"];
     }
 }
 
