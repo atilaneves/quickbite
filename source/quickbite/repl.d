@@ -80,10 +80,14 @@ public struct Repl {
                 return ReplResult(Value.void_);
             }
 
-            const value = evalReplCell(cell);
-            session.accept(cell);
+            const result = evalReplCell(cell);
             pendingInput = null;
-            return ReplResult(value, replDisplay(cell));
+            if (result.failed)
+                throw new Exception(userDiagnostic(result.diagnostic));
+
+            // Accept only on success — explicit, not via exception unwinding.
+            session.accept(cell);
+            return ReplResult(result.value, replDisplay(cell));
         } catch (Exception exception) {
             if (pendingInput.length != 0)
                 pendingInput = null;
@@ -113,17 +117,19 @@ public struct Repl {
         return ReplResult(Value.void_);
     }
 
-    private imported!"quickbite.lang".Value evalReplCell(
+    private imported!"quickbite.backends".EvalResult evalReplCell(
         imported!"quickbite.frontend.repl".ReplCell cell,
     ) {
         import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.backends: EvalResult;
         import quickbite.lang: Value;
 
-        const value = backend.eval(cell.evalCell);
-        if (cell.kind == ReplCellKind.typeExpression)
-            return Value.typeName(value.asCharArrayString);
+        const result = backend.eval(cell.evalCell);
+        if (result.failed || cell.kind != ReplCellKind.typeExpression)
+            return result;
 
-        return value;
+        // A type-expression cell reports the value's type name.
+        return EvalResult(Value.typeName(result.value.asCharArrayString));
     }
 }
 

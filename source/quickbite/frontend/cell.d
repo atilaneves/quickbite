@@ -2,14 +2,15 @@ module quickbite.frontend.cell;
 
 private:
 
-public enum EvalCellKind {
-    incomplete,
-    noDisplay,
-    expression,
-}
 
-public struct EvalCell {
-    public EvalCellKind kind;
+public struct Cell {
+    public enum Kind {
+        incomplete,
+        noDisplay,
+        expression,
+    }
+
+    public Kind kind;
     public string source;
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
@@ -43,11 +44,11 @@ public struct EvalSession {
         this.importPaths = importPaths.dup;
     }
 
-    public EvalCell submit(in string input) {
+    public Cell submit(in string input) {
         return submitImpl(input, true);
     }
 
-    public EvalCell submitComplete(in string input) {
+    public Cell submitComplete(in string input) {
         return submitImpl(input, false);
     }
 
@@ -55,7 +56,7 @@ public struct EvalSession {
         return isReplTypeExpressionCell(input, moduleSource, importPaths);
     }
 
-    private EvalCell submitImpl(
+    private Cell submitImpl(
         in string input,
         in bool allowIncomplete,
     ) {
@@ -63,7 +64,7 @@ public struct EvalSession {
 
         const evalFunctionName = syntheticEvalFunctionName(evalCellCount);
         if (allowIncomplete && isIncompleteCell(input))
-            return EvalCell(EvalCellKind.incomplete);
+            return Cell(Cell.Kind.incomplete);
 
         if (isModuleDeclarationCell(input)) {
             const source = evalSource(
@@ -72,7 +73,7 @@ public struct EvalSession {
                 evalFunctionName,
             );
             return evalCellFromSource(
-                EvalCellKind.noDisplay,
+                Cell.Kind.noDisplay,
                 source,
                 importPaths,
                 EvalHistoryTarget.module_,
@@ -93,7 +94,7 @@ public struct EvalSession {
                 evalFunctionName,
             );
             return evalCellFromSource(
-                EvalCellKind.noDisplay,
+                Cell.Kind.noDisplay,
                 source,
                 importPaths,
                 EvalHistoryTarget.local,
@@ -107,7 +108,7 @@ public struct EvalSession {
             evalFunctionName,
         );
         return evalCellFromSource(
-            EvalCellKind.expression,
+            Cell.Kind.expression,
             source,
             importPaths,
             EvalHistoryTarget.local,
@@ -121,7 +122,7 @@ public struct EvalSession {
         );
     }
 
-    public void accept(in EvalCell cell) {
+    public void accept(in Cell cell) {
         final switch (cell.historyTarget) with (EvalHistoryTarget) {
             case local:
                 localTranscript ~= cell.history;
@@ -132,7 +133,7 @@ public struct EvalSession {
         }
 
         ++evalCellCount;
-        if (cell.kind == EvalCellKind.expression)
+        if (cell.kind == Cell.Kind.expression)
             ++valueCellCount;
     }
 
@@ -226,8 +227,8 @@ public string withCandidateSignatures(
     return text(diagnostic, "\nCandidates:\n- ", signatures.join("\n- "));
 }
 
-private EvalCell evalCellFromSource(
-    in EvalCellKind kind,
+private Cell evalCellFromSource(
+    in Cell.Kind kind,
     in string source,
     in string[] importPaths,
     in EvalHistoryTarget historyTarget,
@@ -237,7 +238,7 @@ private EvalCell evalCellFromSource(
 
     try {
         auto moduleResult = parseModule(source, importPaths);
-        return EvalCell(
+        return Cell(
             kind,
             source,
             evalFunction(moduleResult.module_),

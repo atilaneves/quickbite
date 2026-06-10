@@ -10,11 +10,10 @@ import benchmarks.cli:
     renderBenchmarkSection,
     run,
     testResultsMismatch;
-import quickbite.backends: Backend, TestResult;
+import quickbite.backends: Backend, TestResult, EvalResult;
 import quickbite.lang: Value;
-import quickbite.frontend.cell: EvalCell;
 import dmd.dmodule: Module;
-import dmd.func: FuncDeclaration, UnitTestDeclaration;
+import dmd.func: FuncDeclaration;
 import ut;
 
 
@@ -128,8 +127,8 @@ unittest {
 @("benchmark.checkBackendResultsRejectsDisagreeingBackends")
 unittest {
     Backend[string] backends;
-    backends["good"] = new StubBackend(null);
-    backends["bad"] = new StubBackend("1 != 2");
+    backends["good"] = new FixedVerdictBackend(null);
+    backends["bad"] = new FixedVerdictBackend("1 != 2");
 
     checkBackendResults(
         backends,
@@ -142,7 +141,7 @@ unittest {
 @("benchmark.checkBackendResultsSkipsFailingFixtures")
 unittest {
     Backend[string] backends;
-    backends["a"] = new StubBackend("1 != 2");
+    backends["a"] = new FixedVerdictBackend("1 != 2");
 
     const check = checkBackendResults(
         backends,
@@ -158,8 +157,8 @@ unittest {
 @("benchmark.checkBackendResultsAcceptsAgreeingBackends")
 unittest {
     Backend[string] backends;
-    backends["a"] = new StubBackend(null);
-    backends["b"] = new StubBackend(null);
+    backends["a"] = new FixedVerdictBackend(null);
+    backends["b"] = new FixedVerdictBackend(null);
 
     const check = checkBackendResults(
         backends,
@@ -182,23 +181,22 @@ private Module testModule() {
     }).module_;
 }
 
-private final class StubBackend: Backend {
+// A test double that reports a fixed unittest verdict (null message = pass,
+// non-empty = fail) regardless of the function it is handed. It lets the
+// checkBackendResults tests exercise cross-backend agreement and
+// fixture-skipping logic without standing up a real backend: the only path
+// those tests reach is runTests, which calls eval per unittest, so eval just
+// replays the canned verdict.
+private final class FixedVerdictBackend: Backend {
     private string failureMessage;
 
     this(string failureMessage) {
         this.failureMessage = failureMessage;
     }
 
-    public override Value eval(FuncDeclaration) {
-        assert(false);
-    }
-
-    public override Value eval(EvalCell) {
-        assert(false);
-    }
-
-    public override void runUnitTest(UnitTestDeclaration) {
-        if (failureMessage !is null)
-            throw new Exception(failureMessage);
+    public override EvalResult eval(FuncDeclaration) {
+        return failureMessage.length == 0
+            ? EvalResult(Value.void_)
+            : EvalResult(EvalResult.Diagnostic(failureMessage));
     }
 }

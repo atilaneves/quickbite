@@ -2,22 +2,19 @@ module quickbite.backends.bytecode.vm;
 
 private:
 
+// A single entry that tolerates a program leaving either no value (a
+// statement or unittest body) or exactly one (an expression). More than one
+// value indicates a corrupt program.
 package imported!"quickbite.lang".Value eval(
     in imported!"quickbite.backends.bytecode.instructions".Program program,
 ) {
-    auto result = run(program);
-    if (result.stack.length != 1)
-        throw new Exception("Bytecode program did not leave exactly one value");
+    import quickbite.lang: Value;
 
-    return result.stack[0];
-}
-
-package void execute(
-    in imported!"quickbite.backends.bytecode.instructions".Program program,
-) {
     auto result = run(program);
-    if (result.stack.length != 0)
-        throw new Exception("Bytecode test left values on the stack");
+    if (result.stack.length > 1)
+        throw new Exception("Bytecode program left more than one value");
+
+    return result.stack.length == 1 ? result.stack[0] : Value.void_;
 }
 
 private RunResult run(

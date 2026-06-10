@@ -5,38 +5,19 @@ private:
 
 
 public class Interpreter: imported!"quickbite.backends".Backend {
-    import quickbite.backends: Backend;
+    import quickbite.backends: Backend, EvalResult;
     import quickbite.lang: Value;
-    import quickbite.frontend.cell: EvalCell;
-    import dmd.func: FuncDeclaration, UnitTestDeclaration;
+    import dmd.func: FuncDeclaration;
 
     public alias eval = Backend.eval;
 
-    public override Value eval(FuncDeclaration function_) {
-        return evalFunction(function_);
-    }
-
-    public override Value eval(EvalCell cell) {
-        import quickbite.frontend.cell: EvalCellKind;
-
-        final switch (cell.kind) with (EvalCellKind) {
-            case incomplete:
-                throw new Exception(
-                    "Incomplete REPL cell reached Interpreter backend.",
-                );
-            case noDisplay:
-                evalFunction(cell.function_, true);
-                return Value.void_;
-            case expression:
-                return evalFunction(cell.function_, true);
-        }
-    }
-
-    public override void runUnitTest(UnitTestDeclaration unitTest) {
+    public override EvalResult eval(FuncDeclaration function_) {
         Walker walker;
-        walker.allowZeroArgumentCalls = true;
-        walker.allowControlFlow = true;
-        walker.runTest(unitTest);
+        try
+            walker.runStatement(function_.fbody);
+        catch (Exception exception)
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        return EvalResult(walker.result);
     }
 }
 
@@ -44,17 +25,6 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     import quickbite.frontend.dmd.types: isArrayType;
 
     return isArrayType(type);
-}
-
-private imported!"quickbite.lang".Value evalFunction(
-    imported!"dmd.func".FuncDeclaration function_,
-    bool allowZeroArgumentCalls = false,
-) {
-    Walker walker;
-    walker.allowZeroArgumentCalls = allowZeroArgumentCalls;
-    walker.allowControlFlow = false;
-    walker.runStatement(function_.fbody);
-    return walker.result;
 }
 
 private struct Walker {
@@ -69,17 +39,6 @@ private struct Walker {
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
-    // The entry points pin pairwise-different restrictions: `eval`
-    // rejects both zero-argument calls and control flow, the REPL
-    // allows only the former, and module test runs allow both, so
-    // neither flag can stand in for the other.
-    private bool allowZeroArgumentCalls;
-    private bool allowControlFlow;
-
-    private void runTest(imported!"dmd.func".UnitTestDeclaration unitTest) {
-        log("Running test ", unitTest);
-        runStatement(unitTest.fbody);
-    }
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null)
@@ -117,22 +76,20 @@ private struct Walker {
             return;
         }
 
-        if (allowControlFlow) {
-            if (auto if_ = statement.isIfStatement) {
-                import quickbite.backends.interpreter.messages: isTruthy;
+        if (auto if_ = statement.isIfStatement) {
+            import quickbite.backends.interpreter.messages: isTruthy;
 
-                if (isTruthy(runExpression(if_.condition)))
-                    runStatement(if_.ifbody);
-                else
-                    runStatement(if_.elsebody);
-                return;
-            }
+            if (isTruthy(runExpression(if_.condition)))
+                runStatement(if_.ifbody);
+            else
+                runStatement(if_.elsebody);
+            return;
+        }
 
-            if (auto throw_ = statement.isThrowStatement) {
-                import quickbite.backends.interpreter.messages: thrownExceptionMessage;
+        if (auto throw_ = statement.isThrowStatement) {
+            import quickbite.backends.interpreter.messages: thrownExceptionMessage;
 
-                throw new Exception(thrownExceptionMessage(throw_.exp));
-            }
+            throw new Exception(thrownExceptionMessage(throw_.exp));
         }
 
         import std.conv: text;
@@ -397,10 +354,6 @@ private struct Walker {
             }
         }
 
-        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-        if (argumentCount == 0 && !allowZeroArgumentCalls)
-            throw new Exception("Unsupported eval call argument count.");
-
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
@@ -438,8 +391,6 @@ private struct Walker {
         VarDeclaration[] argumentVariables,
     ) {
         Walker child;
-        child.allowZeroArgumentCalls = allowZeroArgumentCalls;
-        child.allowControlFlow = allowControlFlow;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);

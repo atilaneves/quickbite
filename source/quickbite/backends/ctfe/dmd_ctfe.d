@@ -5,55 +5,38 @@ private:
 
 
 public class Ctfe: imported!"quickbite.backends".Backend {
-    import quickbite.backends: Backend;
+    import quickbite.backends: Backend, EvalResult;
     import quickbite.lang: Value;
-    import quickbite.frontend.cell: EvalCell;
-    import dmd.func: FuncDeclaration, UnitTestDeclaration;
+    import dmd.func: FuncDeclaration;
 
     public alias eval = Backend.eval;
 
-    public override Value eval(FuncDeclaration function_) {
-        return ctfeValue(interpretCtfe(callExpression(function_)));
-    }
-
-    public override Value eval(EvalCell cell) {
-        import quickbite.frontend.cell: EvalCellKind;
-
-        final switch (cell.kind) with (EvalCellKind) {
-            case incomplete:
-                throw new Exception(
-                    "Incomplete REPL cell reached CTFE backend.",
-                );
-            case noDisplay:
-                if (const failure = ctfeFailureMessage(
-                    callExpression(cell.function_),
-                ))
-                    throw new Exception(failure);
-                return Value.void_;
-            case expression:
-                return evalReplSource(cell);
-        }
-    }
-
-    public override void runUnitTest(UnitTestDeclaration unitTest) {
-        if (const failure = ctfeFailureMessage(callExpression(unitTest)))
-            throw new Exception(failure);
+    public override EvalResult eval(FuncDeclaration function_) {
+        string diagnostic;
+        auto interpreted = interpretCtfeWithDiagnostic(
+            callExpression(function_),
+            diagnostic,
+        );
+        return diagnostic.length == 0
+            ? EvalResult(ctfeValue(interpreted))
+            : EvalResult(EvalResult.Diagnostic(diagnostic));
     }
 }
 
-private string ctfeFailureMessage(
+private imported!"dmd.expression".Expression interpretCtfeWithDiagnostic(
     imported!"dmd.expression".Expression expression,
+    out string diagnostic,
 ) {
-    import quickbite.frontend.compiler: withCompilerLock;
+    import quickbite.frontend.compiler: resetErrors, withCompilerLock;
     import dmd.dinterpret: ctfeInterpret;
-    import dmd.errors: diagnostics;
     import dmd.globals: global;
 
-    string result;
+    imported!"dmd.expression".Expression result;
     withCompilerLock(() {
-        diagnostics.length = 0;
-        if (ctfeInterpret(expression).isErrorExp !is null || global.errors != 0)
-            result = diagnosticMessage;
+        resetErrors;
+        result = ctfeInterpret(expression);
+        if (result.isErrorExp !is null || global.errors != 0)
+            diagnostic = diagnosticMessage;
     });
 
     return result;
@@ -75,22 +58,8 @@ private string diagnosticMessage() {
     return messages.join("\n");
 }
 
-private imported!"quickbite.lang".Value evalReplSource(
-    imported!"quickbite.frontend.cell".EvalCell cell,
-) {
-    try
-        return ctfeValue(interpretCtfeOrThrow(callExpression(cell.function_)));
-    catch (Exception exception) {
-        import quickbite.frontend.cell: withCandidateSignatures;
-
-        throw new Exception(
-            withCandidateSignatures(cell.source, exception.msg),
-        );
-    }
-}
-
 private imported!"quickbite.lang".Value evalReplTypeSource(
-    imported!"quickbite.frontend.cell".EvalCell cell,
+    imported!"quickbite.frontend.cell".Cell cell,
 ) {
     import std.conv: text;
     import quickbite.lang: Value;
@@ -133,23 +102,6 @@ private imported!"dmd.expression".Expression interpretCtfe(
     imported!"dmd.expression".Expression result;
     withCompilerLock(() {
         result = ctfeInterpret(expression);
-    });
-    return result;
-}
-
-private imported!"dmd.expression".Expression interpretCtfeOrThrow(
-    imported!"dmd.expression".Expression expression,
-) {
-    import quickbite.frontend.compiler: resetErrors, withCompilerLock;
-    import dmd.dinterpret: ctfeInterpret;
-    import dmd.globals: global;
-
-    imported!"dmd.expression".Expression result;
-    withCompilerLock(() {
-        resetErrors;
-        result = ctfeInterpret(expression);
-        if (result.isErrorExp !is null || global.errors != 0)
-            throw new Exception(diagnosticMessage);
     });
     return result;
 }

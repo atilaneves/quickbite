@@ -14,7 +14,7 @@ auto __quickbite_repl_eval_N__() { <localTranscript> <new input> }
 ```
 
 reparses it in full, and hands the synthetic function to
-`Backend.evalRepl(EvalCell)`, which re-executes every prior statement.
+`Backend.eval(Cell)`, which re-executes every prior statement.
 Expression results persist as `auto __quickbite_repl_value_N = <expr>;`
 transcript lines, re-evaluated in every later cell. Cells are accepted into
 the transcript only after successful evaluation.
@@ -51,11 +51,11 @@ Benchmarks below):
    `VarDeclaration`, so `int counter;` becomes a function-local invisible
    to module-scope functions. Exposed by the globals test (fails today on
    every backend).
-5. **Stateless backend interface**: `evalRepl(EvalCell)` hands backends a
+5. **Stateless backend interface**: `eval(Cell)` hands backends a
    fresh-parsed snapshot each cell — no delta, no session handle, no symbol
    continuity. No implementation of this interface can pass the finding-2
-   test. This is the pivotal fault: `ai/plans/dmd-backend.md` slice
-   "SystemLinker.evalRepl" as specified can only be implemented as replay.
+   test. This is the pivotal fault: the `ai/plans/dmd-backend.md` REPL
+   slice as specified can only be implemented as replay.
 6. **Replay × dlopen multiplies runtime obligations**: whole-transcript
    compile + link + load per cell re-runs module ctors and re-registers
    eh_frame/TypeInfo/GC ranges, N times over.
@@ -77,13 +77,18 @@ Benchmarks below):
   containing a callable function. The synthetic-function wrapping survives
   this redesign; what changes is what the module contains.
 - **`ai/plans/interfaces.md` governs the interface shape.** `Backend`
-  splits into `Evaluator` (Value at interactive boundaries only) and
-  `Runner` (execution, no Value). The REPL session capability grows out of
-  `Evaluator`, not the legacy `Backend` aggregate. Value-transport
-  machinery is confined to the Evaluator path; `Runner` for native code is
-  dlsym + call. The "dmd objects stay behind frontend boundaries" rule
-  applies to VM-family backends; the dmd-codegen backend is inherently a
-  dmd client.
+  exposes a single execution primitive,
+  `EvalResult eval(FuncDeclaration)`, reporting failure as data
+  (`EvalResult` is a `SumType!(Value, EvalResult.Diagnostic)`, queried
+  via `result.failed`/`result.diagnostic`); `eval(Cell)` is the REPL
+  dispatch adapter over it. The `Evaluator`/`Runner` split (Value
+  confined to interactive boundaries; `Runner` for native code is
+  dlsym + call) is **deferred**
+  until the VMs adopt a private execution-slot type — see
+  `ai/plans/interfaces.md`. The REPL session capability
+  (`createReplSession`) grows out of the `eval` primitive. The "dmd
+  objects stay behind frontend boundaries" rule applies to VM-family
+  backends; the dmd-codegen backend is inherently a dmd client.
 - **`ai/plans/dmd-backend.md` is a non-authoritative sketch.** Use it for
   loading mechanics (memfd + mold + dlopen, in-process relocation) only;
   re-validate at implementation time. Its REPL slices are superseded by
@@ -105,13 +110,13 @@ Benchmarks below):
 Replace the two flat strings with a structured history:
 
 ```d
-private struct Cell {
+private struct TranscriptCell {   // `Cell` now names the renamed eval cell
     string source;
-    EvalCellKind kind;
+    Cell.Kind kind;
     string[] declaredNames;   // captured at accept time from the parse
 }
-private Cell[] moduleCells;
-private Cell[] localCells;
+private TranscriptCell[] moduleCells;
+private TranscriptCell[] localCells;
 ```
 
 Joining the cells reproduces today's synthesized source exactly — this
@@ -124,17 +129,19 @@ per-cell `#line` attribution, and per-cell delta modules.
 The frontend keeps what it is good at: classification (unchanged),
 transcript management, semantic analysis under the compiler lock, and
 synthesizing compilable modules. Backends gain a session object that owns
-cross-cell execution state. Shape (post-interfaces.md; exact names driven
-by tests):
+cross-cell execution state. Shape (post-interfaces.md, deferred; exact
+names driven by tests). `submit` reports failure as data
+(`EvalResult` — `result.failed` is the discriminator), consistent with
+the `Backend.eval` primitive; it does not throw on evaluation failure:
 
 ```d
 public interface Evaluator {
-    public Value eval(in string expr);
+    public Value eval(in string expr);  // one-shot; throws at the boundary
     public ReplSession createReplSession();
 }
 
 public interface ReplSession {
-    public Value submit(ReplCellView cell);
+    public EvalResult submit(ReplCellView cell);  // session; failure as data
 }
 ```
 
@@ -308,10 +315,11 @@ expressiveness gaps are exposed by straight-line behaviour tests.
   picked up by the existing benchmark dub config, run by `bin/bench.sh`):
   pre-build an `EvalSession` to depth−1 outside the timed loop
   (`EvalSession` is a copyable value type), time `submitComplete(probe)`
-  + `evalRepl` at depths 1/10/50/100/200 on CTFE. **The probe must be
-  unique per iteration** — `parseModule` caches by source text
+  + `eval(Cell)` at depths 1/10/50/100/200 on CTFE. **The probe must
+  be unique per iteration** — `parseModule` caches by source text
   (`sourceCache`, `frontend/compiler.d`), and identical probes would hide
-  the parse growth. Variant B times `evalRepl` alone to attribute parse
+  the parse growth. Variant B times `eval(Cell)` alone to attribute
+  parse
   vs execution growth. Acceptance criterion for the delta path: linear-fit
   slope of median latency vs depth ≈ 0 (today: affine, ~15× from depth 1
   to 200 expected).
@@ -341,8 +349,10 @@ Dependencies are noted; order within independent slices is flexible.
    initializers to be static; runtime initialization arrives via
    statements (replayed, pure-only) or, later, lifting on the native
    path.
-6. **interfaces.md migration** (Evaluator/Runner split) — prerequisite
-   for 7; tracked in `ai/plans/interfaces.md`, not duplicated here.
+6. ~~**interfaces.md migration**~~ (done — single `eval` primitive,
+   failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
+   tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split
+   is deferred and is not a prerequisite for backend-owned sessions.
 7. **Backend-owned sessions** (depends on 6): introduce
    `createReplSession`/`ReplSession`; pure backends wrap today's replay
    behaviour behind it (no behaviour change, suite stays green); frontend

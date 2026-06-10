@@ -18,7 +18,6 @@ int main(string[] args) {
         "ut.backends.lang.structs",
         "ut.backends.projects.cerealed",
         "ut.backends.api.repl",
-        "ut.backends.interpreter",
         "ut.backends.ctfe",
         "ut.backends.runtime.cstdlib",
         "ut.value",

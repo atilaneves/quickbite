@@ -12,7 +12,7 @@ public enum ReplCellKind {
 public struct ReplCell {
     public ReplCellKind kind;
     public string source;
-    public imported!"quickbite.frontend.cell".EvalCell evalCell;
+    public imported!"quickbite.frontend.cell".Cell evalCell;
 }
 
 public struct ReplSession {
@@ -51,11 +51,11 @@ public struct ReplSession {
 }
 
 private ReplCellKind replCellKind(
-    in imported!"quickbite.frontend.cell".EvalCellKind kind,
+    in imported!"quickbite.frontend.cell".Cell.Kind kind,
 ) @safe pure {
-    import quickbite.frontend.cell: EvalCellKind;
+    import quickbite.frontend.cell: Cell;
 
-    final switch (kind) with (EvalCellKind) {
+    final switch (kind) with (Cell.Kind) {
         case incomplete:
             return ReplCellKind.incomplete;
         case noDisplay:

@@ -13,12 +13,6 @@ package imported!"quickbite.backends.bytecode.instructions".Program compileExpre
     return compileExpression(parseExpression(expr));
 }
 
-package imported!"quickbite.backends.bytecode.instructions".Program compileEvalCell(
-    imported!"quickbite.frontend.cell".EvalCell cell,
-) {
-    return compileFunction(cell.function_);
-}
-
 package imported!"quickbite.backends.bytecode.instructions".Program compileUnitTest(
     imported!"dmd.declaration".UnitTestDeclaration unitTest,
 ) {
