@@ -517,6 +517,57 @@ Fix plan for the failing REPL probe:
    cannot be materialized. Do not implement a broad range engine or generic
    Phobos interpreter without another promoted red test forcing each step.
 
+REPL promotion probe (2026-06-10, branch `interpreter-bin-repl`):
+The REPL test module now lives at `tests/ut/bin/repl.d`. All 29 remaining
+CTFE-only backend-matrix blocks were promoted to `AliasSeq!(Ctfe,
+Interpreter)`. Two leftover CTFE-only duplicate blocks
+(`importDeclarationsPersistWithoutDisplay` and
+`displaysUndisplayablePlaceholderForFunctionLiterals`) were left unpromoted:
+their tests already run on `Interpreter` via the shared three-backend blocks,
+and promoting the duplicates would create colliding `.Interpreter` test names.
+Those duplicate CTFE-only blocks look like leftovers that should be folded
+away in a separate approved test cleanup.
+
+23 promotions passed and were kept; `bin/ut --random` is green (905 tests, 0
+failed). Six promotions failed and were reverted to CTFE-only:
+
+- `importStdExposesPhobosSymbols`: `Unsupported eval statement: UnrolledLoop`
+  (unchanged from the previous probe).
+- `displaysFiniteRangeResults`: now also `Unsupported eval statement:
+  UnrolledLoop`; the previous `Unsupported DMD default value` failure point
+  has moved.
+- `displaysFilteredArrayResults`: now `Unsupported eval expression:
+  structLiteral`; the previous `Unsupported eval statement: If` failure point
+  has moved deeper into the lowered Phobos range wrapper.
+- `displaysAssocArrayResults`: `Unsupported eval expression:
+  assocArrayLiteral` (unchanged).
+- `displaysEnumValues`: displayed `["7", "[7, 8]", "7"]` instead of
+  `["E.a", "[E.a, E.b]", "7"]` (unchanged); enum display metadata is lost.
+- `expressionCtfeErrorsReportDiagnostics`: REPL `IndexExp` reads now exist but
+  have no bounds check, so `arr[99]` escapes as a host
+  `core.exception.ArrayIndexError` (`index [99] is out of bounds for array of
+  length 3`) instead of the CTFE diagnostic
+  "array index 99 is out of bounds \`[0..3]\`". This is a crash-class escape,
+  not just a missing feature; the bounds-message half of fix-plan item 3 is
+  still open.
+
+Relative to the previous probe's fix plan: item 1 (`AssertExp`,
+`diagnosticsHideSyntheticWrapperNames`) and item 2 (no-available-source call
+diagnostics, `runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`) are
+done — both tests now pass on `Interpreter` and were kept. Item 3 is half
+done (reads work, bounds diagnostics missing). Items 4 (assoc array
+literals), 5 (enum display metadata), and 6 (Phobos ranges, now blocked on
+`UnrolledLoop` sequencing and `structLiteral` evaluation) remain open.
+
+Newly kept promotions beyond the previous probe's green list:
+`typeofCellsDisplayTypeName`, `typeAliasCellsDisplayTypeName`,
+`runtimeErrorsReportOneDiagnostic`,
+`runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState`, and
+`diagnosticsHideSyntheticWrapperNames`. The kept promotions passed without
+production changes in this probe; per-test mutation signal verification was
+not performed and remains required before any kept promotion is accepted as a
+completed slice.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

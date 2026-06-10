@@ -449,7 +449,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.typeofCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -464,7 +464,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.typeAliasCellsDisplayTypeName." ~ backend.stringof)
     unittest {
@@ -486,7 +486,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.displaysStringValues." ~ backend.stringof)
     unittest {
@@ -501,7 +501,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.specialTokenValuesHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -516,7 +516,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.numericScalarDisplayUsesDLiteralSuffixes." ~ backend.stringof)
     unittest {
@@ -556,7 +556,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.noDisplayCellsReturnVoid." ~ backend.stringof)
     unittest {
@@ -570,7 +570,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -583,7 +583,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedTestsWithNothingLoadedReturnsVoid." ~ backend.stringof)
     unittest {
@@ -595,7 +595,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.loadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -612,7 +612,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.laterLoadedUnittestFailuresReportReplLocation." ~ backend.stringof)
     unittest {
@@ -632,7 +632,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
@@ -664,7 +664,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedFileUnittestBlocks." ~ backend.stringof)
     unittest {
@@ -677,7 +677,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.loadedSourceDoesNotAdvanceTypedReplLocations." ~
         backend.stringof)
@@ -696,7 +696,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.loadedFileUnittestFailuresReportFileLocation." ~
         backend.stringof)
@@ -731,7 +731,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.loadModuleFileErrorsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -763,7 +763,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
@@ -783,7 +783,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runtimeErrorsReportOneDiagnostic." ~ backend.stringof)
     unittest {
@@ -821,7 +821,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.duplicateDeclarationsHideSyntheticNames." ~ backend.stringof)
     unittest {
@@ -838,7 +838,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.failedModuleNoDisplayCellsDoNotPoisonSession." ~ backend.stringof)
     unittest {
@@ -856,7 +856,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.syntaxErrorsHideWrapperInternals." ~ backend.stringof)
     unittest {
@@ -872,7 +872,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.diagnosticsHideSyntheticWrapperNames." ~ backend.stringof)
     unittest {
@@ -887,7 +887,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.functionCallMismatchShowsCandidateSignature." ~ backend.stringof)
     unittest {
@@ -905,7 +905,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.functionCallMismatchShowsOverloadSignatures." ~ backend.stringof)
     unittest {
