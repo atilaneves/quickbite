@@ -256,7 +256,7 @@ static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; backendsWith!(Interpreter, Bytecode, IR)) {
+static foreach (backend; backendsWith!(Interpreter, Bytecode, IR, DynamicLibrary)) {
     @("logicalOrOops." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

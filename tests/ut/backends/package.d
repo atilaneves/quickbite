@@ -8,6 +8,7 @@ public import quickbite.backends.ctfe;
 public import quickbite.backends.interpreter;
 public import quickbite.backends.bytecode;
 public import quickbite.backends.ir;
+public import quickbite.backends.native;
 
 
 alias backends = imported!"std.meta".AliasSeq!(

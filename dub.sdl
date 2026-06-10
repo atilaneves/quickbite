@@ -22,6 +22,9 @@ configuration "unittest" {
     sourceFiles "benchmarks/cli.d" "benchmarks/harness.d"
     importPaths "tests" "benchmarks"
     versions "unitUnthreaded"
+    // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
+    // libraries it builds.
+    dflags "-defaultlib=libphobos2.so"
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
@@ -40,6 +43,9 @@ configuration "unittest-cov" {
     sourcePaths "tests" "tests/coverage"
     importPaths "tests"
     versions "unitUnthreaded"
+    // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
+    // libraries it builds.
+    dflags "-defaultlib=libphobos2.so"
 
     // Pair this config with `--build=unittest-cov`; dub will then pass
     // `-unittest -cov`. dub warns if these are listed as buildOptions
@@ -76,6 +82,9 @@ configuration "qb" {
     mainSourceFile "repl/main.d"
     sourcePaths "source" "repl"
     importPaths "source" "repl"
+    // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared
+    // libraries it builds.
+    dflags "-defaultlib=libphobos2.so"
     lflags "--allow-multiple-definition" platform="linux"
 
     dependency "dmd:frontend" version="~>2.112.0"
