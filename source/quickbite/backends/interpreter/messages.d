@@ -444,3 +444,18 @@ public string assertFailureMessage(
 
     return "`assert(false)` failed";
 }
+
+public string indexOutOfBoundsMessage(
+    in ulong index,
+    in ulong length,
+) @safe pure {
+    import std.conv: text;
+
+    return text(
+        "array index ",
+        index,
+        " is out of bounds `[0..",
+        length,
+        "]`",
+    );
+}

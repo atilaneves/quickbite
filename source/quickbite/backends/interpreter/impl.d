@@ -221,9 +221,7 @@ private struct Walker {
             return runSliceExpression(slice);
 
         if (auto index = expression.isIndexExp)
-            return runExpression(index.e1)[
-                cast(size_t) runExpression(index.e2).asLong
-            ];
+            return runIndexExpression(index);
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -628,6 +626,22 @@ private struct Walker {
             values ~= source[index];
 
         return Value.arrayValue(values);
+    }
+
+    private Value runIndexExpression(
+        imported!"dmd.expression".IndexExp index,
+    ) {
+        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+
+        const receiver = runExpression(index.e1);
+        // matches CTFE, which formats the index as unsigned
+        const arrayIndex = cast(ulong) runExpression(index.e2).asLong;
+        if (arrayIndex >= receiver.length)
+            throw new Exception(
+                indexOutOfBoundsMessage(arrayIndex, receiver.length),
+            );
+
+        return receiver[cast(size_t) arrayIndex];
     }
 
     private void recordSliceAlias(

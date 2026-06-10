@@ -775,7 +775,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.expressionCtfeErrorsReportDiagnostics." ~ backend.stringof)
     unittest {
