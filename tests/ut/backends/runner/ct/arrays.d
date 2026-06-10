@@ -529,7 +529,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

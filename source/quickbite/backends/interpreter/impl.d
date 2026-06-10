@@ -192,6 +192,9 @@ private struct Walker {
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
 
+        if (auto lowered = expression.isLoweredAssignExp)
+            return runLoweredAssignExpression(lowered);
+
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -575,6 +578,43 @@ private struct Walker {
         );
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private Value runLoweredAssignExpression(
+        imported!"dmd.expression".LoweredAssignExp assign,
+    ) {
+        import quickbite.frontend.dmd.types: arrayElementType, isDynamicArrayType;
+        import std.conv: text;
+
+        auto arrayLength = assign.e1.isArrayLengthExp;
+        if (arrayLength is null)
+            throw new Exception(text("Unsupported eval expression: ", assign.op));
+
+        auto var = arrayLength.e1.isVarExp;
+        if (var is null)
+            throw new Exception(text("Unsupported eval expression: ", assign.op));
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null || !isDynamicArrayType(variable.type))
+            throw new Exception(text("Unsupported eval expression: ", assign.op));
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception(text("Unsupported eval expression: ", assign.op));
+
+        const lengthValue = runExpression(assign.e2);
+        const newLength = cast(size_t) lengthValue.asLong;
+
+        Value[] elements;
+        foreach (index; 0 .. newLength)
+            elements ~= index < current.length
+                ? (*current)[index]
+                : defaultValue(arrayElementType(variable.type));
+
+        locals[variable] = Value.arrayValue(elements);
+        uninitializedLocals.remove(variable);
+        sliceAliases.remove(variable);
+        return lengthValue;
     }
 
     private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
