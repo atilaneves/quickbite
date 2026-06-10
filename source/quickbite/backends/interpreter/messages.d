@@ -310,6 +310,9 @@ private string dmdAssertFailBoolMessageFromCall(
     if (left is null || right is null)
         return null;
 
+    if (isCharExpression(left) || isCharExpression(right))
+        return null;
+
     const inverseOperator = operatorText == "==" ? "!=" : "==";
     if (left.toInteger > 1 || right.toInteger > 1)
         return text(

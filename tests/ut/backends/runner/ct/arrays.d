@@ -21,7 +21,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
