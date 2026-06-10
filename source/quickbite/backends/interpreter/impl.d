@@ -226,6 +226,9 @@ private struct Walker {
         if (auto index = expression.isIndexExp)
             return runIndexExpression(index);
 
+        if (auto new_ = expression.isNewExp)
+            return runNewExpression(new_);
+
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
 
@@ -523,6 +526,9 @@ private struct Walker {
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
+        if (auto outer = index.e1.isIndexExp)
+            return runNestedIndexAssignExpression(outer, index, rhs);
+
         auto var = index.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
@@ -539,6 +545,34 @@ private struct Walker {
         const value = runExpression(rhs);
         locals[variable] = current.withArrayElement(arrayIndex, value);
         writeThroughSliceAlias(variable, arrayIndex, value);
+        uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private Value runNestedIndexAssignExpression(
+        imported!"dmd.expression".IndexExp outer,
+        imported!"dmd.expression".IndexExp inner,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = outer.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+        const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+        const value = runExpression(rhs);
+        locals[variable] = current.withArrayElement(
+            outerIndex,
+            (*current)[outerIndex].withArrayElement(innerIndex, value),
+        );
         uninitializedLocals.remove(variable);
         return value;
     }
@@ -682,6 +716,49 @@ private struct Walker {
 
         auto variable = var.var.isVarDeclaration;
         return variable !is null && (variable in sliceAliases) !is null;
+    }
+
+    private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import std.conv: text;
+
+        if (
+            !isDynamicArrayType(new_.type) ||
+            new_.placement !is null ||
+            new_.thisexp !is null ||
+            new_.member !is null ||
+            new_.arguments is null ||
+            new_.arguments.length == 0
+        )
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        size_t[] lengths;
+        foreach (argument; *new_.arguments)
+            lengths ~= cast(size_t) runExpression(argument).asLong;
+
+        return newArrayValue(new_.type, lengths);
+    }
+
+    private Value newArrayValue(
+        imported!"dmd.mtype".Type type,
+        in size_t[] lengths,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.frontend.dmd.types: arrayElementType;
+        import std.conv: text;
+
+        // `auto` because DMD returns a mutable class reference
+        auto elementType = arrayElementType(type);
+        if (elementType is null)
+            throw new Exception(text("Unsupported eval expression: ", EXP.new_));
+
+        Value[] elements;
+        foreach (_; 0 .. lengths[0])
+            elements ~= lengths.length > 1
+                ? newArrayValue(elementType, lengths[1 .. $])
+                : defaultValue(elementType);
+
+        return Value.arrayValue(elements);
     }
 
     private void recordSliceAlias(

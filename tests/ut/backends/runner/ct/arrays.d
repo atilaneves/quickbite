@@ -462,7 +462,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 /++
     Array allocation, resizing, copying, and operations.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newUsesRuntimeLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -481,7 +481,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newCharArrayUsesRuntimeLengthAndDefaultFill." ~
         backend.stringof)
     unittest {
@@ -507,7 +507,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newMultidimensionalUsesRuntimeLengths." ~
         backend.stringof)
     unittest {

@@ -144,13 +144,20 @@ public imported!"quickbite.lang".Value realValue(
 public imported!"quickbite.lang".Value defaultValue(
     imported!"dmd.declaration".VarDeclaration variable,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
-
     if (variable.type is null)
         throw new Exception("Unsupported DMD default value.");
 
-    const type = variable.type.toBasetype;
+    return defaultValue(variable.type);
+}
+
+public imported!"quickbite.lang".Value defaultValue(
+    // not `in`: DMD's `Type.toBasetype` is not const-callable
+    imported!"dmd.mtype".Type variableType,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    const type = variableType.toBasetype;
     with (TY) final switch (type.ty) {
         case Tbool:
             return scalarDefaultValue!Tbool;
