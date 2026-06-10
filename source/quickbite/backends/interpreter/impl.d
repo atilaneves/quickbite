@@ -116,6 +116,9 @@ private struct Walker {
         if (auto array = expression.isArrayLiteralExp)
             return arrayValue(array);
 
+        if (auto assocArray = expression.isAssocArrayLiteralExp)
+            return assocArrayValue(assocArray);
+
         if (auto assert_ = expression.isAssertExp) {
             import quickbite.backends.interpreter.messages:
                 assertFailureMessage,
@@ -602,6 +605,19 @@ private struct Walker {
                 values ~= runExpression(element);
 
         return Value.arrayValue(values);
+    }
+
+    private Value assocArrayValue(
+        imported!"dmd.expression".AssocArrayLiteralExp assocArray,
+    ) {
+        Value[] keys;
+        Value[] values;
+        foreach (index; 0 .. assocArray.keys.length) {
+            keys ~= runExpression((*assocArray.keys)[index]);
+            values ~= runExpression((*assocArray.values)[index]);
+        }
+
+        return Value.assocArrayValue(keys, values);
     }
 
     private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {

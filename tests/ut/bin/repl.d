@@ -381,7 +381,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
