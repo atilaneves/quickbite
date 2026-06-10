@@ -186,6 +186,9 @@ private struct Walker {
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
+        if (auto cat = expression.isCatExp)
+            return runConcatenateExpression(cat);
+
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
 
@@ -538,6 +541,28 @@ private struct Walker {
         writeThroughSliceAlias(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
+        return Value.arrayValue(
+            concatenationElements(cat.e1) ~ concatenationElements(cat.e2),
+        );
+    }
+
+    private Value[] concatenationElements(
+        imported!"dmd.expression".Expression operand,
+    ) {
+        import quickbite.frontend.dmd.types: isArrayType;
+
+        const value = runExpression(operand);
+        if (!isArrayType(operand.type))
+            return [value];
+
+        Value[] elements;
+        foreach (index; 0 .. value.length)
+            elements ~= value[index];
+
+        return elements;
     }
 
     private Value runArrayAppendAssignExpression(

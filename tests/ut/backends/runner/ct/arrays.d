@@ -234,7 +234,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.concatenation." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -254,7 +254,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.elementConcatenatesWithArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
