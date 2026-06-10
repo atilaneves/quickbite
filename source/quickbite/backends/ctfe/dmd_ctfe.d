@@ -33,7 +33,7 @@ public class Ctfe: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override TestResult[] runTestResults(
+    public override TestResult[] runTests(
         imported!"dmd.dmodule".Module module_,
     ) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;

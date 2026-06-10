@@ -1,7 +1,7 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends: Backend, runTests;
+import quickbite.backends: Backend, TestResult;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;
@@ -15,6 +15,7 @@ enum size_t defaultWarmup = 1;
 enum size_t defaultIterations = 9;
 
 public void run(string[] args) {
+    import std.algorithm.searching: all;
     import std.file: readText;
     import std.getopt: defaultGetoptPrinter, getopt;
     import std.stdio: stderr, writefln, writeln;
@@ -77,6 +78,14 @@ public void run(string[] args) {
     auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, iterations);
     auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, iterations);
 
+    const check = checkBackendResults(
+        backends,
+        backendNames,
+        fixtureRuns ~ dubRuns,
+    );
+    foreach (message; check.skipped)
+        stderr.writeln(message);
+
     if (fixtureRuns.length > 0 || dubRuns.length > 0) {
         writeln("== frontend (parse + semantic) ==");
         printHeader;
@@ -92,11 +101,14 @@ public void run(string[] args) {
         auto backend = backends[name];
 
         foreach (run; fixtureRuns) {
+            if (!check.passingPairs.get(pairKey(run.displayName, name), false))
+                continue;
+
             try {
                 printRow(
                     run.displayName, name,
                     measure(
-                        () => backend.runTests(run.module_),
+                        () { backend.runTests(run.module_); },
                         warmup,
                         iterations,
                     ),
@@ -119,6 +131,20 @@ public void run(string[] args) {
         if (dubModules.length > 0) {
             foreach (name; backendNames) {
                 auto backend = backends[name];
+
+                const allPassing = dubRuns.all!(
+                    run => check.passingPairs.get(
+                        pairKey(run.displayName, name),
+                        false,
+                    ),
+                );
+                if (!allPassing) {
+                    stderr.writefln(
+                        "skipping %s %s: failing fixtures", dubPkg, name,
+                    );
+                    continue;
+                }
+
                 try {
                     printRow(
                         dubPkg, name,
@@ -146,6 +172,101 @@ string firstLine(in string message) {
     foreach (line; message.lineSplitter)
         return line.idup;
     return "";
+}
+
+public struct BackendCheck {
+    public bool[string] passingPairs;
+    public string[] skipped;
+}
+
+// Backends must agree on which tests exist and whether they pass before any
+// of them is timed: a disagreement means at least one backend is wrong, so
+// its numbers would be meaningless. Fixtures whose tests fail are skipped
+// rather than timed.
+public BackendCheck checkBackendResults(
+    Backend[string] backends,
+    in string[] backendNames,
+    BenchmarkRun[] runs,
+) {
+    import std.conv: text;
+
+    BackendCheck check;
+
+    foreach (run; runs) {
+        string[] resultNames;
+        TestResult[][] allResults;
+
+        foreach (name; backendNames) {
+            try {
+                allResults ~= backends[name].runTests(run.module_);
+                resultNames ~= name;
+            } catch (Exception e) {
+                check.skipped ~= text(
+                    "skipping ", run.displayName, " ", name, ": ",
+                    e.msg.firstLine,
+                );
+            }
+        }
+
+        foreach (i; 1 .. allResults.length) {
+            const mismatch = testResultsMismatch(allResults[0], allResults[i]);
+            if (mismatch !is null)
+                throw new Exception(text(
+                    "backends ", resultNames[0], " and ", resultNames[i],
+                    " disagree on ", run.displayName, ": ", mismatch,
+                ));
+        }
+
+        foreach (i, name; resultNames) {
+            const failure = firstFailureMessage(allResults[i]);
+            if (failure is null)
+                check.passingPairs[pairKey(run.displayName, name)] = true;
+            else
+                check.skipped ~= text(
+                    "skipping ", run.displayName, " ", name, ": ",
+                    failure.firstLine,
+                );
+        }
+    }
+
+    return check;
+}
+
+public string pairKey(in string fixture, in string backendName) {
+    return fixture ~ '\0' ~ backendName;
+}
+
+// Failure messages may legitimately differ between backends; test names and
+// outcomes may not.
+public string testResultsMismatch(
+    in TestResult[] lhs,
+    in TestResult[] rhs,
+) {
+    import std.conv: text;
+
+    if (lhs.length != rhs.length)
+        return text(lhs.length, " tests vs ", rhs.length);
+
+    foreach (i, left; lhs) {
+        const right = rhs[i];
+        if (left.name != right.name)
+            return text("test ", left.name, " vs ", right.name);
+        if (left.passed != right.passed)
+            return text(
+                "test ", left.name, " ",
+                left.passed ? "passes" : "fails", " vs ",
+                right.passed ? "passes" : "fails",
+            );
+    }
+
+    return null;
+}
+
+string firstFailureMessage(in TestResult[] results) {
+    foreach (result; results)
+        if (!result.passed)
+            return result.message;
+    return null;
 }
 
 struct DubInfo {

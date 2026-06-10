@@ -1,7 +1,19 @@
 module ut.benchmarks;
 
 
-import benchmarks.cli: BenchmarkRow, prepareFixtureRuns, renderBenchmarkSection, run;
+import benchmarks.cli:
+    BenchmarkRow,
+    BenchmarkRun,
+    checkBackendResults,
+    pairKey,
+    prepareFixtureRuns,
+    renderBenchmarkSection,
+    run,
+    testResultsMismatch;
+import quickbite.backends: Backend, TestResult;
+import quickbite.lang: Value;
+import quickbite.frontend.cell: EvalCell;
+import dmd.dmodule: Module;
 import ut;
 
 
@@ -94,4 +106,83 @@ unittest {
     assert(report.canFind("fixture"));
     "ram".should.be in report;
     "KiB".should.be in report;
+}
+
+@("benchmark.testResultsMismatch")
+unittest {
+    const passing = [TestResult(true, "t0", "loc", null)];
+
+    assert(testResultsMismatch(passing, passing) is null);
+    assert(testResultsMismatch(passing, []) !is null);
+    assert(testResultsMismatch(
+        passing,
+        [TestResult(true, "other", "loc", null)],
+    ) !is null);
+    assert(testResultsMismatch(
+        passing,
+        [TestResult(false, "t0", "loc", "1 != 2")],
+    ) !is null);
+}
+
+@("benchmark.checkBackendResultsRejectsDisagreeingBackends")
+unittest {
+    Backend[string] backends;
+    backends["good"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
+    backends["bad"] = new StubBackend([TestResult(false, "t0", "loc", "1 != 2")]);
+
+    checkBackendResults(backends, ["good", "bad"], [BenchmarkRun("fixture")])
+        .shouldThrow;
+}
+
+@("benchmark.checkBackendResultsSkipsFailingFixtures")
+unittest {
+    Backend[string] backends;
+    backends["a"] = new StubBackend([TestResult(false, "t0", "loc", "1 != 2")]);
+
+    const check = checkBackendResults(
+        backends,
+        ["a"],
+        [BenchmarkRun("fixture")],
+    );
+
+    check.passingPairs.length.should == 0;
+    check.skipped.length.should == 1;
+    "1 != 2".should.be in check.skipped[0];
+}
+
+@("benchmark.checkBackendResultsAcceptsAgreeingBackends")
+unittest {
+    Backend[string] backends;
+    backends["a"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
+    backends["b"] = new StubBackend([TestResult(true, "t0", "loc", null)]);
+
+    const check = checkBackendResults(
+        backends,
+        ["a", "b"],
+        [BenchmarkRun("fixture")],
+    );
+
+    check.skipped.length.should == 0;
+    check.passingPairs.get(pairKey("fixture", "a"), false).should == true;
+    check.passingPairs.get(pairKey("fixture", "b"), false).should == true;
+}
+
+private final class StubBackend: Backend {
+    private TestResult[] results;
+
+    this(TestResult[] results) {
+        this.results = results;
+    }
+
+    public override Value eval(in string) {
+        assert(false);
+    }
+
+    public override Value evalRepl(EvalCell) {
+        assert(false);
+    }
+
+    public override TestResult[] runTests(Module) {
+        return results;
+    }
 }

@@ -99,7 +99,7 @@ public struct Repl {
         if (session.loadedModuleSource.length == 0)
             return ReplResult(Value.void_);
 
-        const result = backend.runTestResults(
+        const result = backend.runTests(
             parseModuleWithCheckActionContext(
                 session.loadedModuleSource,
                 importPaths,

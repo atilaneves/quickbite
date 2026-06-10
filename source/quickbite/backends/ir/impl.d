@@ -19,7 +19,7 @@ public class IR: imported!"quickbite.backends".Backend {
         assert(0);
     }
 
-    public override TestResult[] runTestResults(Module module_) {
+    public override TestResult[] runTests(Module module_) {
         import quickbite.backends.ir.compiler: compileUnitTest;
         import quickbite.backends.ir.vm: execute;
         import quickbite.frontend.util: foreachUnitTestDeclaration;

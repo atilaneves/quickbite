@@ -34,7 +34,7 @@ public class Bytecode: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override TestResult[] runTestResults(Module module_) {
+    public override TestResult[] runTests(Module module_) {
         import quickbite.backends.bytecode.compiler: compileUnitTest;
         import quickbite.backends.bytecode.vm: execute;
         import quickbite.frontend.util: foreachUnitTestDeclaration;

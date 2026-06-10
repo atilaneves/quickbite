@@ -32,7 +32,7 @@ public class Interpreter: imported!"quickbite.backends".Backend {
         }
     }
 
-    public override TestResult[] runTestResults(Module module_) {
+    public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
         TestResult[] cases;
