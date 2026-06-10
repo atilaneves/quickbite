@@ -221,9 +221,7 @@ private struct Walker {
             return runSliceExpression(slice);
 
         if (auto index = expression.isIndexExp)
-            return runExpression(index.e1)[
-                cast(size_t) runExpression(index.e2).asLong
-            ];
+            return runIndexExpression(index);
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -628,6 +626,37 @@ private struct Walker {
             values ~= source[index];
 
         return Value.arrayValue(values);
+    }
+
+    private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
+        import quickbite.frontend.dmd.types: isArrayType;
+
+        const source = runExpression(index.e1);
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+
+        if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
+            import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+
+            throw new Exception(indexOutOfBoundsMessage(
+                arrayIndex,
+                source.length,
+                isSliceValue(index.e1),
+            ));
+        }
+
+        return source[arrayIndex];
+    }
+
+    private bool isSliceValue(imported!"dmd.expression".Expression expression) {
+        if (expression.isSliceExp !is null)
+            return true;
+
+        auto var = expression.isVarExp;
+        if (var is null)
+            return false;
+
+        auto variable = var.var.isVarDeclaration;
+        return variable !is null && (variable in sliceAliases) !is null;
     }
 
     private void recordSliceAlias(

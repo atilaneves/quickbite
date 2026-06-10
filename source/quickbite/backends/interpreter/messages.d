@@ -20,6 +20,18 @@ public string uninitializedVariableMessage(
     );
 }
 
+public string indexOutOfBoundsMessage(
+    in size_t index,
+    in size_t length,
+    in bool isSlice,
+) @safe pure {
+    import std.conv: text;
+
+    return isSlice
+        ? text("index ", index, " exceeds array length ", length)
+        : text("array index ", index, " is out of bounds `[0..", length, "]`");
+}
+
 public bool isTruthy(in imported!"quickbite.lang".Value value) {
     import quickbite.lang: Value;
 
