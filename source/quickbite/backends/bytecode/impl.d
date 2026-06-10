@@ -2,12 +2,13 @@ module quickbite.backends.bytecode.impl;
 
 private:
 
-public class Bytecode: imported!"quickbite.backends".Backend {
-    import quickbite.backends: Backend, EvalResult;
+public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
+    import quickbite.backends: TreeNodeBackend;
+    import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
-    public alias eval = Backend.eval;
+    public alias eval = Evaluator.eval;
 
     public override EvalResult eval(FuncDeclaration function_) {
         import quickbite.backends.bytecode.compiler: compileFunction;

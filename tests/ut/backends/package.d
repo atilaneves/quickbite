@@ -2,7 +2,7 @@ module ut.backends;
 
 
 public import ut;
-public import quickbite.backends: TestResult;
+public import quickbite.backends.runner: TestResult;
 public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 public import quickbite.backends.interpreter;

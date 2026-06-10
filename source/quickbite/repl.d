@@ -117,11 +117,11 @@ public struct Repl {
         return ReplResult(Value.void_);
     }
 
-    private imported!"quickbite.backends".EvalResult evalReplCell(
+    private imported!"quickbite.backends.evaluator".EvalResult evalReplCell(
         imported!"quickbite.frontend.repl".ReplCell cell,
     ) {
         import quickbite.frontend.repl: ReplCellKind;
-        import quickbite.backends: EvalResult;
+        import quickbite.backends.evaluator: EvalResult;
         import quickbite.lang: Value;
 
         const result = backend.eval(cell.evalCell);
@@ -164,14 +164,14 @@ private ReplDisplay replDisplay(
 }
 
 private string testFailureDiagnostic(
-    ref const(imported!"quickbite.backends".TestResult) testCase,
+    ref const(imported!"quickbite.backends.runner".TestResult) testCase,
 ) @safe pure {
     return "unittest at " ~ testCase.location ~ " failed: " ~
         testCase.message;
 }
 
 private string testFailureDiagnostics(
-    const(imported!"quickbite.backends".TestResult)[] testCases,
+    const(imported!"quickbite.backends.runner".TestResult)[] testCases,
 ) @safe pure {
     import std.array: join;
 

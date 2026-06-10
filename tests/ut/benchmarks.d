@@ -1,36 +1,25 @@
 module ut.benchmarks;
 
 
-import benchmarks.cli:
-    BenchmarkRow,
-    BenchmarkRun,
-    checkBackendResults,
-    pairKey,
-    prepareFixtureRuns,
-    renderBenchmarkSection,
-    run,
-    testResultsMismatch;
-import quickbite.backends: Backend, TestResult, EvalResult;
-import quickbite.lang: Value;
+import benchmarks.cli;
+import quickbite.backends.runner: TestResult;
+import quickbite.backends.runner: Runner;
 import dmd.dmodule: Module;
-import dmd.func: FuncDeclaration;
 import ut;
 
 
-private:
-
-@("benchmark.cliRejectsOldOptionSpelling")
+@("cliRejectsOldOptionSpelling")
 unittest {
     run(["bench", "--executor=dmd-ctfe", "--help"])
         .shouldThrowWithMessage("Unrecognized option --executor=dmd-ctfe");
 }
 
-@("benchmark.cliAcceptsBackendOption")
+@("cliAcceptsBackendOption")
 unittest {
     run(["bench", "--backend=ctfe", "--help"]);
 }
 
-@("benchmark.preParseReportsMissingFixture")
+@("preParseReportsMissingFixture")
 unittest {
     import quickbite.benchmarks: populateDmdCodegenModuleSet;
     import std.algorithm.searching: canFind, startsWith;
@@ -48,7 +37,7 @@ unittest {
     }
 }
 
-@("benchmark.frontendRowsArePreparedAndRenderedPerFixture")
+@("frontendRowsArePreparedAndRenderedPerFixture")
 unittest {
     import std.algorithm.searching: canFind;
     import std.file: mkdirRecurse, write;
@@ -108,7 +97,7 @@ unittest {
     "KiB".should.be in report;
 }
 
-@("benchmark.testResultsMismatch")
+@("testResultsMismatch")
 unittest {
     const passing = [TestResult(true, "t0", "loc", null)];
 
@@ -124,27 +113,27 @@ unittest {
     ) !is null);
 }
 
-@("benchmark.checkBackendResultsRejectsDisagreeingBackends")
+@("results.RejectsDisagreeingBackends")
 unittest {
-    Backend[string] backends;
-    backends["good"] = new FixedVerdictBackend(null);
-    backends["bad"] = new FixedVerdictBackend("1 != 2");
+    Runner[string] runners;
+    runners["good"] = new FixedVerdictRunner(null);
+    runners["bad"] = new FixedVerdictRunner("1 != 2");
 
-    checkBackendResults(
-        backends,
+    checkRunnerResults(
+        runners,
         ["good", "bad"],
         [BenchmarkRun("fixture", testModule)],
     )
         .shouldThrow;
 }
 
-@("benchmark.checkBackendResultsSkipsFailingFixtures")
+@("results.SkipsFailingFixtures")
 unittest {
-    Backend[string] backends;
-    backends["a"] = new FixedVerdictBackend("1 != 2");
+    Runner[string] runners;
+    runners["a"] = new FixedVerdictRunner("1 != 2");
 
-    const check = checkBackendResults(
-        backends,
+    const check = checkRunnerResults(
+        runners,
         ["a"],
         [BenchmarkRun("fixture", testModule)],
     );
@@ -154,14 +143,14 @@ unittest {
     "1 != 2".should.be in check.skipped[0];
 }
 
-@("benchmark.checkBackendResultsAcceptsAgreeingBackends")
+@("results.AcceptsAgreeingBackends")
 unittest {
-    Backend[string] backends;
-    backends["a"] = new FixedVerdictBackend(null);
-    backends["b"] = new FixedVerdictBackend(null);
+    Runner[string] runners;
+    runners["a"] = new FixedVerdictRunner(null);
+    runners["b"] = new FixedVerdictRunner(null);
 
-    const check = checkBackendResults(
-        backends,
+    const check = checkRunnerResults(
+        runners,
         ["a", "b"],
         [BenchmarkRun("fixture", testModule)],
     );
@@ -181,22 +170,33 @@ private Module testModule() {
     }).module_;
 }
 
-// A test double that reports a fixed unittest verdict (null message = pass,
-// non-empty = fail) regardless of the function it is handed. It lets the
-// checkBackendResults tests exercise cross-backend agreement and
-// fixture-skipping logic without standing up a real backend: the only path
-// those tests reach is runTests, which calls eval per unittest, so eval just
-// replays the canned verdict.
-private final class FixedVerdictBackend: Backend {
+// A test double that reports a fixed verdict (empty message = pass, non-empty
+// = fail) for every unittest in the module. It lets the checkRunnerResults
+// tests exercise cross-runner agreement and fixture-skipping logic without
+// standing up a real backend, so it implements Runner directly rather than
+// evaluating anything.
+private final class FixedVerdictRunner: Runner {
     private string failureMessage;
 
     this(string failureMessage) {
         this.failureMessage = failureMessage;
     }
 
-    public override EvalResult eval(FuncDeclaration) {
-        return failureMessage.length == 0
-            ? EvalResult(Value.void_)
-            : EvalResult(EvalResult.Diagnostic(failureMessage));
+    public override TestResult[] runTests(Module module_) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+        import std.conv: text;
+
+        TestResult[] results;
+        size_t index;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            results ~= TestResult(
+                failureMessage.length == 0,
+                text("test", index++),
+                "loc",
+                failureMessage,
+            );
+        });
+
+        return results;
     }
 }

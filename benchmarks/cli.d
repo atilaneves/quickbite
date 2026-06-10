@@ -1,7 +1,7 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends: Backend, TestResult;
+import quickbite.backends.runner: Runner, TestResult;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;
@@ -65,21 +65,21 @@ public void run(string[] args) {
 
     printRunHeader(warmup, iterations);
 
-    Backend[string] backends;
-    backends["ctfe"] = new Ctfe;
+    Runner[string] runners;
+    runners["ctfe"] = new Ctfe;
 
     if (backendNames.length == 0)
         backendNames = ["ctfe"];
 
     foreach (name; backendNames)
-        if (name !in backends)
+        if (name !in runners)
             throw new Exception("unknown backend: " ~ name);
 
     auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, iterations);
     auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, iterations);
 
-    const check = checkBackendResults(
-        backends,
+    const check = checkRunnerResults(
+        runners,
         backendNames,
         fixtureRuns ~ dubRuns,
     );
@@ -98,7 +98,7 @@ public void run(string[] args) {
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (name; backendNames) {
-        auto backend = backends[name];
+        auto runner = runners[name];
 
         foreach (run; fixtureRuns) {
             if (!check.passingPairs.get(pairKey(run.displayName, name), false))
@@ -108,7 +108,7 @@ public void run(string[] args) {
                 printRow(
                     run.displayName, name,
                     measure(
-                        () { backend.runTests(run.module_); },
+                        () { runner.runTests(run.module_); },
                         warmup,
                         iterations,
                     ),
@@ -130,7 +130,7 @@ public void run(string[] args) {
 
         if (dubModules.length > 0) {
             foreach (name; backendNames) {
-                auto backend = backends[name];
+                auto runner = runners[name];
 
                 const allPassing = dubRuns.all!(
                     run => check.passingPairs.get(
@@ -151,7 +151,7 @@ public void run(string[] args) {
                         measure(
                             () {
                                 foreach (module_; dubModules)
-                                    backend.runTests(module_);
+                                    runner.runTests(module_);
                             },
                             warmup,
                             iterations,
@@ -174,23 +174,23 @@ string firstLine(in string message) {
     return "";
 }
 
-public struct BackendCheck {
+public struct RunnerCheck {
     public bool[string] passingPairs;
     public string[] skipped;
 }
 
-// Backends must agree on which tests exist and whether they pass before any
-// of them is timed: a disagreement means at least one backend is wrong, so
+// Runners must agree on which tests exist and whether they pass before any
+// of them is timed: a disagreement means at least one runner is wrong, so
 // its numbers would be meaningless. Fixtures whose tests fail are skipped
 // rather than timed.
-public BackendCheck checkBackendResults(
-    Backend[string] backends,
+public RunnerCheck checkRunnerResults(
+    Runner[string] runners,
     in string[] backendNames,
     BenchmarkRun[] runs,
 ) {
     import std.conv: text;
 
-    BackendCheck check;
+    RunnerCheck check;
 
     foreach (run; runs) {
         string[] resultNames;
@@ -198,7 +198,7 @@ public BackendCheck checkBackendResults(
 
         foreach (name; backendNames) {
             try {
-                allResults ~= backends[name].runTests(run.module_);
+                allResults ~= runners[name].runTests(run.module_);
                 resultNames ~= name;
             } catch (Exception e) {
                 check.skipped ~= text(

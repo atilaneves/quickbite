@@ -2,201 +2,129 @@
 
 ## Summary
 
-Split backend capabilities into two interfaces:
+Replace the single `Backend` interface with two capability interfaces:
 
-- one interface for interactive evaluation that returns a displayable
-  `quickbite.lang.Value`;
-- one interface for executing D code that does not expose `Value` as
-  part of the normal execution contract, and reports failure as a
-  diagnostic string rather than by throwing.
+- `Evaluator` — interactive evaluation returning `EvalResult`; used by
+  the REPL and ad-hoc expression callers.
+- `Runner` — test execution for a whole `Module`, returning
+  `TestResult[]`; the contract is wide enough for backends that compile
+  an entire module at once (dmd codegen) and those that run tests
+  one-by-one.
 
-The goal is to keep `Value` at REPL and expression-result
-boundaries. Real code execution should run D declarations and report
-completion or failure without materialising every runtime value as a
-public display value.
+`Backend` is gone. Call sites hold `Evaluator`, `Runner`, or both,
+depending on what they need.
 
 ## Status (June 2026)
 
-**Decision (June 2026): one execution primitive, failure-as-data.**
-The execution surface collapses to a single backend method —
-`EvalResult eval(FuncDeclaration)`. `EvalResult` is a sum type,
-`SumType!(Value, EvalResult.Diagnostic)` — the nested `Diagnostic`
-wraps the failure message, which only means anything as part of a
-result — so the "value and error message at once" state is
-unrepresentable. It exposes `failed`, `value` (`Value.void_` on failure
-or for a statement that produces nothing), and `diagnostic` (null on
-success) accessors. `eval(string)`, `eval(Cell)`, and `runTests` are
-`final` adapters over it. The earlier `eval` / `evalCell` / `runCell` /
-`runUnitTest` quartet is gone. See `PLAN.md` at the repo root for the
-implementation slices (1–3 now complete). The REPL cell type `EvalCell`
-was renamed to `Cell`, with its kind enum nested as `Cell.Kind`.
+The single `EvalResult eval(FuncDeclaration)` primitive on `Backend`
+is already in place (slices 1–3 in `PLAN.md`), with `eval(string)` and
+`eval(Cell)` as `final` adapters, and failure carried as data
+(`EvalResult.Diagnostic`).
 
-Why one, not two-or-more (correcting the prior "two primitives, not
-one" rationale):
+The current `runTests` adapter on `Backend` is the direct predecessor
+of `Runner.runTests`; the module-level signature is the only change
+needed there.
 
-- The bytecode "`eval` requires exactly one stack value; a statement
-  cell leaves zero" difference is a **post-run assertion**, not a second
-  primitive. A single `eval` returning `Value.void_` for an empty stack
-  (and the produced value otherwise) subsumes both; the kind-aware
-  `eval(Cell)` dispatcher discards the value for `noDisplay` cells.
-- `eval` and `evalCell` were byte-for-byte identical in bytecode, and
-  the interpreter's `eval`-vs-`evalCell` difference
-  (`allowZeroArgumentCalls`, `allowControlFlow`) only kept the bare
-  `eval(string)` path artificially weaker than the REPL/unittest paths.
-  Real D and CTFE (the oracle) accept bare zero-argument calls and
-  control flow, so the restriction encoded incompleteness, not a
-  contract. The two interpreter tests pinning it
-  (`zeroArgumentCallReportsArgumentCount`,
-  `ifStatementReportsUnsupportedEvalStatement`) were removed with
-  approval; the matrix already covers those capabilities via
-  `runUnitTest`.
-- Failure is reported as **data** on every path, including the REPL.
-  The REPL's accept-on-success rollback becomes an explicit branch
-  (`session.accept` only when the diagnostic is empty), replacing the
-  earlier reliance on exception unwinding — which was the
-  no-exceptions-for-control-flow anti-pattern. Throwing survives only
-  at terminal boundaries (`eval(string)` for a single ad-hoc
-  expression; `incomplete` reaching the backend, a programming error)
-  and for genuinely exceptional conditions inside backends.
-
-The Evaluator/Runner two-interface split below is **deferred**, not
-abandoned: it is only worth doing once the VMs adopt a private
-execution-slot type so the test-running path can avoid materialising
-`Value`. Until then one primitive returning `EvalResult` is simpler and
-costs nothing (the interpreter and bytecode VMs already use `Value` as
-their runtime representation).
-
-Research findings that motivated the failure-as-data decision (June 2026
-review of all four backends):
-
-- No part of the test-running contract needs `Value`. Failure
-  diagnostics do render runtime operands ("1 != 2" — pinned by the
-  test matrix and matching compiled-D `-checkaction=context` output),
-  but rendering needs only a string produced at the point of failure
-  from whatever internal representation the backend has. The IR VM
-  proves it (renders from raw `ulong` registers), as does CTFE
-  (verbatim dmd diagnostic strings).
-- `quickbite.lang.Value` is repl-shaped: its variant set includes
-  display-only kinds (`TypeName`, `EnumValue`, `Undisplayable`, the
-  string-display flag on arrays) and the full `toString` apparatus.
-  The interpreter and bytecode backends nevertheless use it as their
-  runtime representation (locals, operand stack, instruction
-  literals); the IR VM already uses a private representation and
-  converts only at the `eval` boundary. That confirms the Boundary
-  Rules below rather than changing them.
-
-## Motivation
-
-The deferred Evaluator/Runner split is motivated by two jobs that have
-different *runtime* needs (the single `eval` primitive serves both today
-because the VMs still use `Value` as their runtime representation):
-
-- expression-like input that returns `Value` for inspection and display;
-- D code executed for effect (statements, unittests) that only needs
-  completion, failure, and diagnostics — no `Value`.
-
-Those jobs have different runtime needs. The REPL needs a lossless
-enough value representation for display. The VM hot path should be
-free to use a private slot representation optimized for execution
-latency.
+The next step is to introduce `Evaluator` and `Runner`, delete
+`Backend`, and wire the three existing backends to both. The dmd
+codegen backend (not yet started) will implement `Runner` only.
 
 ## Target Shape
 
-**Deferred target** (see Status — the current shape is a single
-`EvalResult eval(FuncDeclaration)` on `Backend`, with failure carried
-by the nested `EvalResult.Diagnostic`). Use capability
-interfaces with concrete current execution units. Do not invent an
-abstract entry-point type before a test forces it. The split below is
-only worth doing alongside the private execution-slot type (Migration
-Plan step 6), which lets `Runner` avoid `Value` entirely.
-
 ```d
 public interface Evaluator {
-    import quickbite.lang: Value;
+    import dmd.declaration: FuncDeclaration;
+    import quickbite.eval: EvalResult;
 
-    public Value eval(in string expr);
-    public ReplSession createReplSession();  // see ai/plans/repl.md
+    public EvalResult eval(in FuncDeclaration function_);
+
+    // Final adapters — not overridden by backends.
+    public final EvalResult eval(in string expr) { ... }
+    public final EvalResult eval(in Cell cell) { ... }
 }
 
 public interface Runner {
-    import dmd.declaration: FuncDeclaration;
+    import dmd.dmodule: Module;
+    import quickbite.eval: TestResult;
 
-    // Empty result means success; non-empty is the failure
-    // diagnostic, rendered at the point of failure.
-    public string run(FuncDeclaration function_);
+    public TestResult[] runTests(in Module module_);
 }
 ```
 
-Unittest execution remains a frontend/API layer over `Runner`:
+`ASTRunner` is an abstract class that implements `Runner` for backends
+whose execution unit is a single `FuncDeclaration`. It iterates the
+unit-test declarations in the module and delegates to a backend-supplied
+`runUnitTest`:
 
 ```d
-foreachUnitTestDeclaration(module_, (unitTest) {
-    const message = runner.run(unitTest);
-    ...
-});
+public abstract class ASTRunner : Runner {
+    import dmd.dmodule: Module;
+    import dmd.declaration: UnitTestDeclaration;
+    import quickbite.eval: TestResult;
+
+    public final override TestResult[] runTests(in Module module_) {
+        // iterate UnitTestDeclarations in module_, call runUnitTest each
+    }
+
+    protected abstract TestResult runUnitTest(
+        in UnitTestDeclaration test);
+}
 ```
 
-`compileUnitTest` and `compileFunction` are already identical in the
-bytecode and IR backends (`UnitTestDeclaration` is a
-`FuncDeclaration`), so a single execution method covers unittests with
-no test-shaped knowledge in the backend. The cell-vs-unittest
-restrictions that once differed per entry point (the interpreter's
-`allowZeroArgumentCalls`/`allowControlFlow` flags) have been removed —
-all execution now allows the same D surface — so the collapse into one
-`eval` is already done; a future `Runner.run` would just be the
-`Value`-free view of it.
+The three existing backends extend `ASTRunner` and implement
+`Evaluator`. Their `runUnitTest` override delegates to `eval`, since
+they already hold the execution machinery there:
 
-Test-result aggregation stays a thin `final` adapter (today's
-`runTests`), not a core backend capability. Implementations must be
-able to run all supported D code, not just tests.
+```d
+class InterpreterBackend : ASTRunner, Evaluator { ... }
+class BytecodeBackend    : ASTRunner, Evaluator { ... }
+class IrVmBackend        : ASTRunner, Evaluator { ... }
+```
+
+The dmd codegen backend compiles the whole module to an object file and
+runs the resulting test binary; it cannot run individual unit tests in
+isolation. It therefore implements `Runner` directly without going
+through `ASTRunner` or `Evaluator`:
+
+```d
+class DmdCodegenBackend : Runner { ... }
+```
 
 ## Boundary Rules
 
-- `quickbite.lang.Value` is the public value returned by `Evaluator`.
-- `Runner` must not require `Value` for ordinary execution.
-- VM stacks, locals, constants, and call frames should eventually use
-  a VM-private representation (the IR VM already does; the
-  interpreter and bytecode VMs do not yet).
-- Conversion from VM-private values to `quickbite.lang.Value` happens
-  only at `Evaluator` result boundaries. Diagnostics that need
-  rendered runtime operands render to `string` at the point of
-  failure; they do not need `Value` either.
-- DMD frontend objects stay behind frontend/compiler
-  boundaries. Bytecode and VM artifacts should consume Quickbite-owned
-  ids and metadata.
+- `quickbite.lang.Value` is the public value returned by `Evaluator`
+  (inside `EvalResult`). `Runner` and `ASTRunner` must not require
+  `Value` for ordinary execution.
+- Diagnostics that render runtime operands produce a `string` at the
+  point of failure; they do not need `Value`.
+- DMD frontend objects stay behind compiler boundaries. `ASTRunner`
+  takes `UnitTestDeclaration` (a DMD type) because the AST-walking loop
+  is its job; backends should not leak DMD types further into the VM
+  hot paths.
+- Backends must not import each other.
 
 ## Migration Plan
 
-1. ~~Hoist REPL-cell dispatch out of the backends~~ (done — `final
-   Backend.eval(Cell)` owns the dispatch).
-2. ~~Make test failure data, not exceptions~~ (done for the test path —
-   `runUnitTest` returned `string`, `runTests` is the adapter).
-3. ~~**Collapse the execution surface to one primitive**~~ (done —
-   slices 1–3 in `PLAN.md`): replaced `eval`/`evalCell`/`runCell`/
-   `runUnitTest` with `EvalResult eval(FuncDeclaration)`;
-   `eval(string)`/`eval(Cell)`/`runTests` are `final` adapters; failure
-   is data on every path, including the REPL (explicit
-   accept-on-success rollback). Removed the interpreter's
-   `allowZeroArgumentCalls`/`allowControlFlow` flags and the two tests
-   that pinned the artificial `eval(string)` weakness.
-4. **(Deferred) Introduce `Evaluator` and `Runner`** next to `Backend`.
-   `eval` is Evaluator-shaped; the test/effect path is Runner-shaped.
-   Motivated only by Value-confinement (below), so it waits for step 6.
-   The REPL session capability (`createReplSession`) grows out of
-   `Evaluator` per `ai/plans/repl.md`.
-5. **(Deferred)** Move REPL call sites to `Evaluator` and
-   module/unittest execution to `Runner` once those interfaces exist.
+1. ~~Hoist REPL-cell dispatch out of the backends~~ (done).
+2. ~~Make test failure data, not exceptions~~ (done).
+3. ~~Collapse execution surface to one primitive~~ (done —
+   `EvalResult eval(FuncDeclaration)` on `Backend`).
+4. **Introduce `Evaluator`, `Runner`, and `ASTRunner`.**  Add the two
+   interfaces and the abstract class. Migrate the three existing
+   backends to `extend ASTRunner, Evaluator`. Update `runTests` to
+   accept `Module` instead of operating on individual declarations.
+   Delete `Backend`. Update all call sites to hold the narrower type.
+5. **dmd codegen backend.** Implement `Runner` directly; no `Evaluator`
+   needed.
 6. **(Deferred) Private execution-slot type.** Replace direct VM use of
-   `quickbite.lang.Value` with a private slot type. This is what makes
-   the Evaluator/Runner split pay off: the `Runner` path can then avoid
-   materialising `Value` at all. The private type may initially wrap or
-   alias `Value`. Until this lands, the single `EvalResult` primitive is
-   the right shape.
+   `quickbite.lang.Value` with a private slot type in the interpreter
+   and bytecode VMs (the IR VM already has one). Only then does
+   `Runner` fully avoid materialising `Value` on the test-execution
+   path.
 
 ## Non-Goals
 
-- Do not redesign `quickbite.lang.Value` as part of this interface
-  split.
-- Do not change REPL display behavior unless an approved behavior test
-  requires it.
-- Do not add new test behavior without explicit approval.
+- Do not redesign `quickbite.lang.Value` as part of this split.
+- Do not change REPL display behaviour unless an approved behaviour
+  test requires it.
+- Do not add new test behaviour without explicit approval.
