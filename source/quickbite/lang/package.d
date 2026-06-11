@@ -423,6 +423,41 @@ public struct Value {
         );
     }
 
+    public Value structFieldAt(in size_t index) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => struct_.fields[index].value,
+            (_) {
+                throw new Exception("Expected struct.");
+                return Value.void_;
+            },
+        );
+    }
+
+    // not @safe: the sumtype match copies array-bearing alternatives,
+    // which `match` infers as @system, same as withArrayElement below
+    public Value withStructField(
+        in size_t index,
+        in Value value,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) {
+                Value[] values;
+                foreach (field; struct_.fields)
+                    values ~= field.value;
+                values[index] = value;
+                return Value.structValue(struct_.typeName, values);
+            },
+            (_) {
+                throw new Exception("Expected struct.");
+                return Value.void_;
+            },
+        );
+    }
+
     public Value withAppendedArrayElement(in Value element) const pure {
         import std.sumtype: match;
 
@@ -458,7 +493,7 @@ public struct Value {
     }
 
     public Value opBinary(string op)(in Value rhs) const @safe pure
-        if (op == "+" || op == "-" || op == "*" || op == "/")
+        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%")
     {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
@@ -568,6 +603,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
@@ -593,6 +630,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;

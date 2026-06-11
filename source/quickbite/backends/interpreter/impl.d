@@ -40,9 +40,12 @@ private struct Walker {
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
+    private Value thisValue;
+    private bool hasThis;
+    private bool returned;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
-        if (statement is null)
+        if (statement is null || returned)
             return;
 
         if (auto compound = statement.isCompoundDeclarationStatement) {
@@ -64,6 +67,13 @@ private struct Walker {
             return;
         }
 
+        if (auto unrolled = statement.isUnrolledLoopStatement) {
+            if (unrolled.statements !is null)
+                foreach (child; *unrolled.statements)
+                    runStatement(child);
+            return;
+        }
+
         if (statement.isImportStatement !is null)
             return;
 
@@ -73,7 +83,37 @@ private struct Walker {
         }
 
         if (auto return_ = statement.isReturnStatement) {
-            result = runExpression(return_.exp);
+            if (return_.exp !is null)
+                result = runExpression(return_.exp);
+            returned = true;
+            return;
+        }
+
+        if (auto for_ = statement.isForStatement) {
+            import quickbite.backends.interpreter.messages: isTruthy;
+
+            runStatement(for_._init);
+            while (
+                !returned &&
+                (for_.condition is null || isTruthy(runExpression(for_.condition)))
+            ) {
+                runStatement(for_._body);
+                if (returned)
+                    break;
+                if (for_.increment !is null)
+                    runExpression(for_.increment);
+            }
+            return;
+        }
+
+        if (auto do_ = statement.isDoStatement) {
+            import quickbite.backends.interpreter.messages: isTruthy;
+
+            do {
+                runStatement(do_._body);
+                if (returned)
+                    break;
+            } while (isTruthy(runExpression(do_.condition)));
             return;
         }
 
@@ -98,11 +138,15 @@ private struct Walker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
         import quickbite.frontend.dmd.values: integerValue, realValue;
 
-        if (auto integer = expression.isIntegerExp)
+        if (auto integer = expression.isIntegerExp) {
+            if (integer.type !is null && integer.type.ty == TY.Tenum)
+                return Value.enumValue(expressionChars(integer));
             return integerValue(integer);
+        }
 
         if (auto real_ = expression.isRealExp)
             return realValue(real_);
@@ -115,6 +159,12 @@ private struct Walker {
 
         if (auto array = expression.isArrayLiteralExp)
             return arrayValue(array);
+
+        if (auto assocArray = expression.isAssocArrayLiteralExp)
+            return assocArrayValue(assocArray);
+
+        if (auto struct_ = expression.isStructLiteralExp)
+            return structLiteralValue(struct_);
 
         if (auto assert_ = expression.isAssertExp) {
             import quickbite.backends.interpreter.messages:
@@ -183,11 +233,20 @@ private struct Walker {
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+        if (auto mod = expression.isModExp)
+            return runExpression(mod.e1) % runExpression(mod.e2);
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
+
+        if (auto construct = expression.isConstructExp)
+            return runAssignExpression(construct);
+
+        if (auto blit = expression.isBlitExp)
+            return runAssignExpression(blit);
 
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
@@ -221,20 +280,32 @@ private struct Walker {
             return runSliceExpression(slice);
 
         if (auto index = expression.isIndexExp)
-            return runExpression(index.e1)[
-                cast(size_t) runExpression(index.e2).asLong
-            ];
+            return runIndexExpression(index);
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
+
+        if (expression.isThisExp !is null) {
+            if (!hasThis)
+                throw new Exception("Unsupported eval expression: this");
+            return thisValue;
+        }
 
         if (auto typeid_ = expression.isTypeidExp)
             return runTypeidExpression(typeid_);
 
         if (auto var = expression.isVarExp) {
+            import dmd.id: Id;
+
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 assert(0);
+
+            // the magic __ctfe variable is true under AST interpretation,
+            // matching dmd's own interpreter; the language requires both
+            // __ctfe branches to be observably equivalent
+            if (variable.ident is Id.ctfe)
+                return Value(true);
 
             if (variable in uninitializedLocals) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
@@ -320,6 +391,7 @@ private struct Walker {
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
+        import dmd.expression: Expression;
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
             interpreterBuiltinArgumentCount,
@@ -356,19 +428,36 @@ private struct Walker {
         }
 
         Value[] arguments;
-        VarDeclaration[] argumentVariables;
+        Expression[] argumentExpressions;
         if (call.arguments !is null) {
             foreach (argument; *call.arguments) {
                 arguments ~= runExpression(argument);
-                argumentVariables ~= argumentVariable(argument);
+                argumentExpressions ~= argument;
             }
         }
 
-        if (auto dot = call.e1.isDotVarExp)
-            if (runExpression(dot.e1) == Value.null_)
+        if (auto dot = call.e1.isDotVarExp) {
+            const receiver = runExpression(dot.e1);
+            if (receiver == Value.null_)
                 throw new Exception(
                     "function call through null class reference `null`",
                 );
+
+            if (call.f !is null && call.f.needThis) {
+                import quickbite.frontend.dmd.functions:
+                    hasNoAvailableSource, noAvailableSourceMessage;
+
+                if (hasNoAvailableSource(call.f))
+                    throw new Exception(noAvailableSourceMessage(call.f));
+                return runMemberFunction(
+                    call.f,
+                    dot.e1,
+                    receiver,
+                    arguments,
+                    argumentExpressions,
+                );
+            }
+        }
 
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
@@ -376,12 +465,12 @@ private struct Walker {
 
             if (hasNoAvailableSource(call.f))
                 throw new Exception(noAvailableSourceMessage(call.f));
-            return runFunction(call.f, arguments, argumentVariables);
+            return runFunction(call.f, arguments, argumentExpressions);
         }
 
         if (auto var = call.e1.isVarExp)
             if (auto function_ = var.var.isFuncDeclaration)
-                return runFunction(function_, arguments, argumentVariables);
+                return runFunction(function_, arguments, argumentExpressions);
 
         throw new Exception("Unsupported eval call.");
     }
@@ -389,7 +478,7 @@ private struct Walker {
     private Value runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
-        VarDeclaration[] argumentVariables,
+        imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -398,8 +487,54 @@ private struct Walker {
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
-        child.writeBackRefParameters(function_, argumentVariables, locals);
+        writeBackRefArguments(function_, argumentExpressions, child);
         return child.result;
+    }
+
+    private Value runMemberFunction(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression receiverExpression,
+        in Value receiver,
+        in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        child.result = Value(false);
+        child.thisValue = receiver;
+        child.hasThis = true;
+        child.bindFunctionParameters(function_, arguments);
+
+        child.runStatement(function_.fbody);
+        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackThis(receiverExpression, child.thisValue);
+
+        if (function_.isCtorDeclaration !is null)
+            return child.thisValue;
+
+        return child.result;
+    }
+
+    private void writeBackThis(
+        imported!"dmd.expression".Expression receiver,
+        in Value value,
+    ) {
+        // mutations of `this` persist only through lvalue receivers; rvalue
+        // temporaries such as struct literals discard them, matching D
+        if (!isWritableLocation(receiver))
+            return;
+
+        writeLocation(receiver, value);
+    }
+
+    private bool isWritableLocation(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        return
+            expression.isVarExp !is null ||
+            expression.isDotVarExp !is null ||
+            expression.isThisExp !is null;
     }
 
     private void bindFunctionParameters(
@@ -422,10 +557,10 @@ private struct Walker {
             locals[parameter] = arguments[index];
     }
 
-    private void writeBackRefParameters(
+    private void writeBackRefArguments(
         imported!"dmd.func".FuncDeclaration function_,
-        VarDeclaration[] argumentVariables,
-        ref Value[VarDeclaration] savedLocals,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
     ) {
         if (function_.parameters is null)
             return;
@@ -434,15 +569,15 @@ private struct Walker {
             if (!parameter.isReference)
                 continue;
 
-            if (index >= argumentVariables.length)
+            if (index >= argumentExpressions.length)
                 continue;
 
-            auto argumentVariable = argumentVariables[index];
-            if (argumentVariable is null)
+            auto argument = argumentExpressions[index];
+            if (argument is null || !isWritableLocation(argument))
                 continue;
 
-            if (auto value = parameter in locals)
-                savedLocals[argumentVariable] = *value;
+            if (auto value = parameter in child.locals)
+                writeLocation(argument, *value);
         }
     }
 
@@ -466,12 +601,16 @@ private struct Walker {
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
-        if (runExpression(dot.e1) == Value.null_)
+        const receiver = runExpression(dot.e1);
+        if (receiver == Value.null_)
             throw new Exception(text(
                 "class `",
                 receiverName(dot.e1),
                 "` is `null` and cannot be dereferenced",
             ));
+
+        if (dot.var.isVarDeclaration !is null)
+            return receiver.structFieldAt(structFieldIndex(dot));
 
         throw new Exception("Unsupported interpreter field read.");
     }
@@ -503,19 +642,59 @@ private struct Walker {
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
-        auto var = assign.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported interpreter assignment target.");
-
         const value = runExpression(assign.e2);
-        locals[variable] = value;
-        uninitializedLocals.remove(variable);
-        sliceAliases.remove(variable);
+        writeLocation(assign.e1, value);
         return value;
+    }
+
+    private void writeLocation(
+        imported!"dmd.expression".Expression target,
+        in Value value,
+    ) {
+        if (auto var = target.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception("Unsupported interpreter assignment target.");
+
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            return;
+        }
+
+        if (target.isThisExp !is null && hasThis) {
+            thisValue = value;
+            return;
+        }
+
+        if (auto dot = target.isDotVarExp) {
+            writeLocation(
+                dot.e1,
+                runExpression(dot.e1).withStructField(structFieldIndex(dot), value),
+            );
+            return;
+        }
+
+        import std.conv: text;
+        throw new Exception(
+            text("Unsupported interpreter assignment target: ", target.op),
+        );
+    }
+
+    private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception("Unsupported interpreter field access.");
+
+        auto structType = receiverStructType(dot.e1);
+        if (structType is null || structType.sym is null)
+            throw new Exception("Unsupported interpreter field access.");
+
+        foreach (index; 0 .. structType.sym.fields.length)
+            if (structType.sym.fields[index] is field)
+                return index;
+
+        throw new Exception("Unsupported interpreter field access.");
     }
 
     private Value runIndexAssignExpression(
@@ -564,16 +743,6 @@ private struct Walker {
         return locals[variable];
     }
 
-    private VarDeclaration argumentVariable(
-        imported!"dmd.expression".Expression argument,
-    ) {
-        auto var = argument.isVarExp;
-        if (var is null)
-            return null;
-
-        return var.var.isVarDeclaration;
-    }
-
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.casts:
             backendCastTarget = castTarget,
@@ -606,6 +775,30 @@ private struct Walker {
         return Value.arrayValue(values);
     }
 
+    private Value structLiteralValue(
+        imported!"dmd.expression".StructLiteralExp literal,
+    ) {
+        Value[] fields;
+        if (literal.elements !is null)
+            foreach (element; *literal.elements)
+                fields ~= element is null ? Value.void_ : runExpression(element);
+
+        return Value.structValue(structLiteralName(literal), fields);
+    }
+
+    private Value assocArrayValue(
+        imported!"dmd.expression".AssocArrayLiteralExp assocArray,
+    ) {
+        Value[] keys;
+        Value[] values;
+        foreach (index; 0 .. assocArray.keys.length) {
+            keys ~= runExpression((*assocArray.keys)[index]);
+            values ~= runExpression((*assocArray.values)[index]);
+        }
+
+        return Value.assocArrayValue(keys, values);
+    }
+
     private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {
         size_t lower;
         return runSliceExpression(slice, lower);
@@ -616,6 +809,8 @@ private struct Walker {
         out size_t lower,
     ) {
         const source = runExpression(slice.e1);
+        if (slice.lengthVar !is null)
+            locals[slice.lengthVar] = Value(source.length);
         lower = slice.lwr is null
             ? 0
             : cast(size_t) runExpression(slice.lwr).asLong;
@@ -628,6 +823,24 @@ private struct Walker {
             values ~= source[index];
 
         return Value.arrayValue(values);
+    }
+
+    private Value runIndexExpression(
+        imported!"dmd.expression".IndexExp index,
+    ) {
+        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+
+        const receiver = runExpression(index.e1);
+        if (index.lengthVar !is null)
+            locals[index.lengthVar] = Value(receiver.length);
+        // matches CTFE, which formats the index as unsigned
+        const arrayIndex = cast(ulong) runExpression(index.e2).asLong;
+        if (arrayIndex >= receiver.length)
+            throw new Exception(
+                indexOutOfBoundsMessage(arrayIndex, receiver.length),
+            );
+
+        return receiver[cast(size_t) arrayIndex];
     }
 
     private void recordSliceAlias(
@@ -755,23 +968,37 @@ private struct Walker {
     private Value runIncrementAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        auto var = assign.e1.isVarExp;
-        if (var is null)
-            assert(0);
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            assert(0);
-
-        auto current = variable in locals;
-        if (current is null) {
-            locals[variable] = defaultValue(variable);
-            current = variable in locals;
-        }
-
-        *current = *current + Value(cast(int) 1);
-        return *current;
+        const value = runExpression(assign.e1) + runExpression(assign.e2);
+        writeLocation(assign.e1, value);
+        return value;
     }
+}
+
+
+private imported!"dmd.mtype".TypeStruct receiverStructType(
+    imported!"dmd.expression".Expression receiver,
+) {
+    if (receiver.type is null)
+        return null;
+
+    return receiver.type.toBasetype.isTypeStruct;
+}
+
+
+private string structLiteralName(
+    imported!"dmd.expression".StructLiteralExp literal,
+) @safe {
+    return literal.sd is null ? "" : literal.sd.ident.toString.idup;
+}
+
+
+// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
+// string owned by the AST node, which we copy with `idup` before returning,
+// so no unsafe pointer escapes.
+private string expressionChars(imported!"dmd.expression".Expression expression) @trusted {
+    import std.string: fromStringz;
+
+    return expression.toChars.fromStringz.idup;
 }
 
 
