@@ -41,9 +41,13 @@ private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
     import std.path: buildPath;
 
     // Unique paths per call: dlopen caches by path, so reusing one would
-    // return a previously loaded library instead of the new code.
+    // return a previously loaded library instead of the new code. The pid
+    // keeps paths unique across processes too: a crashed run leaks its
+    // directories, and a later run reusing the path could load the stale
+    // library if its own link step failed.
+    import core.sys.posix.unistd: getpid;
     const index = atomicFetchAdd(_libraryCounter, 1u);
-    const dir = buildPath(tempDir, text("quickbite_native_", index));
+    const dir = buildPath(tempDir, text("quickbite_native_", getpid, "_", index));
     mkdirRecurse(dir);
     // The loader keeps the library mapped after Runtime.loadLibrary, so the
     // files can go as soon as it is loaded.

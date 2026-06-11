@@ -12,17 +12,20 @@ in-process linker (JITLink-style relocation loading) and ORC JIT are
 cannot be made correct, nothing fancier will be either. Everything here is
 about making `DynamicLibrary` pass the whole runner test matrix.
 
-## Current state (2026-06-10)
+## Current state (2026-06-11, slice 1 done)
 
-`source/quickbite/backends/native/dynamic.d` implements
+`source/quickbite/backends/native/system_linker.d` implements
 `quickbite.backends.runner.Runner.runTests`:
 
 1. Caller parses the module with checkaction=context — **uncached**
    (`parseModuleWithCheckActionContextUncached` in
    `source/quickbite/frontend/compiler.d`; see "Lessons" for why).
-2. `emitObjectFile`: `dmd.glue.generateCodeAndWrite` writes one object file
-   to a unique temp dir. Backend initialised once per process with
-   `PIC.pic`. Runs under the compiler lock.
+2. `emitObjectFile`: reset codegen written-state (lesson 9), prune foreign
+   members, `dmd.glue.generateCodeAndWrite` writes one object file to a
+   unique temp dir, then the adoption loop (lesson 8) re-emits until the
+   object contains every instance/TypeInfo symbol it references. Backend
+   initialised once per process with `PIC.pic`. Runs under the compiler
+   lock.
 3. `linkSharedLibrary`: spawns `dmd -shared -defaultlib=libphobos2.so
    -L=-z -L=defs`. `-z defs` deliberately turns every missing symbol into a
    link error instead of a load-time or call-time failure — keep it; it is
@@ -32,18 +35,40 @@ about making `DynamicLibrary` pass the whole runner test matrix.
 5. Per unittest: `dlsym(mangleExact(unitTestDecl))`, call, catch `Throwable`.
    Per-test results come from enumerating the AST with
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
+6. `GC.collect` before `Runtime.unloadLibrary` (lesson 10).
 
-**Passing:** 14 runner test blocks include `DynamicLibrary`
-(logic.d ||/&& fixtures, explicit/dynamic assert messages in diagnostics.d,
-4 results.d tests). Each is tagged `@Tags(backend.stringof)` so
-`bin/ut '~@DynamicLibrary'` skips them (they are slow: compile+link+load per
-test) and `bin/ut @DynamicLibrary` runs exactly them.
+**Passing:** 336 runner matrix blocks include `SystemLinker` (was 14
+before slice 1), each tagged `@Tags(backend.stringof)` so
+`bin/ut '~@SystemLinker'` skips them (they are slow: compile+link+load per
+test) and `bin/ut @SystemLinker` runs exactly them. The old slice-3 dlsym
+miss (`reportsAssertFailureMessages`) is in the matrix and passing.
 
-**Failing (not in the matrix):** everything else — 93 of the 113 candidate
-blocks fail with undefined `_d_assert_fail!T` (or
-`_d_newclassT!(AssertError)`) at link time, 3 fail on message mismatches,
-1 fails dlsym lookup. Details below; fixing the first category is the core
-of this plan.
+**Still out of the matrix** (23 blocks), by category:
+
+- **CTFE-flavoured expectations** (compiled code runs fine but reports
+  runtime texts; slice-2-style arbitration would change the *expectation*,
+  which needs approval): bounds/missing-key/overlapping-slice diagnostics
+  (5 in arrays.d, 4 in cerealed.d), `uncaughtThrow*` in exceptions.d
+  ("uncaught CTFE exception ..." vs the plain message),
+  `delegate.(func)ptrPropertyIsRejectedAtCtfe`,
+  `typeid.typeNameReturnsIdentifier` (compiled gives `snippet_N.Widget`,
+  CTFE gives `Widget`), `rt.cstdlib.malloc` (runs fine compiled),
+  `intToFloatCastUsesFloatPrecision` (its @ShouldFail encodes a
+  CTFE-formatter limitation; SystemLinker genuinely passes — needs a
+  per-backend ShouldFail split).
+- **Slice-2 message texts** (plain `_d_assert`/`_d_unittest` hook texts):
+  `literalFalseAssertionMatchesDmd`, `voidFunctionOops`,
+  `structMethodReturnDoesNotSkipCallerStatements`,
+  `catchExceptionDoesNotCatchAssertFailure`,
+  `logicalAndCallShortCircuitFailureMessage.1`.
+- **Imported user modules**:
+  `runBackend{File,Source}FixtureTests.withImportPaths` — the snippet
+  imports a module from importPaths whose functions are compiled nowhere;
+  needs multi-object compilation of imported modules.
+- **Fatal by design in-process**: the three null-class-dereference
+  diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
+  test runner) and `voidInitializedScalarReadReportsUninitialized`
+  (CTFE-only diagnostic).
 
 Build-layout note: dmd 2.112's glue layer (`dmd/glue/` package) compiles
 inside the dub `dmd:frontend` dependency; only `backend/*` + `dmsc.d` are
@@ -150,44 +175,73 @@ timed loop is Slice-1 territory: the emission bookkeeping that re-homes
 foreign instances must also allow re-emission of an already-written
 module — a fresh parse per iteration is no escape because of lesson 6.
 
+### 8. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1)
+
+"Which instances does this module need but not own?" is answered exactly
+by the undefined symbols of the object just written (`-z defs` checks the
+same set). `emitObjectFile` loops: parse the object's ELF symtab → adopt
+every cached instance/TypeInfo whose symbols match → reset written-state →
+re-emit, until no new adoption. Template symbols are COMDATs and every
+test `.so` links independently, so duplicate emission across objects is
+safe; symbols libphobos2.so exports simply never match a candidate and the
+loop terminates. Candidate sources (all three are needed):
+
+- module members across `Module.amodules` (semantic-time instances —
+  prefix match on `"_D" ~ mangleToBuffer(cast(Dsymbol) instance)`),
+- `TemplateDeclaration.instances` caches (codegen-driven instantiations,
+  e.g. `hashOf` for an AA TypeInfo, never reach any members array; also
+  claim speculative ones — `minst = module_` — when emitted code provably
+  references them),
+- `Type.stringtable` → `Type.vtinfo` (TypeInfos created during codegen are
+  cached only on the type; `genTypeInfo` returns needs-codegen only on
+  vtinfo *creation*, once per process. A `TypeInfoDeclaration` ident is
+  the complete symbol name; as a module member it emits unconditionally as
+  a COMDAT via `toobj.d`).
+
+### 9. The written-state to reset for re-emission (slice 1 / lesson 7 fix)
+
+Codegen marks everything written once per process. To re-emit a module
+(and its adopted instances), reset, recursively over members and
+everything codegen'd *with* a function rather than as a member:
+
+- `FuncDeclaration.semanticRun` PASS.obj → PASS.semantic3done, and
+  `Dsymbol.csym = null` everywhere (stale backend Symbols carry the old
+  local-symtab index → `assert(s.Ssymnum == SYMIDX.max)` in symbol_add).
+- Function-local state via `foreachExpAndVar`/`foreachVar` plus a
+  postorder walker: parameters, `vthis`/`vresult`, body-local variables,
+  nested functions/literals (`FuncLiteralDeclaration.deferToObj` is a
+  once-per-process gate in e2ir!), local structs/classes, `lowering`
+  fields (ArrayLiteralExp, AssocArrayLiteralExp, NewExp, CastExp,
+  LoweredAssignExp, CatAssignExp, CatExp, EqualExp — the generic walkers
+  skip them), and `ExpInitializer` subtrees (a Dsymbol child, also
+  skipped). Nested functions referenced rather than declared (foreach
+  bodies) are reachable via DelegateExp/SymOffExp/VarExp.
+- `EnumDeclaration.semanticRun` (separate once-per-process gate in
+  toobj.d) and the synthesized struct methods `xeq`/`xcmp`/`xhash` (hang
+  off the struct, not in members; templatesem's InstMemberWalker visits
+  them explicitly for the same reason).
+- Do NOT walk into `TemplateDeclaration` bodies: parse-time AST,
+  `foreachExpAndVar` asserts on un-lowered statements.
+
+### 10. dlclose + GC heap = dangling vptrs (slice 1)
+
+Dead-but-uncollected objects of classes the fixture defines carry vptrs
+into the test's `.so`. After `Runtime.unloadLibrary`, ANY later finalizer
+sweep (`rt_hasFinalizerInSegment`) dereferences unmapped memory — the
+crash surfaces tests later, far from the cause. Fix: `GC.collect` right
+before each unload, while the library is still mapped. Fixtures whose
+*reachable* objects survive the collect would still be landmines; results
+copy primitives out, so none do today.
+
 ## The work, in order
 
-### Slice 1 — make template-instance fixtures link (the big one)
+### Slice 1 — make template-instance fixtures link — DONE (2026-06-11)
 
-Success criterion: re-add `DynamicLibrary` to a value-reporting block (e.g.
-`diagnostics.oops`, fixture `assert(answer == 43)` needing
-`_d_assert_fail!int`) and have it pass **stably under `--random`**, i.e.
-also when another compilation in the same process instantiated the template
-first. That ordering *is* the exposing test — no new test design needed,
-just the matrix line.
-
-Investigation order:
-
-1. **Re-home instead of prune.** In `removeForeignTemplateInstances`'s
-   place (or alongside it), find the instances *this* module needs but does
-   not own, and force them to be emitted into this object: set
-   `minst`/emission bookkeeping so `needsCodegen()` says yes for this
-   module. Template symbols are COMDATs, and each test `.so` is an
-   independent link, so duplicate emission across objects is safe by
-   construction. Read `TemplateInstance.needsCodegen` and the
-   instance-emission path in `dmd/glue/toobj.d` first; the answer lives in
-   exactly which flag makes the glue skip an already-written instance.
-2. **If re-homing one flag isn't enough**, consider compiling the snippet
-   in a fresh semantic pass so its instances are genuinely its own — but
-   note this collides with quickbite's single long-lived dmd instance and
-   the other backends sharing it. Measure before committing.
-3. **Fallback (pragmatic, partial):** pre-link a support library exporting
-   the common instantiations (`_d_assert_fail!int/!bool/!char/...`,
-   `_d_newclassT!AssertError`). Unblocks the assert fixtures but does not
-   scale to user templates; only acceptable as a stopgap with the limitation
-   documented.
-
-After it works, sweep: re-add `DynamicLibrary` to every previously-failing
-block, keep what passes 10+ `--random` runs plus both repro seeds. The same
-emission bookkeeping must also support codegen'ing one module repeatedly
-(lesson 7) — that is what unblocks the benchmark's timed system-linker
-loop, so verify `bin/bench.sh -b system-linker` times the fixture instead
-of skipping it.
+Done on branch `dmd-backend-slice1`; mechanism in lessons 8-10. The sweep
+promoted every block that passes; `diagnostics.oops` (the success
+criterion) and the rest are stable under `--random` and both repro seeds.
+The same reset machinery unblocks repeated codegen of one module
+(lesson 7), which the benchmark's timed system-linker loop needs.
 
 ### Slice 2 — message mismatches (3 tests)
 
@@ -203,12 +257,17 @@ of skipping it.
   compiled code cannot produce — likely permanently CTFE-only; exclude
   deliberately, with a comment.
 
-### Slice 3 — the dlsym miss (1 test)
+### Slice 3 — the dlsym miss (1 test) — RESOLVED with slice 1
 
-`reportsAssertFailureMessages` links and loads but
-`dlsym(mangleExact(unitTest))` returns null. Undiagnosed. Check whether the
-mangled name in the `.so` (`nm -D`) differs from `mangleExact` of the AST
-node — likely interaction with how that fixture declares its unittests.
+`reportsAssertFailureMessages` is in the matrix and passing; the miss was
+another symptom of the ownership/written-state problem.
+
+### Slice 3b — imported user modules (2 tests)
+
+`withImportPaths` fixtures import a module from importPaths; its functions
+are compiled into no object. Compile imported non-druntime modules into
+the link as well (walk `module_.aimports` for modules under the given
+import paths, emit each, pass all objects to the link).
 
 ### Slice 4 — Evaluator interface
 
@@ -223,8 +282,8 @@ benchmark before promoting anywhere.
 - A backend joins a `static foreach (backend; backendsWith!(...))` block
   only when the test passes repeatedly under `--random` (not just solo) —
   order-dependence is the failure mode here.
-- Every kept block carries `@Tags(backend.stringof)` so DynamicLibrary
-  variants stay opt-out-able: `bin/ut '~@DynamicLibrary'`.
+- Every kept block carries `@Tags(backend.stringof)` so SystemLinker
+  variants stay opt-out-able: `bin/ut '~@SystemLinker'`.
 - Every fault found must pair with a test that exposes it; for ownership
   bugs the exposing test is usually "this fixture, after any other
   compilation, under --random".
@@ -236,7 +295,7 @@ ninja -C <build> bin/ut
 bin/ut --random                       # repeat; order-dependence is the enemy
 bin/ut --random --seed 2828407573     # historical link-failure order
 bin/ut --random --seed 3516581215     # historical segfault order
-bin/ut @DynamicLibrary                # just the native-backend matrix
+bin/ut @SystemLinker                # just the native-backend matrix
 ./ci.sh
 ```
 
@@ -245,7 +304,7 @@ bin/ut @DynamicLibrary                # just the native-backend matrix
 - `source/quickbite/backends/native/dynamic.d` — the backend
 - `source/quickbite/frontend/compiler.d` — uncached parse entry point
 - `source/quickbite/frontend/util.d` — index-based unittest walk
-- `tests/ut/backends/package.d` — fresh-parse `static if` for DynamicLibrary
+- `tests/ut/backends/package.d` — fresh-parse `static if` for SystemLinker
 - dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember`),
   `typinf.d` (`getTypeInfoType`), `dmd/glue/toobj.d` (instance/TypeInfo
   emission), `dmd/glue/package.d` (`generateCodeAndWrite`)
