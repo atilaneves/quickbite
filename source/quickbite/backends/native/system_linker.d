@@ -111,16 +111,26 @@ private void buildSharedLibrary(
         objPaths ~= buildPath(dir, text("obj_", i, ".o"));
 
     runInFork(() {
+        const context = LinkContext(linkSet, collectMemberInstances(linkSet));
         // User-import modules are root modules (see prepareForCodegen), so
         // like the rod they accumulate template instances parameterized on
         // other compilations' types; prune them all against this link.
-        pruneForeignMembers(rod, linkSet);
+        pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
-            pruneForeignMembers(userImport, linkSet);
+            pruneForeignMembers(userImport, context);
         adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
         linkSharedLibrary(objPaths, libPath);
     });
+}
+
+// What the link being built may legitimately reference: the modules whose
+// objects are in it, and the template instances those modules hold as
+// members (an instance is emitted from whichever members array holds it, so
+// only member instances are guaranteed a definition).
+private struct LinkContext {
+    bool[imported!"dmd.dmodule".Module] modules;
+    bool[imported!"dmd.dtemplate".TemplateInstance] memberInstances;
 }
 
 // Run `work` in a fork child; the child never returns. Errors are transported
@@ -194,7 +204,7 @@ private void runInFork(scope void delegate() work) {
 // for). Runs in the fork child only, so nothing needs restoring.
 private void pruneForeignMembers(
     imported!"dmd.dmodule".Module module_,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     if (module_.members is null)
         return;
@@ -202,10 +212,32 @@ private void pruneForeignMembers(
     size_t numKept = 0;
     foreach (i; 0 .. module_.members.length) {
         auto member = (*module_.members)[i];
-        if (!memberIsForeign(member, linkSet))
+        if (!memberIsForeign(member, context))
             (*module_.members)[numKept++] = member;
     }
     module_.members.setDim(numKept);
+}
+
+// The template instances some in-link module holds as a member — the only
+// instances whose emission in this link is guaranteed (an instance is
+// emitted from whichever members array holds it).
+private bool[imported!"dmd.dtemplate".TemplateInstance] collectMemberInstances(
+    bool[imported!"dmd.dmodule".Module] linkSet,
+) {
+    import dmd.dtemplate: TemplateInstance;
+
+    bool[TemplateInstance] result;
+    foreach (module_, _; linkSet) {
+        if (module_.members is null)
+            continue;
+        foreach (i; 0 .. module_.members.length)
+            if (auto instance = (*module_.members)[i].isTemplateInstance) {
+                result[instance] = true;
+                if (instance.inst !is null)
+                    result[instance.inst] = true;
+            }
+    }
+    return result;
 }
 
 // TypeInfos are created once per process (genTypeInfo only reports
@@ -214,8 +246,8 @@ private void pruneForeignMembers(
 // using the same type gets the cached vtinfo and no member append, so
 // nothing in its own link would emit the TypeInfo (the symbol referenced by
 // e.g. a synthesized __xtoHash stays undefined). The cache is on the type
-// (Type.stringtable); re-home every non-foreign TypeInfo onto the rod, where
-// it emits as a COMDAT — duplicate emission across links is safe.
+// (Type.stringtable); re-home every aggregate-free TypeInfo onto the rod,
+// where it emits as a COMDAT — duplicate emission across links is safe.
 private void adoptTypeInfos(
     imported!"dmd.dmodule".Module rod,
     bool[imported!"dmd.dmodule".Module] linkSet,
@@ -250,41 +282,80 @@ private void adoptTypeInfos(
     foreach (typeInfo; cached) {
         import dmd.typinf: builtinTypeInfo;
 
-        // The same gates genTypeInfo applies before appending: unqualified
-        // class TypeInfos (ClassInfo) are emitted as part of
-        // ClassDeclaration codegen (toDt asserts on a standalone one), and
-        // builtin TypeInfos are exported by druntime.
-        const isUnqualifiedClassInfo =
-            typeInfo.tinfo.isTypeClass !is null && typeInfo.tinfo.mod == 0;
-        if (isUnqualifiedClassInfo || builtinTypeInfo(typeInfo.tinfo))
+        // Only aggregate-free types (builtin compositions like
+        // const(int[])): their TypeInfos reference nothing but other
+        // builtin-composition TypeInfos and druntime vtables, so the COMDAT
+        // is self-contained. A TypeInfo involving a struct/class/enum
+        // references the aggregate's synthesized members (__xtoHash,
+        // __xopEquals, __init); those resolve only if the aggregate's
+        // declaration or instance is emitted in this link — in which case
+        // the TypeInfo is already a member of an in-link module — and
+        // adopting one created for another compilation (e.g.
+        // std.array.Appender!(int[]).Data, instantiated by unrelated
+        // in-process code) injects undefined references the snippet never
+        // asked for. Builtin TypeInfos themselves are exported by druntime.
+        if (builtinTypeInfo(typeInfo.tinfo) || typeHasAggregate(typeInfo.tinfo))
             continue;
-        if (typeInfo in present || typeIsForeign(typeInfo.tinfo, linkSet))
+        if (typeInfo in present)
             continue;
         present[typeInfo] = true;
         rod.members.push(typeInfo);
     }
 }
 
+// Whether any struct/class/enum anywhere in the type satisfies `predicate`.
+private bool anyAggregate(
+    imported!"dmd.mtype".Type type,
+    scope bool delegate(imported!"dmd.dsymbol".Dsymbol) predicate,
+) {
+    if (type is null)
+        return false;
+    if (auto structType = type.isTypeStruct)
+        return predicate(structType.sym);
+    if (auto classType = type.isTypeClass)
+        return predicate(classType.sym);
+    if (auto enumType = type.isTypeEnum)
+        return predicate(enumType.sym);
+    if (auto functionType = type.isTypeFunction) {
+        if (anyAggregate(functionType.next, predicate))
+            return true;
+        foreach (i; 0 .. functionType.parameterList.length)
+            if (anyAggregate(functionType.parameterList[i].type, predicate))
+                return true;
+        return false;
+    }
+    if (auto aaType = type.isTypeAArray)
+        return anyAggregate(aaType.index, predicate)
+            || anyAggregate(aaType.next, predicate);
+    if (auto next = type.nextOf)
+        return anyAggregate(next, predicate);
+    return false;
+}
+
+private bool typeHasAggregate(imported!"dmd.mtype".Type type) {
+    return anyAggregate(type, aggregate => true);
+}
+
 private bool memberIsForeign(
     imported!"dmd.dsymbol".Dsymbol member,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     if (auto instance = member.isTemplateInstance)
-        return instanceIsForeign(instance, linkSet);
+        return instanceIsForeign(instance, context);
     if (auto typeInfo = member.isTypeInfoDeclaration)
-        return typeIsForeign(typeInfo.tinfo, linkSet);
+        return typeIsForeign(typeInfo.tinfo, context);
     return false;
 }
 
 private bool instanceIsForeign(
     imported!"dmd.dtemplate".TemplateInstance instance,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     import dmd.dsymbol: Dsymbol;
 
     if (instance.tiargs !is null)
         foreach (i; 0 .. instance.tiargs.length)
-            if (argIsForeign((*instance.tiargs)[i], linkSet))
+            if (argIsForeign((*instance.tiargs)[i], context))
                 return true;
 
     // A nested instance (e.g. Impl!(int, snippet.Nested).findSlotLookup!int,
@@ -293,27 +364,27 @@ private bool instanceIsForeign(
     // symbols.
     for (Dsymbol parent = instance.parent; parent !is null; parent = parent.parent)
         if (auto enclosing = parent.isTemplateInstance)
-            return instanceIsForeign(enclosing, linkSet);
+            return instanceIsForeign(enclosing, context);
 
     return false;
 }
 
 private bool argIsForeign(
     imported!"dmd.rootobject".RootObject arg,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     import dmd.dtemplate: isDsymbol, isExpression, isTuple, isType;
 
     if (auto type = isType(arg))
-        return typeIsForeign(type, linkSet);
+        return typeIsForeign(type, context);
     if (auto symbol = isDsymbol(arg))
-        return symbolIsForeign(symbol, linkSet);
+        return symbolIsForeign(symbol, context);
     if (auto expression = isExpression(arg))
         return expression.type !is null
-            && typeIsForeign(expression.type, linkSet);
+            && typeIsForeign(expression.type, context);
     if (auto tuple = isTuple(arg)) {
         foreach (i; 0 .. tuple.objects.length)
-            if (argIsForeign(tuple.objects[i], linkSet))
+            if (argIsForeign(tuple.objects[i], context))
                 return true;
     }
     return false;
@@ -321,47 +392,40 @@ private bool argIsForeign(
 
 private bool typeIsForeign(
     imported!"dmd.mtype".Type type,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
-    if (type is null)
-        return false;
-    if (auto structType = type.isTypeStruct)
-        return symbolIsForeign(structType.sym, linkSet);
-    if (auto classType = type.isTypeClass)
-        return symbolIsForeign(classType.sym, linkSet);
-    if (auto enumType = type.isTypeEnum)
-        return symbolIsForeign(enumType.sym, linkSet);
-    if (auto functionType = type.isTypeFunction) {
-        if (typeIsForeign(functionType.next, linkSet))
-            return true;
-        foreach (i; 0 .. functionType.parameterList.length)
-            if (typeIsForeign(functionType.parameterList[i].type, linkSet))
-                return true;
-        return false;
-    }
-    if (auto aaType = type.isTypeAArray)
-        return typeIsForeign(aaType.index, linkSet)
-            || typeIsForeign(aaType.next, linkSet);
-    if (auto next = type.nextOf)
-        return typeIsForeign(next, linkSet);
-    return false;
+    return anyAggregate(type, aggregate => symbolIsForeign(aggregate, context));
 }
 
 // A symbol nested in a template instance lives wherever the instance does;
-// what makes it foreign is the instance's arguments, not the template's
-// declaring module (core.internal.newaa.Impl!(int, snippet_5.Nested) is
-// declared in druntime but foreign to every link except snippet_5's).
+// what makes it foreign is the instance, not the template's declaring
+// module, in two ways: the instance's arguments may come from another
+// compilation (core.internal.newaa.Impl!(int, snippet_5.Nested) is declared
+// in druntime but foreign to every link except snippet_5's), and the
+// instance may never be emitted at all — a speculative instantiation by
+// unrelated in-process code (std.array.Appender!(int[]) via a repl test)
+// lands in no members array, so its synthesized members
+// (__xtoHash/__xopEquals/__init) and TypeInfos have no definition in any
+// link. needsCodegen finalizes instance state (tnext/minst); safe here
+// because this only runs in the fork child.
 private bool symbolIsForeign(
     imported!"dmd.dsymbol".Dsymbol symbol,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     import dmd.dsymbol: Dsymbol;
+    import dmd.templatesem: needsCodegen;
 
     for (Dsymbol parent = symbol; parent !is null; parent = parent.parent)
-        if (auto instance = parent.isTemplateInstance)
-            return instanceIsForeign(instance, linkSet);
+        if (auto instance = parent.isTemplateInstance) {
+            if (instanceIsForeign(instance, context))
+                return true;
+            if (instance.inst is null)
+                return true; // dummy/errored: never emitted
+            return instance.inst !in context.memberInstances
+                || !needsCodegen(instance.inst);
+        }
 
-    return moduleIsForeign(symbol.getModule, linkSet);
+    return moduleIsForeign(symbol.getModule, context);
 }
 
 // A module is foreign to this link if its symbols are in neither the link
@@ -370,10 +434,10 @@ private bool symbolIsForeign(
 // the process-default import paths).
 private bool moduleIsForeign(
     imported!"dmd.dmodule".Module module_,
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    in LinkContext context,
 ) {
     return module_ !is null
-        && module_ !in linkSet
+        && module_ !in context.modules
         && !isUnderDefaultImportPaths(module_);
 }
 
