@@ -120,3 +120,53 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
         }).shouldThrowWithMessage("130 != 131");
     }
 }
+
+// IR is omitted: its i32 comparison is signed-only, so it evaluates
+// `-1 < 0u` as true — a semantic divergence recorded in ai/plans/ir.md.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("signedUnsignedComparisonIsUnsigned." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int neg() {
+                return -1;
+            }
+
+            uint zero() {
+                return 0u;
+            }
+
+            unittest {
+                int a = neg;
+                uint b = zero;
+                // The signed operand converts to uint, so -1 compares as
+                // uint.max and is *not* less than 0u.
+                assert(!(a < b));
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+    @("wraparoundAtTypeBoundaries." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int top() {
+                return int.max;
+            }
+
+            uint bottom() {
+                return 0u;
+            }
+
+            unittest {
+                int a = top;
+                assert(a + 1 == int.min);
+
+                uint b = bottom;
+                assert(b - 1 == uint.max);
+            }
+        });
+    }
+}

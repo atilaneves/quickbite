@@ -539,3 +539,15 @@ is added when a test requires control flow.
   backend; it only needs to support the first approved behaviors cleanly.
 - Existing CTFE parity tests are the canonical driver for implementation
   sequencing until the IR backend has its own stronger evidence.
+
+## Known Semantic Divergences (found by the coverage corpus)
+
+- **Signed/unsigned comparison.** `executeLessThan`/`executeGreaterThan` in
+  `vm.d` compare `i32` as signed regardless of the D operand types, so
+  `-1 < 0u` evaluates to `true` (D requires the signed operand to convert to
+  `uint`, making it `false`). The IR `Type` enum carries no signedness; the
+  fix needs signedness-aware comparison operations (LLVM-style `slt`/`ult`)
+  threaded through `language.d`, `compiler.d`, and `vm.d`. Exposing fixture:
+  `signedUnsignedComparisonIsUnsigned` in
+  `tests/ut/backends/runner/ct/integrals.d`, which omits `IR` from its
+  `AliasSeq` until this is fixed.

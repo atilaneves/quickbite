@@ -283,8 +283,8 @@ only.
 
 ### Tier 1 — most likely to expose a real backend bug
 
-- [ ] **String switch.** Entirely distinct lowering from int switch;
-  absent.
+- [x] **String switch.** Entirely distinct lowering from int switch;
+  absent. *Done: `switch.stringCases` (Ctfe, SystemLinker).*
   ```d
   string pick(int n) { return n == 1 ? "red" : "green"; }
   int classify(string s) {
@@ -299,8 +299,9 @@ only.
       assert(classify(pick(2)) == 20);
   }
   ```
-- [ ] **Default struct equality (field-wise `==`).** No struct `==`
-  anywhere.
+- [x] **Default struct equality (field-wise `==`).** No struct `==`
+  anywhere. *Done: `struct.defaultEqualityComparesFields` (Ctfe,
+  SystemLinker).*
   ```d
   struct Point { int x; int y; }
   Point make(int seed) { Point p; p.x = seed; p.y = seed + 1; return p; }
@@ -309,7 +310,8 @@ only.
       assert(make(3) != make(4));
   }
   ```
-- [ ] **Custom `opEquals`.** No operator overloads tested at all.
+- [x] **Custom `opEquals`.** No operator overloads tested at all.
+  *Done: `struct.customOpEquals` (Ctfe, SystemLinker).*
   ```d
   struct CaseId {
       int id;
@@ -321,8 +323,9 @@ only.
       assert(make(7) != make(8));
   }
   ```
-- [ ] **Catch a derived exception by base type + read a subclass
-  field.**
+- [x] **Catch a derived exception by base type + read a subclass
+  field.** *Done: `exception.catchByBaseReadsDerivedField` (Ctfe,
+  SystemLinker).*
   ```d
   class MyError : Exception {
       int code;
@@ -338,14 +341,17 @@ only.
   }
   unittest { assert(run(2) == 42); }
   ```
-- [ ] **Signed/unsigned comparison conversion.** `-1 < 0u` is *false*
-  in D.
+- [x] **Signed/unsigned comparison conversion.** `-1 < 0u` is *false*
+  in D. *Done: `signedUnsignedComparisonIsUnsigned` (Ctfe, Interpreter,
+  Bytecode, SystemLinker) — exposed a real IR divergence (signed-only
+  i32 comparison), recorded in `ai/plans/ir.md`.*
   ```d
   int neg() { return -1; }
   uint zero() { return 0u; }
   unittest { assert(!(neg() < zero())); }
   ```
-- [ ] **Integer wraparound at type boundaries.**
+- [x] **Integer wraparound at type boundaries.** *Done:
+  `wraparoundAtTypeBoundaries` (all five backends).*
   ```d
   int top() { return int.max; }
   uint bottom() { return 0u; }
