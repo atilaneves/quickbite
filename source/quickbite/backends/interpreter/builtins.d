@@ -2,6 +2,61 @@ module quickbite.backends.interpreter.builtins;
 
 private:
 
+package enum AssocArrayHook {
+    length,
+    getRvalue,
+    getLvalue,
+    in_,
+    remove,
+    equal,
+    dup,
+    keys,
+    values,
+}
+
+// DMD lowers associative array operations to druntime template hooks in
+// `core.internal.newaa` and `object`; the interpreter handles the semantics
+// at the call site instead of executing the druntime hook bodies.
+package bool tryAssocArrayHook(
+    imported!"dmd.func".FuncDeclaration function_,
+    out AssocArrayHook hook,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null || function_.parent is null ||
+        function_.parent.isTemplateInstance is null)
+        return false;
+
+    const name = text(function_.toPrettyChars);
+
+    static struct Hook {
+        string prefix;
+        AssocArrayHook hook;
+    }
+
+    static immutable hooks = [
+        Hook("core.internal.newaa._d_aaLen!(", AssocArrayHook.length),
+        Hook("core.internal.newaa._d_aaGetRvalueX!(", AssocArrayHook.getRvalue),
+        Hook("core.internal.newaa._d_aaGetY!(", AssocArrayHook.getLvalue),
+        Hook("core.internal.newaa._d_aaIn!(", AssocArrayHook.in_),
+        Hook("core.internal.newaa._d_aaDel!(", AssocArrayHook.remove),
+        Hook("core.internal.newaa._d_aaEqual!(", AssocArrayHook.equal),
+        Hook("object.dup!(", AssocArrayHook.dup),
+        Hook("object.keys!(", AssocArrayHook.keys),
+        Hook("object.values!(", AssocArrayHook.values),
+    ];
+
+    foreach (candidate; hooks) {
+        if (name.startsWith(candidate.prefix)) {
+            hook = candidate.hook;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 package enum InterpreterBuiltin: size_t {
     fabs,
     isInfinity,

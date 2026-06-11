@@ -10,7 +10,7 @@ import ut.backends;
     These tests verify expression/value rendering for failed asserts. Array feature
     tests below should not each repeat these same "actual != expected" checks.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.integerEquality." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -21,7 +21,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -32,7 +32,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.booleanEquality." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -43,7 +43,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.arrayElementMismatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -57,7 +57,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assertDiagnostic.arrayLengthMismatch." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -75,7 +75,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Dynamic array basics.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.lengthCases." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.literalElements." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -112,7 +112,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.ubyteLiteralTruncatesElements." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -126,7 +126,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.indexReadWrite." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -143,7 +143,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.postIncrementIndex." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -158,7 +158,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.mutableStringLiteralCopiesDoNotShareWrites." ~
         backend.stringof)
     unittest {
@@ -179,7 +179,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Append and concatenation.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.localAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -196,7 +196,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.appendToNonEmptyArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -213,7 +213,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -234,7 +234,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.concatenation." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -254,7 +254,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.elementConcatenatesWithArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -286,7 +286,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Slices.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.sliceFromRuntimeBounds." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -306,7 +306,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.nullZeroLengthSlice." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -323,7 +323,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.nestedSliceWritesPropagateToOriginalArray." ~
         backend.stringof)
     unittest {
@@ -341,7 +341,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.nestedSliceAppendKeepsOriginalArrayTail." ~
         backend.stringof)
     unittest {
@@ -359,7 +359,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.sliceAssignmentUpdatesArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -389,7 +389,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe." ~
         backend.stringof)
     unittest {
@@ -417,7 +417,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.sliceIndexPastLengthDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -439,7 +439,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.indexPastLengthDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -462,7 +462,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Array allocation, resizing, copying, and operations.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newUsesRuntimeLength." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -481,7 +481,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newCharArrayUsesRuntimeLengthAndDefaultFill." ~
         backend.stringof)
     unittest {
@@ -507,7 +507,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.newMultidimensionalUsesRuntimeLengths." ~
         backend.stringof)
     unittest {
@@ -529,7 +529,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -558,7 +558,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("staticArray.copyFromRuntimeArrayUsesArrayCtor." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -581,7 +581,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("staticArray.multidimensionalSliceBlockAssignRepeatsRow." ~
         backend.stringof)
     unittest {
@@ -605,7 +605,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.arrayOperationAddsRuntimeElements." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -634,7 +634,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Dynamic array return values.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.returnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -657,7 +657,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.sliceReturnValue." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -681,7 +681,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.indexesCallResult." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -704,7 +704,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Associative arrays.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.literalKeepsRuntimeKeysAndValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -725,7 +725,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.literalKeepsLastDuplicateRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -746,7 +746,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.keysAndValuesUseRuntimeLiteral." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -781,7 +781,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.inFindsRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -809,7 +809,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -840,7 +840,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -865,7 +865,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.dupCopiesEntries." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -893,7 +893,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -920,7 +920,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Pointer operations over dynamic arrays.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.arithmeticOverDynamicArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -948,7 +948,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.indexReadsDynamicArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -969,7 +969,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.comparisonWithinArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -995,7 +995,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.relationsAcrossArraysReturnFalse." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1031,7 +1031,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.sliceFromDynamicArray." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -1055,7 +1055,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("pointer.slicePastAllocatedBlockDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

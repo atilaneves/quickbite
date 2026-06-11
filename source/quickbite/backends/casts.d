@@ -55,7 +55,8 @@ public CastTarget castTarget(imported!"dmd.mtype".Type type) {
         case Tfloat80:
             return CastTarget.real_;
         default:
-            assert(0);
+            import std.conv: text;
+            throw new Exception(text("Unsupported cast target: ", basetype.ty));
     }
 }
 

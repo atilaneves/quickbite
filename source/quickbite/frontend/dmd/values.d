@@ -144,13 +144,21 @@ public imported!"quickbite.lang".Value realValue(
 public imported!"quickbite.lang".Value defaultValue(
     imported!"dmd.declaration".VarDeclaration variable,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.lang: Value;
-
     if (variable.type is null)
         throw new Exception("Unsupported DMD default value.");
 
-    const type = variable.type.toBasetype;
+    return defaultValue(variable.type);
+}
+
+public imported!"quickbite.lang".Value defaultValue(
+    // not `in`: DMD's `Type.toBasetype` is not const-callable
+    imported!"dmd.mtype".Type variableType,
+) {
+    import dmd.astenums: TY;
+    import quickbite.lang: Value;
+
+    // `auto` because DMD's static array accessors are not const-callable
+    auto type = variableType.toBasetype;
     with (TY) final switch (type.ty) {
         case Tbool:
             return scalarDefaultValue!Tbool;
@@ -186,6 +194,8 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tclass:
         case Tnull:
             return Value.null_;
+        case Tsarray:
+            return staticArrayDefaultValue(type.isTypeSArray);
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -197,7 +207,6 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tcomplex80:
         case Tfunction:
         case Tarray:
-        case Tsarray:
         case Taarray:
         case Tident:
         case Tinstance:
@@ -218,6 +227,20 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tnone:
             throw new Exception("Unsupported DMD default value.");
     }
+}
+
+private imported!"quickbite.lang".Value staticArrayDefaultValue(
+    imported!"dmd.mtype".TypeSArray staticArray,
+) {
+    import quickbite.lang: Value;
+
+    const length = cast(size_t) staticArray.dim.toInteger;
+
+    Value[] elements;
+    foreach (_; 0 .. length)
+        elements ~= defaultValue(staticArray.nextOf);
+
+    return Value.arrayValue(elements);
 }
 
 private imported!"quickbite.lang".Value scalarDefaultValue(

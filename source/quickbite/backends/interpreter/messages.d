@@ -20,8 +20,41 @@ public string uninitializedVariableMessage(
     );
 }
 
+public string indexOutOfBoundsMessage(
+    in size_t index,
+    in size_t length,
+    in bool isSlice,
+) @safe pure {
+    import std.conv: text;
+
+    return isSlice
+        ? text("index ", index, " exceeds array length ", length)
+        : text("array index ", index, " is out of bounds `[0..", length, "]`");
+}
+
+public string missingKeyMessage(
+    imported!"dmd.expression".Expression key,
+    imported!"dmd.expression".Expression aa,
+) {
+    import std.conv: text;
+
+    return text(
+        "key `",
+        text(key.toChars),
+        "` not found in associative array `",
+        text(aa.toChars),
+        "`",
+    );
+}
+
 public bool isTruthy(in imported!"quickbite.lang".Value value) {
     import quickbite.lang: Value;
+
+    if (value == Value.null_)
+        return false;
+
+    if (value.isPointer)
+        return true;
 
     if (value == Value(false))
         return false;
@@ -296,6 +329,9 @@ private string dmdAssertFailBoolMessageFromCall(
     auto left = (*call.arguments)[1].isIntegerExp;
     auto right = (*call.arguments)[2].isIntegerExp;
     if (left is null || right is null)
+        return null;
+
+    if (isCharExpression(left) || isCharExpression(right))
         return null;
 
     const inverseOperator = operatorText == "==" ? "!=" : "==";

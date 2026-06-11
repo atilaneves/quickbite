@@ -1105,6 +1105,103 @@ two remaining CTFE-only tests in `repl.d`
 struct support and the second needs buffered-declaration error recovery, both
 larger than the next available slice.
 
+### CT Arrays Promotion Probe
+
+All 48 backend-matrix blocks in `tests/ut/backends/runner/ct/arrays.d` (the
+current home of the former `lang/arrays.d` coverage) were promoted from
+`AliasSeq!(Ctfe)` to `AliasSeq!(Ctfe, Interpreter)` in branch
+`interpreter-ct-arrays`. 20 promotions passed immediately; the other 28
+were implemented as per-category slices in the same branch (see below).
+The full suite is green with `bin/ut --random`.
+
+Kept (already green on `Interpreter`, no production change):
+`assertDiagnostic.integerEquality`, `assertDiagnostic.booleanEquality`,
+`assertDiagnostic.arrayElementMismatch`,
+`assertDiagnostic.arrayLengthMismatch`, `dynamicArray.lengthCases`,
+`dynamicArray.literalElements`, `dynamicArray.ubyteLiteralTruncatesElements`,
+`dynamicArray.indexReadWrite`, `dynamicArray.postIncrementIndex`,
+`dynamicArray.mutableStringLiteralCopiesDoNotShareWrites`,
+`dynamicArray.localAppend`, `dynamicArray.appendToNonEmptyArray`,
+`dynamicArray.refParameterAppend`, `dynamicArray.sliceFromRuntimeBounds`,
+`dynamicArray.nullZeroLengthSlice`,
+`dynamicArray.nestedSliceWritesPropagateToOriginalArray`,
+`dynamicArray.nestedSliceAppendKeepsOriginalArrayTail`,
+`dynamicArray.returnValue`, `dynamicArray.sliceReturnValue`, and
+`dynamicArray.indexesCallResult`. These were bulk promotions; none has had
+individual mutation-based signal verification yet, so treat each as
+needing signal verification before relying on it as a regression guard.
+
+The 28 initially-failing promotions were then re-promoted and implemented
+in the same branch, one commit per failure category. All 48 blocks in
+`runner/ct/arrays.d` now run on `Interpreter`. What each category
+required:
+
+- Bounds diagnostics (`indexPastLengthDiagnostic`,
+  `sliceIndexPastLengthDiagnostic`): `IndexExp` reads are bounds-checked
+  before touching the host array, reporting `index N exceeds array
+  length L` for slice values and ``array index N is out of bounds
+  `[0..L]` `` otherwise. The previous behaviour was a host
+  `ArrayIndexError` escaping `Value.opIndex` — a robustness bug, fixed.
+- `assertDiagnostic.characterEquality`: the bool/integer
+  assertion-message shortcut declines char-typed operands so they reach
+  the full formatter's existing char display path (`'e' != 'f'`).
+- Concatenation: `CatExp` evaluates each operand into a fresh element
+  list (arrays expand, scalars become one element) — array~array,
+  element~array, array~element.
+- `new`: `NewExp` for dynamic arrays evaluates runtime lengths and
+  builds default-filled values, recursing per row so multidimensional
+  new gets distinct inner arrays; `defaultValue` gained a `Type`
+  overload. Nested `values[i][j]` writes got one level of index-assign
+  writeback.
+- Length resize: `LoweredAssignExp` whose original LHS is an
+  `ArrayLengthExp` over a local dynamic array resizes the value
+  directly; the `_d_arraysetlengthT` lowering is not executed.
+- Slice assignment: `SliceExp` LHS over a local array writes RHS
+  elements into [lower, upper); block-repeat is classified by the RHS
+  type equalling the slice's element type, copying a fresh row per
+  outer element. Same-variable overlapping slice assignment reports the
+  CTFE diagnostic. Static array locals materialise `defaultValue` at
+  declaration (DMD's `BlitExp` `var[] = 0` shape), with `Tsarray`
+  support in `defaultValue`.
+- Array operations: DMD lowers `sums[] = left[] + right[]` to a druntime
+  `core.internal.array.operations.arrayOp` call. The "+"/"="
+  instantiation is recognised via its template arguments and interpreted
+  element-wise at the call site; the druntime body is never executed.
+- `staticArray.copyFromRuntimeArrayUsesArrayCtor`: test-only promotion;
+  covered by the static-array `BlitExp` materialisation. Signal verified
+  against the pre-slice interpreter ("Expected array."). Note: a
+  temporary independence probe showed real DMD CTFE *aliases* `copy`
+  and `source` in this shape while compiled code copies independently
+  (the Interpreter matches compiled code) — a CTFE-oracle divergence to
+  revisit once dmd codegen is the oracle.
+- Associative arrays (all 8): DMD lowers AA operations to
+  `core.internal.newaa` and `object` template hooks (`_d_aaLen`,
+  `_d_aaGetRvalueX`, `_d_aaGetY`, `_d_aaIn`, `_d_aaDel`, `_d_aaEqual`,
+  `object.keys/values/dup`); the interpreter handles the semantics at
+  the call site. AA literals keep the last duplicate key; equality is
+  insertion-order-independent; missing-key reads use the source
+  spellings (``key `absent` not found in associative array `values` ``).
+  `aa[key] = v` writes through a recorded `_d_aaGetY` slot alias. `in`
+  yields a narrow single-target `Pointer` value (dereference and null
+  comparison only). `foreach` over `.keys`/`.values` needed a narrow
+  `ForStatement` runner (init/condition/body/increment, no
+  break/continue). Also fixed a real pre-existing bug: `+=` added a
+  hardcoded 1 instead of the RHS.
+- Pointers (all 6): the lang `Pointer` value gained an opaque allocation
+  id and element offset over a copy-on-write snapshot of the array
+  elements. `&values[i]` and the `cast(T*)` lowering of `.ptr` build
+  array pointers; pointer arithmetic is byte-scaled by DMD semantic and
+  converted through the element size; `p - q` returns the byte
+  difference so the lowered `/stride` division yields the element count;
+  ordered comparisons across unrelated allocations are false both ways
+  (CTFE semantics); pointer slices bounds-check against the allocated
+  block with the CTFE diagnostic. `castTarget` in
+  `source/quickbite/backends/casts.d` now throws an unsupported-cast
+  diagnostic instead of `assert(0)` — the second probe crash bug, fixed.
+  Known staleness limits of the snapshot model (no fixture exercises
+  them): reads through a pointer do not see later writes to the array
+  local, and pointer writes (`*p = x`) remain unsupported diagnostics.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from
