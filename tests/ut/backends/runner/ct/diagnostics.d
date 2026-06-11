@@ -197,6 +197,25 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+// Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
+// message "Assertion failure" (checkaction=context adds no operands for a
+// literal condition); "`assert(0)` failed" is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("voidFunctionOops." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void foo() {
+                assert(0);
+            }
+
+            unittest {
+                foo;
+            }
+        }).shouldThrowWithMessage("Assertion failure");
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("functionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -351,6 +370,20 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+// Compiled `assert(false)` in a unittest body raises the plain _d_unittest
+// hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("literalFalseAssertionMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                assert(false);
+            }
+        }).shouldThrowWithMessage("unittest failure");
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -406,6 +439,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
+// SystemLinker deliberately excluded from the three null-class-dereference
+// blocks below: a compiled null dereference is a real SIGSEGV that would kill
+// the test runner (ai/plans/dmd-backend.md, slice 3).
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("nullClassMethodCallReportsDiagnostic." ~ backend.stringof)
     unittest {
@@ -457,6 +493,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+// SystemLinker deliberately excluded: reading a void-initialized scalar is a
+// CTFE-only diagnostic; compiled code just reads whatever is in the slot
+// (ai/plans/dmd-backend.md, slice 3).
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("voidInitializedScalarReadReportsUninitialized." ~ backend.stringof)
     unittest {

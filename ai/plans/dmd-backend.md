@@ -86,30 +86,17 @@ ut path drives SystemLinker fine; the bench's standalone-fixture path
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
 6. `GC.collect` before `Runtime.unloadLibrary` (lesson 12).
 
-**Passing:** 336 runner matrix blocks include `SystemLinker` (was 14
-before slice 1), each tagged `@Tags(backend.stringof)` so
-`bin/ut '~@SystemLinker'` skips them (they are slow: compile+link+load per
-test) and `bin/ut @SystemLinker` runs exactly them. The old slice-3 dlsym
-miss (`reportsAssertFailureMessages`) is in the matrix and passing.
+**Passing:** 357 runner matrix blocks include `SystemLinker` (was 14
+before slice 1, 336 before slice 3 — PR #206), each tagged
+`@Tags(backend.stringof)` so `bin/ut '~@SystemLinker'` skips them (they
+are slow: compile+link+load per test) and `bin/ut @SystemLinker` runs
+exactly them. The old slice-3 dlsym miss (`reportsAssertFailureMessages`)
+is in the matrix and passing. Slice 3 oracle-arbitrated and promoted all
+the CTFE-flavoured and message-text blocks; the verdicts are in its DONE
+section below.
 
-**Still out of the matrix** (23 blocks), by category:
+**Still out of the matrix**, by category:
 
-- **CTFE-flavoured expectations** (compiled code runs fine but reports
-  runtime texts; slice-2-style arbitration would change the *expectation*,
-  which needs approval): bounds/missing-key/overlapping-slice diagnostics
-  (5 in arrays.d, 4 in cerealed.d), `uncaughtThrow*` in exceptions.d
-  ("uncaught CTFE exception ..." vs the plain message),
-  `delegate.(func)ptrPropertyIsRejectedAtCtfe`,
-  `typeid.typeNameReturnsIdentifier` (compiled gives `snippet_N.Widget`,
-  CTFE gives `Widget`), `rt.cstdlib.malloc` (runs fine compiled),
-  `intToFloatCastUsesFloatPrecision` (its @ShouldFail encodes a
-  CTFE-formatter limitation; SystemLinker genuinely passes — needs a
-  per-backend ShouldFail split).
-- **Slice-2 message texts** (plain `_d_assert`/`_d_unittest` hook texts):
-  `literalFalseAssertionMatchesDmd`, `voidFunctionOops`,
-  `structMethodReturnDoesNotSkipCallerStatements`,
-  `catchExceptionDoesNotCatchAssertFailure`,
-  `logicalAndCallShortCircuitFailureMessage.1`.
 - **Imported user modules**:
   `runBackend{File,Source}FixtureTests.withImportPaths` — the snippet
   imports a module from importPaths whose functions are compiled nowhere;
@@ -117,7 +104,11 @@ miss (`reportsAssertFailureMessages`) is in the matrix and passing.
 - **Fatal by design in-process**: the three null-class-dereference
   diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
   test runner) and `voidInitializedScalarReadReportsUninitialized`
-  (CTFE-only diagnostic).
+  (CTFE-only diagnostic). Both excluded with comments in the test files.
+- **FFI-bridge design tests** (added after the slice-3 enumeration):
+  rt/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
+  expectations; compiled code would pass those fixtures, so SystemLinker
+  variants belong with any future FFI-bridge work, not the matrix sweep.
 
 Build-layout note: dmd 2.112's glue layer (`dmd/glue/` package) compiles
 inside the dub `dmd:frontend` dependency; only `backend/*` + `dmsc.d` are
@@ -532,42 +523,38 @@ to the link. This promotes the two `withImportPaths` blocks
 (tests/ut/backends/runner/ct/results.d:251, :280) and closes the prune
 edge case where fixtures share an importPaths module.
 
-### Slice 3 — message texts and CTFE-flavoured exclusions (parallelizable with slice 2)
+### Slice 3 — message texts and CTFE-flavoured exclusions — DONE (2026-06-11, PR #206)
 
-This slice is **test-side only** and backend-mechanism-agnostic: both the
-adoption loop and fork+rod produce real compiled code, so what the
-compiled code *prints* is identical. It can proceed in parallel with
-slice 2 on the current backend, and every block it adds strengthens
-slice 2's gate. **Division of labor rule: this slice must not touch
-system_linker.d, compiler.d, or tests/ut/backends/package.d.** A block
-that fails for backend reasons gets documented and handed to slice 2,
-not fixed here.
+Test-side only, as planned: every candidate block was arbitrated with
+the real-dmd oracle (lesson 4) and encoded by splitting the
+static-foreach block per backend (the expressions.d `@ShouldFail` split
+pattern; nondeterministic message parts via the existing
+`collectExceptionMsg`+`canFind` pattern). 21 new `SystemLinker` blocks,
+each verified solo, under repeated `--random`, and on both historical
+seeds. **The backend matched the oracle on every block — nothing was
+handed to slice 2.** Oracle verdicts worth keeping:
 
-- Oracle arbitration (lesson 4) for the slice-2-message blocks:
-  `literalFalseAssertionMatchesDmd` (`assert(false)` → backend said
-  "unittest failure"), `voidFunctionOops` (`assert(0)` in a called
-  function → "Assertion failure"),
-  `structMethodReturnDoesNotSkipCallerStatements`,
-  `catchExceptionDoesNotCatchAssertFailure`,
-  `logicalAndCallShortCircuitFailureMessage.1`. Compile each fixture
-  with real `dmd -unittest -checkaction=context`, run it, arbitrate. If
-  real output matches the backend, the *expectation* is CTFE-flavoured.
-- Per-backend expectations: encode by **splitting the static-foreach
-  block** — one block per backend group, each with its own expected
-  string or `@ShouldFail`. This is the existing pattern
-  (expressions.d:453 Ctfe-only `@ShouldFail` vs :472); no new
-  infrastructure. Applies to the ~15 excluded CTFE-flavoured blocks
-  (bounds/missing-key/overlapping-slice diagnostics, `uncaughtThrow*`,
-  `delegate.(func)ptrPropertyIsRejectedAtCtfe`,
-  `typeid.typeNameReturnsIdentifier`, `rt.cstdlib.malloc`,
-  `intToFloatCastUsesFloatPrecision`).
-- `voidInitializedScalarReadReportsUninitialized` expects a CTFE
-  diagnostic compiled code cannot produce — permanently CTFE-only;
-  exclude deliberately, with a comment.
-- The three null-class-dereference blocks stay excluded (a compiled null
-  deref is a real SIGSEGV). Note: once slice 2's fork machinery exists,
-  forking the *execution* step too would make these tolerable — possible
-  follow-on, not in scope.
+- `assert(false)`/`assert(0)` in a **unittest body** → "unittest
+  failure" (`_d_unittest` hook); in a **called function** → "Assertion
+  failure" (`_d_assert`). checkaction=context adds no operands for
+  literal conditions; the "`assert(...)` failed" wording is CTFE-only.
+- Uncaught throws report the exception's own message, not the
+  "uncaught CTFE exception" wrapper.
+- Bounds errors: druntime's "index [N] is out of bounds for array of
+  length N"; AA missing key and overlapping slice assignment are both
+  plain "Range violation".
+- Compiled code genuinely passes where CTFE rejects or ShouldFails:
+  pointer slicing past a block (unchecked at runtime), `dg.funcptr`,
+  `malloc`, int-to-float precision, cerealed's static child registry.
+- Nondeterministic compiled messages: `typeid(T).name` is
+  module-qualified (`snippet_N.Widget`), `dg.ptr` is a live pointer
+  value — both matched on their stable suffix.
+
+`voidInitializedScalarReadReportsUninitialized` and the three
+null-class-dereference blocks stay excluded with comments (CTFE-only
+diagnostic / real SIGSEGV). Note: once slice 2's fork machinery exists,
+forking the *execution* step too would make the null-deref blocks
+tolerable — possible follow-on, not in scope.
 
 ### Slice 4 — Evaluator interface
 

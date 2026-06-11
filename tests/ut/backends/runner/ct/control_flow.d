@@ -199,6 +199,29 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
+// Compiled `assert(false)` in a unittest body raises the plain _d_unittest
+// hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("function.structMethodReturnDoesNotSkipCallerStatements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Worker {
+                void stop() {
+                    return;
+                }
+            }
+
+            unittest {
+                Worker worker;
+                worker.stop;
+                assert(false);
+            }
+        }).shouldThrowWithMessage("unittest failure");
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("function.freeFunctionCallWithReturn." ~ backend.stringof)
     @Tags(backend.stringof)

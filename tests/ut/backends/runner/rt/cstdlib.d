@@ -249,3 +249,22 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
         shouldFailNoSource!(backend, "ldiv", source);
     }
 }
+
+// Compiled code calls the real malloc and the fixture passes; the diagnostic
+// above is interpretation-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("malloc." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.stdc.stdlib: malloc, free;
+                auto ptr = cast(ubyte*) malloc(8);
+                scope(exit) free(ptr);
+                ptr[7] = 0xff;
+                assert(ptr[7] == 0xff);
+                assert(ptr[7] != 0);
+            }
+        });
+    }
+}
