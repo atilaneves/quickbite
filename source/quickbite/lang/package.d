@@ -36,6 +36,7 @@ public struct Value {
 
         Array,
         AssocArray,
+        Pointer,
         Struct,
         TypeName,
         EnumValue,
@@ -82,6 +83,10 @@ public struct Value {
         return Value(AssocArray(keys, values));
     }
 
+    public static Value pointerValue(in Value target) @safe pure {
+        return Value(Pointer([target]));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -107,6 +112,10 @@ public struct Value {
     }
 
     private this(AssocArray value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(Pointer value) @safe pure {
         data = Data(value);
     }
 
@@ -385,9 +394,162 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) => array.elements.length,
+            (const(AssocArray) assocArray) => assocArray.entries.length,
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
+            },
+        );
+    }
+
+    public bool assocArrayContains(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                foreach (entry; assocArray.entries)
+                    if (entry.key == key)
+                        return true;
+                return false;
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return false;
+            },
+        );
+    }
+
+    public Value assocArrayElement(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                foreach (entry; assocArray.entries)
+                    if (entry.key == key)
+                        return entry.value;
+
+                throw new Exception("Expected present key.");
+                return Value.void_;
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withAssocArrayEntry(
+        in Value key,
+        in Value value,
+    ) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                Value[] values;
+                bool replaced;
+
+                foreach (entry; assocArray.entries) {
+                    keys ~= entry.key;
+                    if (entry.key == key) {
+                        values ~= value;
+                        replaced = true;
+                    } else
+                        values ~= entry.value;
+                }
+
+                if (!replaced) {
+                    keys ~= key;
+                    values ~= value;
+                }
+
+                return Value.assocArrayValue(keys, values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withoutAssocArrayKey(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                Value[] values;
+
+                foreach (entry; assocArray.entries) {
+                    if (entry.key == key)
+                        continue;
+                    keys ~= entry.key;
+                    values ~= entry.value;
+                }
+
+                return Value.assocArrayValue(keys, values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value assocArrayKeys() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                foreach (entry; assocArray.entries)
+                    keys ~= entry.key;
+
+                return Value.arrayValue(keys);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value assocArrayValues() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] values;
+                foreach (entry; assocArray.entries)
+                    values ~= entry.value;
+
+                return Value.arrayValue(values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public bool isPointer() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => true,
+            (_) => false,
+        );
+    }
+
+    public Value pointerTarget() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.target[0],
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
             },
         );
     }
@@ -711,6 +873,27 @@ private struct AssocArray {
             entries ~= Entry(Value(key), Value(value));
     }
 
+    public bool opEquals(in AssocArray other) const @safe pure {
+        if (entries.length != other.entries.length)
+            return false;
+
+        foreach (entry; entries) {
+            bool found;
+
+            foreach (otherEntry; other.entries)
+                if (otherEntry.key == entry.key &&
+                    otherEntry.value == entry.value) {
+                    found = true;
+                    break;
+                }
+
+            if (!found)
+                return false;
+        }
+
+        return true;
+    }
+
     public string toString() const @safe pure {
         string ret = "[";
 
@@ -721,6 +904,15 @@ private struct AssocArray {
         }
 
         return ret ~ "]";
+    }
+}
+
+
+private struct Pointer {
+    public Value[] target;
+
+    public this(in Value[] target) @safe pure {
+        this.target = target.dup;
     }
 }
 

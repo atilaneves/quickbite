@@ -704,7 +704,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 /++
     Associative arrays.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.literalKeepsRuntimeKeysAndValues." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -725,7 +725,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.literalKeepsLastDuplicateRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -746,7 +746,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.keysAndValuesUseRuntimeLiteral." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -781,7 +781,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.inFindsRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -809,7 +809,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -840,7 +840,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -865,7 +865,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.dupCopiesEntries." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -893,7 +893,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

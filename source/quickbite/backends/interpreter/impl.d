@@ -37,6 +37,7 @@ private struct Walker {
     private Value[VarDeclaration] locals;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
+    private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
@@ -87,6 +88,11 @@ private struct Walker {
             return;
         }
 
+        if (auto for_ = statement.isForStatement) {
+            runForStatement(for_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             import quickbite.backends.interpreter.messages: thrownExceptionMessage;
 
@@ -95,6 +101,20 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    // DMD lowers `foreach` over arrays to a `for` loop; `break` and
+    // `continue` are not supported
+    private void runForStatement(imported!"dmd.statement".ForStatement for_) {
+        import quickbite.backends.interpreter.messages: isTruthy;
+
+        runStatement(for_._init);
+
+        while (for_.condition is null || isTruthy(runExpression(for_.condition))) {
+            runStatement(for_._body);
+            if (for_.increment !is null)
+                runExpression(for_.increment);
+        }
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
@@ -115,6 +135,9 @@ private struct Walker {
 
         if (auto array = expression.isArrayLiteralExp)
             return arrayValue(array);
+
+        if (auto assocArray = expression.isAssocArrayLiteralExp)
+            return assocArrayValue(assocArray);
 
         if (auto assert_ = expression.isAssertExp) {
             import quickbite.backends.interpreter.messages:
@@ -172,7 +195,7 @@ private struct Walker {
             return runPostIncrementExpression(post);
 
         if (auto addAssign = expression.isAddAssignExp)
-            return runIncrementAssignExpression(addAssign);
+            return runAddAssignExpression(addAssign);
 
         if (auto add = expression.isAddExp)
             return runExpression(add.e1) + runExpression(add.e2);
@@ -231,6 +254,9 @@ private struct Walker {
 
         if (auto new_ = expression.isNewExp)
             return runNewExpression(new_);
+
+        if (auto pointer = expression.isPtrExp)
+            return runExpression(pointer.e1).pointerTarget;
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -365,6 +391,15 @@ private struct Walker {
         if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
             return runArrayOpAddAssignCall(call);
 
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
+                AssocArrayHook, tryAssocArrayHook;
+
+            AssocArrayHook assocArrayHook;
+            if (tryAssocArrayHook(call.f, assocArrayHook))
+                return runAssocArrayHookCall(call, assocArrayHook);
+        }
+
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
@@ -492,6 +527,138 @@ private struct Walker {
         return locals[variable];
     }
 
+    // DMD lowers associative array operations to druntime template hooks in
+    // `core.internal.newaa` and `object`; interpret the semantics directly
+    // instead of executing the druntime hook bodies.
+    private Value runAssocArrayHookCall(
+        imported!"dmd.expression".CallExp call,
+        in imported!"quickbite.backends.interpreter.builtins".AssocArrayHook hook,
+    ) {
+        import quickbite.backends.interpreter.builtins: AssocArrayHook;
+
+        if (call.arguments is null)
+            throw new Exception("Unsupported eval call.");
+
+        with (AssocArrayHook) final switch (hook) {
+            case length:
+                requireArgumentCount(call, 1);
+                return Value(runExpression((*call.arguments)[0]).length);
+
+            case getRvalue:
+                requireArgumentCount(call, 2);
+                return runAssocArrayReadCall(call);
+
+            case getLvalue:
+                requireArgumentCount(call, 3);
+                return runAssocArrayLvalueCall(call);
+
+            case in_:
+                requireArgumentCount(call, 2);
+                return runAssocArrayInCall(call);
+
+            case remove:
+                requireArgumentCount(call, 2);
+                return runAssocArrayRemoveCall(call);
+
+            case equal:
+                requireArgumentCount(call, 2);
+                return Value(
+                    runExpression((*call.arguments)[0]) ==
+                    runExpression((*call.arguments)[1]),
+                );
+
+            case dup:
+                requireArgumentCount(call, 1);
+                return runExpression((*call.arguments)[0]);
+
+            case keys:
+                requireArgumentCount(call, 1);
+                return runExpression((*call.arguments)[0]).assocArrayKeys;
+
+            case values:
+                requireArgumentCount(call, 1);
+                return runExpression((*call.arguments)[0]).assocArrayValues;
+        }
+    }
+
+    private void requireArgumentCount(
+        imported!"dmd.expression".CallExp call,
+        in size_t count,
+    ) {
+        if (call.arguments is null || call.arguments.length != count)
+            throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runAssocArrayReadCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import quickbite.backends.interpreter.messages: missingKeyMessage;
+
+        const aa = runExpression((*call.arguments)[0]);
+        const key = runExpression((*call.arguments)[1]);
+
+        if (!aa.assocArrayContains(key))
+            throw new Exception(missingKeyMessage(
+                (*call.arguments)[1],
+                (*call.arguments)[0],
+            ));
+
+        return Value.pointerValue(aa.assocArrayElement(key));
+    }
+
+    // `aa[key] = value` lowers to a write through the slot pointer returned
+    // by `_d_aaGetY(aa, key, found)`; the write-back happens via the slot
+    // alias recorded for the pointer variable
+    private Value runAssocArrayLvalueCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        const aa = runExpression((*call.arguments)[0]);
+        const key = runExpression((*call.arguments)[1]);
+        const contains = aa.assocArrayContains(key);
+
+        if (auto found = (*call.arguments)[2].isVarExp)
+            if (auto foundVariable = found.var.isVarDeclaration)
+                locals[foundVariable] = Value(contains);
+
+        return Value.pointerValue(
+            contains
+                ? aa.assocArrayElement(key)
+                : defaultValue(call.type.toBasetype.nextOf),
+        );
+    }
+
+    private Value runAssocArrayInCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        const aa = runExpression((*call.arguments)[0]);
+        const key = runExpression((*call.arguments)[1]);
+
+        return aa.assocArrayContains(key)
+            ? Value.pointerValue(aa.assocArrayElement(key))
+            : Value.null_;
+    }
+
+    private Value runAssocArrayRemoveCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        auto var = (*call.arguments)[0].isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported eval call.");
+
+        const key = runExpression((*call.arguments)[1]);
+        const removed = current.assocArrayContains(key);
+        locals[variable] = current.withoutAssocArrayKey(key);
+        return Value(removed);
+    }
+
     private Value runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
@@ -606,6 +773,9 @@ private struct Walker {
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+        if (auto pointer = assign.e1.isPtrExp)
+            return runAssocArraySlotAssignExpression(pointer.e1, assign.e2);
+
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
@@ -631,6 +801,11 @@ private struct Walker {
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (isPointerType(index.e1.type))
+            return runAssocArraySlotAssignExpression(index.e1, rhs);
+
         if (auto outer = index.e1.isIndexExp)
             return runNestedIndexAssignExpression(outer, index, rhs);
 
@@ -651,6 +826,31 @@ private struct Walker {
         locals[variable] = current.withArrayElement(arrayIndex, value);
         writeThroughSliceAlias(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
+        return value;
+    }
+
+    private Value runAssocArraySlotAssignExpression(
+        imported!"dmd.expression".Expression pointer,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = pointer.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto alias_ = variable in assocArraySlotAliases;
+        if (alias_ is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto source = alias_.source in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        const value = runExpression(rhs);
+        locals[alias_.source] = source.withAssocArrayEntry(alias_.key, value);
         return value;
     }
 
@@ -901,6 +1101,20 @@ private struct Walker {
         return Value.arrayValue(values);
     }
 
+    // duplicate keys keep the last value, as in compiled D
+    private Value assocArrayValue(
+        imported!"dmd.expression".AssocArrayLiteralExp assocArray,
+    ) {
+        auto value = Value.assocArrayValue([], []);
+        foreach (index; 0 .. assocArray.keys.length)
+            value = value.withAssocArrayEntry(
+                runExpression((*assocArray.keys)[index]),
+                runExpression((*assocArray.values)[index]),
+            );
+
+        return value;
+    }
+
     private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {
         size_t lower;
         return runSliceExpression(slice, lower);
@@ -926,10 +1140,23 @@ private struct Walker {
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
-        import quickbite.frontend.dmd.types: isArrayType;
+        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
 
         const source = runExpression(index.e1);
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+
+        // DMD dereferences druntime hook results such as `_d_aaGetRvalueX`
+        // pointers with a zero index
+        if (isPointerType(index.e1.type)) {
+            if (arrayIndex != 0) {
+                import std.conv: text;
+                throw new Exception(
+                    text("Unsupported eval expression: ", index.op),
+                );
+            }
+
+            return source.pointerTarget;
+        }
 
         if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
@@ -1108,7 +1335,40 @@ private struct Walker {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
+        recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private void recordAssocArraySlotAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.backends.interpreter.builtins:
+            AssocArrayHook, tryAssocArrayHook;
+
+        assocArraySlotAliases.remove(variable);
+
+        auto call = initializer.isCallExp;
+        if (call is null || call.f is null || call.arguments is null ||
+            call.arguments.length != 3)
+            return;
+
+        AssocArrayHook hook;
+        if (!tryAssocArrayHook(call.f, hook) || hook != AssocArrayHook.getLvalue)
+            return;
+
+        auto var = (*call.arguments)[0].isVarExp;
+        if (var is null)
+            return;
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null)
+            return;
+
+        assocArraySlotAliases[variable] = AssocArraySlotAlias(
+            source,
+            runExpression((*call.arguments)[1]),
+        );
     }
 
     private Value runPostIncrementExpression(
@@ -1133,7 +1393,7 @@ private struct Walker {
         return oldValue;
     }
 
-    private Value runIncrementAssignExpression(
+    private Value runAddAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         auto var = assign.e1.isVarExp;
@@ -1150,7 +1410,7 @@ private struct Walker {
             current = variable in locals;
         }
 
-        *current = *current + Value(cast(int) 1);
+        *current = *current + runExpression(assign.e2);
         return *current;
     }
 }
@@ -1159,6 +1419,12 @@ private struct Walker {
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t lower;
+}
+
+
+private struct AssocArraySlotAlias {
+    public imported!"dmd.declaration".VarDeclaration source;
+    public imported!"quickbite.lang".Value key;
 }
 
 
