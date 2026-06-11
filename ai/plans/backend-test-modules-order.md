@@ -46,10 +46,10 @@ Within the selected module:
   production code.
 - Make the smallest honest backend change that turns the promoted test green.
 
-`tests/ut/backends/package.d` defines `backends` as the CTFE-only baseline
-matrix. Promoting a test usually means changing only the relevant test block to
-use `backendsWith!Backend`, not adding the backend to the global `backends`
-alias and not broadening an entire file at once.
+There is no global `backends` matrix any more. Each test block lists its
+backends explicitly with `static foreach (backend; AliasSeq!(...))`. Promoting
+a test means adding the target backend type to that one block's `AliasSeq`,
+not broadening an entire file at once.
 
 Adding a backend to an existing CTFE-backed test is a backend promotion, not a
 new behavior test. Adding a new test or changing expected behavior still needs
@@ -58,80 +58,114 @@ the normal test-approval stop.
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
 | 1 | 3.0 | `tests/ut/backends/evaluator/eval.d` |
-| 2 | 4.0 | `tests/ut/backends/runner/ct/integrals.d` |
-| 3 | 4.5 | `tests/ut/backends/runner/results.d` |
-| 4 | 4.5 | `tests/ut/backends/runner/rt/cstdlib.d` |
-| 5 | 5.0 | `tests/ut/backends/runner/ct/logic.d` |
-| 6 | 6.0 | `tests/ut/backends/runner/ct/diagnostics.d` |
-| 7 | 6.5 | `tests/ut/backends/runner/ct/math.d` |
-| 8 | 7.5 | `tests/ut/bin/repl/package.d` |
-| 9 | 8.0 | `tests/ut/backends/runner/ct/arrays.d` |
-| 10 | 8.5 | `tests/ut/backends/runner/ct/structs.d` |
-| 11 | 9.0 | `tests/ut/backends/runner/ct/control_flow.d` |
-| 12 | 9.5 | `tests/ut/backends/runner/ct/expressions.d` |
-| 13 | 10.0 | `tests/ut/backends/runner/ct/exceptions.d` |
-| 14 | 10.5 | `tests/ut/backends/runner/ct/cerealed.d` |
+| 2 | 3.5 | `tests/ut/backends/runner/rt/cstdlib.d` |
+| 3 | 4.0 | `tests/ut/backends/runner/ct/integrals.d` |
+| 4 | 5.0 | `tests/ut/backends/runner/ct/logic.d` |
+| 5 | 5.5 | `tests/ut/backends/runner/results.d` |
+| 6 | 6.5 | `tests/ut/backends/runner/ct/diagnostics.d` |
+| 7 | 7.0 | `tests/ut/backends/runner/ct/math.d` |
+| 8 | 8.0 | `tests/ut/backends/runner/ct/arrays.d` |
+| 9 | 8.5 | `tests/ut/backends/runner/ct/structs.d` |
+| 10 | 9.0 | `tests/ut/backends/runner/ct/control_flow.d` |
+| 11 | 9.5 | `tests/ut/backends/runner/ct/exceptions.d` |
+| 12 | 10.0 | `tests/ut/backends/runner/ct/expressions.d` |
+| 13 | 10.0 | `tests/ut/backends/runner/ct/cerealed.d` |
+| 14 | 10.5 | `tests/ut/bin/repl.d` |
+
+Re-graded 2026-06-10 against the current checkout. The matrices observed then
+agreed with this order: every module ranked 1-7 already ran on several
+backends, the modules ranked 8-13 were still CTFE-only, and the REPL module
+ran its early session-state tests on three backends but kept everything
+involving Phobos, display formats, or loaded unittests CTFE-only.
 
 ## Classification Notes
 
-- `eval.d`: Direct `eval`, scalar values, literals, arithmetic, casts, simple
-  multi-cell declarations, string literals, and a few `std.math` calls.
-- `integrals.d`: All integral widths and signedness, runtime casts and
-  truncation, typed locals, aliases, enum constants, function parameters and
-  returns, and signed/unsigned assertion formatting.
-- `runner/results.d`: Module-backed unittest execution, attributed unittests,
-  thrown unittests, import paths, multiple modules, assertion failure handling,
-  summary counts, DMD unittest symbols, and source/file locations.
+- `eval.d`: Direct `eval`, scalar values, literals, arithmetic, unary ops,
+  casts across every scalar width with type preservation, simple multi-cell
+  declarations and mutation, string literals, and `std.math` `fabs`/`pow`
+  return-type behavior.
 - `cstdlib.d`: A single `malloc`/`free` test whose only backend requirement is
   to fail when a called function has no available body; the pointer casts,
   indexing, and `scope(exit)` in the source are never reached. Asserts the
   diagnostic that such a function cannot be interpreted at compile time. Gated
-  by `runner`'s unittest-execution surface, not by any pointer behavior.
+  by `runner`'s unittest-execution surface and `core.stdc` import resolution,
+  not by any pointer behavior.
+- `integrals.d`: All integral widths and signedness, runtime casts and
+  truncation/wrapping, typed locals, aliases, function parameters and returns,
+  and signed/unsigned assertion-message formatting.
 - `logic.d`: Boolean and non-boolean truthiness, `!`, `&&`, `||`,
-  short-circuiting, comparisons inside logical expressions, operand calls, and
-  assertion diagnostics.
-- `diagnostics.d`: DMD-like assertion messages, explicit and dynamic assert
-  messages, simple `if`/`else`, `in` and `ref` parameters, null class
-  diagnostics, `typeid`, and uninitialized scalar diagnostics.
-- `math.d`: `std.math` imports and intrinsic-like calls such as `pow`, `sqrt`,
-  `fabs`, `isNaN`, `isInfinity`, and `signbit`; NaN, infinity, sign-bit, and
-  floating assertion diagnostics.
-- `bin/repl/package.d`: `evalRepl`, persistent cell state, expression and no-display
-  cells, declarations, functions, templates, imports, Phobos-visible calls,
-  scalar/string/array/associative-array/enum/range display values, loaded
-  unittest execution, location rewriting, and diagnostic cleanup.
-- `arrays.d`: Dynamic and static arrays, indexing, writes, `.length`, append,
-  concatenation, slices, slice assignment, equality diagnostics, nested arrays,
-  associative arrays, `.dup`, `new T[]`, bounds diagnostics, `ref` array
-  parameters, pointers, pointer arithmetic, and string copying.
+  short-circuiting (including division-by-zero guards), comparisons inside
+  logical expressions, operand calls, and an extensive assertion-message
+  oracle covering both `x != y` and `` `assert(expr)` failed `` forms.
+- `runner/results.d`: Module-backed unittest execution, attributed unittests,
+  `throw new Exception` from a unittest (class construction plus unwinding to
+  the runner), import paths for source and file fixtures, multiple modules,
+  assertion failure handling, summary counts, DMD unittest symbol names, and
+  source/file locations.
+- `diagnostics.d`: DMD-like assertion messages for every comparison operator,
+  explicit and dynamic assert messages, simple `if`/`else`, `in` and `ref`
+  parameters, many-parameter calls, null class method/field/`typeid`
+  diagnostics, and uninitialized (`= void`) scalar-read diagnostics.
+- `math.d`: `std.math` imports and intrinsic-like calls (`pow`, `sqrt`,
+  `fabs`, `isNaN`, `isInfinity`, `signbit`); NaN, infinity, `double.max`, and
+  signed-zero semantics; user functions shadowing intrinsic names; and
+  floating assertion diagnostics including DMD's rounding of displayed values.
+- `arrays.d`: Dynamic and static arrays, indexing, writes, `.length` reads and
+  resizing assignment, append, concatenation, runtime-bound slices, slice and
+  block assignment with overlap rejection, array-wise element ops, nested
+  arrays, associative arrays (`in`, `.keys`, `.values`, `.remove`, `.dup`,
+  missing-key diagnostics), `new T[]` including multidimensional, bounds
+  diagnostics, `ref` array parameters, pointer arithmetic, comparisons, and
+  slicing with out-of-block diagnostics, and string copying.
 - `structs.d`: Struct layout, default initialization, field access and writes,
-  copy semantics, methods, constructors, `this` mutation, template methods,
-  `ref` parameters, dynamic array fields, returns, `new Struct`, pointer field
-  access, `with`, nested structs, static array fields, destructors, and
-  postblits.
-- `control_flow.d`: `if`, loops, `foreach`, `foreach_reverse`, `break`,
-  `continue`, labels, `switch`, `goto case`, `goto default`, direct `goto`,
-  `try/finally` interactions with jumps, function pointers, ranges, string
-  iteration, and basic struct method behavior.
+  by-value copy semantics including shared array descriptors, methods,
+  constructors, `this` mutation, template methods, `ref` parameters, dynamic
+  and static array fields, returns, `new Struct`, `with` on structs and enums
+  (including `goto` inside the body), destructors, postblits, and nested
+  structs capturing enclosing locals.
+- `control_flow.d`: `if`, `while`/`for`/`do-while`, `foreach` over arrays,
+  ranges, and `AliasSeq`, `foreach_reverse`, UTF-8/16/32 string decoding and
+  re-encoding during iteration, `break`, `continue`, labels, `switch`,
+  `goto case`/`goto default` with runtime selectors, direct `goto`, `goto`
+  restarting statements from inside `try`/`finally` and `catch` handlers
+  (which forces early exception-handling machinery), and function pointers.
+- `exceptions.d`: `new Exception` and user subclasses calling `super`, throw
+  statements and expressions, uncaught-exception reporting, `try`/`catch`,
+  class matching across multiple handlers, catch binding and member access,
+  propagation across calls and branches with `ref` side effects preserved,
+  unwinding, `finally` ordering, return-value capture before `finally`,
+  `goto` in bodies and handlers, and exception chaining via `.next`.
 - `expressions.d`: Broad expression runtime including arithmetic, bitwise ops,
   shifts, comparisons, compound assignment, comma expressions, increment and
-  decrement, floating/complex casts, arrays, slices, strings, pointers,
-  pointer casts, `new`, classes, inheritance, virtual/interface dispatch,
-  `typeid`, delegates, closures, member delegates, and vector splats.
-- `exceptions.d`: `new Exception`, throw statements and expressions,
-  uncaught-exception reporting, `try`/`catch`, class matching, catch binding,
-  exception member access, propagation across calls and branches, unwinding,
-  `finally` ordering, return-value capture before `finally`, catch-handler
-  `goto`, and exception chaining.
+  decrement, integer wrapping, mixed signed/unsigned/floating comparisons,
+  `real` precision, complex literals, hex-string casts, slice/pointer/`void*`
+  casts, `new`, classes, inheritance, virtual/interface dispatch, `typeid`,
+  delegates, closures, member delegates, and vector splats under an SSE2
+  target.
 - `cerealed.d`: Integration stress coverage combining arrays,
-  structs, methods, `ref` cursors, post-increment indexing, templates,
-  `T.sizeof`, constraints, loops, bit operations, casts, enum round trips,
-  nested arrays, associative arrays, pointers, `new`, static arrays, input
-  range-style properties, overloads, bounds diagnostics, and float bit
-  reinterpretation.
+  structs, methods, `ref` cursors, post-increment indexing, templates with
+  `is(T == ...)` constraints, loops, bit packing and shifts, casts, enum round
+  trips, nested arrays, associative arrays, pointers, `new`, static arrays,
+  input range-style properties, overload resolution, bounds diagnostics, and
+  float bit reinterpretation through pointer casts.
+- `bin/repl/package.d`: Persistent multi-cell session state, expression and
+  no-display cells, statements, multi-line declaration buffering, functions,
+  templates, structs, enums, mixin expressions, `typeof` and type-alias
+  cells, `import std` with Phobos range pipelines (`map`/`filter`/`array`),
+  display formatting for scalars with D literal suffixes, strings (narrow and
+  wide), arrays, associative arrays, enums, ranges, and function literals,
+  special-token (`__FILE__` etc.) rewriting, loaded unittest execution with
+  `<repl>` and file location rewriting, and synthetic-wrapper-name cleanup in
+  diagnostics. The full module is the largest surface in the suite even
+  though its session-state slice is small.
 
 ## Not Behavior Targets
 
 `tests/ut/backends/package.d` is promotion plumbing, not a behavior target: it
-defines the `backends` matrix, `backendsWith`, `newBackend`, and the fixture
-helpers. It does not execute any test itself.
+defines `newBackend` and the `runBackend*Fixture*` helpers. It does not
+execute any test itself, and it no longer defines a `backends` matrix or
+`backendsWith` — backend lists live in each test block's `AliasSeq`.
+
+`tests/ut/backends/evaluator/value.d` tests the `Value` type directly with no
+backend parameterization. It is shared infrastructure every backend relies on,
+not a module to promote.

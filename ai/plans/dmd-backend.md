@@ -1,5 +1,9 @@
 # DMD Native Backend: `DynamicLibrary`
 
+> Naming note: the backend has since been renamed `SystemLinker`
+> (`source/quickbite/backends/native/system_linker.d`). Mentions of
+> `DynamicLibrary` and `dynamic.d` below refer to it.
+
 ## Scope
 
 Get the dynamic-library-based dmd backend fully working first. A mini
@@ -60,7 +64,8 @@ snippets' symbols. Consequences already baked in:
 - `DynamicLibrary` must only ever codegen a **freshly parsed** module. The
   ut harness does this via a `static if (is(T == DynamicLibrary))` in
   `tests/ut/backends/package.d`. Any future caller (benchmark harness, REPL)
-  must do the same.
+  must do the same — but a fresh parse is *not sufficient* if the same
+  source was already parsed earlier in the process; see lesson 6.
 - `removeForeignTemplateInstances` in dynamic.d prunes members whose
   `minst`/declaring module isn't this module before codegen — belt and
   braces; it was **not sufficient alone** (adopted instances slipped
@@ -113,6 +118,38 @@ in any regression loop: `2828407573` (foreign-member link failure),
 `3516581215` (iterator-invalidation segv). Crashing runs need
 `stdbuf -oL` to keep output.
 
+### 6. A fresh parse cannot reclaim instance ownership (2026-06-10)
+
+If any earlier compilation in the process already instantiated a template,
+a later fresh parse of the same source gets the *cached* instance, owned
+(`minst`) by the earlier module. The instance is never appended to the
+fresh module's members, so its codegen emits a dangling reference and the
+`-z defs` link fails. The benchmark harness hit this with
+`_d_arrayliteralTX!ubyte`: its frontend timing runs warmup + N uncached
+parses of the fixture, so any module parsed afterwards — fresh or not —
+cannot own the fixture's instances. The empirical fix there is parse
+*order*: `prepareFixtureRuns` parses the kept module before the timed
+uncached parses, so it is the first instantiator and owns (and therefore
+emits) its instances. Fixture-local templates are immune (each parse makes
+a fresh `TemplateDeclaration` with its own instance cache); only templates
+from cached imports (druntime/phobos lowering hooks) are affected.
+
+### 7. Codegen of the same module AST twice emits an empty object (2026-06-10)
+
+`generateCodeAndWrite` on a module already codegen'd in this process
+writes an object with no function symbols: the glue marks functions as
+written and skips them on the second pass. The resulting `.so` links
+(nothing is undefined in an empty library) and every `dlsym` then misses,
+reported as "unittest symbol not found in shared library: <mangled name>".
+This blocks the benchmark's timed loop for `SystemLinker` — 1 warmup +
+N iterations means repeatedly codegen'ing the same module. As of
+2026-06-10 `bin/bench.sh -b system-linker` passes the correctness check
+(first codegen: compile, link, load, run all fixture tests, agree with
+ctfe) and skips the timed loop with the message above. Unblocking the
+timed loop is Slice-1 territory: the emission bookkeeping that re-homes
+foreign instances must also allow re-emission of an already-written
+module — a fresh parse per iteration is no escape because of lesson 6.
+
 ## The work, in order
 
 ### Slice 1 — make template-instance fixtures link (the big one)
@@ -146,7 +183,11 @@ Investigation order:
    documented.
 
 After it works, sweep: re-add `DynamicLibrary` to every previously-failing
-block, keep what passes 10+ `--random` runs plus both repro seeds.
+block, keep what passes 10+ `--random` runs plus both repro seeds. The same
+emission bookkeeping must also support codegen'ing one module repeatedly
+(lesson 7) — that is what unblocks the benchmark's timed system-linker
+loop, so verify `bin/bench.sh -b system-linker` times the fixture instead
+of skipping it.
 
 ### Slice 2 — message mismatches (3 tests)
 
