@@ -1,86 +1,251 @@
 # Bytecode VM Architecture Plan
 
 ## Summary
-Design a new bytecode VM for D that minimizes unittest latency from an edit to
-an ok/fail result. The system should compile from semantically analyzed D ASTs
-into an internal bytecode artifact, execute that artifact in-process, and avoid
-object files and linker involvement on the hot path.
+Design and build, from scratch, a bytecode VM for D behind the existing
+`Bytecode` backend. The VM compiles semantically analyzed D ASTs into an
+internal bytecode artifact and executes it in-process, with no object files
+and no linker on the hot path.
 
-The architecture should borrow the useful parts of LuaJIT: compact bytecode,
-explicit operand domains, a small interpreter core, deterministic emission, and
-strong separation between compiler and VM. It should not borrow the JIT or the
-Lua-specific bytecode shape.
+Two product goals, in priority order:
+
+1. Minimise the latency from an edit in the project under test (not
+   necessarily in its dub dependencies) to a yes/no "did the relevant tests
+   pass?" answer. Parse and semantic analysis are fixed costs. This plan
+   covers the execution engine only: compiling from the AST and running.
+   Bytecode artifact caching and affected-test selection are separate, later
+   plans; this design must not preclude them but does not deliver them.
+2. Serve as a replacement for the DMD CTFE engine, for performance. Backends
+   take a construction-time mode parameter: in CTFE-only mode the VM limits
+   itself to what D allows at compile time and reproduces DMD CTFE's
+   observable behaviour exactly; otherwise it targets all of D.
+
+Correctness overrides both goals: the VM must have the same observable
+semantics as if the source had been compiled to native code and run. Fast
+but wrong is worthless.
+
+## Modes and Oracles
+- The mode is a constructor parameter on the backend. It selects bytecode
+  emission (checked vs unchecked opcodes), the native-call policy, and the
+  diagnostic flavour.
+- Full-D mode oracle: really-compiled code. The arbiter for any observable
+  behaviour, including failure message text, is a real
+  `dmd -unittest -checkaction=context` compile-and-run of the fixture, byte
+  for byte — the same discipline `dmd-backend.md` established for
+  `SystemLinker`.
+- CTFE-only mode oracle: DMD CTFE (`dmd.dinterpret`). Accept exactly what it
+  accepts, reject exactly what it rejects, with byte-identical diagnostics.
+  The current `Bytecode` test matrix asserts CTFE-flavoured messages
+  ("cannot read uninitialized variable ... in ctfe", "cannot be interpreted
+  at compile time..."), so the matrix as it stands exercises CTFE-only mode.
+  Full-D mode earns its own coverage where compiled-output expectations
+  exist.
+- A future swap of `dmd.dinterpret` itself (semantic-time CTFE: `static if`,
+  mixins, template arguments) is not a deliverable, but the design must not
+  preclude it. Concretely: the VM core is re-entrant with no global mutable
+  state, entry is per-`FuncDeclaration` rather than per-module, and results
+  are reachable as raw memory plus a static type, so they can be reified as
+  a DMD `Expression` just as well as a `quickbite.lang.Value`.
 
 ## Core Architecture
-- Keep the bytecode format compact and rigid, with a small set of opcodes and
-  typed operand kinds such as function reference, local slot, constant index,
-  comparison kind, and jump target.
-- Make the compiled artifact closed over the code selected for the current
-  unittest slice, not over every transitive dependency. Code stream, constant
-  pool, function table, frame metadata, and debug or line info live together but
-  are logically separate. Function references may point to local bytecode,
-  cached dependency bytecode, or native-call bridge entries through
-  bytecode-native ids.
-- Keep the frontend and VM boundary hard. AST and semantic lookup belong in the
-  compiler layer; the VM should consume only bytecode-native ids and metadata.
-- Make bytecode deterministic to emit and easy to disassemble so test failures
-  and cache behavior are reproducible.
-- Keep the interpreter small and direct. Prefer a minimal dispatch loop and
-  explicit frame bookkeeping over a deep abstraction stack.
-- Compute max value-stack depth at compile time and store it in the function
-  table entry. Allocate call frames from VM-owned storage, using
-  `std.experimental.allocator` to avoid per-call GC allocation. Inline storage
-  for the common shallow unittest case is fine, but the policy must either grow
-  through the allocator or report a deterministic bytecode call-stack
-  exhaustion diagnostic. Each frame holds: a function reference, an instruction
-  pointer, and a base pointer into the value stack.
-- Start the dispatch loop with `final switch` over the opcode enum. The end
-  goal is direct-threaded dispatch: computed goto (GCC/Clang labels-as-values
-  extension or equivalent C), inline assembly, or a function-pointer table —
-  whatever is viable in D and measurably fastest on the target. The direct
-  threading experiment must name the chosen route and keep the `final switch`
-  interpreter as the portable fallback. Keep the opcode enum and handler
-  boundaries interchangeable between the two so the upgrade path requires no
-  structural change to the VM.
+
+### Memory model: native layout over real memory
+This is the load-bearing decision; everything else follows from it.
+
+- The VM is a virtual CPU executing D-level operations on real host memory
+  laid out exactly as compiled code would lay it out. DMD semantic analysis
+  has already computed every size, alignment, and field offset
+  (`Type.size()`, `Type.alignsize()`, `VarDeclaration.offset`); the bytecode
+  compiler reuses those numbers and never invents its own layout.
+- A call frame is a contiguous byte region. Every local lives at its native
+  offset with its native size; compiler-generated temporaries are additional
+  typed frame slots assigned at emit time. Instructions address frame byte
+  offsets — a register machine whose registers are frame memory.
+- Consequences, all by construction rather than by special cases: taking the
+  address of a local yields a real pointer; pointer arithmetic, aliasing,
+  slices into locals, unions, and reinterpret casts behave exactly as native
+  code does. This eliminates the whole class of deviations the tree-walking
+  interpreter's pointer-snapshot model is known for.
+- Full-D mode heap: interpreted data structures are native data structures.
+  `new`, array append, and AA operations call the real druntime through the
+  native bridge, so the host GC owns the heap. VM stack memory is registered
+  with the host GC so references held in frames keep objects alive.
+- CTFE-only mode heap: the VM owns all allocations and registers each one in
+  a provenance table (allocation id, bounds, static type, initialization
+  shadow). No native memory is reachable and no native code is called.
+
+### No universal runtime value type
+- `quickbite.lang.Value` must not appear in the bytecode compiler, the
+  bytecode format, or the VM. Every operand's type is static; the compiler
+  selects type-specialised opcodes at emit time from the semantic type, and
+  no handler dispatches on a runtime tag.
+- `Value` is constructed in exactly one place: the `Evaluator` boundary,
+  where the final result is reified from frame memory plus its static type,
+  the way a debugger renders memory using type metadata. `Runner` needs no
+  `Value` at all — pass/fail plus diagnostic strings.
+- This supersedes the earlier accepted-cost decision to use `Value` as the
+  VM slot type (see the PR 97 lessons below); that was the first-generation
+  implementation, not the target.
+
+### Bytecode format
+- Fixed-width instructions: opcode plus up to three 16-bit operands (frame
+  byte offsets, constant-pool indices, function ids, jump targets). Frames
+  larger than the 16-bit range get an explicit wide escape rather than a
+  variable-width format.
+- The constant pool holds raw bits and strings, never `Value`. Diagnostic
+  strings (assert messages, uninitialized-variable names) are pool entries
+  referenced by index, not instruction payloads.
+- A compiled function records: code, frame size and layout, parameter
+  metadata, exception handler table, and a bytecode-offset-to-source-line
+  table. The artifact is deterministic to emit and easy to disassemble so
+  failures and cache behaviour are reproducible.
+- Functions compile lazily: a function body is compiled the first time it is
+  called. An edit therefore pays compilation cost only for code the executed
+  tests actually reach. The artifact stays closed over the code the current
+  test slice executes, not every transitive dependency.
+
+### Execution core
+- Frames are carved from VM-owned contiguous stack chunks; max frame size is
+  known at compile time. Growth goes through the allocator or reports a
+  deterministic call-stack exhaustion diagnostic.
+- Dispatch starts as `final switch` over the opcode enum. Handler boundaries
+  stay compatible with a function-pointer table or computed-goto upgrade so
+  direct threading is a measurement-driven swap, not a rewrite.
+- The interpreter core stays small and direct: explicit frame bookkeeping,
+  no abstraction stack between the dispatch loop and memory.
+
+### Native bridge (full-D mode only)
+- Mixed-mode execution per `ffi.md`: the VM executes the project's own
+  source, including templates instantiated into it; precompiled native code
+  — druntime's implementation, C libraries, compiled dub dependencies — is
+  called directly. Because VM memory is native-layout, outbound calls pass
+  pointers and values as-is with no marshalling layer.
+- Druntime lowering hooks (`_d_arrayappendT`, the AA runtime, `_d_newclass`,
+  ...) are ordinary outbound bridge calls in full-D mode, not interpreted
+  specials: the real runtime manipulates the real heap.
+- Inbound calls (native code invoking a bytecode function: vtable entries,
+  function pointers, delegates handed to native APIs) need native entry
+  points per bytecode function. Candidate mechanisms: a pre-generated thunk
+  pool or libffi closures. The choice is deferred until the classes/vtable
+  slice forces it; the calling convention must not preclude either.
+- CTFE-only mode has no bridge. A call to anything without available source
+  keeps the existing "cannot be interpreted at compile time, because it has
+  no available source code" diagnostic, and druntime lowerings are executed
+  by the VM itself against VM-owned memory (the call-site interception the
+  Interpreter backend already proved out).
+
+### CTFE legality checking
+- CTFE-only mode emits checked opcode variants; full-D mode emits unchecked
+  ones. Full-D execution pays zero cost for CTFE support.
+- Checked operations validate against the provenance table: reads of
+  uninitialized memory, out-of-bounds access, pointer comparison and
+  subtraction across allocations, pointer-to-integer conversion, disallowed
+  reinterpretation, and escaping CTFE-owned pointers are rejected with
+  diagnostics byte-identical to DMD CTFE's.
+- `__ctfe` evaluates to `true` in CTFE-only mode and `false` in full-D mode,
+  decided at emit time.
+
+### Concurrency readiness
+- Threads, `synchronized`, atomics, and fibers are out of scope until a test
+  forces them, with an explicit unsupported diagnostic (CTFE-only mode
+  rejects them the way DMD CTFE does). The design must not preclude them: no
+  module-level mutable VM state, one machine instantiable per thread, heap
+  and provenance structures designed to become shared-capable.
+
+### Boundaries
+- DMD AST and semantic types are visible only to the compiler module; the
+  bytecode format and VM consume bytecode-native ids and metadata only.
+- Backends remain isolated from each other; the new core shares nothing with
+  the Interpreter or IR backends.
 
 ## Implementation Direction
-- Start with the smallest useful `eval` slice that can make exactly one
-  approved behavior test fail.
+
+### Rewrite strategy
+The current bytecode internals (a `Value`-typed stack and locals, `Value`
+embedded in every instruction, tag-dispatched arithmetic) are the
+first-generation implementation and are replaced wholesale by this design.
+The rewrite happens behind the existing `Bytecode` backend class, and the
+backend's current green test matrix is a non-negotiable ratchet: every PR
+keeps the full suite green.
+
+- Strangler pattern: the new core (typed frames, native layout, specialised
+  opcodes) grows in parallel modules inside `backends/bytecode`, behind an
+  internal engine switch on the `Bytecode` class that defaults to the old
+  core.
+- Each slice makes a chosen set of already-green matrix behaviours pass on
+  the new core. When the entire matrix passes on the new core, flip the
+  default and delete the old core in the same change.
+- The CTFE-only constructor parameter exists from the first slice. The
+  existing matrix runs in CTFE-only mode (its message expectations are
+  CTFE-flavoured); full-D mode coverage starts when the native bridge slice
+  lands.
+
+### Slice roadmap
+Earn the design back test-first, in this order. Each slice follows the
+existing discipline: red test (or an already-green matrix behaviour moved to
+the new core), minimal implementation, green suite, benchmark checkpoint.
+
+1. Scalar core: typed frames, specialised arithmetic/comparison opcodes,
+   locals, calls, returns, assert diagnostics. Re-earn `integrals.d`,
+   `logic.d`, `math.d`, and `diagnostics.d` on the new core.
+2. CTFE provenance: allocation table, initialization shadow, checked
+   opcodes. Re-earn the uninitialized-read and `= void` diagnostics.
+3. Control flow completion: the `control_flow.d` surface (currently
+   CTFE/SystemLinker only).
+4. Structs with native layout: field offsets from DMD, by-value copies,
+   methods, constructors — the `structs.d` surface.
+5. Arrays, slices, and pointers with true aliasing: real addresses into
+   frame and VM-heap memory, slice write-through, pointer arithmetic — the
+   `arrays.d` surface, including the cases a snapshot model can never pass.
+6. Exceptions: handler tables, throw/catch/finally/scope(exit) — the
+   `exceptions.d` surface.
+7. Associative arrays and druntime lowerings in CTFE-only mode via call-site
+   interception against VM-owned memory.
+8. Full-D mode: outbound native bridge, real druntime heap, host GC
+   integration, compiled-output diagnostics; split per-mode message
+   expectations where CTFE and compiled text differ.
+9. Classes: native object layout, vtables, virtual dispatch; decide the
+   inbound trampoline mechanism here.
+10. REPL/Evaluator parity: reify memory plus static type into `Value`, and
+    session state.
+
+### Discipline (unchanged from the first generation)
+- Start each slice with the smallest behaviour that can honestly fail. If a
+  slice needs unittest blocks, literals, equality, calls, returns, and
+  assert handling all at once, it is too broad; pick a smaller test.
 - Promote CTFE-backed test modules in the order documented by
-  `ai/plans/backend-test-modules-order.md`. Within each module, start with the
-  smallest named unittest that the current bytecode surface can honestly make
-  red and then green.
-- Treat the selected module, not a single template instantiation, as the unit
-  of migration. Before editing, inventory every backend-matrix unittest in the
-  module and classify each test family as already covered by `Bytecode`,
-  blocked by an expected missing feature, or ready to promote.
-- Do not count repeated instantiations of the same parametrized unittest, such
-  as one `static foreach` body over several integral types, as independent
-  migration slices when one instantiation already proves the behavior. Promote
-  the whole test family when it is already green, then move to the next distinct
-  named behavior in the module.
-- When orchestrating subagents, assign work by remaining named test behavior or
-  test family in the selected module. A worker should not spend a full slice on
-  another type-width variant of a behavior that has already passed for
-  `Bytecode` unless that variant is expected to expose a different missing VM
-  feature.
+  `ai/plans/backend-test-modules-order.md`. Treat the module, not a single
+  template instantiation, as the unit of migration; promote whole test
+  families once one instantiation proves the behaviour.
+- When orchestrating subagents, assign work by remaining named test
+  behaviour or test family. A worker should not spend a slice on another
+  type-width variant of an already-passing behaviour unless it is expected
+  to expose a different missing VM feature.
 - Before promoting a named test mentioned by this plan or a review note,
   verify in the current checkout that its enclosing backend matrix still
-  excludes `Bytecode`. If it already uses `backendsWith!Bytecode`, treat the
-  note as stale and choose the next smallest current CTFE-only candidate.
-- If the slice needs unittest blocks, integer literals, equality, calls,
-  returns, and assert handling all at once, the test is too broad; pick a
-  smaller test.
-- Add locals, branches, and broader expression support only when a test forces
-  the next slice.
-- Keep unsupported behavior explicit and diagnostic rather than silently
+  excludes the target; treat stale notes as a trigger for current-test
+  discovery, not broad promotion.
+- Keep unsupported behaviour explicit and diagnostic rather than silently
   lowering or guessing.
-- Preserve a strict compile-AST-then-execute-bytecode pipeline; do not route
-  the new VM through existing lowering machinery as the baseline design.
-- Treat bytecode as an internal artifact, not a public interchange format or a
-  serialization compatibility promise.
+- Preserve a strict compile-AST-then-execute-bytecode pipeline; no IR layer
+  between AST and bytecode. Unittest code runs once, so compile speed is on
+  the hot path and a separate IR pass costs latency without paying rent.
+- Treat bytecode as an internal artifact, not a public interchange format or
+  a serialization compatibility promise.
+
+### Benchmarks and success criteria
+- `bin/bench` post-parse comparisons at every slice checkpoint: the new core
+  must beat the old core, and full-D mode targets beating `SystemLinker`'s
+  measured ~43 ms median per test by an order of magnitude on the bench
+  fixtures.
+- CTFE-only mode targets beating the `Ctfe` backend (DMD's `ctfeInterpret`)
+  on the same fixtures — that is the entire case for goal 2.
+- The REPL session-depth benchmark tracks `Evaluator` latency.
 
 ## Current Coverage State
+This log records matrix coverage earned by the first-generation internals.
+It remains binding as the rewrite ratchet: everything below must stay green
+on the new core before the engine default flips.
+
 - `tests/ut/backends/lang/eval.d` now covers `Bytecode` for every eval
   candidate previously listed for promotion: `multiCell`,
   `preservesScalarValueTypes`, `castsFloatingValueNumerically`,
@@ -553,23 +718,22 @@ Lua-specific bytecode shape.
   bridge to handle runtime `double` inputs and fractional bounds.
 
 ## Current Next Step
-Continue with `tests/ut/backends/lang/math.d`, the next module in
-`ai/plans/backend-test-modules-order.md`.
+Begin rewrite slice 1: stand up the new typed-frame core behind an internal
+engine switch on `Bytecode` (defaulting to the old core), and make the
+smallest `integrals.d` behaviour pass on the new core in CTFE-only mode.
 
-Do not return to `tests/ut/backends/lang/integrals.d`,
-`tests/ut/backends/api/runner.d`, `tests/ut/backends/runtime/cstdlib.d`, or
-`tests/ut/backends/lang/logic.d`, or
-`tests/ut/backends/lang/diagnostics.d` unless new tests are added there. Their
-current backend-matrix test families all include `Bytecode`.
+Promotion of further test modules onto the old core stops; new surface area
+(`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
+directly on the new core per the slice roadmap.
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
 - Add focused VM contract tests only for bytecode-specific properties such as
   operand typing, frame behavior, and diagnostic boundaries.
 - Keep unsupported-slice tests narrow and behavior-driven, not layout-driven.
-- For backend language-surface tests, treat CTFE as the canonical oracle for
-  supported behaviour unless the completed DMD codegen backend demonstrates
-  that compiled D code behaves differently.
+- Oracles are per mode: in CTFE-only mode DMD CTFE is canonical; in full-D
+  mode really-compiled `dmd -unittest -checkaction=context` output is, byte
+  for byte. Where the two disagree, the test carries per-mode expectations.
 - CTFE coverage reports do not rank Quickbite test modules by simplicity. All
   backend language modules run against CTFE, so use
   `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
@@ -593,16 +757,10 @@ current backend-matrix test families all include `Bytecode`.
 - Keep modules separate from the start: backend adapter, compiler, bytecode
   program representation, and VM. Do not hide all bytecode logic in the backend
   adapter.
-- Use the existing runtime `Value` type as the first implementation stack slot
-  type. Its size and GC semantics are accepted costs for now. Architecturally,
-  VM stack slots are private execution values that convert to and from
-  `quickbite.lang.Value` at backend/API boundaries; the private slot type may
-  initially alias `Value`. If benchmarks show slot size or copying hurts
-  edit-to-test-result latency, investigate a narrower VM slot representation
-  such as NaN-boxing for the numeric subset (collapses all values to 8 bytes,
-  type check becomes 1–2 bitwise ops); however NaN-boxing may not be viable for
-  D given the breadth of scalar types and the need to represent structs. Do not
-  invent int-only stack or operand types as a first step.
+- [Superseded by the native-layout memory model above.] The first
+  implementation used `Value` as the stack slot type as an accepted cost.
+  The rewrite removes `Value` from the VM entirely; slots are typed frame
+  memory and conversion happens only at the `Evaluator` boundary.
 - Make operands earn their shape. Avoid a generic `long` operand, ad hoc
   integer-specialized operands, or a half-built sum type unless the current test
   proves that shape is needed.
@@ -745,15 +903,15 @@ current backend-matrix test families all include `Bytecode`.
 - Do not add the pass until a benchmark justifies it.
 
 ## Builtins and Native Calls
-- CTFE builtin support exists only for feature parity with DMD CTFE. Keep it
-  narrow, mechanically tied to DMD builtin classification, and scoped to the
-  implemented builtin subset. Do not let CTFE builtin handling become the
-  general native-call mechanism.
-- The native-code bridge is a separate VM subsystem for code that should not be
-  re-emitted as bytecode. It needs typed bridge entries, cached resolution,
-  VM-slot/native argument and return marshalling, ownership and lifetime rules
-  for aggregate values, GC interaction policy, and explicit D exception
-  propagation into VM unwinding.
+- CTFE-only mode never calls native code. CTFE builtin parity (`sqrt`,
+  `fabs`, ...) stays mechanically tied to DMD's builtin classification and
+  is executed by the VM; druntime lowerings are intercepted at the call site
+  and applied to VM-owned memory.
+- In full-D mode the native bridge (see Core Architecture) is the general
+  mechanism: outbound calls are direct because VM memory is native-layout —
+  no marshalling layer. Bridge entries carry typed signatures and cached
+  symbol resolution; D exceptions crossing the boundary are converted
+  between native and VM unwinding at the bridge.
 
 ## Exception Handling
 - Each compiled function artifact includes a handler table. For unittest blocks
@@ -769,6 +927,10 @@ current backend-matrix test families all include `Bytecode`.
   caller.
 - D exceptions must not propagate silently through every C interpreter frame;
   the VM owns the decision of how test failures are caught and reported.
+- In full-D mode thrown objects are real `Throwable` instances on the host
+  heap; the bridge converts between native unwinding and VM unwinding at
+  boundary crossings. In CTFE-only mode uncaught exceptions report DMD's
+  "uncaught CTFE exception" text.
 
 ## Debug Info
 - The minimum required is bytecode-offset-to-source-line mapping, sufficient
@@ -796,11 +958,13 @@ current backend-matrix test families all include `Bytecode`.
   environment or upvalue storage from the start.
 
 ## Assumptions
-- Direct parser-to-bytecode generation is out of scope; AST-first lowering is
-  the right starting point.
-- The bytecode VM is optimized for unittest latency, not long-running execution
-  throughput.
-- JIT compilation is a future experiment, not a requirement for the first
-  design.
+- Direct parser-to-bytecode generation is out of scope; AST-first lowering
+  from semantically analyzed DMD ASTs is the starting point, and DMD's
+  computed layout information is authoritative.
+- The bytecode VM is optimized for unittest latency, not long-running
+  execution throughput. JIT compilation remains a future experiment.
+- Linux x86_64 first, matching `SystemLinker`'s existing platform
+  assumptions; other targets follow the host ABI through the same layout
+  queries.
 - The VM should remain independent of DMD internals except at the compiler
   boundary.

@@ -6,13 +6,62 @@
 
 ## Scope
 
-Get the dynamic-library-based dmd backend fully working first. A mini
-in-process linker (JITLink-style relocation loading) and ORC JIT are
-**completely out of scope** for now: if compile → system link → `dlopen`
-cannot be made correct, nothing fancier will be either. Everything here is
-about making `DynamicLibrary` pass the whole runner test matrix.
+The goal is to **use and re-use dmd's codegen backend in-process**.
+Spawning a whole `dmd -unittest -shared` per fixture already works and is
+the null hypothesis; any design here must beat it by sharing the
+in-process frontend AST (the multi-backend matrix and the REPL endgame
+both depend on that). Test every design choice against this criterion.
 
-## Current state (2026-06-11, slice 1 done)
+The pipeline has three stages — keep them separate when reasoning:
+
+1. **Ownership** (semantic time): which module's members hold which
+   template instances/TypeInfos. Solved by the lightning rod + child-side
+   prune (slice 2, lessons 8-9, 13).
+2. **Codegen re-use**: dmd's backend has a strictly one-shot,
+   once-per-process contract (`backend_init` once, `PASS.obj`/`csym`
+   marks, `deferToObj`, enum/TypeInfo gates) — dmd itself inits, emits
+   each module once, and exits. Solved by `fork()`: each codegen gets a
+   disposable copy of the process image, i.e. the backend is used exactly
+   the way dmd uses it. Manually un-writing the state (the slice-1 reset
+   walker) works but is a shadow copy of dmd-internals knowledge that
+   must be re-learned on every dmd upgrade.
+3. **Loading**: object file → running code in this process. Today:
+   spawned `dmd -shared` + `dlopen` (~30 ms, full druntime integration
+   via `Runtime.loadLibrary`). A mini in-process linker or LLVM
+   ORC/JITLink (`ObjectLinkingLayer` accepts precompiled ELF objects —
+   no LLVM IR involved) are stage-3 **swaps only**: out of scope until
+   the matrix is healthy on the dlopen loader, and localized to
+   `linkSharedLibrary`/`loadSharedLibrary` (~50 lines) when they happen.
+   If compile → system link → `dlopen` cannot be made correct, nothing
+   fancier will be either. Fork composes with all loaders: the child's
+   product is an object file, and loading must happen in the parent
+   regardless (results, exceptions, GC).
+
+`source/quickbite/executors/` (including the `DmdCodegenRam` hand-rolled
+ELF loader in `dmd_codegen.d`) is legacy reference code kept as
+inspiration; it will be deleted. Two facts worth keeping from it for any
+future stage-3 work: its RAM loader registered nothing with druntime —
+no `.eh_frame`, GC ranges, or module ctors — and a loader without those
+cannot pass the runner matrix (catching assert `Throwable`s requires
+unwinding through generated frames); and its ~3000-line hand-enumerated
+`pragma(mangle)` support shim existed precisely because its input objects
+were not self-contained — the ownership problem slice 2 solves upstream.
+
+## Current state (2026-06-11, slice 1 merged as PR #205)
+
+**Direction (agreed 2026-06-11):** slice 1's machinery works, but it is
+~380 of system_linker.d's 611 lines of custom code that drives dmd
+differently from how dmd drives itself, and it forces fresh parses.
+Slice 2 replaces it with fork + lightning rod (lessons 8-9, 13-14),
+deleting the adoption loop, the written-state reset walker, the
+foreign-member pruning, and every fresh-parse workaround.
+
+**Open bug (found 2026-06-11, investigate independently of slice 2):**
+`bin/bench --backend=system-linker` skips every fixture at the
+correctness gate (`checkRunnerResults`, benchmarks/cli.d:89) with
+"unittest symbol not found in shared library", even freshly built. The
+ut path drives SystemLinker fine; the bench's standalone-fixture path
+(module naming or parse order) does not line up.
 
 `source/quickbite/backends/native/system_linker.d` implements
 `quickbite.backends.runner.Runner.runTests`:
@@ -37,30 +86,17 @@ about making `DynamicLibrary` pass the whole runner test matrix.
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
 6. `GC.collect` before `Runtime.unloadLibrary` (lesson 12).
 
-**Passing:** 336 runner matrix blocks include `SystemLinker` (was 14
-before slice 1), each tagged `@Tags(backend.stringof)` so
-`bin/ut '~@SystemLinker'` skips them (they are slow: compile+link+load per
-test) and `bin/ut @SystemLinker` runs exactly them. The old slice-3 dlsym
-miss (`reportsAssertFailureMessages`) is in the matrix and passing.
+**Passing:** 357 runner matrix blocks include `SystemLinker` (was 14
+before slice 1, 336 before slice 3 — PR #206), each tagged
+`@Tags(backend.stringof)` so `bin/ut '~@SystemLinker'` skips them (they
+are slow: compile+link+load per test) and `bin/ut @SystemLinker` runs
+exactly them. The old slice-3 dlsym miss (`reportsAssertFailureMessages`)
+is in the matrix and passing. Slice 3 oracle-arbitrated and promoted all
+the CTFE-flavoured and message-text blocks; the verdicts are in its DONE
+section below.
 
-**Still out of the matrix** (23 blocks), by category:
+**Still out of the matrix**, by category:
 
-- **CTFE-flavoured expectations** (compiled code runs fine but reports
-  runtime texts; slice-2-style arbitration would change the *expectation*,
-  which needs approval): bounds/missing-key/overlapping-slice diagnostics
-  (5 in arrays.d, 4 in cerealed.d), `uncaughtThrow*` in exceptions.d
-  ("uncaught CTFE exception ..." vs the plain message),
-  `delegate.(func)ptrPropertyIsRejectedAtCtfe`,
-  `typeid.typeNameReturnsIdentifier` (compiled gives `snippet_N.Widget`,
-  CTFE gives `Widget`), `rt.cstdlib.malloc` (runs fine compiled),
-  `intToFloatCastUsesFloatPrecision` (its @ShouldFail encodes a
-  CTFE-formatter limitation; SystemLinker genuinely passes — needs a
-  per-backend ShouldFail split).
-- **Slice-2 message texts** (plain `_d_assert`/`_d_unittest` hook texts):
-  `literalFalseAssertionMatchesDmd`, `voidFunctionOops`,
-  `structMethodReturnDoesNotSkipCallerStatements`,
-  `catchExceptionDoesNotCatchAssertFailure`,
-  `logicalAndCallShortCircuitFailureMessage.1`.
 - **Imported user modules**:
   `runBackend{File,Source}FixtureTests.withImportPaths` — the snippet
   imports a module from importPaths whose functions are compiled nowhere;
@@ -68,7 +104,11 @@ miss (`reportsAssertFailureMessages`) is in the matrix and passing.
 - **Fatal by design in-process**: the three null-class-dereference
   diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
   test runner) and `voidInitializedScalarReadReportsUninitialized`
-  (CTFE-only diagnostic).
+  (CTFE-only diagnostic). Both excluded with comments in the test files.
+- **FFI-bridge design tests** (added after the slice-3 enumeration):
+  rt/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
+  expectations; compiled code would pass those fixtures, so SystemLinker
+  variants belong with any future FFI-bridge work, not the matrix sweep.
 
 Build-layout note: dmd 2.112's glue layer (`dmd/glue/` package) compiles
 inside the dub `dmd:frontend` dependency; only `backend/*` + `dmsc.d` are
@@ -165,7 +205,10 @@ from cached imports (druntime/phobos lowering hooks) are affected.
 **This lesson is dissolved for `SystemLinker` by the adoption loop (lesson
 10):** owned-or-not is irrelevant once the object's ELF undefined symbols
 drive instance adoption — borrowed instances are re-homed into the snippet
-module and re-emitted.
+module and re-emitted. **Slice 2 dissolves it for all callers:** with the
+rod parsed first, druntime/phobos instances never land on snippets, cached
+snippets stay clean, and the benchmark's parse-order pre-parse
+(benchmarks/cli.d:497-503) is deleted.
 
 ### 7. Codegen of the same module AST twice emits an empty object (2026-06-10)
 
@@ -187,6 +230,8 @@ repeatedly codegen'ing the same module.
 (lesson 11):** resetting `semanticRun` and `csym` before each re-emit
 means every codegen pass sees the module as un-written. The benchmark's
 timed system-linker loop is now unblocked as a side-effect of slice 1.
+**Slice 2 dissolves it differently:** every fork child sees pristine
+once-per-process gates, so the reset walker is deleted outright.
 
 ### 8. `allInst=true` is what concentrates instances at the first root module (2026-06-11)
 
@@ -245,7 +290,21 @@ lightning rod, the child still needs the adoption loop or pruning.
 code + an optional pipe for error text; the `.so` path is computed by the
 parent before forking.
 
-### 10. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1)
+**Slice-2 addenda (2026-06-11):**
+- Fork inside `withCompilerLock`: the child inherits the held
+  `Compiler.mutex` it owns and never unlocks before `_exit`. Safe because
+  everything is single-threaded — `versions "unitUnthreaded"` in dub.sdl,
+  and neither the benchmark nor the repl spawn threads (verified).
+- Fork also dissolves all three adoption-loop candidate sources (lesson
+  10): codegen-driven instantiations and codegen-time TypeInfos happen
+  fresh in every child, because the parent never trips the
+  once-per-process gates.
+- What fork+rod still needs that this lesson missed: the child-side prune
+  of the rod's members (lesson 13). "The adoption loop or pruning" above
+  understates it — the prune is mandatory, but it is ~40 lines, needs no
+  restore (the child exits), and replaces ~380.
+
+### 10. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1; deleted by slice 2 — kept as the spec the spike must match)
 
 "Which instances does this module need but not own?" is answered exactly
 by the undefined symbols of the object just written (`-z defs` checks the
@@ -268,7 +327,7 @@ loop terminates. Candidate sources (all three are needed):
   the complete symbol name; as a module member it emits unconditionally as
   a COMDAT via `toobj.d`).
 
-### 11. The written-state to reset for re-emission (slice 1 / lesson 7 fix)
+### 11. The written-state to reset for re-emission (slice 1 / lesson 7 fix; deleted by slice 2 — fork makes it unnecessary)
 
 Codegen marks everything written once per process. To re-emit a module
 (and its adopted instances), reset, recursively over members and
@@ -301,7 +360,87 @@ sweep (`rt_hasFinalizerInSegment`) dereferences unmapped memory — the
 crash surfaces tests later, far from the cause. Fix: `GC.collect` right
 before each unload, while the library is still mapped. Fixtures whose
 *reachable* objects survive the collect would still be landmines; results
-copy primitives out, so none do today.
+copy primitives out, so none do today. (This is a parent-side loader
+concern; it survives slice 2 unchanged.)
+
+### 13. The rod's object is dirty: foreign-parameterized instances (validated against dmd source, 2026-06-11)
+
+rod.o must be in **every** link: a snippet's druntime instances are parked
+on the rod (`appendToModuleMember`, templatesem.d:1233, routes via
+`importedFrom` under allInst), so snippet.o alone is missing them. But the
+rod also accumulates instances parameterized on *other* snippets' types
+(`_d_newclassT!(snippetA.Widget)`, TypeInfos for snippetA's structs), and
+codegen of the rod **emits them**:
+
+- `needsCodegen` (templatesem.d:2818-2862) is provenance-based — true as
+  soon as `minst.isRoot()`, never link-set-based. Once snippetA was a root
+  module, its instances emit forever, from whichever module's members they
+  sit in.
+- `_d_arrayliteralTX` is emitted unconditionally (templatesem.d:2813-2816).
+- TypeInfoDeclarations are gated only by `isSpeculativeType`
+  (toobj.d:605), which returns false for plain non-template structs
+  (typinf.d:253).
+
+Emitted foreign instances reference snippetA's
+`__ClassZ`/`__vtbl`/`__init`/`xeq`/`xcmp`/`xhash`/`toString` as
+`SC.extern_` (tocsym.d:506/676/741; todt.d:1502-1560) — undefined in a
+rod.o + snippetB.o link.
+
+**Non-fixes:** `--gc-sections` is a no-op for shared libraries (all
+symbols are dynamic-exported, so every section is a GC root). Dropping
+`-z defs` just moves the failure to dlopen — vtable/TypeInfo *data*
+relocations bind eagerly. No frontend mechanism prunes by symbol
+resolvability.
+
+**The fix: prune the rod's members in the fork child before emission** —
+drop template instances whose arguments (and TypeInfos whose type) come
+from a root module other than the current snippet. Sound because snippets
+cannot reference each other's types; modules shared via importPaths are in
+the link (slice 2 emits imported-module objects too), so their instances
+survive the prune and resolve. No restore needed — the child exits. This
+is the one piece of custom code that remains, and it encodes a real
+invariant instead of fighting the frontend.
+
+The rod is deliberately not "real life": it exploits the same
+allInst+importedFrom funneling that causes the pollution, concentrating
+the unavoidable consequence of a shared in-process frontend into one known
+place with one principled filter. Fork makes each codegen look like a
+fresh dmd process; the rod handles the one thing that cannot be made
+fresh.
+
+### 14. Measured fork costs (2026-06-11, this machine)
+
+- `fork()`+waitpid: ~0.3 ms median, **flat from 100 MiB to 4 GiB parent
+  RSS** (COW page-table setup scales with mappings, not bytes resident).
+  A child dirtying 20 MiB of inherited pages adds nothing measurable.
+- Baseline: ~43 ms median per SystemLinker test (range 36-94 ms), ~30 ms
+  of which is the spawned `dmd -shared` link against shared phobos.
+  Runner RSS ~40 MiB. Fork is <1% per-test overhead.
+- The cost that *can* grow is not fork: it is re-emitting rod.o every
+  test as the rod accumulates instances over the process lifetime.
+  Measure the growth curve in the spike; watch it in the benchmark.
+- Footnotes: `_exit` skips the coverage flush, so codegen-path coverage
+  is lost in `-cov` builds; debugging child crashes needs gdb
+  `set follow-fork-mode child`; fork is POSIX-only.
+
+## Parallel sessions
+
+Slices 2 and 3 are designed to run as **concurrent agent sessions**:
+
+- Each session works in its own git worktree + branch (existing
+  convention: `worktrees/<branch-name>`), e.g. `dmd-backend-slice2-fork`
+  and `dmd-backend-slice3-expectations`.
+- Their file sets are disjoint by the slice-3 rule (slice 2 owns
+  system_linker.d, compiler.d, tests/ut/backends/package.d,
+  benchmarks/cli.d; slice 3 owns tests/ut/backends/runner/ct/*), so
+  merges are trivial. If slice 3 lands new matrix blocks first, slice 2
+  rebases and gets a stronger gate for free.
+- The slice-2 spike is throwaway: keep it in an untracked scratch dir
+  (e.g. `scratch/` or /tmp), not committed; only its findings go in this
+  plan and its pollution scenario graduates into the matrix as a real
+  test during Step 1.
+- Read the whole plan before starting either slice — the Lessons section
+  exists so they are not relearned.
 
 ## The work, in order
 
@@ -319,47 +458,124 @@ requirement. The adoption loop was chosen because it was incrementally
 verifiable and self-contained. The fork path remains viable as a future
 optimization (Slice 4 territory).
 
-### Slice 2 — message mismatches (3 tests)
+### Slice 2 — fork + lightning rod: delete the custom machinery
 
-- `literalFalseAssertionMatchesDmd` (`assert(false)`) → backend said
-  "unittest failure"; `voidFunctionOops` (`assert(0)` in a called function)
-  → "Assertion failure". These are plain druntime `_d_assert`/`_d_unittest`
-  hook texts. Per the oracle rule: compile each fixture with real dmd, run
-  it, and arbitrate. If real compiled output matches the backend, the *test
-  expectation* is CTFE-flavoured and the fixture/expectation needs the
-  "runtime-shaped" treatment instead.
-- `voidInitializedScalarReadReportsUninitialized` expects a CTFE
-  diagnostic ("cannot read uninitialized variable ... in ctfe") that
-  compiled code cannot produce — likely permanently CTFE-only; exclude
-  deliberately, with a comment.
+Goal: replace the adoption loop, written-state reset walker, and
+foreign-member pruning with fork-based codegen isolation and a
+lightning-rod module, removing the fresh-parse requirement so cached
+modules can be codegen'd.
 
-### Slice 3 — the dlsym miss (1 test) — RESOLVED with slice 1
+**Step 0 — spike (throwaway code, time-boxed, ~1 day).** The one question
+dmd source cannot answer is actual linker behavior on the rod's object
+(lesson 13). Standalone scratch program; do not touch system_linker.d:
 
-`reportsAssertFailureMessages` is in the matrix and passing; the miss was
-another symptom of the ownership/written-state problem.
+1. Parse a small rod module at the end of `initializeDmdState`
+   (compiler.d:106-180; it runs in `shared static this`, so the rod is
+   the first root module for ut, bench, and repl alike).
+2. Compile fixture A (defines a class, uses `assert(a == b)` so
+   `_d_assert_fail!int` and `_d_newclassT` instantiate) → fork → child
+   prunes rod members by template-arg origin (lesson 13) → emits rod.o +
+   A.o → links `dmd -shared -L=-z -L=defs` → `_exit`; parent dlopens and
+   runs the unittest.
+3. Same for fixture B **from a cached parse** (no fresh parse — the
+   scenario slice 1 could not do). The link must not reference A's
+   symbols.
+4. In-child sanity: `GC.collect`; throw and catch a D exception.
+5. Growth curve: rod.o size and emit time over N≈100 synthetic fixtures
+   (lesson 14: fork is flat; rod re-emission is the cost to watch).
 
-### Slice 3b — imported user modules (2 tests)
+Pass criteria: A and B link under `-z defs` and pass; B used a cached
+parse; rod growth is acceptable. **Fallback: if the prune criterion leaks
+(undefined symbols the prune should have removed), stop and reassess —
+do not patch the filter until it links. A leaky prune criterion would
+rebuild the adoption loop's discovery problem with less visibility; the
+adoption loop stays until a sound criterion exists.**
 
-`withImportPaths` fixtures import a module from importPaths; its functions
-are compiled into no object. Compile imported non-druntime modules into
-the link as well (walk `module_.aimports` for modules under the given
-import paths, emit each, pass all objects to the link).
+**Step 1 — implement** (only if the spike passes):
+
+- Rod parse in `initializeDmdState`, plus a runtime guard asserting
+  `Module.rootModule` is the rod before any SystemLinker codegen — a
+  pre-rod parse must be a loud assert, not a mystery link error two
+  tests later.
+- `emitObjectFile` → fork inside `withCompilerLock` (lesson 9 addenda).
+  Child: prune rod → emit rod.o + snippet.o + imported-module objects →
+  spawn `dmd -shared -z defs` → `_exit(0)`. Error transport: exit code +
+  pipe for error text; `.so` path computed by the parent before forking.
+- Parent: `Runtime.loadLibrary`, dlsym+run, `GC.collect` before unload —
+  unchanged (lesson 12).
+- Delete: adoption loop + ELF symtab parser + `mangledPrefix`
+  (system_linker.d:82-93, 348-478); reset walker (:96-315); foreign
+  pruning + `typeModule` (:486-520); the
+  `static if (is(T == SystemLinker))` in tests/ut/backends/package.d:41-52;
+  `parseModuleWithCheckActionContextUncached` (compiler.d:60-65,
+  242-257); the benchmark parse-order pre-parse (benchmarks/cli.d:497-503).
+  `parseModuleUncached` stays — cell.d and the bench timed loop use it
+  for unrelated reasons.
+- Gate: the full matrix (`bin/ut @SystemLinker`), `--random` repeatedly,
+  both historical seeds, ./ci.sh. The spike's two-fixture pollution
+  scenario graduates into the matrix as a permanent regression test — it
+  is the exposing test for lesson 13.
+
+**Folded in — imported user modules (was slice 3b):** multi-object
+linking is native to this design. Walk `module_.aimports` for modules
+under the given import paths; the child emits each and passes all objects
+to the link. This promotes the two `withImportPaths` blocks
+(tests/ut/backends/runner/ct/results.d:251, :280) and closes the prune
+edge case where fixtures share an importPaths module.
+
+### Slice 3 — message texts and CTFE-flavoured exclusions — DONE (2026-06-11, PR #206)
+
+Test-side only, as planned: every candidate block was arbitrated with
+the real-dmd oracle (lesson 4) and encoded by splitting the
+static-foreach block per backend (the expressions.d `@ShouldFail` split
+pattern; nondeterministic message parts via the existing
+`collectExceptionMsg`+`canFind` pattern). 21 new `SystemLinker` blocks,
+each verified solo, under repeated `--random`, and on both historical
+seeds. **The backend matched the oracle on every block — nothing was
+handed to slice 2.** Oracle verdicts worth keeping:
+
+- `assert(false)`/`assert(0)` in a **unittest body** → "unittest
+  failure" (`_d_unittest` hook); in a **called function** → "Assertion
+  failure" (`_d_assert`). checkaction=context adds no operands for
+  literal conditions; the "`assert(...)` failed" wording is CTFE-only.
+- Uncaught throws report the exception's own message, not the
+  "uncaught CTFE exception" wrapper.
+- Bounds errors: druntime's "index [N] is out of bounds for array of
+  length N"; AA missing key and overlapping slice assignment are both
+  plain "Range violation".
+- Compiled code genuinely passes where CTFE rejects or ShouldFails:
+  pointer slicing past a block (unchecked at runtime), `dg.funcptr`,
+  `malloc`, int-to-float precision, cerealed's static child registry.
+- Nondeterministic compiled messages: `typeid(T).name` is
+  module-qualified (`snippet_N.Widget`), `dg.ptr` is a live pointer
+  value — both matched on their stable suffix.
+
+`voidInitializedScalarReadReportsUninitialized` and the three
+null-class-dereference blocks stay excluded with comments (CTFE-only
+diagnostic / real SIGSEGV). Note: once slice 2's fork machinery exists,
+forking the *execution* step too would make the null-deref blocks
+tolerable — possible follow-on, not in scope.
 
 ### Slice 4 — Evaluator interface
 
-Only after the runner matrix is healthy: implement
-`eval`/`evalRepl`/`runTestSummary` so `SystemLinker` becomes a full
-`Backend`. The fresh-parse requirement still applies (the adoption loop
-did not remove it). Per-call compile+link+load latency makes this
-unsuitable for the REPL hot path until measured — benchmark before
-promoting anywhere. Adopting the fork design (lesson 9) at this point
-would remove the fresh-parse requirement and is worth considering then.
+Only after the runner matrix is healthy. The live contract is
+`Evaluator.eval(FuncDeclaration)` (source/quickbite/backends/evaluator.d:18)
+— the single required primitive; `eval(string)`/`eval(Cell)` are final
+dispatchers on it. (An earlier draft of this plan said
+`eval`/`evalRepl`/`runTestSummary`; that predates the interfaces.md
+migration.) Missing pieces: value transport from machine code back to a
+`quickbite.lang.Value` (does not exist), and latency — per-call
+compile+link+load is ~43 ms today (lesson 14); benchmark before promoting
+anywhere near the REPL hot path (ai/plans/repl.md puts a native session
+at step 9 of 9). With slice 2 done the fresh-parse caveat is gone, and a
+stage-3 loader swap (Scope) becomes the latency lever if needed.
 
 ## Test discipline
 
-- A backend joins a `static foreach (backend; backendsWith!(...))` block
-  only when the test passes repeatedly under `--random` (not just solo) —
-  order-dependence is the failure mode here.
+- A backend joins a `static foreach (backend; AliasSeq!(...))` block only
+  when the test passes repeatedly under `--random` (not just solo) —
+  order-dependence is the failure mode here. (The tests use plain
+  `AliasSeq` lists; `backendsWith` appears only in older plan drafts.)
 - Every kept block carries `@Tags(backend.stringof)` so SystemLinker
   variants stay opt-out-able: `bin/ut '~@SystemLinker'`.
 - Every fault found must pair with a test that exposes it; for ownership
@@ -384,6 +600,12 @@ bin/ut @SystemLinker                # just the native-backend matrix
   `allInst=true` at :178
 - `source/quickbite/frontend/util.d` — index-based unittest walk
 - `tests/ut/backends/package.d` — fresh-parse `static if` for SystemLinker
+  (deleted by slice 2)
+- `source/quickbite/backends/evaluator.d` — the live Evaluator interface
+  (slice 4)
+- `benchmarks/cli.d` — bench harness; parse-order pre-parse at :497-503
+  (deleted by slice 2), correctness gate at :89 (open bug, see Current
+  state)
 - dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember` :1233,
   `needsCodegen` :2778), `typinf.d` (`getTypeInfoType`),
   `dmd/glue/toobj.d` (`visit(TemplateInstance)` :701, instance emission),

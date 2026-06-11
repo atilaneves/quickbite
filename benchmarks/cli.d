@@ -73,7 +73,7 @@ public void run(string[] args) {
     runners["system-linker"] = new SystemLinker;
 
     if (backendNames.length == 0)
-        backendNames = ["ctfe"];
+        backendNames = ["ctfe", "system-linker"];
 
     foreach (name; backendNames)
         if (name !in runners)
