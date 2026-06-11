@@ -36,6 +36,7 @@ public struct Value {
 
         Array,
         AssocArray,
+        Pointer,
         Struct,
         TypeName,
         EnumValue,
@@ -82,6 +83,18 @@ public struct Value {
         return Value(AssocArray(keys, values));
     }
 
+    public static Value pointerValue(in Value target) @safe pure {
+        return Value(Pointer([target]));
+    }
+
+    public static Value arrayPointerValue(
+        in Value[] allocation,
+        in size_t allocationId,
+        in long offset,
+    ) @safe pure {
+        return Value(Pointer(allocation, allocationId, offset));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -107,6 +120,10 @@ public struct Value {
     }
 
     private this(AssocArray value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(Pointer value) @safe pure {
         data = Data(value);
     }
 
@@ -385,9 +402,260 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) => array.elements.length,
+            (const(AssocArray) assocArray) => assocArray.entries.length,
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
+            },
+        );
+    }
+
+    public bool assocArrayContains(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                foreach (entry; assocArray.entries)
+                    if (entry.key == key)
+                        return true;
+                return false;
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return false;
+            },
+        );
+    }
+
+    public Value assocArrayElement(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                foreach (entry; assocArray.entries)
+                    if (entry.key == key)
+                        return entry.value;
+
+                throw new Exception("Expected present key.");
+                return Value.void_;
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withAssocArrayEntry(
+        in Value key,
+        in Value value,
+    ) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                Value[] values;
+                bool replaced;
+
+                foreach (entry; assocArray.entries) {
+                    keys ~= entry.key;
+                    if (entry.key == key) {
+                        values ~= value;
+                        replaced = true;
+                    } else
+                        values ~= entry.value;
+                }
+
+                if (!replaced) {
+                    keys ~= key;
+                    values ~= value;
+                }
+
+                return Value.assocArrayValue(keys, values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withoutAssocArrayKey(in Value key) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                Value[] values;
+
+                foreach (entry; assocArray.entries) {
+                    if (entry.key == key)
+                        continue;
+                    keys ~= entry.key;
+                    values ~= entry.value;
+                }
+
+                return Value.assocArrayValue(keys, values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value assocArrayKeys() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] keys;
+                foreach (entry; assocArray.entries)
+                    keys ~= entry.key;
+
+                return Value.arrayValue(keys);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value assocArrayValues() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(AssocArray) assocArray) {
+                Value[] values;
+                foreach (entry; assocArray.entries)
+                    values ~= entry.value;
+
+                return Value.arrayValue(values);
+            },
+            (_) {
+                throw new Exception("Expected associative array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public bool isPointer() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => true,
+            (_) => false,
+        );
+    }
+
+    public Value pointerTarget() const @safe pure {
+        return pointerIndex(0);
+    }
+
+    public Value pointerIndex(in size_t index) const @safe pure {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) {
+                const element = pointer.offset + cast(long) index;
+                if (element < 0 || element >= pointer.target.length)
+                    throw new Exception(text(
+                        "pointer index `", index,
+                        "` exceeds allocated memory block `[",
+                        -pointer.offset, "..",
+                        cast(long) pointer.target.length - pointer.offset,
+                        "]`",
+                    ));
+
+                return pointer.target[cast(size_t) element];
+            },
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value pointerOffsetBy(in long delta) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => Value(Pointer(
+                pointer.target,
+                pointer.allocation,
+                pointer.offset + delta,
+            )),
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public bool pointerSameAllocation(in Value other) const @safe pure {
+        return pointerAllocation != 0 &&
+            pointerAllocation == other.pointerAllocation;
+    }
+
+    public long pointerOffsetDifference(in Value other) const @safe pure {
+        if (!pointerSameAllocation(other))
+            throw new Exception("Expected pointers into the same allocation.");
+
+        return pointerOffset - other.pointerOffset;
+    }
+
+    public Value pointerSlice(in size_t lower, in size_t upper) const @safe pure {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) {
+                const begin = pointer.offset + cast(long) lower;
+                const end = pointer.offset + cast(long) upper;
+
+                if (begin < 0 || begin > end || end > pointer.target.length)
+                    throw new Exception(text(
+                        "pointer slice `[", lower, "..", upper,
+                        "]` exceeds allocated memory block `[",
+                        -pointer.offset, "..",
+                        cast(long) pointer.target.length - pointer.offset,
+                        "]`",
+                    ));
+
+                return Value.arrayValue(
+                    pointer.target[cast(size_t) begin .. cast(size_t) end],
+                );
+            },
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
+    private size_t pointerAllocation() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.allocation,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return size_t.init;
+            },
+        );
+    }
+
+    private long pointerOffset() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.offset,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return long.init;
             },
         );
     }
@@ -418,6 +686,41 @@ public struct Value {
             },
             (_) {
                 throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value structFieldAt(in size_t index) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => struct_.fields[index].value,
+            (_) {
+                throw new Exception("Expected struct.");
+                return Value.void_;
+            },
+        );
+    }
+
+    // not @safe: the sumtype match copies array-bearing alternatives,
+    // which `match` infers as @system, same as withArrayElement below
+    public Value withStructField(
+        in size_t index,
+        in Value value,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) {
+                Value[] values;
+                foreach (field; struct_.fields)
+                    values ~= field.value;
+                values[index] = value;
+                return Value.structValue(struct_.typeName, values);
+            },
+            (_) {
+                throw new Exception("Expected struct.");
                 return Value.void_;
             },
         );
@@ -458,7 +761,7 @@ public struct Value {
     }
 
     public Value opBinary(string op)(in Value rhs) const @safe pure
-        if (op == "+" || op == "-" || op == "*" || op == "/")
+        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%")
     {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
@@ -568,6 +871,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
@@ -593,6 +898,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
@@ -711,6 +1018,27 @@ private struct AssocArray {
             entries ~= Entry(Value(key), Value(value));
     }
 
+    public bool opEquals(in AssocArray other) const @safe pure {
+        if (entries.length != other.entries.length)
+            return false;
+
+        foreach (entry; entries) {
+            bool found;
+
+            foreach (otherEntry; other.entries)
+                if (otherEntry.key == entry.key &&
+                    otherEntry.value == entry.value) {
+                    found = true;
+                    break;
+                }
+
+            if (!found)
+                return false;
+        }
+
+        return true;
+    }
+
     public string toString() const @safe pure {
         string ret = "[";
 
@@ -721,6 +1049,32 @@ private struct AssocArray {
         }
 
         return ret ~ "]";
+    }
+}
+
+
+// `allocation` is an opaque nonzero id identifying the allocation the
+// pointer points into; `target` is a copy-on-write snapshot of that
+// allocation's elements and `offset` the element the pointer points at.
+// Single-target pointers (e.g. associative array slots) have no
+// allocation identity and use `allocation == 0`, `offset == 0`.
+private struct Pointer {
+    public Value[] target;
+    public size_t allocation;
+    public long offset;
+
+    public this(in Value[] target) @safe pure {
+        this.target = target.dup;
+    }
+
+    public this(
+        in Value[] target,
+        in size_t allocation,
+        in long offset,
+    ) @safe pure {
+        this.target = target.dup;
+        this.allocation = allocation;
+        this.offset = offset;
     }
 }
 

@@ -91,6 +91,18 @@ public bool isDynamicArrayType(imported!"dmd.mtype".Type type) {
     return type !is null && type.toBasetype.isTypeDArray !is null;
 }
 
+public bool isStaticArrayType(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeSArray !is null;
+}
+
+public bool isAssocArrayType(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeAArray !is null;
+}
+
+public bool isPointerType(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypePointer !is null;
+}
+
 public template dmdScalarType(imported!"dmd.astenums".TY type) {
     import dmd.astenums: TY;
 

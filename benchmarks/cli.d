@@ -10,10 +10,10 @@ import dmd.dmodule: Module;
 
 private:
 
-// Defaults; overridable with --warmup / --iterations.
+// Defaults; overridable with -w/--warmup / -r/--runs.
 enum size_t defaultWarmup = 1;
 // Odd, so the median is a single sample without averaging two values.
-enum size_t defaultIterations = 9;
+enum size_t defaultRuns = 9;
 
 public void run(string[] args) {
     import std.algorithm.searching: all;
@@ -22,22 +22,24 @@ public void run(string[] args) {
     import std.stdio: stderr, writefln, writeln;
 
     size_t warmup     = defaultWarmup;
-    size_t iterations = defaultIterations;
+    size_t runs       = defaultRuns;
+    bool   skipCheck  = false;
     string[] importPaths;
     string[] backendNames;
     string dubPkg;
 
     auto info = getopt(
         args,
-        "warmup",       "untimed iterations before sampling",          &warmup,
-        "iterations",   "timed iterations per measurement",            &iterations,
+        "w|warmup",     "untimed iterations before sampling",          &warmup,
+        "r|runs",       "timed iterations per measurement",            &runs,
+        "skip-check",   "skip correctness checks before timing",       &skipCheck,
         "import-path",  "add an import search path (repeatable)",      &importPaths,
         "b|backend",    "backend to measure (repeatable)",             &backendNames,
         "dub",          "benchmark a dub package's tests by name",     &dubPkg,
     );
     if (info.helpWanted) {
         defaultGetoptPrinter(
-            "usage: bench [--warmup=N] [--iterations=N]"
+            "usage: bench [-w N] [-r N] [--skip-check]"
             ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME]"
             ~ " [<module.d> ...]",
             info.options,
@@ -64,7 +66,7 @@ public void run(string[] args) {
         );
     }
 
-    printRunHeader(warmup, iterations);
+    printRunHeader(warmup, runs);
 
     Runner[string] runners;
     runners["ctfe"] = new Ctfe;
@@ -77,16 +79,22 @@ public void run(string[] args) {
         if (name !in runners)
             throw new Exception("unknown backend: " ~ name);
 
-    auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, iterations);
-    auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, iterations);
+    if (backendNames.length == 1)
+        skipCheck = true;
 
-    const check = checkRunnerResults(
-        runners,
-        backendNames,
-        fixtureRuns ~ dubRuns,
-    );
-    foreach (message; check.skipped)
-        stderr.writeln(message);
+    auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
+    auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, runs);
+
+    RunnerCheck check;
+    if (skipCheck) {
+        foreach (name; backendNames)
+            foreach (run; fixtureRuns ~ dubRuns)
+                check.passingPairs[pairKey(run.displayName, name)] = true;
+    } else {
+        check = checkRunnerResults(runners, backendNames, fixtureRuns ~ dubRuns);
+        foreach (message; check.skipped)
+            stderr.writeln(message);
+    }
 
     if (fixtureRuns.length > 0 || dubRuns.length > 0) {
         writeln("== frontend (parse + semantic) ==");
@@ -112,7 +120,7 @@ public void run(string[] args) {
                     measure(
                         () { runner.runTests(run.module_); },
                         warmup,
-                        iterations,
+                        runs,
                     ),
                 );
             } catch (Exception e) {
@@ -156,7 +164,7 @@ public void run(string[] args) {
                                     runner.runTests(module_);
                             },
                             warmup,
-                            iterations,
+                            runs,
                         ),
                     );
                 } catch (Exception e) {
@@ -477,11 +485,11 @@ public BenchmarkRun[] prepareFixtureRuns(
     in string[] fixtures,
     in string[] importPaths,
     in size_t warmup,
-    in size_t iterations,
+    in size_t runs,
 ) {
     import std.file: readText;
 
-    BenchmarkRun[] runs;
+    BenchmarkRun[] fixtureRuns;
     foreach (path; fixtures) {
         const source      = readText(path);
         const displayName = moduleDisplayName(path, importPaths);
@@ -498,16 +506,16 @@ public BenchmarkRun[] prepareFixtureRuns(
                     parseModuleUncached(source, importPaths);
                 },
                 warmup,
-                iterations,
+                runs,
             );
-            runs ~= BenchmarkRun(displayName, module_, frontend);
+            fixtureRuns ~= BenchmarkRun(displayName, module_, frontend);
         } catch (Exception e) {
             import std.stdio: stderr;
 
             stderr.writefln("skipping %s: %s", displayName, e.msg);
         }
     }
-    return runs;
+    return fixtureRuns;
 }
 
 bool isOptimisedBuild() {
@@ -515,7 +523,7 @@ bool isOptimisedBuild() {
     else return false;
 }
 
-void printRunHeader(in size_t warmup, in size_t iterations) {
+void printRunHeader(in size_t warmup, in size_t runs) {
     import core.cpuid: processor;
     import std.algorithm.searching: until;
     import std.array: array;
@@ -542,7 +550,7 @@ void printRunHeader(in size_t warmup, in size_t iterations) {
 
     writefln("os:          %s", os);
     writefln("gc:          disabled during timed loop");
-    writefln("sampling:    %s warmup + %s timed iterations", warmup, iterations);
+    writefln("sampling:    %s warmup + %s runs", warmup, runs);
     writeln;
 }
 

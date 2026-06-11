@@ -20,9 +20,9 @@ about making `DynamicLibrary` pass the whole runner test matrix.
 1. Caller parses the module with checkaction=context — **uncached**
    (`parseModuleWithCheckActionContextUncached` in
    `source/quickbite/frontend/compiler.d`; see "Lessons" for why).
-2. `emitObjectFile`: reset codegen written-state (lesson 9), prune foreign
+2. `emitObjectFile`: reset codegen written-state (lesson 11), prune foreign
    members, `dmd.glue.generateCodeAndWrite` writes one object file to a
-   unique temp dir, then the adoption loop (lesson 8) re-emits until the
+   unique temp dir, then the adoption loop (lesson 10) re-emits until the
    object contains every instance/TypeInfo symbol it references. Backend
    initialised once per process with `PIC.pic`. Runs under the compiler
    lock.
@@ -35,7 +35,7 @@ about making `DynamicLibrary` pass the whole runner test matrix.
 5. Per unittest: `dlsym(mangleExact(unitTestDecl))`, call, catch `Throwable`.
    Per-test results come from enumerating the AST with
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
-6. `GC.collect` before `Runtime.unloadLibrary` (lesson 10).
+6. `GC.collect` before `Runtime.unloadLibrary` (lesson 12).
 
 **Passing:** 336 runner matrix blocks include `SystemLinker` (was 14
 before slice 1), each tagged `@Tags(backend.stringof)` so
@@ -86,18 +86,21 @@ accumulates speculative template instances and TypeInfoDeclarations from
 backends. Codegen of such a module emits dangling references to other
 snippets' symbols. Consequences already baked in:
 
-- `DynamicLibrary` must only ever codegen a **freshly parsed** module. The
-  ut harness does this via a `static if (is(T == DynamicLibrary))` in
+- `SystemLinker` must only ever codegen a **freshly parsed** module. The
+  ut harness enforces this via a `static if (is(T == SystemLinker))` in
   `tests/ut/backends/package.d`. Any future caller (benchmark harness, REPL)
-  must do the same — but a fresh parse is *not sufficient* if the same
-  source was already parsed earlier in the process; see lesson 6.
-- `removeForeignTemplateInstances` in dynamic.d prunes members whose
+  must do the same.
+- `removeForeignTemplateInstances` in system_linker.d prunes members whose
   `minst`/declaring module isn't this module before codegen — belt and
   braces; it was **not sufficient alone** (adopted instances slipped
   through).
-- `global.params.allInst = true` is a trap: it does *not* force re-emission
-  of instances already written once per process, but *does* emit foreign
-  junk. It was tried and removed.
+- `global.params.allInst = true` is **active** (`compiler.d:178`,
+  unconditionally, since the early dynamic-library commits). With allInst
+  on, `appendToModuleMember` (`templatesem.d:1233`) always routes non-root
+  template instances via `importedFrom` to the first root module parsed.
+  Slice 1 worked around this via the ELF adoption loop (lesson 10) rather
+  than controlling ownership upfront. See lesson 8 for why it is not a trap
+  if the first root module is one we control.
 
 ### 2. Template instances are emitted once per process, owned by the first instantiator
 
@@ -159,23 +162,90 @@ emits) its instances. Fixture-local templates are immune (each parse makes
 a fresh `TemplateDeclaration` with its own instance cache); only templates
 from cached imports (druntime/phobos lowering hooks) are affected.
 
+**This lesson is dissolved for `SystemLinker` by the adoption loop (lesson
+10):** owned-or-not is irrelevant once the object's ELF undefined symbols
+drive instance adoption — borrowed instances are re-homed into the snippet
+module and re-emitted.
+
 ### 7. Codegen of the same module AST twice emits an empty object (2026-06-10)
 
 `generateCodeAndWrite` on a module already codegen'd in this process
 writes an object with no function symbols: the glue marks functions as
-written and skips them on the second pass. The resulting `.so` links
-(nothing is undefined in an empty library) and every `dlsym` then misses,
-reported as "unittest symbol not found in shared library: <mangled name>".
-This blocks the benchmark's timed loop for `SystemLinker` — 1 warmup +
-N iterations means repeatedly codegen'ing the same module. As of
-2026-06-10 `bin/bench.sh -b system-linker` passes the correctness check
-(first codegen: compile, link, load, run all fixture tests, agree with
-ctfe) and skips the timed loop with the message above. Unblocking the
-timed loop is Slice-1 territory: the emission bookkeeping that re-homes
-foreign instances must also allow re-emission of an already-written
-module — a fresh parse per iteration is no escape because of lesson 6.
+written and skips them on the second pass (`fd.semanticRun >= PASS.obj`
+guard, `glue/package.d:434`). Note that the pass is *incremental*, not
+fully empty: template-instance members appended *after* the first pass
+(speculative instances promoted later) do emit, since their member
+functions are still at `semantic3done`. But for the SystemLinker's
+benchmark loop the first-pass functions are exactly the ones needed —
+every subsequent pass misses them. The resulting `.so` links (nothing is
+undefined in an empty library) and every `dlsym` then misses, reported as
+"unittest symbol not found in shared library: <mangled name>". This
+blocks the benchmark's timed loop — 1 warmup + N iterations means
+repeatedly codegen'ing the same module.
 
-### 8. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1)
+**This lesson is dissolved for `SystemLinker` by the written-state reset
+(lesson 11):** resetting `semanticRun` and `csym` before each re-emit
+means every codegen pass sees the module as un-written. The benchmark's
+timed system-linker loop is now unblocked as a side-effect of slice 1.
+
+### 8. `allInst=true` is what concentrates instances at the first root module (2026-06-11)
+
+`global.params.allInst = true` is set unconditionally at
+`compiler.d:178` and never cleared (despite the plan's earlier "tried
+and removed" note — that referred to a per-codegen toggle that was
+removed, not this process-global setting). With allInst active,
+`appendToModuleMember` (`templatesem.d:1233`) always takes the branch that
+chases `importedFrom` on the template's declaring module. For every
+druntime/phobos template (`_d_assert_fail`, `miniFormat`,
+`_d_newThrowable`, etc.), `importedFrom` resolves to the first root module
+ever parsed in the process. This is deterministic: whichever module the
+process parses first as root becomes the accumulation point for every
+druntime/phobos instantiation that happens later.
+
+This is the mechanism that would make a **lightning-rod design** work
+(see lesson 9 for the design): control the first root module and you
+control instance ownership. Slice 1 took a different path (ELF adoption
+loop, lesson 10) that does not require controlling the first root module,
+but the lightning-rod + fork approach remains a cleaner long-term
+alternative.
+
+### 9. Fork-based codegen isolation design (alternative to adoption loop)
+
+A future refactor could replace the adoption loop entirely:
+
+`fork()` before `generateCodeAndWrite` gives the child a copy-on-write
+snapshot of the full dmd AST and process globals. The child runs codegen,
+links the `.so`, writes it to `/tmp`, then `_exit`. The parent's state
+— `PASS.obj` marks, `csym` populated by `toSymbol`, ELF segment tables —
+is never mutated. Combined with a **lightning rod module** (parse a small
+controlled module as the very first root module in the process so it
+becomes the accumulation point for all druntime/phobos instances), this
+dissolves lessons 6 and 7 entirely and removes the fresh-parse requirement.
+
+**Why it is safe here:**
+- The process is single-threaded at fork time: `unitUnthreaded` forces
+  sequential tests (dub.sdl:24), no D worker threads exist.
+- druntime registers `pthread_atfork` handlers for the GC
+  (`gc.d:1794–1797`): the prepare handler locks gcLock, the child handler
+  unlocks it and resets parallel-scan-thread state. GC allocations and D
+  exceptions work normally in the child.
+- The conservative GC's optional `COLLECT_FORK` mode (disabled by default)
+  is direct precedent for fork-without-exec running full D code.
+- The child still needs to spawn `dmd -shared` (fork+exec) — fine; spawning
+  from a forked child is safe on Linux.
+- The parent dlopens the `.so` from a file path computed before forking; no
+  codegen-time state is needed beyond mangled names derived from the parent AST.
+
+**What fork alone does NOT fix:** `minst` ownership is set during semantic
+analysis in the parent. The lightning rod is what ensures druntime/phobos
+instances are owned by the right module before the fork. Without the
+lightning rod, the child still needs the adoption loop or pruning.
+
+**Error transport:** the child cannot throw across the fork boundary. Exit
+code + an optional pipe for error text; the `.so` path is computed by the
+parent before forking.
+
+### 10. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1)
 
 "Which instances does this module need but not own?" is answered exactly
 by the undefined symbols of the object just written (`-z defs` checks the
@@ -198,7 +268,7 @@ loop terminates. Candidate sources (all three are needed):
   the complete symbol name; as a module member it emits unconditionally as
   a COMDAT via `toobj.d`).
 
-### 9. The written-state to reset for re-emission (slice 1 / lesson 7 fix)
+### 11. The written-state to reset for re-emission (slice 1 / lesson 7 fix)
 
 Codegen marks everything written once per process. To re-emit a module
 (and its adopted instances), reset, recursively over members and
@@ -223,7 +293,7 @@ everything codegen'd *with* a function rather than as a member:
 - Do NOT walk into `TemplateDeclaration` bodies: parse-time AST,
   `foreachExpAndVar` asserts on un-lowered statements.
 
-### 10. dlclose + GC heap = dangling vptrs (slice 1)
+### 12. dlclose + GC heap = dangling vptrs (slice 1)
 
 Dead-but-uncollected objects of classes the fixture defines carry vptrs
 into the test's `.so`. After `Runtime.unloadLibrary`, ANY later finalizer
@@ -237,11 +307,17 @@ copy primitives out, so none do today.
 
 ### Slice 1 — make template-instance fixtures link — DONE (2026-06-11)
 
-Done on branch `dmd-backend-slice1`; mechanism in lessons 8-10. The sweep
+Done on branch `dmd-backend-slice1`; mechanism in lessons 10-12. The sweep
 promoted every block that passes; `diagnostics.oops` (the success
 criterion) and the rest are stable under `--random` and both repro seeds.
 The same reset machinery unblocks repeated codegen of one module
 (lesson 7), which the benchmark's timed system-linker loop needs.
+
+A fork+lightning-rod design (lessons 8-9) would have been a cleaner
+alternative — it dissolves lessons 6 and 7 and removes the fresh-parse
+requirement. The adoption loop was chosen because it was incrementally
+verifiable and self-contained. The fork path remains viable as a future
+optimization (Slice 4 territory).
 
 ### Slice 2 — message mismatches (3 tests)
 
@@ -272,10 +348,12 @@ import paths, emit each, pass all objects to the link).
 ### Slice 4 — Evaluator interface
 
 Only after the runner matrix is healthy: implement
-`eval`/`evalRepl`/`runTestSummary` so `DynamicLibrary` becomes a full
-`Backend`. Same fresh-parse requirement applies. Per-call compile+link+load
-latency makes this unsuitable for the REPL hot path until measured —
-benchmark before promoting anywhere.
+`eval`/`evalRepl`/`runTestSummary` so `SystemLinker` becomes a full
+`Backend`. The fresh-parse requirement still applies (the adoption loop
+did not remove it). Per-call compile+link+load latency makes this
+unsuitable for the REPL hot path until measured — benchmark before
+promoting anywhere. Adopting the fork design (lesson 9) at this point
+would remove the fresh-parse requirement and is worth considering then.
 
 ## Test discipline
 
@@ -301,10 +379,16 @@ bin/ut @SystemLinker                # just the native-backend matrix
 
 ## Key reference files
 
-- `source/quickbite/backends/native/dynamic.d` — the backend
-- `source/quickbite/frontend/compiler.d` — uncached parse entry point
+- `source/quickbite/backends/native/system_linker.d` — the backend
+- `source/quickbite/frontend/compiler.d` — parse cache, `initializeDmdState`,
+  `allInst=true` at :178
 - `source/quickbite/frontend/util.d` — index-based unittest walk
 - `tests/ut/backends/package.d` — fresh-parse `static if` for SystemLinker
-- dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember`),
-  `typinf.d` (`getTypeInfoType`), `dmd/glue/toobj.d` (instance/TypeInfo
-  emission), `dmd/glue/package.d` (`generateCodeAndWrite`)
+- dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember` :1233,
+  `needsCodegen` :2778), `typinf.d` (`getTypeInfoType`),
+  `dmd/glue/toobj.d` (`visit(TemplateInstance)` :701, instance emission),
+  `dmd/glue/package.d` (`FuncDeclaration_toObjFile` :434 skip guard,
+  `generateCodeAndWrite`),
+  `core/internal/dassert.d` (`_d_assert_fail` unary :38, binary :63,
+  `miniFormat` :176), `core/lifetime.d` (`_d_newThrowable` :2669,
+  `_d_newclassT` :2729)
