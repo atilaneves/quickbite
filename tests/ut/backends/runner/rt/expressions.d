@@ -6,8 +6,8 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-// The @ShouldFail above encodes a CTFE-formatter limitation; compiled code
-// genuinely passes.
+// The ct/ counterpart is @ShouldFail due to a CTFE-formatter limitation;
+// compiled code genuinely passes.
 static foreach (backend; AliasSeq!(SystemLinker)) {
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -50,10 +50,10 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 }
 
 // Compiled dg.ptr is the (non-null) closure context pointer, so the
-// `context is null` assertion fails; the rejection above is CTFE-only. The
+// `context is null` assertion fails; the ct/ rejection is CTFE-only. The
 // pointer value varies per run, so match the stable suffix of the message.
 static foreach (backend; AliasSeq!(SystemLinker)) {
-    @("delegate.ptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @("delegate.ptrPropertyReturnsClosureContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         const message = collectExceptionMsg!Exception(
@@ -87,9 +87,9 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 }
 
 // Compiled dg.funcptr is a plain (non-null) function pointer, so the fixture
-// passes; the rejection above is CTFE-only.
+// passes; the ct/ rejection is CTFE-only.
 static foreach (backend; AliasSeq!(SystemLinker)) {
-    @("delegate.funcptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @("delegate.funcptrPropertyReturnsFunctionPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

@@ -138,8 +138,8 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
     }
 }
 
-// Compiled code reads the static child-class registry fine; the limitation
-// above is CTFE-only.
+// Compiled code reads the static child-class registry fine; the ct/
+// @ShouldFail limitation is CTFE-only.
 static foreach (backend; AliasSeq!(SystemLinker)) {
     @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)

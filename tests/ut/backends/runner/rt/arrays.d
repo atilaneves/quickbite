@@ -7,8 +7,7 @@ import ut.backends;
 // Compiled overlapping slice assignment raises druntime's plain
 // "Range violation"; the slice-range text is CTFE-only.
 static foreach (backend; AliasSeq!(SystemLinker)) {
-    @("dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe." ~
-        backend.stringof)
+    @("dynamicArray.overlappingSliceAssignmentDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
