@@ -5,8 +5,13 @@ private:
 
 
 public class SystemLinker: imported!"quickbite.backends.runner".Runner {
-    import quickbite.backends.runner: TestResult;
+    import quickbite.backends.runner: ExecutionMode, TestResult;
     import dmd.dmodule: Module;
+
+    // Native code is inherently runtime; the mode exists for constructor
+    // uniformity across backends and is ignored.
+    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+    }
 
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
