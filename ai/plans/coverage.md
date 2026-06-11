@@ -1,40 +1,37 @@
 # Plan: Backend Semantic Confidence
 
-## Why this plan exists
+## Goal
 
-The end goal is that any backend — `Interpreter`, `Bytecode`, `IR`,
-`SystemLinker` — could be dropped in where dmd's CTFE engine or regular
-dmd-compiled code runs today, and nobody would notice. "Passes the test
-suite" must come to *mean* that. Today it does not, for two independent
-reasons:
+Given that quickbite's tests pass, any D code should behave on every
+backend — `Interpreter`, `Bytecode`, `IR`, `SystemLinker` — exactly as
+it would if compiled into object files, linked, and run as a native
+program. "Passes the test suite" must come to *mean* that.
 
-1. **The corpus has semantic holes.** Real D behaviours (string switch,
-   operator overloading, signed/unsigned conversion, integer wraparound,
-   struct/null value marshaling, …) are not tested against any backend.
-2. **The matrix is opt-in and uneven.** `backends` (in
-   `tests/ut/backends/package.d`) is `Ctfe` only; each test block opts
-   other backends in via `backendsWith!(...)`. Participation today:
-   ~55 multi-backend blocks omit `IR`, only ~14 include `SystemLinker`,
-   and whole files (e.g. `cerealed.d`) run on `Ctfe` alone. Nothing
-   reports these gaps, so "green" silently means different things per
-   backend.
+This plan owns the **corpus**: making the suite semantically dense
+enough that a backend which mis-implements D semantics cannot pass it.
+It does **not** own the matrix — which backends participate in which
+existing test blocks is being expanded per backend in parallel
+(`SystemLinker` in `ai/plans/dmd-backend.md`; the VM backends in their
+own promotion streams). Every test added here becomes an obligation
+those streams inherit.
+
+Today "green" does not imply semantic fidelity because the corpus has
+holes: real D behaviours (string switch, operator overloading,
+signed/unsigned conversion, integer wraparound, struct/null value
+marshaling, …) are not tested against *any* backend.
 
 Two failed approaches inform this plan. Line coverage of `Ctfe` was
 tried as the test-idea generator and hit diminishing returns fast: the
 uncovered remainder is dmd's diagnostic-formatting branches, and each
 new test lit up one error string while proving no behaviour. More
 fundamentally, coverage answers "did tests execute this line?" when the
-question that matters is "**if this code were wrong, would any test
+question that matters is "**if this backend were wrong, would any test
 notice?**" — and a hand-curated backlog of feature ideas (the second
 attempt) is a fish, not a fishing rod: once consumed, the agent has no
 method for finding the next gap.
 
 So this plan is built around three *generative* mechanisms that tell an
-agent what test to write next without anyone imagining it (stream A),
-plus matrix-gap visibility (stream B) and `IR` parity (stream C).
-Expanding `SystemLinker`'s matrix is owned by `ai/plans/dmd-backend.md`,
-not duplicated here — but every test added here becomes an obligation
-that plan inherits.
+agent what test to write next without anyone imagining it.
 
 ## What "drop-in replacement" means
 
@@ -55,11 +52,13 @@ corpus, its observable behaviour is indistinguishable from the oracle's:
    fixture (via `SystemLinker`, or an actual compiled binary when
    needed to settle a dispute), its behaviour — including exact message
    text — is definitive. No "CTFE quirk" excuses for native results.
+   (Making compiled dmd the systematic arbiter is
+   `ai/plans/dmd-compiled-fixture-sentinel.md`.)
 2. **CTFE is the working oracle** (`Ctfe`,
    `source/quickbite/backends/ctfe/dmd_ctfe.d`) for everything compiled
    code hasn't been brought to yet. A fixture written against CTFE
    passes by construction (it is real D) and becomes a cross-backend
-   obligation when promoted.
+   obligation when other backends join its block.
 3. **Disagreements:** backend vs CTFE → assume the backend or the test
    is wrong unless compiled D code proves otherwise. CTFE vs compiled
    code → compiled code wins; pin the compiled behaviour where the
@@ -68,7 +67,7 @@ corpus, its observable behaviour is indistinguishable from the oracle's:
    formatter emits `<double not supported>` for float failure
    messages).
 
-## Stream A — generate new tests
+## The generative mechanisms
 
 Three mechanisms, in complementary roles:
 
@@ -86,9 +85,17 @@ extend the corpus through the mechanisms below.
 Every new test, regardless of which mechanism produced it, follows the
 same finishing steps: verify the expected value/message against the
 oracle empirically before pinning it; show the fixture and stop for
-approval (the approval gate); after it passes on `Ctfe`, promote it to
-`Interpreter`, `Bytecode`, and `IR` via `backendsWith!` (promotion is
-pre-approved); run `ninja bin/ut` then `bin/ut --random`.
+approval (the approval gate); write its block as
+`static foreach (backend; AliasSeq!(...))` listing **every backend
+that passes it** — `Ctfe` at minimum, and adding backends to the
+`AliasSeq` is pre-approved. A backend that *fails* the new fixture is
+the plan working as intended: a found semantic divergence. Fix it if
+the fix is small (strict TDD — the fixture is the failing test);
+otherwise leave that backend out of the `AliasSeq` with a comment
+naming the divergence so the omission is visible, and record it for
+that backend's stream. If the behaviour is genuinely unsupported by a
+backend's design, pin an explicit unsupported-diagnostic expectation
+instead. Then `ninja bin/ut` and `bin/ut --random`.
 
 ### A1. Backend mutation (generator + exit criterion)
 
@@ -129,10 +136,11 @@ one line per attempt: file:line, mutation, killed/survived/equivalent,
 and the test that kills it. Agents read it first so the same mutant is
 never retried, and the kill rate over time is the confidence metric.
 
-Synergy with stream C: a mutant in `IR` can only be killed by a test
-block that includes `IR`. A low kill rate in one backend is often a
-matrix gap, not a corpus gap — check the stream-B report before
-writing a new fixture.
+A mutant in backend X can only be killed by a test block whose
+`AliasSeq` includes X. When a mutant survives because no block on that
+code path runs X at all, that is a matrix gap, not a corpus gap —
+record it and hand it to that backend's promotion stream instead of
+writing a redundant fixture.
 
 ### A2. Spec walk (enumerable checklist)
 
@@ -156,7 +164,7 @@ The loop:
    checklist as deferred-to-native).
 3. For each claim, grep the corpus (`tests/ut/backends/runner/`) for
    an existing test. Misses become proposed fixtures (approval gate,
-   oracle-verified, then promoted).
+   oracle-verified, every passing backend in the `AliasSeq`).
 4. Tick the section with a one-line note of what was added or why
    nothing was needed.
 
@@ -206,12 +214,15 @@ or mutation work flags as thin (e.g. `arrayop`, `switch`, `bitops`,
 | boolean / short-circuit logic | `logic.d` |
 | assert/diagnostic messages | `diagnostics.d` |
 | impure / runtime-only (unsupported) | `../rt/` |
-| struct/null value round-trip | REPL driver, `tests/ut/bin/repl/` |
+| struct/null value round-trip | REPL driver, `tests/ut/bin/repl.d` |
 
 The fixture helper is `runBackendSourceFixtureTests!backend(q{...})`
 (the fixture's own `unittest` asserts; failures surface through
-`.shouldThrowWithMessage`). Value round-trips that must marshal a whole
-struct or a `null` use the REPL driver (`runReplLoop`).
+`.shouldThrowWithMessage`), inside a
+`static foreach (backend; AliasSeq!(...))` block named
+`@("name." ~ backend.stringof)` and tagged `@Tags(backend.stringof)`.
+Value round-trips that must marshal a whole struct or a `null` use the
+REPL driver (`runReplLoop`).
 
 ### Fixture rules (non-negotiable, from `ai/mistakes.md` / AGENTS.md)
 
@@ -227,60 +238,18 @@ struct or a `null` use the REPL driver (`runReplLoop`).
   matrix** (the `<double not supported>` quirk above). Passing float
   asserts are fine.
 - **Approval gate.** Show the exact fixture in a syntax-highlighted
-  block and stop for approval before writing it. Promoting an existing
-  test to another backend is the only pre-approved move.
+  block and stop for approval before writing it. Adding a backend to
+  an existing test block's `AliasSeq` is the only pre-approved move.
 - **Never weaken a test to make it pass.** If CTFE rejects something,
   convert to an unsupported-diagnostic test and keep the inner
   supported assertion.
 
-## Stream B — make the matrix gaps visible
-
-The matrix stays opt-in (`backendsWith!`); what changes is that the
-gaps stop being invisible. Deliverable: a small checked-in script
-(`scripts/matrix-report.sh` or similar) that scans
-`tests/ut/backends/` for `static foreach (backend; backends…)` blocks
-and emits a per-backend participation report:
-
-- per backend: how many of the N test blocks include it;
-- per file: which blocks exclude which backends;
-- run on demand (and from `ci.sh`), output as a markdown table so
-  diffs of the committed report show matrix regressions.
-
-Implementation can be a grep/awk pass over the test sources — the
-`backendsWith!(…)` text and the `@("name." ~ backend.stringof)` naming
-convention make blocks mechanically identifiable. No build-system
-integration required to start; correctness of the count matters more
-than elegance.
-
-A new test block that omits a backend is then a visible, reviewable
-choice instead of a silent default.
-
-## Stream C — IR to full parity
-
-`IR` is a first-class target and must reach the same participation as
-`Interpreter` and `Bytecode`. Promotion of an existing CTFE-backed
-matrix test to another backend is pre-approved (AGENTS.md), so this
-stream needs no test-approval round-trips:
-
-1. Generate the stream-B report; take the list of blocks that have
-   `Interpreter`/`Bytecode` but not `IR` (~55 today, concentrated in
-   the `backendsWith!(Interpreter, Bytecode)` blocks).
-2. One block at a time: add `IR`, run the focused test.
-3. If it passes, commit and continue. If it fails, that is a found
-   bug: write nothing new — the promoted test *is* the failing test —
-   and fix the IR backend until green (strict TDD).
-4. If the behaviour is genuinely unsupported by IR's current design,
-   pin an explicit unsupported-diagnostic expectation for IR rather
-   than leaving it out silently — same policy as the `rt/cstdlib.d`
-   malloc tests.
-5. Full suite (`bin/ut --random`) after every editing session.
-
 ## Out of scope (deliberately)
 
-- **SystemLinker matrix expansion** — owned by
-  `ai/plans/dmd-backend.md`. This plan only feeds it obligations.
-- **Inverting the matrix default** to all-backends opt-out — revisit
-  once the report exists and IR parity lands.
+- **Matrix expansion of existing tests** — which backends join which
+  existing blocks is per-backend parallel work (`SystemLinker`:
+  `ai/plans/dmd-backend.md`; VM backends: their promotion streams).
+  This plan only feeds those streams obligations.
 - **Differential fuzzing** (random program generation) — a possible
   future stream once mutation kill rates plateau, not part of this
   plan.
@@ -298,14 +267,12 @@ stream needs no test-approval round-trips:
 - The mutation ledger shows **20 consecutive plausible mutants per VM
   backend all killed** — the loop-until-dry signal that the corpus is
   strong, not just well-trodden.
-- The matrix report exists, runs in `ci.sh`, and shows `IR` at parity
-  with `Interpreter`/`Bytecode`.
 
-At that point "passes the suite" means "agrees with the dmd oracle
-across real D semantics, on every VM backend, with a measured kill
-rate behind it" — which is the confidence this plan exists to provide.
-The remaining distance to full drop-in status is then exactly the
-`SystemLinker` matrix work in `ai/plans/dmd-backend.md`.
+At that point "passes the suite" means "agrees with compiled D
+semantics across the real language surface, with a measured kill rate
+behind it" — which is the confidence this plan exists to provide. The
+remaining distance to full drop-in status is then exactly the matrix
+work the per-backend streams own: every backend running every block.
 
 ## Appendix: starter backlog (hand-curated; consume, don't extend)
 
