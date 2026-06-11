@@ -55,14 +55,14 @@ walker, and fresh-parse workarounds with fork + lightning rod
 and the only custom machinery left is the child-side prune plus the
 TypeInfo re-homing (lesson 15).
 
-**Open bug (found 2026-06-11, investigate independently):**
-`bin/bench --backend=system-linker` skips every fixture at the
-correctness gate (`checkRunnerResults`, benchmarks/cli.d) with
-"unittest symbol not found in shared library", even freshly built. The
-ut path drives SystemLinker fine; the bench's standalone-fixture path
-(module naming or parse order) does not line up. Unchanged by slice 2
-(the bench fixture is file-backed; the dlsym miss is not a stale-parse
-symptom).
+**Resolved by slice 2:** the open bench bug
+(`bin/bench --backend=system-linker` skipped every fixture at the
+correctness gate with "unittest symbol not found in shared library").
+The bench runs `runTests` repeatedly on the same cached module
+(correctness gate, then warmup + N timed iterations) — exactly the
+repeated-codegen-of-one-AST case fork isolates. ci.sh's bench now times
+the system-linker row (~59 ms median on `tests/example.d`) with zero
+skips.
 
 How it works now:
 
@@ -713,8 +713,8 @@ bin/ut @SystemLinker                # just the native-backend matrix
   test (graduated spike scenario)
 - `source/quickbite/backends/evaluator.d` — the live Evaluator interface
   (slice 4)
-- `benchmarks/cli.d` — bench harness; correctness gate (open bug, see
-  Current state)
+- `benchmarks/cli.d` — bench harness; correctness gate
+  (`checkRunnerResults`)
 - dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember` :1233,
   `needsCodegen` :2778), `typinf.d` (`getTypeInfoType`),
   `dmd/glue/toobj.d` (`visit(TemplateInstance)` :701, instance emission),
