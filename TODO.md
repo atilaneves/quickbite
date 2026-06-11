@@ -1,4 +1,6 @@
 * Increase test coverage.
+* Deal with the test split now that real compiled code behaves
+  differently from CTFE.
 * Get at least one backend to the CTFE-parity finish line.
 * Write more runtime tests.
 * Plan and implement runtime execution for CTFE-parity backends.
