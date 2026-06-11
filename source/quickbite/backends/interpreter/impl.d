@@ -38,6 +38,8 @@ private struct Walker {
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
+    private size_t[VarDeclaration] arrayAllocations;
+    private size_t allocationCount;
     private Value result;
     private bool runningCalledFunction;
     private FuncDeclaration currentFunction;
@@ -198,13 +200,16 @@ private struct Walker {
             return runAddAssignExpression(addAssign);
 
         if (auto add = expression.isAddExp)
-            return runExpression(add.e1) + runExpression(add.e2);
+            return runAddExpression(add);
 
         if (auto sub = expression.isMinExp)
-            return runExpression(sub.e1) - runExpression(sub.e2);
+            return runMinExpression(sub);
 
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
+
+        if (auto div = expression.isDivExp)
+            return runExpression(div.e1) / runExpression(div.e2);
 
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
@@ -257,6 +262,9 @@ private struct Walker {
 
         if (auto pointer = expression.isPtrExp)
             return runExpression(pointer.e1).pointerTarget;
+
+        if (auto address = expression.isAddrExp)
+            return runAddressExpression(address);
 
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
@@ -316,8 +324,14 @@ private struct Walker {
     ) {
         import dmd.tokens: EXP;
 
-        const left = runExpression(comparison.e1).asReal;
-        const right = runExpression(comparison.e2).asReal;
+        const leftValue = runExpression(comparison.e1);
+        const rightValue = runExpression(comparison.e2);
+
+        if (leftValue.isPointer && rightValue.isPointer)
+            return runPointerComparison(comparison.op, leftValue, rightValue);
+
+        const left = leftValue.asReal;
+        const right = rightValue.asReal;
 
         if (comparison.op == EXP.lessThan)
             return Value(left < right);
@@ -326,6 +340,150 @@ private struct Walker {
         if (comparison.op == EXP.greaterThan)
             return Value(left > right);
         return Value(left >= right);
+    }
+
+    // ordered comparisons between pointers into unrelated allocations are
+    // false both ways, matching CTFE
+    private Value runPointerComparison(
+        in imported!"dmd.tokens".EXP op,
+        in Value left,
+        in Value right,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (!left.pointerSameAllocation(right))
+            return Value(false);
+
+        const difference = left.pointerOffsetDifference(right);
+
+        if (op == EXP.lessThan)
+            return Value(difference < 0);
+        if (op == EXP.lessOrEqual)
+            return Value(difference <= 0);
+        if (op == EXP.greaterThan)
+            return Value(difference > 0);
+        return Value(difference >= 0);
+    }
+
+    private Value runAddExpression(imported!"dmd.expression".AddExp add) {
+        const left = runExpression(add.e1);
+        const right = runExpression(add.e2);
+
+        if (left.isPointer)
+            return left.pointerOffsetBy(
+                pointerElementOffset(add.type, right.asLong),
+            );
+
+        if (right.isPointer)
+            return right.pointerOffsetBy(
+                pointerElementOffset(add.type, left.asLong),
+            );
+
+        return left + right;
+    }
+
+    private Value runMinExpression(imported!"dmd.expression".MinExp sub) {
+        const left = runExpression(sub.e1);
+        const right = runExpression(sub.e2);
+
+        // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
+        // difference so the lowered division yields the element difference
+        if (left.isPointer && right.isPointer)
+            return Value(
+                left.pointerOffsetDifference(right) *
+                pointerElementSize(sub.e1.type),
+            );
+
+        if (left.isPointer)
+            return left.pointerOffsetBy(
+                -pointerElementOffset(sub.type, right.asLong),
+            );
+
+        return left - right;
+    }
+
+    // DMD semantic scales pointer arithmetic operands to byte offsets
+    private long pointerElementOffset(
+        imported!"dmd.mtype".Type pointerType,
+        in long byteOffset,
+    ) {
+        const elementSize = pointerElementSize(pointerType);
+        if (byteOffset % elementSize != 0)
+            throw new Exception("Unsupported pointer arithmetic offset.");
+
+        return byteOffset / elementSize;
+    }
+
+    private long pointerElementSize(imported!"dmd.mtype".Type pointerType) {
+        import dmd.typesem: size;
+
+        auto element = pointerType is null
+            ? null
+            : pointerType.toBasetype.nextOf;
+        const elementSize = element is null ? 0 : cast(long) element.size;
+        if (elementSize <= 0)
+            throw new Exception("Unsupported pointer element type.");
+
+        return elementSize;
+    }
+
+    private Value runAddressExpression(
+        imported!"dmd.expression".AddrExp address,
+    ) {
+        import std.conv: text;
+
+        auto index = address.e1.isIndexExp;
+        if (index is null)
+            throw new Exception(
+                text("Unsupported eval expression: ", address.op),
+            );
+
+        const offset = runExpression(index.e2).asLong;
+        return arrayPointer(index.e1, offset, address.op);
+    }
+
+    private Value arrayPointer(
+        imported!"dmd.expression".Expression array,
+        in long offset,
+        in imported!"dmd.tokens".EXP op,
+    ) {
+        import std.conv: text;
+
+        auto var = array.isVarExp;
+        if (var is null)
+            throw new Exception(text("Unsupported eval expression: ", op));
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception(text("Unsupported eval expression: ", op));
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception(text("Unsupported eval expression: ", op));
+
+        return Value.arrayPointerValue(
+            arrayElements(*current),
+            allocationId(variable),
+            offset,
+        );
+    }
+
+    private Value[] arrayElements(in Value value) {
+        Value[] elements;
+        foreach (index; 0 .. value.length)
+            elements ~= value[index];
+
+        return elements;
+    }
+
+    // pointers into the same array local share an opaque allocation id so
+    // that identity and ordering survive the copy-on-write value model
+    private size_t allocationId(VarDeclaration variable) {
+        if (auto id = variable in arrayAllocations)
+            return *id;
+
+        arrayAllocations[variable] = ++allocationCount;
+        return arrayAllocations[variable];
     }
 
     private Value runConditionalExpression(
@@ -1073,6 +1231,7 @@ private struct Walker {
         import quickbite.backends.casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
+        import quickbite.frontend.dmd.types: isPointerType;
 
         auto type = cast_.to.toBasetype;
         if (type is null)
@@ -1081,7 +1240,25 @@ private struct Walker {
         if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
 
+        if (isPointerType(type))
+            return pointerCastValue(cast_);
+
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    // DMD semantic lowers `array.ptr` to `cast(T*) array`
+    private Value pointerCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.frontend.dmd.types: isArrayType;
+        import std.conv: text;
+
+        if (isArrayType(cast_.e1.type))
+            return arrayPointer(cast_.e1, 0, cast_.op);
+
+        const value = runExpression(cast_.e1);
+        if (value.isPointer)
+            return value;
+
+        throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
@@ -1128,6 +1305,21 @@ private struct Walker {
         lower = slice.lwr is null
             ? 0
             : cast(size_t) runExpression(slice.lwr).asLong;
+
+        if (source.isPointer) {
+            if (slice.upr is null) {
+                import std.conv: text;
+                throw new Exception(
+                    text("Unsupported eval expression: ", slice.op),
+                );
+            }
+
+            return source.pointerSlice(
+                lower,
+                cast(size_t) runExpression(slice.upr).asLong,
+            );
+        }
+
         const upper = slice.upr is null
             ? source.length
             : cast(size_t) runExpression(slice.upr).asLong;
@@ -1145,18 +1337,11 @@ private struct Walker {
         const source = runExpression(index.e1);
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
 
-        // DMD dereferences druntime hook results such as `_d_aaGetRvalueX`
-        // pointers with a zero index
-        if (isPointerType(index.e1.type)) {
-            if (arrayIndex != 0) {
-                import std.conv: text;
-                throw new Exception(
-                    text("Unsupported eval expression: ", index.op),
-                );
-            }
-
-            return source.pointerTarget;
-        }
+        // covers both array-backed pointers and druntime hook results such
+        // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
+        // zero index
+        if (isPointerType(index.e1.type))
+            return source.pointerIndex(arrayIndex);
 
         if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
@@ -1231,6 +1416,14 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         in size_t lower,
     ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        // pointer slices snapshot the allocation; they do not alias a local
+        if (isPointerType(slice.e1.type)) {
+            sliceAliases.remove(variable);
+            return;
+        }
+
         auto var = slice.e1.isVarExp;
         if (var is null) {
             sliceAliases.remove(variable);

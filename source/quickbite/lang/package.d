@@ -87,6 +87,14 @@ public struct Value {
         return Value(Pointer([target]));
     }
 
+    public static Value arrayPointerValue(
+        in Value[] allocation,
+        in size_t allocationId,
+        in long offset,
+    ) @safe pure {
+        return Value(Pointer(allocation, allocationId, offset));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -543,13 +551,111 @@ public struct Value {
     }
 
     public Value pointerTarget() const @safe pure {
+        return pointerIndex(0);
+    }
+
+    public Value pointerIndex(in size_t index) const @safe pure {
+        import std.conv: text;
         import std.sumtype: match;
 
         return data.match!(
-            (const(Pointer) pointer) => pointer.target[0],
+            (const(Pointer) pointer) {
+                const element = pointer.offset + cast(long) index;
+                if (element < 0 || element >= pointer.target.length)
+                    throw new Exception(text(
+                        "pointer index `", index,
+                        "` exceeds allocated memory block `[",
+                        -pointer.offset, "..",
+                        cast(long) pointer.target.length - pointer.offset,
+                        "]`",
+                    ));
+
+                return pointer.target[cast(size_t) element];
+            },
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;
+            },
+        );
+    }
+
+    public Value pointerOffsetBy(in long delta) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => Value(Pointer(
+                pointer.target,
+                pointer.allocation,
+                pointer.offset + delta,
+            )),
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public bool pointerSameAllocation(in Value other) const @safe pure {
+        return pointerAllocation != 0 &&
+            pointerAllocation == other.pointerAllocation;
+    }
+
+    public long pointerOffsetDifference(in Value other) const @safe pure {
+        if (!pointerSameAllocation(other))
+            throw new Exception("Expected pointers into the same allocation.");
+
+        return pointerOffset - other.pointerOffset;
+    }
+
+    public Value pointerSlice(in size_t lower, in size_t upper) const @safe pure {
+        import std.conv: text;
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) {
+                const begin = pointer.offset + cast(long) lower;
+                const end = pointer.offset + cast(long) upper;
+
+                if (begin < 0 || begin > end || end > pointer.target.length)
+                    throw new Exception(text(
+                        "pointer slice `[", lower, "..", upper,
+                        "]` exceeds allocated memory block `[",
+                        -pointer.offset, "..",
+                        cast(long) pointer.target.length - pointer.offset,
+                        "]`",
+                    ));
+
+                return Value.arrayValue(
+                    pointer.target[cast(size_t) begin .. cast(size_t) end],
+                );
+            },
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
+    private size_t pointerAllocation() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.allocation,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return size_t.init;
+            },
+        );
+    }
+
+    private long pointerOffset() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.offset,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return long.init;
             },
         );
     }
@@ -908,11 +1014,28 @@ private struct AssocArray {
 }
 
 
+// `allocation` is an opaque nonzero id identifying the allocation the
+// pointer points into; `target` is a copy-on-write snapshot of that
+// allocation's elements and `offset` the element the pointer points at.
+// Single-target pointers (e.g. associative array slots) have no
+// allocation identity and use `allocation == 0`, `offset == 0`.
 private struct Pointer {
     public Value[] target;
+    public size_t allocation;
+    public long offset;
 
     public this(in Value[] target) @safe pure {
         this.target = target.dup;
+    }
+
+    public this(
+        in Value[] target,
+        in size_t allocation,
+        in long offset,
+    ) @safe pure {
+        this.target = target.dup;
+        this.allocation = allocation;
+        this.offset = offset;
     }
 }
 
