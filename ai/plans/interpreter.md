@@ -568,6 +568,64 @@ production changes in this probe; per-test mutation signal verification was
 not performed and remains required before any kept promotion is accepted as a
 completed slice.
 
+REPL probe resolution (2026-06-11, branch `interpreter-bin-repl`):
+all six reverted probe failures were re-promoted and fixed in serial
+subagent slices, one commit each. The two duplicate CTFE-only blocks were
+folded into the shared matrix (approved test cleanup). Every backend-matrix
+block in `tests/ut/bin/repl.d` now includes `Interpreter`.
+
+REPL progress: `repl.backend.expressionCtfeErrorsReportDiagnostics` now runs
+on `Interpreter`. The eval walker's `IndexExp` read had no bounds check, so
+`arr[99]` on a local escaped as a host `core.exception.ArrayIndexError`.
+Indexing now goes through `runIndexExpression`, which throws the CTFE-parity
+message via a new `indexOutOfBoundsMessage` helper in
+`backends/interpreter/messages.d`. The literal-receiver path
+(`[1, 2, 3][10]`) was already covered and did not regress.
+
+REPL progress: `repl.backend.displaysAssocArrayResults` now runs on
+`Interpreter`. The walker evaluates `AssocArrayLiteralExp` keys and values
+recursively into `Value.assocArrayValue`, the same constructor the CTFE
+backend uses, so display matches by construction. Literal-only: no
+assoc-array indexing, mutation, `.keys`/`.values`, or druntime hooks.
+
+REPL progress: `repl.backend.displaysEnumValues` now runs on `Interpreter`.
+Enum-typed `IntegerExp` values (checked via `type.ty == TY.Tenum` on the
+non-basetype, mirroring CTFE) construct `Value.enumValue` from DMD's rendered
+member spelling. Casts to integral types still discard the display wrapper.
+
+REPL progress: `repl.backend.importStdExposesPhobosSymbols` now runs on
+`Interpreter`. Clearing the failure chain for
+`[1, 2, 3].map!(a => a * 2).array` required: `UnrolledLoopStatement` and
+`ForStatement` sequencing with a `returned` early-return flag,
+`StructLiteralExp` → `Value.structValue`, `ConstructExp`/`BlitExp` routed
+through assignment, a general `writeLocation` lvalue writer (VarExp / ThisExp
+/ recursive DotVarExp), member-function calls with receiver binding and
+lvalue-only `this` writeback, ref-argument writeback generalized to arbitrary
+writable lvalues, `DotVarExp` struct field reads, the magic `__ctfe` variable
+evaluating to `true` (identified via `ident is Id.ctfe`, matching DMD's own
+interpreter and avoiding the runtime GC/asm path in `std.array.array`), and
+binding DMD's `lengthVar` so `$` resolves in slice and index expressions.
+`Value` gained `structFieldAt` and `withStructField`.
+
+REPL progress: `repl.backend.displaysFilteredArrayResults` now runs on
+`Interpreter`. `iota(5).filter!(x => x % 2 == 0).array` additionally needed
+`DoStatement` sequencing, `ModExp` via a new `%` case in `Value.opBinary`,
+and rewriting the add-assign handler as a read-modify-write through
+`writeLocation` so struct-field targets (`this.current += step` in `iota`)
+work and the increment honours the right-hand side instead of hardcoding 1.
+
+REPL progress: `repl.backend.displaysFiniteRangeResults` now runs on
+`Interpreter`. It was already green through the struct-literal, member-call,
+and lvalue machinery from the two Phobos pipeline slices; the unconsumed
+`MapResult` displays through the generic `Value` struct rendering (no Phobos
+symbol names appear in production code). Signal was verified by temporarily
+mutating the interpreter struct-literal name, which failed the focused test;
+the mutation was reverted before committing.
+
+With this, the previous probe's fix plan is fully discharged: items 1-6 are
+all done. No CTFE-only backend-matrix blocks remain in
+`tests/ut/bin/repl.d`.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and
