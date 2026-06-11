@@ -362,6 +362,9 @@ private struct Walker {
             }
         }
 
+        if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
+            return runArrayOpAddAssignCall(call);
+
         Value[] arguments;
         VarDeclaration[] argumentVariables;
         if (call.arguments !is null) {
@@ -391,6 +394,102 @@ private struct Walker {
                 return runFunction(function_, arguments, argumentVariables);
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // DMD lowers `sums[] = left[] + right[]` to a druntime
+    // `core.internal.array.operations.arrayOp` template call; interpret the
+    // element-wise semantics directly instead of executing the druntime body.
+    private bool isDruntimeArrayOpAddAssign(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        import dmd.dtemplate: isExpression;
+        import std.algorithm: startsWith;
+        import std.conv: text;
+
+        auto instance = function_.parent is null
+            ? null
+            : function_.parent.isTemplateInstance;
+        if (instance is null || instance.tiargs is null)
+            return false;
+
+        if (
+            !text(function_.toPrettyChars)
+                .startsWith("core.internal.array.operations.arrayOp!(")
+        )
+            return false;
+
+        string[] operators;
+        foreach (argument; *instance.tiargs) {
+            auto expression = isExpression(argument);
+            if (expression is null)
+                continue;
+
+            auto literal = expression.isStringExp;
+            if (literal is null)
+                return false;
+
+            operators ~= literal.peekString.idup;
+        }
+
+        return operators == ["+", "="];
+    }
+
+    private Value runArrayOpAddAssignCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        if (call.arguments is null || call.arguments.length != 3)
+            throw new Exception("Unsupported eval call.");
+
+        auto target = (*call.arguments)[0].isSliceExp;
+        if (target is null)
+            throw new Exception("Unsupported eval call.");
+
+        const left = runExpression((*call.arguments)[1]);
+        const right = runExpression((*call.arguments)[2]);
+        if (left.length != right.length)
+            throw new Exception("Unsupported eval call.");
+
+        Value[] elements;
+        foreach (index; 0 .. left.length)
+            elements ~= left[index] + right[index];
+
+        return writeBackSliceElements(target, elements);
+    }
+
+    private Value writeBackSliceElements(
+        imported!"dmd.expression".SliceExp slice,
+        Value[] elements,
+    ) {
+        auto var = slice.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported eval call.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported eval call.");
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? current.length
+            : cast(size_t) runExpression(slice.upr).asLong;
+        if (upper - lower != elements.length)
+            throw new Exception("Unsupported eval call.");
+
+        Value[] updated;
+        foreach (index; 0 .. current.length)
+            updated ~= index >= lower && index < upper
+                ? elements[index - lower]
+                : (*current)[index];
+
+        locals[variable] = Value.arrayValue(updated);
+        uninitializedLocals.remove(variable);
+        return locals[variable];
     }
 
     private Value runFunction(
