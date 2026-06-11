@@ -12,19 +12,20 @@ in-process linker (JITLink-style relocation loading) and ORC JIT are
 cannot be made correct, nothing fancier will be either. Everything here is
 about making `DynamicLibrary` pass the whole runner test matrix.
 
-## Current state (2026-06-11)
+## Current state (2026-06-11, slice 1 done)
 
 `source/quickbite/backends/native/system_linker.d` implements
 `quickbite.backends.runner.Runner.runTests`:
 
 1. Caller parses the module with checkaction=context — **uncached**
    (`parseModuleWithCheckActionContextUncached` in
-   `source/quickbite/frontend/compiler.d`; see "Lessons" for why). This
-   requirement is **superseded** by the lightning-rod + fork design in
-   Slice 1 — once that lands the backend can use the normal parse cache.
-2. `emitObjectFile`: `dmd.glue.generateCodeAndWrite` writes one object file
-   to a unique temp dir. Backend initialised once per process with
-   `PIC.pic`. Runs under the compiler lock.
+   `source/quickbite/frontend/compiler.d`; see "Lessons" for why).
+2. `emitObjectFile`: reset codegen written-state (lesson 11), prune foreign
+   members, `dmd.glue.generateCodeAndWrite` writes one object file to a
+   unique temp dir, then the adoption loop (lesson 10) re-emits until the
+   object contains every instance/TypeInfo symbol it references. Backend
+   initialised once per process with `PIC.pic`. Runs under the compiler
+   lock.
 3. `linkSharedLibrary`: spawns `dmd -shared -defaultlib=libphobos2.so
    -L=-z -L=defs`. `-z defs` deliberately turns every missing symbol into a
    link error instead of a load-time or call-time failure — keep it; it is
@@ -34,17 +35,40 @@ about making `DynamicLibrary` pass the whole runner test matrix.
 5. Per unittest: `dlsym(mangleExact(unitTestDecl))`, call, catch `Throwable`.
    Per-test results come from enumerating the AST with
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
+6. `GC.collect` before `Runtime.unloadLibrary` (lesson 12).
 
-**Passing:** 14 runner test blocks include `DynamicLibrary`
-(logic.d ||/&& fixtures, explicit/dynamic assert messages in diagnostics.d,
-4 results.d tests). Each is tagged `@Tags(backend.stringof)` so
-`bin/ut '~@DynamicLibrary'` skips them (they are slow: compile+link+load per
-test) and `bin/ut @DynamicLibrary` runs exactly them.
+**Passing:** 336 runner matrix blocks include `SystemLinker` (was 14
+before slice 1), each tagged `@Tags(backend.stringof)` so
+`bin/ut '~@SystemLinker'` skips them (they are slow: compile+link+load per
+test) and `bin/ut @SystemLinker` runs exactly them. The old slice-3 dlsym
+miss (`reportsAssertFailureMessages`) is in the matrix and passing.
 
-**Failing (not in the matrix):** everything else — 93 of the 113 candidate
-blocks fail with undefined `_d_assert_fail!T` (or
-`_d_newclassT!(AssertError)`) at link time, 3 fail on message mismatches,
-1 fails dlsym lookup. Details below; fixing the first category is Slice 1.
+**Still out of the matrix** (23 blocks), by category:
+
+- **CTFE-flavoured expectations** (compiled code runs fine but reports
+  runtime texts; slice-2-style arbitration would change the *expectation*,
+  which needs approval): bounds/missing-key/overlapping-slice diagnostics
+  (5 in arrays.d, 4 in cerealed.d), `uncaughtThrow*` in exceptions.d
+  ("uncaught CTFE exception ..." vs the plain message),
+  `delegate.(func)ptrPropertyIsRejectedAtCtfe`,
+  `typeid.typeNameReturnsIdentifier` (compiled gives `snippet_N.Widget`,
+  CTFE gives `Widget`), `rt.cstdlib.malloc` (runs fine compiled),
+  `intToFloatCastUsesFloatPrecision` (its @ShouldFail encodes a
+  CTFE-formatter limitation; SystemLinker genuinely passes — needs a
+  per-backend ShouldFail split).
+- **Slice-2 message texts** (plain `_d_assert`/`_d_unittest` hook texts):
+  `literalFalseAssertionMatchesDmd`, `voidFunctionOops`,
+  `structMethodReturnDoesNotSkipCallerStatements`,
+  `catchExceptionDoesNotCatchAssertFailure`,
+  `logicalAndCallShortCircuitFailureMessage.1`.
+- **Imported user modules**:
+  `runBackend{File,Source}FixtureTests.withImportPaths` — the snippet
+  imports a module from importPaths whose functions are compiled nowhere;
+  needs multi-object compilation of imported modules.
+- **Fatal by design in-process**: the three null-class-dereference
+  diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
+  test runner) and `voidInitializedScalarReadReportsUninitialized`
+  (CTFE-only diagnostic).
 
 Build-layout note: dmd 2.112's glue layer (`dmd/glue/` package) compiles
 inside the dub `dmd:frontend` dependency; only `backend/*` + `dmsc.d` are
@@ -62,11 +86,10 @@ accumulates speculative template instances and TypeInfoDeclarations from
 backends. Codegen of such a module emits dangling references to other
 snippets' symbols. Consequences already baked in:
 
-- `SystemLinker` currently codegens only a **freshly parsed** module. The
+- `SystemLinker` must only ever codegen a **freshly parsed** module. The
   ut harness enforces this via a `static if (is(T == SystemLinker))` in
-  `tests/ut/backends/package.d`. This requirement is **removed** by the
-  fork design in Slice 1 — the parent never codegens, so parse-cache reuse
-  is safe. Until then, the fresh-parse rule stands.
+  `tests/ut/backends/package.d`. Any future caller (benchmark harness, REPL)
+  must do the same.
 - `removeForeignTemplateInstances` in system_linker.d prunes members whose
   `minst`/declaring module isn't this module before codegen — belt and
   braces; it was **not sufficient alone** (adopted instances slipped
@@ -75,8 +98,9 @@ snippets' symbols. Consequences already baked in:
   unconditionally, since the early dynamic-library commits). With allInst
   on, `appendToModuleMember` (`templatesem.d:1233`) always routes non-root
   template instances via `importedFrom` to the first root module parsed.
-  This is the mechanism that makes the lightning-rod design work (lesson 8)
-  — it is NOT a trap if the first root module is one we control.
+  Slice 1 worked around this via the ELF adoption loop (lesson 10) rather
+  than controlling ownership upfront. See lesson 8 for why it is not a trap
+  if the first root module is one we control.
 
 ### 2. Template instances are emitted once per process, owned by the first instantiator
 
@@ -138,9 +162,10 @@ emits) its instances. Fixture-local templates are immune (each parse makes
 a fresh `TemplateDeclaration` with its own instance cache); only templates
 from cached imports (druntime/phobos lowering hooks) are affected.
 
-**This lesson is superseded for `SystemLinker` by the fork design (lesson
-9):** the parent's `PASS.obj` / minst state is never set, so every child
-sees a fresh emission slate regardless of parse history.
+**This lesson is dissolved for `SystemLinker` by the adoption loop (lesson
+10):** owned-or-not is irrelevant once the object's ELF undefined symbols
+drive instance adoption — borrowed instances are re-homed into the snippet
+module and re-emitted.
 
 ### 7. Codegen of the same module AST twice emits an empty object (2026-06-10)
 
@@ -156,14 +181,12 @@ every subsequent pass misses them. The resulting `.so` links (nothing is
 undefined in an empty library) and every `dlsym` then misses, reported as
 "unittest symbol not found in shared library: <mangled name>". This
 blocks the benchmark's timed loop — 1 warmup + N iterations means
-repeatedly codegen'ing the same module. As of 2026-06-10
-`bin/bench.sh -b system-linker` passes the correctness check (first
-codegen: compile, link, load, run all fixture tests, agree with ctfe) and
-skips the timed loop with the message above.
+repeatedly codegen'ing the same module.
 
-**This lesson is dissolved by the fork design (lesson 9):** the parent
-never codegens, so every child's module is at `semantic3done` and emits
-fully. This unblocks the benchmark timed loop as a side-effect of Slice 1.
+**This lesson is dissolved for `SystemLinker` by the written-state reset
+(lesson 11):** resetting `semanticRun` and `csym` before each re-emit
+means every codegen pass sees the module as un-written. The benchmark's
+timed system-linker loop is now unblocked as a side-effect of slice 1.
 
 ### 8. `allInst=true` is what concentrates instances at the first root module (2026-06-11)
 
@@ -177,16 +200,27 @@ druntime/phobos template (`_d_assert_fail`, `miniFormat`,
 `_d_newThrowable`, etc.), `importedFrom` resolves to the first root module
 ever parsed in the process. This is deterministic: whichever module the
 process parses first as root becomes the accumulation point for every
-druntime/phobos instantiation that happens later. This is the mechanism
-that the lightning-rod design (Slice 1) deliberately exploits.
+druntime/phobos instantiation that happens later.
 
-### 9. Fork-based codegen isolation is safe and dissolves lessons 6 and 7 (2026-06-11)
+This is the mechanism that would make a **lightning-rod design** work
+(see lesson 9 for the design): control the first root module and you
+control instance ownership. Slice 1 took a different path (ELF adoption
+loop, lesson 10) that does not require controlling the first root module,
+but the lightning-rod + fork approach remains a cleaner long-term
+alternative.
+
+### 9. Fork-based codegen isolation design (alternative to adoption loop)
+
+A future refactor could replace the adoption loop entirely:
 
 `fork()` before `generateCodeAndWrite` gives the child a copy-on-write
 snapshot of the full dmd AST and process globals. The child runs codegen,
 links the `.so`, writes it to `/tmp`, then `_exit`. The parent's state
 — `PASS.obj` marks, `csym` populated by `toSymbol`, ELF segment tables —
-is never mutated.
+is never mutated. Combined with a **lightning rod module** (parse a small
+controlled module as the very first root module in the process so it
+becomes the accumulation point for all druntime/phobos instances), this
+dissolves lessons 6 and 7 entirely and removes the fresh-parse requirement.
 
 **Why it is safe here:**
 - The process is single-threaded at fork time: `unitUnthreaded` forces
@@ -202,98 +236,88 @@ is never mutated.
 - The parent dlopens the `.so` from a file path computed before forking; no
   codegen-time state is needed beyond mangled names derived from the parent AST.
 
-**What fork does NOT fix:** `minst` ownership is set during semantic
-analysis in the parent. Each child inherits the accumulated instance
-topology. The lightning rod (lesson 8) is what ensures druntime/phobos
-instances are owned by the right module before the fork.
+**What fork alone does NOT fix:** `minst` ownership is set during semantic
+analysis in the parent. The lightning rod is what ensures druntime/phobos
+instances are owned by the right module before the fork. Without the
+lightning rod, the child still needs the adoption loop or pruning.
 
 **Error transport:** the child cannot throw across the fork boundary. Exit
 code + an optional pipe for error text; the `.so` path is computed by the
-parent before forking. This requires restructuring `emitObjectFile`'s
-error handling from exceptions to exit-code + pipe writes in the child.
+parent before forking.
+
+### 10. Adoption loop: undefined ELF symbols are the discovery mechanism (slice 1)
+
+"Which instances does this module need but not own?" is answered exactly
+by the undefined symbols of the object just written (`-z defs` checks the
+same set). `emitObjectFile` loops: parse the object's ELF symtab → adopt
+every cached instance/TypeInfo whose symbols match → reset written-state →
+re-emit, until no new adoption. Template symbols are COMDATs and every
+test `.so` links independently, so duplicate emission across objects is
+safe; symbols libphobos2.so exports simply never match a candidate and the
+loop terminates. Candidate sources (all three are needed):
+
+- module members across `Module.amodules` (semantic-time instances —
+  prefix match on `"_D" ~ mangleToBuffer(cast(Dsymbol) instance)`),
+- `TemplateDeclaration.instances` caches (codegen-driven instantiations,
+  e.g. `hashOf` for an AA TypeInfo, never reach any members array; also
+  claim speculative ones — `minst = module_` — when emitted code provably
+  references them),
+- `Type.stringtable` → `Type.vtinfo` (TypeInfos created during codegen are
+  cached only on the type; `genTypeInfo` returns needs-codegen only on
+  vtinfo *creation*, once per process. A `TypeInfoDeclaration` ident is
+  the complete symbol name; as a module member it emits unconditionally as
+  a COMDAT via `toobj.d`).
+
+### 11. The written-state to reset for re-emission (slice 1 / lesson 7 fix)
+
+Codegen marks everything written once per process. To re-emit a module
+(and its adopted instances), reset, recursively over members and
+everything codegen'd *with* a function rather than as a member:
+
+- `FuncDeclaration.semanticRun` PASS.obj → PASS.semantic3done, and
+  `Dsymbol.csym = null` everywhere (stale backend Symbols carry the old
+  local-symtab index → `assert(s.Ssymnum == SYMIDX.max)` in symbol_add).
+- Function-local state via `foreachExpAndVar`/`foreachVar` plus a
+  postorder walker: parameters, `vthis`/`vresult`, body-local variables,
+  nested functions/literals (`FuncLiteralDeclaration.deferToObj` is a
+  once-per-process gate in e2ir!), local structs/classes, `lowering`
+  fields (ArrayLiteralExp, AssocArrayLiteralExp, NewExp, CastExp,
+  LoweredAssignExp, CatAssignExp, CatExp, EqualExp — the generic walkers
+  skip them), and `ExpInitializer` subtrees (a Dsymbol child, also
+  skipped). Nested functions referenced rather than declared (foreach
+  bodies) are reachable via DelegateExp/SymOffExp/VarExp.
+- `EnumDeclaration.semanticRun` (separate once-per-process gate in
+  toobj.d) and the synthesized struct methods `xeq`/`xcmp`/`xhash` (hang
+  off the struct, not in members; templatesem's InstMemberWalker visits
+  them explicitly for the same reason).
+- Do NOT walk into `TemplateDeclaration` bodies: parse-time AST,
+  `foreachExpAndVar` asserts on un-lowered statements.
+
+### 12. dlclose + GC heap = dangling vptrs (slice 1)
+
+Dead-but-uncollected objects of classes the fixture defines carry vptrs
+into the test's `.so`. After `Runtime.unloadLibrary`, ANY later finalizer
+sweep (`rt_hasFinalizerInSegment`) dereferences unmapped memory — the
+crash surfaces tests later, far from the cause. Fix: `GC.collect` right
+before each unload, while the library is still mapped. Fixtures whose
+*reachable* objects survive the collect would still be landmines; results
+copy primitives out, so none do today.
 
 ## The work, in order
 
-### Slice 1 — lightning rod + fork (the big one)
+### Slice 1 — make template-instance fixtures link — DONE (2026-06-11)
 
-Success criterion: re-add `SystemLinker` to a value-reporting block (e.g.
-`diagnostics.oops`, fixture `assert(answer == 43)` needing
-`_d_assert_fail!int`) and have it pass **stably under `--random`** including
-with both historical repro seeds. As a side-effect the benchmark's timed
-system-linker loop should run instead of being skipped.
+Done on branch `dmd-backend-slice1`; mechanism in lessons 10-12. The sweep
+promoted every block that passes; `diagnostics.oops` (the success
+criterion) and the rest are stable under `--random` and both repro seeds.
+The same reset machinery unblocks repeated codegen of one module
+(lesson 7), which the benchmark's timed system-linker loop needs.
 
-#### Design
-
-Two cooperating changes eliminate lessons 6 and 7 and fix ownership:
-
-**A. Lightning rod module** — parse a small controlled module as the very
-first root module in the process (at the end of `initializeDmdState` in
-`compiler.d`). With `allInst=true` already active, `appendToModuleMember`
-routes every druntime/phobos lowering template instance via `importedFrom`
-into this module's members from that point on. The lightning rod should
-contain explicit instantiations for all lowering templates over built-in
-types so it becomes the first instantiator and therefore the owner:
-
-```d
-// lightning_rod.d (internal, never shown to users)
-import core.internal.dassert;
-import core.lifetime;
-alias _lr_int    = _d_assert_fail!int;
-alias _lr_bool   = _d_assert_fail!bool;
-alias _lr_char   = _d_assert_fail!char;
-// ... ubyte, uint, long, ulong, double, float, string, ubyte[], int[]
-```
-
-After this, druntime/phobos instances for built-in types are owned by the
-lightning rod; snippet-local types (user structs, user exceptions) are owned
-by the snippet that defines them (their `_d_assert_fail!UserType` instance
-is first created during that snippet's semantic).
-
-**B. Fork before codegen** — in `compileToSharedLibrary`, compute the `.so`
-path, then `fork()`. The child:
-
-1. Generates **two** object files: one for the lightning rod (pruned — see
-   below), one for the snippet.
-2. Spawns `dmd -shared` linking both into the `.so`.
-3. `_exit(0)` on success, `_exit(1)` on failure (write error text to a
-   pipe opened before the fork).
-
-The parent waits for the child, reads the pipe if exit ≠ 0, then dlopens
-and dlsyms as today. The parent's `PASS.obj` / `csym` / ELF state is
-never mutated — lessons 6 and 7 dissolve, uncached-parse requirement
-removed, benchmark timed loop unblocked.
-
-**Lightning rod pruning in the child:** the lightning rod's members
-accumulate instances over *all* snippets' user types (because
-`appendToModuleMember` routes them there via `importedFrom`). Codegen'ing
-those instances in the child would pull in TypeInfo from *other* snippets,
-creating dangling references under `-z defs`. Prune the lightning rod's
-members in the child before codegen: keep only instances whose type
-arguments are "globally available" — i.e., every type arg's `getModule()`
-returns a non-root module (druntime/phobos) or null. Snippet-defined types
-are root modules; they fail this check and are excluded. The current
-`removeForeignTemplateInstances` is a related but different filter
-(min-ownership-based); replace or extend it.
-
-#### Implementation order
-
-1. Fork only (no lightning rod yet): fork + codegen as today with
-   `removeForeignTemplateInstances` in the child. Verify the 14 currently-
-   green blocks still pass, verify the benchmark timed loop now runs, verify
-   `--random` stability. This validates fork mechanics with no new frontend
-   logic and is independently shippable.
-2. Add the lightning rod module: parse it in `initializeDmdState`, add the
-   explicit aliases. Verify it becomes snippet_0 and takes ownership of
-   built-in-type instances (check `minst` in a debug build).
-3. Generate the lightning rod object in the child (with pruning), add it to
-   the `dmd -shared` invocation. Re-add `SystemLinker` to a single
-   value-reporting block (`diagnostics.oops`), confirm it passes under
-   `--random` with both repro seeds.
-4. Sweep: re-add to every previously-failing block, keep what passes 10+
-   `--random` runs.
-5. Remove `parseModuleWithCheckActionContextUncached` call in the runner
-   path; replace with the normal cached parse. Remove the fresh-parse
-   `static if` in `tests/ut/backends/package.d`.
+A fork+lightning-rod design (lessons 8-9) would have been a cleaner
+alternative — it dissolves lessons 6 and 7 and removes the fresh-parse
+requirement. The adoption loop was chosen because it was incrementally
+verifiable and self-contained. The fork path remains viable as a future
+optimization (Slice 4 territory).
 
 ### Slice 2 — message mismatches (3 tests)
 
@@ -309,21 +333,27 @@ are root modules; they fail this check and are excluded. The current
   compiled code cannot produce — likely permanently CTFE-only; exclude
   deliberately, with a comment.
 
-### Slice 3 — the dlsym miss (1 test)
+### Slice 3 — the dlsym miss (1 test) — RESOLVED with slice 1
 
-`reportsAssertFailureMessages` links and loads but
-`dlsym(mangleExact(unitTest))` returns null. Undiagnosed. Check whether the
-mangled name in the `.so` (`nm -D`) differs from `mangleExact` of the AST
-node — likely interaction with how that fixture declares its unittests.
+`reportsAssertFailureMessages` is in the matrix and passing; the miss was
+another symptom of the ownership/written-state problem.
+
+### Slice 3b — imported user modules (2 tests)
+
+`withImportPaths` fixtures import a module from importPaths; its functions
+are compiled into no object. Compile imported non-druntime modules into
+the link as well (walk `module_.aimports` for modules under the given
+import paths, emit each, pass all objects to the link).
 
 ### Slice 4 — Evaluator interface
 
 Only after the runner matrix is healthy: implement
 `eval`/`evalRepl`/`runTestSummary` so `SystemLinker` becomes a full
-`Backend`. No fresh-parse requirement once Slice 1 lands (the fork design
-uses the cache). Per-call compile+link+load+fork latency makes this
+`Backend`. The fresh-parse requirement still applies (the adoption loop
+did not remove it). Per-call compile+link+load latency makes this
 unsuitable for the REPL hot path until measured — benchmark before
-promoting anywhere.
+promoting anywhere. Adopting the fork design (lesson 9) at this point
+would remove the fresh-parse requirement and is worth considering then.
 
 ## Test discipline
 
@@ -343,17 +373,17 @@ ninja -C <build> bin/ut
 bin/ut --random                       # repeat; order-dependence is the enemy
 bin/ut --random --seed 2828407573     # historical link-failure order
 bin/ut --random --seed 3516581215     # historical segfault order
-bin/ut @DynamicLibrary                # just the native-backend matrix
+bin/ut @SystemLinker                # just the native-backend matrix
 ./ci.sh
 ```
 
 ## Key reference files
 
 - `source/quickbite/backends/native/system_linker.d` — the backend
-- `source/quickbite/frontend/compiler.d` — parse cache, `initializeDmdState`
-  (lightning rod insertion point at end of this function), `allInst=true` at :178
+- `source/quickbite/frontend/compiler.d` — parse cache, `initializeDmdState`,
+  `allInst=true` at :178
 - `source/quickbite/frontend/util.d` — index-based unittest walk
-- `tests/ut/backends/package.d` — fresh-parse `static if` (to be removed in Slice 1 step 5)
+- `tests/ut/backends/package.d` — fresh-parse `static if` for SystemLinker
 - dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember` :1233,
   `needsCodegen` :2778), `typinf.d` (`getTypeInfoType`),
   `dmd/glue/toobj.d` (`visit(TemplateInstance)` :701, instance emission),
