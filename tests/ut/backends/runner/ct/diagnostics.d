@@ -6,8 +6,9 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int one() {
@@ -26,8 +27,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("intLessThanOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int bound() {
@@ -43,8 +45,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("intLessOrEqualOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int bound() {
@@ -60,8 +63,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("intGreaterThanOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int bound() {
@@ -77,8 +81,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("intGreaterOrEqualOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int bound() {
@@ -94,8 +99,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("intNotEqualOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int bound() {
@@ -111,8 +117,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("ok." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer() {
@@ -142,8 +149,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("okFailureMessage.0." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer() {
@@ -157,8 +165,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("localIntReturnOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer() {
@@ -188,8 +197,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("functionParametersOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer(int left, int right) {
@@ -203,8 +213,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("tenFunctionParametersOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer(
@@ -230,8 +241,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("functionParameterOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
@@ -245,8 +257,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("ifElseOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int answer(int value) {
@@ -263,8 +276,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("refParameterOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void addOne(ref int value) {
@@ -280,8 +294,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("inFunctionParametersOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void check(in int left, in int right) {
@@ -295,8 +310,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("refSizeTParameterOops." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void advance(ref size_t pos) {
@@ -335,8 +351,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("runtimeBoolAssertionContextMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             bool nope() {
@@ -350,8 +367,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("boolAssertionContextMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -362,8 +380,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     @("charAssertionContextMatchesDmd." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {

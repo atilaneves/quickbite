@@ -8,8 +8,9 @@ import std.conv: text;
 import std.path: buildPath;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runBackendSourceFixtureTests.throwsOnUnittestFailure." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             @("quickbite regression")
@@ -37,8 +38,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.reportsAssertFailureMessages." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
             @("quickbite regression")
@@ -98,9 +100,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.countsAttributedPassingAndFailingUnittests." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
             @("passes")
@@ -145,8 +148,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.countsAssertErrorsAsFailures." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const results = runBackendSourceFixtureTestResults!backend(q{
             import core.exception: AssertError;
@@ -162,8 +166,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.reportsDmdUnittestSymbolNames." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         const result = runBackendSourceFixtureTestResults!backend(q{
             unittest {
@@ -181,9 +186,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runTests.reportsFileBackedUnittestLocations." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         import unit_threaded.integration: Sandbox;
 

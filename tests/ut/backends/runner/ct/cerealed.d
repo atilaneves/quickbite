@@ -4,9 +4,10 @@ module ut.backends.runner.ct.cerealed;
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -31,8 +32,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
@@ -56,9 +58,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             ubyte readByte(ubyte[] bytes, ref size_t position) {
@@ -80,9 +83,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeLength(T)(ref ubyte[] bytes, size_t length) {
@@ -107,8 +111,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Reader {
@@ -134,8 +139,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -164,8 +170,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
@@ -201,8 +208,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             private enum MyEnum {
@@ -259,8 +267,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Foo {
@@ -298,9 +307,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeLength(ref ubyte[] bytes, size_t length) {
@@ -353,9 +363,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Nested {
@@ -408,8 +419,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.pointerToIntWritesPointeeBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeInt(ref ubyte[] bytes, int value) {
@@ -435,9 +447,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeArray(ref ubyte[] bytes, ubyte[] values) {
@@ -475,8 +488,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Unit {
@@ -570,8 +584,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct ProtoHeader {
@@ -620,8 +635,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct CounterRange {
@@ -674,9 +690,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Reader {
@@ -740,9 +757,10 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             void writeInt(ref ubyte[] bytes, int value) {
@@ -927,8 +945,9 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 /++
     Known project-shaped gaps.
 +/
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Writer {
