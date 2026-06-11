@@ -558,7 +558,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("staticArray.copyFromRuntimeArrayUsesArrayCtor." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
