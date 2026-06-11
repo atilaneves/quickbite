@@ -53,6 +53,9 @@ This design does not attempt to:
 
 The design is optimized for fast feedback, not full process isolation.
 
+The direct-call non-goal applies to backends with a boxed value
+representation. It is superseded for native-layout backends — see §23.
+
 ## 3. High-level architecture
 
 The system consists of two paths: a cold dependency preparation path
@@ -293,6 +296,10 @@ auto result = thunk(ctx, args.ptr, args.length);
 
 There should be no per-wrapper string lookup, symbol lookup,
 reflection, or signature decoding in the hot path.
+
+The value-conversion half of this wrapper contract is superseded for
+native-layout backends (§23); the exception-guard half (§12) survives
+for every backend.
 
 ## 8. Generic versus specialized thunks
 
@@ -1035,3 +1042,45 @@ This is the first resident-native-call rung of the ladder. Pointer
 dereference, indexing, and writes are deferred until a later memory-semantics
 slice. The next rungs (file read, then GC-returning calls needing the
 handle-table/arena from §13) build on the same chokepoint.
+
+## 23. Amendment: native-layout backends
+
+The bytecode VM rewrite (`ai/plans/bytecode.md`) lays out all VM memory —
+frames, heap, module data segments — exactly as compiled code would, using
+DMD's computed sizes, alignments, and offsets. That changes the boundary
+economics this document was written under, and where the two documents
+disagree, `bytecode.md` wins for that backend. Specifically:
+
+- **Value conversion is gone, not cheap.** The `QBValue` boxing layer and
+  per-signature wrapper codegen (§7, §8, §11) exist to convert between a
+  backend value representation and the D ABI. A native-layout backend has
+  no other representation: scalars, pointers, structs, slices, and class
+  references cross the boundary unchanged. The §2 non-goal "call arbitrary
+  extern(D) functions directly" and the §18 rejection of direct ABI calls
+  do not apply to this backend.
+- **What remains of marshalling is the call ABI itself.** Invoking a
+  function whose signature is only known at run time still requires
+  implementing the SysV x86_64 calling convention. The bytecode backend
+  builds libffi CIFs from DMD type signatures, cached per bridge entry —
+  this extends the §21.1 resolver's "typed call plus scalar/pointer
+  marshalling" to arbitrary signatures.
+- **The exception guard survives.** Every outbound call is still wrapped
+  per §12, converting native `Throwable`s into VM unwinding. It is the
+  conversion half of the wrapper contract that is superseded, not the
+  guard half.
+- **The §10/§21 classification is confirmed and sharpened.** The boundary
+  is the body-less leaf: anything with available source — including
+  druntime template hooks and Phobos template bodies instantiated with
+  project types — is executed by the VM. The §18 rejection of mixed
+  template instantiations is therefore moot for this backend: they are
+  ordinary VM-executed code, not a boundary case.
+- **Inbound calls arrive earlier than §14 assumed.** Native-layout
+  execution hands real objects to the real GC and the real AA runtime, so
+  GC finalizers and AA key methods (dtor, postblit, toHash, opEquals on
+  VM-compiled types) force native-to-VM trampolines before any
+  callback-taking dependency API does. See "Runtime type metadata" in
+  `bytecode.md`.
+
+The §3–§20 dependency-image design is unaffected for boxed-value backends
+and for the cold-path caching story; this amendment narrows only the
+interop boundary mechanics for native-layout backends.
