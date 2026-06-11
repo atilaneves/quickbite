@@ -43,6 +43,24 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case signExtend1to4:
+                const ubyte[int.sizeof] signWidened = nativeToLittleEndian(
+                    cast(int) littleEndianScalar!byte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = signWidened;
+                ++ip;
+                break;
+
+            case zeroExtend1to4:
+                const ubyte[int.sizeof] zeroWidened = nativeToLittleEndian(
+                    cast(int) littleEndianScalar!ubyte(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = zeroWidened;
+                ++ip;
+                break;
+
             case signExtend4to8:
                 const ubyte[long.sizeof] extended = nativeToLittleEndian(
                     cast(long) littleEndianScalar!int(stack, base + instruction.b),

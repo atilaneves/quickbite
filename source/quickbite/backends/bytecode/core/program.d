@@ -49,6 +49,8 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     copy, // a: destination frame offset, b: source frame offset, c: size
+    signExtend1to4, // a: destination frame offset, b: source frame offset
+    zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,

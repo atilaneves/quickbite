@@ -216,18 +216,17 @@ private struct Compiler {
             return Operand(offset, target);
         }
 
-        if (isSigned(source.type) && size(source.type) == 4 &&
-            size(target) == 8)
-        {
-            const offset = allocate(target);
-            _code ~= Instruction(Op.signExtend4to8, offset, source.offset);
-            return Operand(offset, target);
-        }
+        return extend(source, target);
+    }
 
-        throw new Exception(text(
-            "Unsupported cast in bytecode core: ",
-            expressionChars(cast_),
-        ));
+    private Operand extend(in Operand source, in ScalarType target) {
+        const offset = allocate(target);
+        _code ~= Instruction(
+            extendOp(size(source.type), size(target), isSigned(source.type)),
+            offset,
+            source.offset,
+        );
+        return Operand(offset, target);
     }
 
     private Operand compileCall(CallExp call) {
@@ -293,10 +292,15 @@ private struct Compiler {
         if (operator is null || operatorText(operator) != "==")
             return false;
 
-        const lhs = compileExpression((*call.arguments)[1]);
-        const rhs = compileExpression((*call.arguments)[2]);
-        if (size(lhs.type) != size(rhs.type))
-            return false;
+        // D's integer promotions appear only in the rewritten condition, not
+        // in the _d_assert_fail operands; replicate them so mixed-width
+        // operands compare and render at the comparison width.
+        auto lhs = compileExpression((*call.arguments)[1]);
+        auto rhs = compileExpression((*call.arguments)[2]);
+        if (size(lhs.type) < size(rhs.type))
+            lhs = extend(lhs, rhs.type);
+        else if (size(rhs.type) < size(lhs.type))
+            rhs = extend(rhs, lhs.type);
 
         const condition = allocateBytes(1, 1);
         _code ~= Instruction(
@@ -406,6 +410,29 @@ private struct ParameterLayout {
 private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
+    in uint sourceSize,
+    in uint targetSize,
+    in bool signed,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    import std.conv: text;
+
+    if (sourceSize == 1 && targetSize == 4)
+        return signed ? Op.signExtend1to4 : Op.zeroExtend1to4;
+
+    if (sourceSize == 4 && targetSize == 8 && signed)
+        return Op.signExtend4to8;
+
+    throw new Exception(text(
+        "Unsupported extension in bytecode core: ",
+        signed ? "signed " : "unsigned ",
+        sourceSize,
+        " to ",
+        targetSize,
+    ));
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op equalOp(

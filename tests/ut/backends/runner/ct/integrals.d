@@ -49,7 +49,7 @@ static foreach (T; IntegralTypes) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -73,7 +73,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -97,7 +97,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
