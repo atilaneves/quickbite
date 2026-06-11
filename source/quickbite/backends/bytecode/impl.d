@@ -45,10 +45,12 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.bytecode.core.reify: reify;
 
         try {
-            const program = compile(function_);
+            auto compilation = compile(function_);
+            const bytes =
+                run(*compilation.program, compilation.compileFunction);
             return EvalResult(reify(
-                run(program),
-                program.functions[0].returnType,
+                bytes,
+                compilation.program.functions[0].returnType,
             ));
         }
         catch (Exception exception)

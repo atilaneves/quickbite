@@ -14,8 +14,22 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
     final switch (type) with (ScalarType) {
         case void_:
             return Value.void_;
+        case byte_:
+            return Value(scalar!byte(bytes));
+        case ubyte_:
+            return Value(scalar!ubyte(bytes));
+        case short_:
+            return Value(scalar!short(bytes));
+        case ushort_:
+            return Value(scalar!ushort(bytes));
         case int_:
             return Value(scalar!int(bytes));
+        case uint_:
+            return Value(scalar!uint(bytes));
+        case long_:
+            return Value(scalar!long(bytes));
+        case ulong_:
+            return Value(scalar!ulong(bytes));
     }
 }
 

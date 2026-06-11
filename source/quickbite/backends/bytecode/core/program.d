@@ -6,7 +6,14 @@ private:
 // types to these tags at emit time; no runtime value carries a tag.
 package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     void_,
+    byte_,
+    ubyte_,
+    short_,
+    ushort_,
     int_,
+    uint_,
+    long_,
+    ulong_,
 }
 
 package(quickbite.backends.bytecode) uint size(in ScalarType type)
@@ -15,8 +22,25 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     final switch (type) with (ScalarType) {
         case void_:
             return 0;
-        case int_:
-            return int.sizeof;
+        case byte_, ubyte_:
+            return 1;
+        case short_, ushort_:
+            return 2;
+        case int_, uint_:
+            return 4;
+        case long_, ulong_:
+            return 8;
+    }
+}
+
+package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
+    @safe @nogc nothrow pure
+{
+    final switch (type) with (ScalarType) {
+        case byte_, short_, int_, long_:
+            return true;
+        case void_, ubyte_, ushort_, uint_, ulong_:
+            return false;
     }
 }
 
@@ -24,6 +48,14 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
 // byte offsets, constant pool indices, function indices).
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
+    copy, // a: destination frame offset, b: source frame offset, c: size
+    signExtend4to8, // a: destination frame offset, b: source frame offset
+    equal1, // a: destination (one boolean byte), b: lhs, c: rhs
+    equal2,
+    equal4,
+    equal8,
+    call, // a: function index, b: argument area frame offset, c: destination
+    assertTrue, // a: condition frame offset, b: assert diagnostic index
     ret, // a: frame offset of the return value
 }
 
@@ -35,12 +67,23 @@ package(quickbite.backends.bytecode) struct Instruction {
 }
 
 package(quickbite.backends.bytecode) struct CompiledFunction {
-    Instruction[] code;
+    Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
+    uint parameterBytes;
     ScalarType returnType;
+}
+
+// How to render a failed assertion: read both operands from the frame and
+// format them per their static type around the inverted operator.
+package(quickbite.backends.bytecode) struct AssertDiagnostic {
+    string operator; // the asserted relation, e.g. "=="
+    ushort lhs;
+    ushort rhs;
+    ScalarType operandType;
 }
 
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
+    AssertDiagnostic[] assertDiagnostics;
 }

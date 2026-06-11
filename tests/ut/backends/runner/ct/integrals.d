@@ -19,7 +19,7 @@ private alias IntegralTypes = AliasSeq!(
 
 
 static foreach (T; IntegralTypes) {
-    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         @Tags(backend.stringof)
         unittest {
