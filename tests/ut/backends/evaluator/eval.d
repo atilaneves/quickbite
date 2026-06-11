@@ -5,7 +5,7 @@ import ut.backends;
 import std.typecons: tuple;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("literal." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("0").should == Value(0);
