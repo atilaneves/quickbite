@@ -38,20 +38,9 @@ public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler:
-        parseModuleWithCheckActionContext,
-        parseModuleWithCheckActionContextUncached;
+    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    // SystemLinker compiles the module to an object file, so it must get a
-    // fresh parse: a cached module accumulates other compilations' speculative
-    // template instances and TypeInfos (DMD appends them to root modules via
-    // importedFrom), which codegen would then emit as dangling references.
-    static if (is(T == SystemLinker))
-        alias parse = parseModuleWithCheckActionContextUncached;
-    else
-        alias parse = parseModuleWithCheckActionContext;
-
-    auto moduleResult = parse(moduleSource, importPaths);
+    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }

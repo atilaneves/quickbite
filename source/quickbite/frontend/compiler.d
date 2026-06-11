@@ -57,13 +57,6 @@ public ModuleParseResult parseModuleWithCheckActionContext(
     return compiler.parseModuleWithCheckActionContext(source, importPaths);
 }
 
-public ModuleParseResult parseModuleWithCheckActionContextUncached(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModuleWithCheckActionContextUncached(source, importPaths);
-}
-
 public ModuleParseResult parseModuleFileWithCheckActionContext(
     in string filePath,
     in string[] importPaths,
@@ -73,6 +66,13 @@ public ModuleParseResult parseModuleFileWithCheckActionContext(
 
 public void withCompilerLock(scope void delegate() action) {
     compiler.withLock(action);
+}
+
+// The lightning rod module: the first root module parsed in this process,
+// where DMD's allInst+importedFrom funneling accumulates druntime/phobos
+// template instances and TypeInfos (see parseLightningRod).
+public imported!"dmd.dmodule".Module lightningRod() {
+    return compiler._rod;
 }
 
 public imported!"quickbite.ir.module_".Module lowerModule(
@@ -90,6 +90,7 @@ public imported!"dmd.expression".Expression parseExpression(in string source) {
 final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
+    private imported!"dmd.dmodule".Module _rod;
     // Keyed by source content and import paths; prevents re-registering the
     // same module in DMD's process-global table when multiple executors parse
     // the same file with the same import context.
@@ -177,6 +178,41 @@ final class Compiler {
         global.params.useUnitTests = true;
         global.params.allInst = true;
         resetErrors;
+
+        parseLightningRod;
+    }
+
+    // With allInst on, DMD parks every druntime/phobos template instance and
+    // TypeInfo from every compilation on the first root module ever parsed
+    // (appendToModuleMember chases importedFrom). Parse a module we control
+    // first so that accumulation point is known: SystemLinker emits it,
+    // pruned, next to every snippet object so the snippet's borrowed
+    // instances resolve at link time.
+    private void parseLightningRod() {
+        import dmd.dmodule: Module;
+        import dmd.frontend: fullSemantic, dmdParseModule = parseModule;
+        import dmd.globals: global;
+
+        // A root module parsed before the rod would silently become the
+        // accumulation point instead; fail loudly here, not with a mystery
+        // link error later.
+        foreach (i; 0 .. Module.amodules.length)
+            assert(
+                !Module.amodules[i].isRoot,
+                "a root module was parsed before the lightning rod",
+            );
+
+        auto result = dmdParseModule("quickbite_rod.d", "module quickbite_rod;\n");
+        assert(!result.diagnostics.hasErrors, "lightning rod failed to parse");
+        result.module_.fullSemantic;
+        assert(global.errors == 0, "lightning rod failed semantic");
+
+        _rod = result.module_;
+        // dmd.frontend never sets Module.rootModule (only dmd's own main.d
+        // does). Setting it lets callers assert the rod really was first and
+        // points dsymbolsem's sc-less importedFrom fallback at the rod.
+        Module.rootModule = _rod;
+        resetErrors;
     }
 
     void shutdown() {
@@ -237,23 +273,6 @@ final class Compiler {
         scope(exit) global.params.checkAction = originalCheckAction;
 
         return parseModuleLocked(source, importPaths, "checkaction=context", true);
-    }
-
-    ModuleParseResult parseModuleWithCheckActionContextUncached(
-        in string source,
-        in string[] importPaths,
-    ) {
-        import dmd.astenums: CHECKACTION;
-        import dmd.globals: global;
-
-        mutex.lock;
-        scope(exit) mutex.unlock;
-
-        const originalCheckAction = global.params.checkAction;
-        global.params.checkAction = CHECKACTION.context;
-        scope(exit) global.params.checkAction = originalCheckAction;
-
-        return parseModuleLocked(source, importPaths, "checkaction=context", false);
     }
 
     ModuleParseResult parseModuleFileWithCheckActionContext(
@@ -402,7 +421,7 @@ final class Compiler {
     }
 }
 
-string diagnosticMessage() {
+public string diagnosticMessage() {
     import dmd.errors: diagnostics, ErrorKind;
     import std.algorithm.iteration: filter, map;
     import std.array: array, join;
