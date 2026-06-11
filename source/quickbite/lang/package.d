@@ -493,7 +493,7 @@ public struct Value {
     }
 
     public Value opBinary(string op)(in Value rhs) const @safe pure
-        if (op == "+" || op == "-" || op == "*" || op == "/")
+        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%")
     {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
@@ -603,6 +603,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;
@@ -628,6 +630,8 @@ public struct Value {
                         return Value(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
                         return Value(cast(L) lhs / cast(R) rhs);
+                    else static if (op == "%")
+                        return Value(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
                     return Value.void_;

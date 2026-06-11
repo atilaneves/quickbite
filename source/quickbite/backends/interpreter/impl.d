@@ -106,6 +106,17 @@ private struct Walker {
             return;
         }
 
+        if (auto do_ = statement.isDoStatement) {
+            import quickbite.backends.interpreter.messages: isTruthy;
+
+            do {
+                runStatement(do_._body);
+                if (returned)
+                    break;
+            } while (isTruthy(runExpression(do_.condition)));
+            return;
+        }
+
         if (auto if_ = statement.isIfStatement) {
             import quickbite.backends.interpreter.messages: isTruthy;
 
@@ -221,6 +232,9 @@ private struct Walker {
 
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
+
+        if (auto mod = expression.isModExp)
+            return runExpression(mod.e1) % runExpression(mod.e2);
 
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
@@ -954,22 +968,9 @@ private struct Walker {
     private Value runIncrementAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        auto var = assign.e1.isVarExp;
-        if (var is null)
-            assert(0);
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            assert(0);
-
-        auto current = variable in locals;
-        if (current is null) {
-            locals[variable] = defaultValue(variable);
-            current = variable in locals;
-        }
-
-        *current = *current + Value(cast(int) 1);
-        return *current;
+        const value = runExpression(assign.e1) + runExpression(assign.e2);
+        writeLocation(assign.e1, value);
+        return value;
     }
 }
 
