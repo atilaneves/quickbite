@@ -59,9 +59,11 @@ Benchmarks below):
 6. **Replay × dlopen multiplies runtime obligations**: whole-transcript
    compile + link + load per cell re-runs module ctors and re-registers
    eh_frame/TypeInfo/GC ranges, N times over.
-7. **No value transport for native code**: no mechanism exists to extract a
-   `quickbite.lang.Value` from machine-code execution. The existing
-   backend-matrix tests are the exposing tests.
+7. **No result transport for native code**: no mechanism exists to
+   extract a cell's result from machine-code execution. (Per the
+   2026-06-12 decision in `ai/plans/value.md` the result is a rendered
+   display string, not a `quickbite.lang.Value`; the finding stands, the
+   fix shrank.) The existing backend-matrix tests are the exposing tests.
 8. **Crash isolation** (deferred — see Deferred Work).
 9. **Ergonomics**: no user-visible last-value binding; diagnostic line
    numbers point into invisible transcript text. (Retracted during review:
@@ -79,10 +81,12 @@ Benchmarks below):
 - **`ai/plans/interfaces.md` governs the interface shape.** `Backend`
   exposes a single execution primitive,
   `EvalResult eval(FuncDeclaration)`, reporting failure as data
-  (`EvalResult` is a `SumType!(Value, EvalResult.Diagnostic)`, queried
-  via `result.failed`/`result.diagnostic`); `eval(Cell)` is the REPL
-  dispatch adapter over it. The `Evaluator`/`Runner` split (Value
-  confined to interactive boundaries; `Runner` for native code is
+  (`EvalResult` is a `SumType!(Value, EvalResult.Diagnostic)` today,
+  queried via `result.failed`/`result.diagnostic`; per
+  `ai/plans/value.md`, 2026-06-12, the success arm becomes the rendered
+  display string and `Value` leaves the contract); `eval(Cell)` is the
+  REPL dispatch adapter over it. The `Evaluator`/`Runner` split (display
+  results confined to interactive boundaries; `Runner` for native code is
   dlsym + call) is **deferred**
   until the VMs adopt a private execution-slot type — see
   `ai/plans/interfaces.md`. The REPL session capability
@@ -136,7 +140,8 @@ the `Backend.eval` primitive; it does not throw on evaluation failure:
 
 ```d
 public interface Evaluator {
-    public Value eval(in string expr);  // one-shot; throws at the boundary
+    public string eval(in string expr);  // one-shot display string;
+                                         // throws at the boundary
     public ReplSession createReplSession();
 }
 
@@ -175,7 +180,10 @@ public import __qb_cell_A, __qb_cell_B, ...;  // live prior cells
 // initialization moves into the eval body):
 T x;
 // new module-level declarations verbatim
-auto __qb_eval_N() { x = <init-expr>; <new statements only>; return <expr>; }
+auto __qb_eval_N() {
+    x = <init-expr>; <new statements only>;
+    return __quickbiteFormat(<expr>);  // see 5
+}
 extern(C) void __qb_cell_N(void* ctx, SinkFunction sink) { ... }  // see 5
 ```
 
@@ -222,33 +230,41 @@ Enabled by the structured transcript; semantics agreed during review:
   under persistent state, executed effects are immutable. Unobservable
   for pure backends — exactly the boundary where replay is sound.
 
-### 5. Value transport (native Evaluator only)
+### 5. Result transport (native Evaluator only)
 
-Frontend-synthesized in-cell serialization; the typed wrapper is
-untouched:
+Frontend-synthesized in-cell formatting. (Decision 2026-06-12,
+`ai/plans/value.md`: the `Evaluator` contract carries a rendered display
+string, so transport is a string crossing the dlsym boundary. The earlier
+design here — TLV serialization of `Value`'s variants, deserialized
+host-side — is dead.)
 
-- A quickbite-owned **REPL prelude module** provides a serializer template
-  `__quickbiteSerialize(T)(T value, void* ctx, SinkFunction sink)`:
-  type-directed via `static if` introspection — integrals, floats,
-  strings, arrays, AAs, structs (field recursion), enums; ranges consumed
-  element-wise; anything else emits an `undisplayable` marker plus the
-  type name. v1 vocabulary = exactly what the CTFE conversion supports,
-  guaranteeing oracle agreement on the existing matrix.
+- A quickbite-owned **REPL prelude module** provides the canonical
+  formatter template `string __quickbiteFormat(T)(T value)`: type-directed
+  via `static if` introspection, implementing the type-revealing display
+  spec (`3u`, quoted strings — injective per type, see
+  `ai/plans/value.md`) — integrals, floats, strings, arrays, AAs, structs
+  (field recursion), enums; ranges consumed element-wise; anything else
+  renders an `undisplayable` marker plus the type name. v1 vocabulary =
+  exactly what the CTFE conversion supports, guaranteeing oracle
+  agreement on the existing matrix.
+- The frontend synthesizes expression cells as `__quickbiteFormat(expr)`,
+  so semantic analysis instantiates the formatter against the real static
+  type and the evaluated program itself produces the display string —
+  one formatter implementation for every backend that can execute it.
 - The synthesized `extern(C)` entry point calls `__qb_eval_N()`, catches
-  `Throwable`, and serializes result or error into a tag-length-value
-  encoding of `Value`'s variants. C ABI, raw callback: nothing
-  druntime-shaped crosses the dlsym boundary; the host copies bytes and
-  deserializes into `quickbite.lang.Value`.
+  `Throwable`, and hands the host the resulting string (or error text)
+  via length + pointer copy. C ABI, raw callback: nothing druntime-shaped
+  crosses the dlsym boundary.
 - All type and ABI knowledge stays on the D-source side, where the
-  compiler handles it. This implements interfaces.md's "convert to Value
-  only at Evaluator result boundaries" for machine code. (Cling-style
-  host-side ABI capture was considered and rejected: it permanently
-  embeds calling-convention knowledge in the host and is Cling's most
-  crash-prone subsystem. Text-only rendering, evcxr-style, fails the test
-  matrix, which compares structured Values.)
-- The byte-stream transport is process-boundary-safe by construction,
-  so the deferred crash-isolation work reuses it unchanged.
-- **De-risking**: the serializer is plain D with no loader dependency —
+  compiler handles it. (Cling-style host-side ABI capture was considered
+  and rejected: it permanently embeds calling-convention knowledge in the
+  host and is Cling's most crash-prone subsystem. The earlier objection
+  to text rendering — "fails the test matrix, which compares structured
+  Values" — is obsolete: the matrix moves to text per
+  `ai/plans/value.md`.)
+- The string transport is process-boundary-safe by construction, so the
+  deferred crash-isolation work reuses it unchanged.
+- **De-risking**: the formatter is plain D with no loader dependency —
   it can be written and fully tested under CTFE and compiled unittests
   before any native backend exists.
 
@@ -295,7 +311,7 @@ expressiveness gaps are exposed by straight-line behaviour tests.
   repl.submit("int counter;");
   repl.submit("int get() { return counter; }");   // throws today
   repl.submit("counter = 5;");
-  repl.submit("get()").should == Value(5);
+  repl.submit("get()").should == "5";
   ```
 
 - **T3 — module ctors**: (a) `static this() { }` is *already accepted*
@@ -307,8 +323,8 @@ expressiveness gaps are exposed by straight-line behaviour tests.
 - **T4 — last-value binding** (fails today: undefined identifier):
 
   ```d
-  repl.submit("41 + 1").should == Value(42);
-  repl.submit("it").should == Value(42);   // name TBD
+  repl.submit("41 + 1").should == "42";
+  repl.submit("it").should == "42";   // name TBD
   ```
 
 - **B1 — session-depth benchmark** (`benchmarks/repl_session_depth.d`,
@@ -357,8 +373,9 @@ Dependencies are noted; order within independent slices is flexible.
    `createReplSession`/`ReplSession`; pure backends wrap today's replay
    behaviour behind it (no behaviour change, suite stays green); frontend
    moves to the session API.
-8. **Serializer prelude + wire format** (independent of 7; testable today
-   under CTFE and compiled unittests).
+8. **Formatter prelude** (the canonical display formatter,
+   `ai/plans/value.md`; independent of 7; testable today under CTFE and
+   compiled unittests).
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on

@@ -150,7 +150,11 @@ IR values carry both an operation type (`i32`, `f32`, and so on) and a
 D-visible scalar result category so the VM can keep arithmetic dispatch typed
 while preserving the public eval result type. `vm.d` executes the single entry
 block directly before converting the returned IR value to `quickbite.lang.Value`
-at the backend boundary.
+at the backend boundary. (Decision update 2026-06-12, `ai/plans/value.md`:
+the `Evaluator` contract drops `quickbite.lang.Value` for a rendered
+display string; the boundary conversion becomes private interim
+scaffolding, deleted once the IR core can execute the in-program
+formatter prelude.)
 
 The current mutation support is intentionally narrow. Locals are identified by
 compiler-assigned integer indices, and `Load`/`Store` operate on those local

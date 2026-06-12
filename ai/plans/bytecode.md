@@ -159,6 +159,11 @@ mutable-global rejection diagnostic byte for byte.
 - This supersedes the earlier accepted-cost decision to use `Value` as the
   VM slot type (see the PR 97 lessons below); that was the first-generation
   implementation, not the target.
+- Decision update (2026-06-12, `ai/plans/value.md`): the `Evaluator`
+  contract itself drops `Value` for a rendered display string. The
+  boundary reification above becomes private interim scaffolding, deleted
+  once this core can execute the in-program formatter prelude — expected,
+  since the core is headed for full D.
 
 ### Bytecode format
 - Fixed-width instructions: opcode plus up to three 16-bit operands (frame

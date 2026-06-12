@@ -689,8 +689,11 @@ Only after the runner matrix is healthy. The live contract is
 — the single required primitive; `eval(string)`/`eval(Cell)` are final
 dispatchers on it. (An earlier draft of this plan said
 `eval`/`evalRepl`/`runTestSummary`; that predates the interfaces.md
-migration.) Missing pieces: value transport from machine code back to a
-`quickbite.lang.Value` (does not exist), and latency — per-call
+migration.) Missing pieces: result transport from machine code back to
+the host (does not exist; per the 2026-06-12 decision in
+`ai/plans/value.md` it is a rendered display string produced in-fixture
+by the formatter prelude — see `ai/plans/repl.md` Target Design 5 — not
+a `quickbite.lang.Value`), and latency — per-call
 compile+link+load is ~43 ms today (lesson 14); benchmark before promoting
 anywhere near the REPL hot path (ai/plans/repl.md puts a native session
 at step 9 of 9). With slice 2 done the fresh-parse caveat is gone.
