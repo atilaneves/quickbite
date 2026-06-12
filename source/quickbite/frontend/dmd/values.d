@@ -196,6 +196,8 @@ public imported!"quickbite.lang".Value defaultValue(
             return Value.null_;
         case Tsarray:
             return staticArrayDefaultValue(type.isTypeSArray);
+        case Tstruct:
+            return structDefaultValue(type.isTypeStruct);
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -220,7 +222,6 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tmixin:
         case Tnoreturn:
         case Ttag:
-        case Tstruct:
         case Tenum:
         case Tdelegate:
         case Treference:
@@ -241,6 +242,25 @@ private imported!"quickbite.lang".Value staticArrayDefaultValue(
         elements ~= defaultValue(staticArray.nextOf);
 
     return Value.arrayValue(elements);
+}
+
+private imported!"quickbite.lang".Value structDefaultValue(
+    imported!"dmd.mtype".TypeStruct structType,
+) {
+    import quickbite.lang: Value;
+
+    if (structType is null || structType.sym is null)
+        throw new Exception("Unsupported DMD default value.");
+
+    const typeName = structType.sym.ident is null
+        ? ""
+        : structType.sym.ident.toString.idup;
+
+    Value[] fields;
+    foreach (field; structType.sym.fields)
+        fields ~= defaultValue(field.type);
+
+    return Value.structValue(typeName, fields);
 }
 
 private imported!"quickbite.lang".Value scalarDefaultValue(

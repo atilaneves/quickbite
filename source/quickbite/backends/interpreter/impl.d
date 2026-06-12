@@ -1676,10 +1676,19 @@ private struct Walker {
         else if (auto construct = initializer.isConstructExp)
             initializer = construct.e2;
         else if (auto blit = initializer.isBlitExp) {
-            import quickbite.frontend.dmd.types: isStaticArrayType;
+            import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
 
             // DMD default-initialises static array locals with `variable[] = 0`
             if (isStaticArrayType(variable.type) && blit.e1.isSliceExp !is null) {
+                const value = defaultValue(variable);
+                locals[variable] = value;
+                uninitializedLocals.remove(variable);
+                sliceAliases.remove(variable);
+                return value;
+            }
+
+            // DMD default-initialises struct locals with `variable = 0`
+            if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
                 const value = defaultValue(variable);
                 locals[variable] = value;
                 uninitializedLocals.remove(variable);

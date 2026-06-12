@@ -103,6 +103,10 @@ public bool isPointerType(imported!"dmd.mtype".Type type) {
     return type !is null && type.toBasetype.isTypePointer !is null;
 }
 
+public bool isStructType(imported!"dmd.mtype".Type type) {
+    return type !is null && type.toBasetype.isTypeStruct !is null;
+}
+
 public template dmdScalarType(imported!"dmd.astenums".TY type) {
     import dmd.astenums: TY;
 
