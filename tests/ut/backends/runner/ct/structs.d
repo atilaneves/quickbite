@@ -74,7 +74,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.arrayFieldDefaultsToEmpty." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -485,7 +485,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Ref parameters involving struct fields.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.arrayFieldPassedByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -510,7 +510,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodPassesFieldByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +539,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.templateMethodPassesFieldByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

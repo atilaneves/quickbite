@@ -198,6 +198,8 @@ public imported!"quickbite.lang".Value defaultValue(
             return staticArrayDefaultValue(type.isTypeSArray);
         case Tstruct:
             return structDefaultValue(type.isTypeStruct);
+        case Tarray:
+            return Value.arrayValue([]);
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -208,7 +210,6 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tcomplex64:
         case Tcomplex80:
         case Tfunction:
-        case Tarray:
         case Taarray:
         case Tident:
         case Tinstance:
