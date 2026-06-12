@@ -62,6 +62,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     equal2,
     equal4,
     equal8,
+    jump, // a: absolute instruction index
+    jumpIfFalse, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     ret, // a: frame offset of the return value

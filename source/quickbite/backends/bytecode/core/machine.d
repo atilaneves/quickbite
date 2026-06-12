@@ -88,6 +88,14 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case jump:
+                ip = instruction.a;
+                break;
+
+            case jumpIfFalse:
+                ip = stack[base + instruction.a] == 0 ? instruction.b : ip + 1;
+                break;
+
             case call:
                 if (program.functions[instruction.a].code.length == 0)
                     compileFunction(instruction.a);

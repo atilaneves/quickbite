@@ -108,10 +108,29 @@ private struct Compiler {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            compileIfStatement(if_);
+            return;
+        }
+
         throw new Exception(text(
             "Unsupported statement in bytecode core: ",
             statement.stmt,
         ));
+    }
+
+    private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
+        const condition = compileExpression(if_.condition);
+        const falseJump = emitJumpIfFalse(condition);
+
+        compileStatement(if_.ifbody);
+        const endJump = emitJump;
+
+        patchJump(falseJump);
+        if (if_.elsebody !is null)
+            compileStatement(if_.elsebody);
+
+        patchJump(endJump);
     }
 
     private Operand compileExpression(Expression expression) {
@@ -162,6 +181,9 @@ private struct Compiler {
 
         if (auto add = expression.isAddExp)
             return compileAddExpression(add);
+
+        if (auto equal = expression.isEqualExp)
+            return compileEqualExpression(equal);
 
         if (auto call = expression.isCallExp)
             return compileCall(call);
@@ -243,6 +265,24 @@ private struct Compiler {
         return Operand(offset, type);
     }
 
+    private Operand compileEqualExpression(Expression expression) {
+        import dmd.expression: BinExp;
+        import std.conv: text;
+
+        auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        const lhs = compileExpression(equal.e1);
+        const rhs = compileExpression(equal.e2);
+        if (lhs.type != ScalarType.int_ || rhs.type != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported equality in bytecode core: ",
+                expressionChars(expression),
+            ));
+
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal4, offset, lhs.offset, rhs.offset);
+        return Operand(offset, ScalarType.bool_);
+    }
+
     private Operand extend(in Operand source, in ScalarType target) {
         const offset = allocate(target);
         _code ~= Instruction(
@@ -285,6 +325,24 @@ private struct Compiler {
             : allocate(returnType);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType);
+    }
+
+    private size_t emitJump() @safe pure {
+        const index = _code.length;
+        _code ~= Instruction(Op.jump);
+        return index;
+    }
+
+    private size_t emitJumpIfFalse(in Operand condition) @safe pure {
+        const index = _code.length;
+        _code ~= Instruction(Op.jumpIfFalse, condition.offset);
+        return index;
+    }
+
+    private void patchJump(in size_t index) @safe pure {
+        _code[index].b = cast(ushort) _code.length;
+        if (_code[index].op == Op.jump)
+            _code[index].a = _code[index].b;
     }
 
     private void compileAssert(AssertExp assert_) {
