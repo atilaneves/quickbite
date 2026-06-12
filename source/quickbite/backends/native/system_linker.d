@@ -94,18 +94,17 @@ private void buildSharedLibrary(
     auto userImports = userImportedModules(module_);
     prepareForCodegen(userImports);
 
-    // Everything the link may legitimately reference; the rod is pruned down
-    // to members that only touch these modules (or druntime/phobos).
-    bool[Module] linkSet;
-    linkSet[module_] = true;
-    linkSet[rod] = true;
-    foreach (userImport; userImports)
-        linkSet[userImport] = true;
-
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
     auto modules = [module_] ~ userImports ~ [rod];
+
+    // Everything the link may legitimately reference; the rod is pruned down
+    // to members that only touch these modules (or druntime/phobos).
+    bool[Module] linkSet;
+    foreach (linkModule; modules)
+        linkSet[linkModule] = true;
+
     string[] objPaths;
     foreach (i; 0 .. modules.length)
         objPaths ~= buildPath(dir, text("obj_", i, ".o"));
@@ -140,9 +139,11 @@ private struct LinkContext {
 // benchmark nor the repl spawn threads), so no other thread can be wedged
 // mid-lock in the child image.
 private void runInFork(scope void delegate() work) {
+    import core.stdc.errno: EINTR, errno;
     import core.stdc.stdio: fflush;
-    import core.sys.posix.unistd: _exit, close, fork, pipe, read, write;
-    import core.sys.posix.sys.wait: waitpid;
+    import core.sys.posix.unistd: _exit, close, fork, pipe, read;
+    import core.sys.posix.sys.wait:
+        WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG, waitpid;
     import std.conv: text;
 
     // The child inherits stdio buffers; flush so it cannot re-emit them.
@@ -162,9 +163,13 @@ private void runInFork(scope void delegate() work) {
         try
             work();
         catch (Throwable throwable) { // also report asserts in the child
-            const message = throwable.toString;
-            write(fds[1], message.ptr, message.length);
             status = 1;
+            // toString can itself throw; the child must never unwind into
+            // the parent's frames (every inherited scope(exit) would run,
+            // including the temp-dir cleanup).
+            try
+                writeAll(fds[1], throwable.toString);
+            catch (Throwable) {}
         }
         close(fds[1]);
         _exit(status);
@@ -177,20 +182,58 @@ private void runInFork(scope void delegate() work) {
     char[4096] buffer;
     for (;;) {
         const got = read(fds[0], buffer.ptr, buffer.length);
-        if (got <= 0)
+        if (got < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (got == 0)
             break;
         message ~= buffer[0 .. got].idup;
     }
     close(fds[0]);
 
     int status;
-    waitpid(pid, &status, 0);
-    if (status != 0)
+    for (;;) {
+        const reaped = waitpid(pid, &status, 0);
+        if (reaped == pid)
+            break;
+        if (reaped < 0 && errno == EINTR)
+            continue;
+        // An unreaped child must not pass for success: the .so was likely
+        // never linked.
+        throw new Exception("waitpid failed for the codegen child");
+    }
+    if (status != 0) {
+        const detail = WIFEXITED(status)
+            ? text("exit code ", WEXITSTATUS(status))
+            : WIFSIGNALED(status)
+                ? text("signal ", WTERMSIG(status))
+                : text("status ", status);
         throw new Exception(
             message.length > 0
                 ? message
-                : text("codegen child died without a report (status ", status, ")"),
+                : text("codegen child died without a report (", detail, ")"),
         );
+    }
+}
+
+// write(2) may write partially or fail with EINTR; the report must survive
+// both or the parent sees a truncated error.
+private void writeAll(int fd, in char[] data) {
+    import core.stdc.errno: EINTR, errno;
+    import core.sys.posix.unistd: write;
+
+    size_t written = 0;
+    while (written < data.length) {
+        const wrote = write(fd, data.ptr + written, data.length - written);
+        if (wrote < 0) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        written += wrote;
+    }
 }
 
 // With allInst on, every druntime/phobos template instance and TypeInfo from
@@ -327,6 +370,18 @@ private bool anyAggregate(
     if (auto aaType = type.isTypeAArray)
         return anyAggregate(aaType.index, predicate)
             || anyAggregate(aaType.next, predicate);
+    // TypeTuple extends Type directly (nextOf is null); D-style variadics
+    // create tuple TypeInfos whose emission references each component
+    // type's TypeInfo, so a struct component must be visible here.
+    if (auto tupleType = type.isTypeTuple) {
+        if (tupleType.arguments !is null)
+            foreach (i; 0 .. tupleType.arguments.length)
+                if (anyAggregate((*tupleType.arguments)[i].type, predicate))
+                    return true;
+        return false;
+    }
+    if (auto vectorType = type.isTypeVector)
+        return anyAggregate(vectorType.basetype, predicate);
     if (auto next = type.nextOf)
         return anyAggregate(next, predicate);
     return false;
@@ -473,10 +528,14 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
 
 private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {
     import std.algorithm.searching: any, startsWith;
-    import std.path: absolutePath, buildNormalizedPath;
+    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
 
     const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
-    return defaultImportPaths.any!(root => path.startsWith(root));
+    // Match whole path components: a bare prefix check would classify a
+    // sibling directory like <root>-extra/ as under <root>.
+    return defaultImportPaths.any!(
+        root => path == root || path.startsWith(root ~ dirSeparator),
+    );
 }
 
 // The import paths registered when DMD was initialized (druntime/phobos);
