@@ -896,3 +896,170 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             "- string twice(string value)";
     }
 }
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.structValueRendersTypeNameAndFields." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "Point(a, b)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Point(1, 2)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "[Point(a, b), Point(b, a)]",
+                ":q",
+            ],
+        );
+
+        output.should == ["[Point(1, 2), Point(2, 1)]"];
+    }
+}
+
+// The Interpreter keeps the null field (`Callbacks(7, null)`) instead of
+// omitting it; Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.nullFunctionPointerFieldIsOmitted." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Callbacks { int id; void function() onDone; }",
+                "int a = 7;",
+                "Callbacks(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Callbacks(7)"];
+    }
+}
+
+// The Interpreter keeps the null field (`Handler(9, null)`) instead of
+// omitting it; Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.nullDelegateFieldIsOmitted." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Handler { int id; void delegate() onEvent; }",
+                "int a = 9;",
+                "Handler(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Handler(9)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullClassFieldRendersAsNull." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Node { int id; Object payload; }",
+                "int a = 5;",
+                "Node(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Node(5, null)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Link { int id; int* next; }",
+                "int a = 4;",
+                "Link(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Link(4, null)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nestedStructOmitsSyntheticContextField." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        // dmd synthesises a void* context field for the nested struct;
+        // it must not appear in the rendered value.
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto makeNested(int seed) { struct Inner { int v; int doubled() { return v * seed; } } Inner i; i.v = seed; return i; }",
+                "int a = 3;",
+                "makeNested(a)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Inner(3)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.assocArrayWithStructValuesRendersEntries." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "[a: Point(a, b)]",
+                ":q",
+            ],
+        );
+
+        output.should == ["[1:Point(1, 2)]"];
+    }
+}
