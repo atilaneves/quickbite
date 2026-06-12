@@ -144,6 +144,25 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.replacesSameSignatureFunctionDeclarations." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int answer() { return 41; }",
+                "int answer() { return 42; }",
+                "answer()",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -829,13 +848,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int twice(int i) { return i; }");
+        repl.submit("struct Twice { }");
         void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+            repl.submit("struct Twice { }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration " ~
-            "at <repl cell 1>(1)";
+        const message = duplicateDeclaration.shouldThrow.msg;
+        "at <repl cell 1>(1)".should.be in message;
     }
 }
 
@@ -848,12 +866,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         auto repl = Repl(newBackend!backend);
 
         repl.submit("int twice(int i) { return i * 2; }").should == Value.void_;
-        void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+        void rejectedReplacement() {
+            repl.submit("int twice(int i) { return unknown; }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration " ~
-            "at <repl cell 1>(1)";
+        rejectedReplacement.shouldThrowWithMessage(
+            "undefined identifier `unknown`",
+        );
         repl.submit("twice(21)").should == Value(42);
     }
 }

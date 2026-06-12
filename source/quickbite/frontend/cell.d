@@ -15,6 +15,7 @@ public struct Cell {
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
+    private string[] moduleFunctionSignatures;
 }
 
 public struct EvalSourceParseResult {
@@ -31,6 +32,7 @@ private struct TranscriptCell {
     public string source;
     public Cell.Kind kind;
     public string[] declaredNames;
+    public string[] functionSignatures;
     public uint cellNumber;
 }
 
@@ -74,6 +76,11 @@ public struct EvalSession {
             return Cell(Cell.Kind.incomplete);
 
         if (isModuleDeclarationCell(input)) {
+            const moduleFunctionSignatures = functionDeclarationSignatures(input);
+            const moduleCells = moduleCellsWithReplacements(
+                moduleCells,
+                moduleFunctionSignatures,
+            );
             const source = evalSource(
                 moduleSource(transcriptSource(moduleCells) ~ input ~ "\n"),
                 transcriptSource(localCells),
@@ -85,6 +92,7 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.module_,
                 input ~ "\n",
+                moduleFunctionSignatures,
             );
         }
 
@@ -106,6 +114,7 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.local,
                 history,
+                [],
             );
         }
 
@@ -120,6 +129,7 @@ public struct EvalSession {
             importPaths,
             EvalHistoryTarget.local,
             expressionHistory(input, valueCellCount),
+            [],
         );
     }
 
@@ -131,14 +141,20 @@ public struct EvalSession {
                     cell.history,
                     cell.kind,
                     [],
+                    [],
                     cellNumber,
                 );
                 break;
             case module_:
+                moduleCells = moduleCellsWithReplacements(
+                    moduleCells,
+                    cell.moduleFunctionSignatures.dup,
+                );
                 moduleCells ~= TranscriptCell(
                     cell.history,
                     cell.kind,
                     [],
+                    cell.moduleFunctionSignatures.dup,
                     cellNumber,
                 );
                 break;
@@ -238,6 +254,41 @@ private string transcriptSource(
     return result;
 }
 
+private TranscriptCell[] moduleCellsWithReplacements(
+    const(TranscriptCell)[] moduleCells,
+    in string[] functionSignatures,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; moduleCells) {
+        if (hasFunctionSignature(cell, functionSignatures))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private bool hasFunctionSignature(
+    ref const TranscriptCell cell,
+    in string[] functionSignatures,
+) @safe pure {
+    foreach (cellSignature; cell.functionSignatures) {
+        foreach (signature; functionSignatures) {
+            if (cellSignature == signature)
+                return true;
+        }
+    }
+
+    return false;
+}
+
 private string replCellLineDirective(in uint cellNumber) @safe pure {
     import std.conv: text;
 
@@ -301,6 +352,7 @@ private Cell evalCellFromSource(
     in string[] importPaths,
     in EvalHistoryTarget historyTarget,
     in string history,
+    in string[] moduleFunctionSignatures,
 ) {
     import quickbite.frontend.compiler: parseModule;
 
@@ -312,6 +364,7 @@ private Cell evalCellFromSource(
             evalFunction(moduleResult.module_),
             historyTarget,
             history,
+            moduleFunctionSignatures.dup,
         );
     } catch (Exception exception) {
         throw new Exception(withCandidateSignatures(source, exception.msg));
@@ -643,6 +696,81 @@ private bool isModuleDeclarationCell(in string input) {
     });
 
     return result;
+}
+
+private string[] functionDeclarationSignatures(in string input) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: parseModule;
+    import dmd.globals: global;
+    import std.conv: text;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string[] result;
+    withCompilerLock(() {
+        import core.atomic: atomicFetchAdd;
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        auto moduleResult = parseModule(
+            text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
+            input,
+        );
+        if (
+            moduleResult.diagnostics.hasErrors ||
+            moduleResult.module_.members is null
+        )
+            return;
+
+        foreach (declaration; *moduleResult.module_.members) {
+            if (
+                isEvalFunctionDeclaration(declaration) &&
+                declaration.isUnitTestDeclaration is null &&
+                declaration.ident !is null
+            ) {
+                auto function_ = declaration.isFuncDeclaration;
+                result ~= replacementFunctionSignature(function_);
+            }
+        }
+    });
+
+    return result;
+}
+
+private string replacementFunctionSignature(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.conv: text;
+
+    auto type = function_.type is null
+        ? null
+        : function_.type.isTypeFunction;
+    return text(function_.ident.toString, "(", parameterSignature(type), ")");
+}
+
+private string parameterSignature(imported!"dmd.mtype".TypeFunction type) {
+    import std.array: join;
+    import std.conv: text;
+
+    if (type is null)
+        return null;
+
+    string[] parameters;
+    foreach (index; 0 .. type.parameterList.length) {
+        auto parameter = type.parameterList[index];
+        parameters ~= parameter.type is null
+            ? null
+            : parameter.type.typeSyntax;
+    }
+
+    return text(parameters.join(","), "/", type.parameterList.varargs);
+}
+
+private string typeSyntax(imported!"dmd.mtype".Type type) {
+    import std.string: fromStringz;
+
+    return fromStringz(type.toChars).idup;
 }
 
 private bool isDeclarationCell(in string input) {
