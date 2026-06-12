@@ -70,6 +70,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case addInt4:
+                const ubyte[int.sizeof] sum = nativeToLittleEndian(
+                    littleEndianScalar!int(stack, base + instruction.b) +
+                    littleEndianScalar!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = sum;
+                ++ip;
+                break;
+
             case equal1, equal2, equal4, equal8:
                 const operandSize = equalOperandSize(instruction.op);
                 stack[base + instruction.a] =

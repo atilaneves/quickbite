@@ -160,6 +160,9 @@ private struct Compiler {
         if (auto cast_ = expression.isCastExp)
             return compileCastExpression(cast_);
 
+        if (auto add = expression.isAddExp)
+            return compileAddExpression(add);
+
         if (auto call = expression.isCallExp)
             return compileCall(call);
 
@@ -217,6 +220,27 @@ private struct Compiler {
         }
 
         return extend(source, target);
+    }
+
+    private Operand compileAddExpression(Expression expression) {
+        import dmd.expression: BinExp;
+        import std.conv: text;
+
+        auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        const lhs = compileExpression(add.e1);
+        const rhs = compileExpression(add.e2);
+        const type = scalarType(expression.type);
+        if (type != ScalarType.int_ ||
+            lhs.type != ScalarType.int_ ||
+            rhs.type != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported addition in bytecode core: ",
+                expressionChars(expression),
+            ));
+
+        const offset = allocate(type);
+        _code ~= Instruction(Op.addInt4, offset, lhs.offset, rhs.offset);
+        return Operand(offset, type);
     }
 
     private Operand extend(in Operand source, in ScalarType target) {

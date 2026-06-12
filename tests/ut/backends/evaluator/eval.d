@@ -13,7 +13,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);

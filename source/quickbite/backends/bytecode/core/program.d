@@ -57,6 +57,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
+    addInt4, // a: destination frame offset, b: lhs, c: rhs
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,
