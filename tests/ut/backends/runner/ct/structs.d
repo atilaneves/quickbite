@@ -978,6 +978,37 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
+// target."), and IR (unmapped struct type assert) cannot run struct-typed
+// fields yet.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.fieldChainReadsInnerStructMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int v;
+            }
+
+            struct Outer {
+                Inner inner;
+            }
+
+            Outer make(int seed) {
+                Outer o;
+                o.inner.v = seed + 2;
+                return o;
+            }
+
+            unittest {
+                Outer outer = make(40);
+
+                assert(outer.inner.v == 42);
+            }
+        });
+    }
+}
+
 
 /++
     Struct equality.

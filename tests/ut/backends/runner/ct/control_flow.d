@@ -258,6 +258,59 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+    @("function.defaultArgumentFillsOmittedParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int add(int a, int b = 10) {
+                return a + b;
+            }
+
+            int seed() {
+                return 32;
+            }
+
+            unittest {
+                int a = seed;
+
+                assert(add(a) == 42);
+                assert(add(a, 1) == 33);
+            }
+        });
+    }
+}
+
+// IR is omitted: its VM asserts on f32/f64/ptr values (vm.d execute assert),
+// so the double overload cannot run.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("function.overloadResolutionBySignature." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int kind(int value) {
+                return 1;
+            }
+
+            int kind(double value) {
+                return 2;
+            }
+
+            int seed() {
+                return 3;
+            }
+
+            unittest {
+                int i = seed;
+                double d = seed;
+
+                assert(kind(i) == 1);
+                assert(kind(d) == 2);
+            }
+        });
+    }
+}
+
 
 /++
     If/else and returns.
@@ -817,6 +870,79 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
+// compile the ternary in pick ("Unsupported IR expression").
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("switch.finalSwitchOnEnumCoversAllMembers." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum Colour {
+                red,
+                green,
+                blue,
+            }
+
+            Colour pick(int n) {
+                return n == 0 ? Colour.red : n == 1 ? Colour.green : Colour.blue;
+            }
+
+            int weight(Colour colour) {
+                final switch (colour) {
+                    case Colour.red:
+                        return 10;
+
+                    case Colour.green:
+                        return 20;
+
+                    case Colour.blue:
+                        return 30;
+                }
+            }
+
+            unittest {
+                assert(weight(pick(0)) == 10);
+                assert(weight(pick(1)) == 20);
+                assert(weight(pick(2)) == 30);
+            }
+        });
+    }
+}
+
+// Interpreter, Bytecode, and IR all report Switch as an unsupported statement.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("switch.caseRangesAndMultiValueCases." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int n) {
+                return n;
+            }
+
+            int classify(int n) {
+                switch (n) {
+                    case 0: .. case 3:
+                        return 10;
+
+                    case 5, 7:
+                        return 20;
+
+                    default:
+                        return 30;
+                }
+            }
+
+            unittest {
+                assert(classify(seed(0)) == 10);
+                assert(classify(seed(3)) == 10);
+                assert(classify(seed(5)) == 20);
+                assert(classify(seed(7)) == 20);
+                assert(classify(seed(4)) == 30);
+            }
+        });
+    }
+}
+
 
 /++
     Goto and restart points.
@@ -1248,6 +1374,26 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Bytecode cannot compile the foreach lowering's array slice ("Unsupported
+// expression `arr[]`"); IR reports the array literal as unsupported.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("foreach.arrayWithIndex." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr = [10, 20, 30];
+                int weighted;
+
+                foreach (i, e; arr)
+                    weighted += e * (cast(int) i + 1);
+
+                assert(weighted == 140);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("foreach.emptyArray." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1412,6 +1558,31 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
                 assert(chars.length == 2);
                 assert(chars[0] == 'z');
                 assert(chars[1] == cast(dchar) 0x1F34C);
+            }
+        });
+    }
+}
+
+// Interpreter hits the foreach_reverse lowering's post-decrement
+// ("Unsupported eval post expression"); Bytecode cannot compile the array
+// slice ("Unsupported expression `arr[]`"); IR reports the array literal as
+// unsupported.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("foreach.reverseIntArrayVisitsBackToFront." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr = [1, 2, 3];
+                int[] visited;
+
+                foreach_reverse (x; arr)
+                    visited ~= x;
+
+                assert(visited.length == 3);
+                assert(visited[0] == 3);
+                assert(visited[1] == 2);
+                assert(visited[2] == 1);
             }
         });
     }

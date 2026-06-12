@@ -363,9 +363,13 @@ only.
 
 ### Tier 2 — common semantics, clear gaps
 
-- [ ] **Negative modulo sign rule.** `-7 % 3 == -1` (sign follows the
-  dividend). Corpus only has positive modulo.
-- [ ] **`>>>` zero-fill vs `>>` sign-extend.**
+- [x] **Negative modulo sign rule.** `-7 % 3 == -1` (sign follows the
+  dividend). Corpus only has positive modulo. *Done:
+  `int.moduloSignFollowsDividend` (Ctfe, Interpreter, SystemLinker) —
+  Bytecode and IR report `%` as an unsupported expression.*
+- [x] **`>>>` zero-fill vs `>>` sign-extend.** *Done:
+  `int.unsignedRightShiftZeroFills` (Ctfe, SystemLinker) — the VM
+  backends report shifts as unsupported expressions.*
   ```d
   int seed() { return -1; }
   unittest {
@@ -374,19 +378,31 @@ only.
       assert((v >>> 28) == 15);
   }
   ```
-- [ ] **`final switch` on an enum** (must cover all members).
-- [ ] **`switch` case ranges** (`case 0: .. case 3:`) and multi-value
-  cases.
-- [ ] **Default function arguments** (`int add(int a, int b = 10)`).
-- [ ] **Overload resolution by signature** (`kind(int)` vs
-  `kind(double)`).
-- [ ] **`foreach` with index** `(i, e)` over a runtime array.
-- [ ] **`foreach_reverse` over a runtime int array** (covered today
-  only for `dchar` over a string).
-- [ ] **Nested struct field access** (`outer.inner.v`).
-- [ ] **Runtime AA insertion / growth** (`m[k] = v` building the map,
+- [x] **`final switch` on an enum** (must cover all members). *Done:
+  `switch.finalSwitchOnEnumCoversAllMembers` (Ctfe, SystemLinker).*
+- [x] **`switch` case ranges** (`case 0: .. case 3:`) and multi-value
+  cases. *Done: `switch.caseRangesAndMultiValueCases` (Ctfe,
+  SystemLinker).*
+- [x] **Default function arguments** (`int add(int a, int b = 10)`).
+  *Done: `function.defaultArgumentFillsOmittedParameter` (all five
+  backends).*
+- [x] **Overload resolution by signature** (`kind(int)` vs
+  `kind(double)`). *Done: `function.overloadResolutionBySignature`
+  (Ctfe, Interpreter, Bytecode, SystemLinker) — IR's VM asserts on
+  f32/f64/ptr values, so the double overload cannot run.*
+- [x] **`foreach` with index** `(i, e)` over a runtime array. *Done:
+  `foreach.arrayWithIndex` (Ctfe, Interpreter, SystemLinker).*
+- [x] **`foreach_reverse` over a runtime int array** (covered today
+  only for `dchar` over a string). *Done:
+  `foreach.reverseIntArrayVisitsBackToFront` (Ctfe, SystemLinker) —
+  the Interpreter hits the lowering's post-decrement as unsupported.*
+- [x] **Nested struct field access** (`outer.inner.v`). *Done:
+  `struct.fieldChainReadsInnerStructMember` (Ctfe, SystemLinker).*
+- [x] **Runtime AA insertion / growth** (`m[k] = v` building the map,
   overwrite, `.length`). Corpus only tests literal AAs + lookup, plus
-  AA `.dup`.
+  AA `.dup`. *Done: `assocArray.insertionGrowsAndOverwrites` (Ctfe,
+  SystemLinker) — the Interpreter cannot index-assign into a
+  still-null AA, despite passing the literal-AA tests.*
 
 ### Tier 3 — fills out existing-but-thin areas
 
