@@ -1,10 +1,10 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends.runner: ExecutionMode, Runner, TestResult;
+import quickbite.backends.runner: ExecutionMode, Runner, TestResult, runTests;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
-import quickbite.backends.native: SystemLinker;
+import quickbite.backends.native: SystemLinker, SystemLinkerInputs;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;
 import dmd.dmodule: Module;
 
@@ -78,8 +78,11 @@ public void run(string[] args) {
     // only the project under test is codegen'd per run.
     runners["system-linker"] = new SystemLinker(
         ExecutionMode.runtime,
-        dubLinkFiles,
-        dubArchiveImportPaths,
+        SystemLinkerInputs(
+            dubLinkFiles,
+            dubArchiveImportPaths,
+            dubPkg.length > 0,
+        ),
     );
 
     if (backendNames.length == 0)
@@ -176,10 +179,7 @@ public void run(string[] args) {
                     printRow(
                         dubPkg, name,
                         measure(
-                            () {
-                                foreach (module_; dubModules)
-                                    runner.runTests(module_);
-                            },
+                            () { runTests(runner, dubModules); },
                             warmup,
                             runs,
                         ),
