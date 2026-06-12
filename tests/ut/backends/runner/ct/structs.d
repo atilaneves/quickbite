@@ -572,7 +572,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Constructors, `new`, and mutable struct pointers.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.constructorStoresDynamicArrayParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -680,7 +680,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Dynamic array struct field return values.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayFieldReturnValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -713,7 +713,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayReturnValueAssignsField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -751,7 +751,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayFieldReturnValueIndexesCallResult." ~
         backend.stringof)
     @Tags(backend.stringof)

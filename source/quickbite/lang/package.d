@@ -550,6 +550,15 @@ public struct Value {
         );
     }
 
+    public bool isStruct() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => true,
+            (_) => false,
+        );
+    }
+
     public Value pointerTarget() const @safe pure {
         return pointerIndex(0);
     }

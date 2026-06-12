@@ -937,7 +937,25 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.thisValue = receiver;
+        // For constructor calls, DMD may blit the target variable to zero
+        // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
+        // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
+        // the struct's proper default in that case so the ctor body can write
+        // fields.  When the receiver is already a valid struct (e.g.
+        // MapResult created from a StructLiteralExp with elements), use it
+        // as-is to preserve any hidden context fields.
+        if (function_.isCtorDeclaration !is null && !receiver.isStruct) {
+            import dmd.dstruct: StructDeclaration;
+
+            auto structDecl = function_.parent is null
+                ? null
+                : function_.parent.isStructDeclaration;
+            child.thisValue = structDecl !is null
+                ? defaultValue(structDecl.type)
+                : receiver;
+        } else {
+            child.thisValue = receiver;
+        }
         child.hasThis = true;
         child.bindFunctionParameters(function_, arguments);
 
