@@ -406,19 +406,44 @@ only.
 
 ### Tier 3 — fills out existing-but-thin areas
 
-- [ ] **More operator overloads**: `opCmp`, `opBinary`, `opIndex`,
-  `opUnary`, `opAssign`.
-- [ ] **Exception extras**: rethrow (`throw;`), multiple typed `catch`
-  clauses selecting by type, `Error` vs `Exception` distinction.
-- [ ] **Integer edge cases needing oracle confirmation**:
-  `int.min / -1`, `int.min % -1` (CTFE may reject as overflow — if so,
-  unsupported-diagnostic test, keeping the inner supported assertion).
-- [ ] **`^^` power operator** on integers — confirm it isn't folded
-  before deciding the fixture shape.
-- [ ] **`float`/`real` variants** of the math intrinsics tested only
-  for `double`; passing forms only.
-- [ ] **Array extras**: `.dup`/`.idup` of a dynamic array (only AA
-  `.dup` is covered), `.ptr`, jagged multidimensional arrays.
+- [x] **More operator overloads**: `opCmp`, `opBinary`, `opIndex`,
+  `opUnary`, `opAssign`. *Done: `struct.opCmpOrdersValues`,
+  `struct.opBinaryAddsOperands`, `struct.opIndexSelectsElement`,
+  `struct.opUnaryNegatesValue`, `struct.opAssignFromScalar` (Ctfe,
+  SystemLinker) — the VM backends cannot run struct-typed values.*
+- [x] **Exception extras**: rethrow, multiple typed `catch` clauses
+  selecting by type, `Error` vs `Exception` distinction. *Done:
+  `exception.rethrowPropagatesToOuterHandler`,
+  `exception.multipleCatchClausesSelectByDynamicType`,
+  `exception.errorIsNotCaughtByExceptionHandler` (Ctfe, SystemLinker)
+  — the VM backends report TryCatch as unsupported. Note: D has no
+  bare `throw;`; rethrow is `throw e;` with an explicit reference.*
+- [x] **Integer edge cases needing oracle confirmation**:
+  `int.min / -1`, `int.min % -1`. *Done: CTFE rejects both as
+  `integer overflow`, pinned as diagnostic tests with inner supported
+  assertions (`int.divisionOverflowAtIntMinIsRejected`,
+  `int.moduloOverflowAtIntMinIsRejected`, Ctfe only) — at runtime the
+  x86_64 idiv traps (SIGFPE), so no runtime backend can pin a value.*
+- [x] **`^^` power operator** on integers. *Done:
+  `int.powerOperatorRaisesRuntimeIntegers` (Ctfe, SystemLinker) — not
+  folded with runtime-shaped operands; its druntime lowering defeats
+  every VM backend.*
+- [x] **`float`/`real` variants** of the math intrinsics tested only
+  for `double`; passing forms only. *Done: sqrt/fabs/pow/isNaN/
+  isInfinity/signbit × float/real in `math.d` (Ctfe, Interpreter,
+  Bytecode, SystemLinker) — BytecodeNewCore has no float/real types
+  and IR asserts on float/real intrinsic calls. The pow-float block
+  also omits SystemLinker: `pow!(float, float)` template-instance
+  ownership makes the link order-dependent (recorded in
+  `ai/plans/dmd-backend.md`).*
+- [x] **Array extras**: `.dup`/`.idup` of a dynamic array, `.ptr`,
+  jagged multidimensional arrays. *Done:
+  `dynamicArray.dupDetachesCopyFromOriginal`,
+  `dynamicArray.idupFreezesIndependentCopy`,
+  `dynamicArray.ptrPointsAtFirstElement` (Ctfe, Interpreter,
+  SystemLinker) and `dynamicArray.jaggedRowsKeepIndependentLengths`
+  (Ctfe, SystemLinker) — bytecode backends and IR fail on array
+  literals, `.length`, pointer casts, or jagged element types.*
 
 ### Tier 4 — value marshaling round-trip (REPL-driven)
 

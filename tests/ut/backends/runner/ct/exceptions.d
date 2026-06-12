@@ -637,3 +637,88 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
         });
     }
 }
+
+// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
+// unsupported statement.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("exception.rethrowPropagatesToOuterHandler." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run(int seed) {
+                try {
+                    try {
+                        if (seed > 0) throw new Exception("rethrown");
+                        return 0;
+                    } catch (Exception e) {
+                        throw e;
+                    }
+                } catch (Exception e) {
+                    if (e.msg == "rethrown") return seed + 40;
+                    return -1;
+                }
+            }
+
+            unittest {
+                assert(run(2) == 42);
+            }
+        });
+    }
+}
+
+// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
+// unsupported statement.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("exception.multipleCatchClausesSelectByDynamicType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class FormatError : Exception {
+                this(string message) { super(message); }
+            }
+
+            int classify(int seed) {
+                try {
+                    if (seed == 1) throw new FormatError("format");
+                    throw new Exception("plain");
+                } catch (FormatError e) {
+                    return 10;
+                } catch (Exception e) {
+                    return 20;
+                }
+            }
+
+            unittest {
+                assert(classify(1) == 10);
+                assert(classify(2) == 20);
+            }
+        });
+    }
+}
+
+// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
+// unsupported statement.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("exception.errorIsNotCaughtByExceptionHandler." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run(int seed) {
+                try {
+                    try {
+                        if (seed > 0) throw new Error("fatal");
+                        return 0;
+                    } catch (Exception e) {
+                        return 1;
+                    }
+                } catch (Error e) {
+                    return 2;
+                }
+            }
+
+            unittest {
+                assert(run(1) == 2);
+            }
+        });
+    }
+}

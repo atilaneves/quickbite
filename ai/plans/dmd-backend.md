@@ -177,6 +177,14 @@ fixtures needing no template instances beyond what libphobos2.so happens to
 export (`||`/`&&` asserts, explicit-message asserts, plain
 `throw new Exception` via the exported `_d_newclassT!Exception`).
 
+Another exposing case from the coverage stream (2026-06-12):
+`evaluatesRuntimePowFloatInputs` in
+`tests/ut/backends/runner/ct/math.d` — `std.math` `pow!(float, float)`
+is not exported by libphobos2.so, so the fixture links solo but fails
+under the full suite once an earlier test owns the instance. The block
+omits `SystemLinker` until instance ownership is solved; re-add it
+then.
+
 ### 3. Process-global mutation invalidates live iterators
 
 The instance/TypeInfo appends from (1) can realloc `module_.members` while

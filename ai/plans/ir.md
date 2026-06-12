@@ -551,3 +551,16 @@ is added when a test requires control flow.
   `signedUnsignedComparisonIsUnsigned` in
   `tests/ut/backends/runner/ct/integrals.d`, which omits `IR` from its
   `AliasSeq` until this is fixed.
+
+- **Internal asserts instead of unsupported diagnostics.** The Tier 3
+  coverage fixtures make the IR compiler fail with `AssertError`
+  (`compiler.d` `valueType` and `compileIntrinsicCall`) rather than an
+  explicit unsupported diagnostic for: struct-typed call results
+  (`struct.opCmpOrdersValues` and the other operator-overload tests in
+  `tests/ut/backends/runner/ct/structs.d`), float/real intrinsic
+  operands (`evaluatesRuntimeSqrtFloatInput` and the other float/real
+  blocks in `math.d`), and the integer `^^` lowering
+  (`int.powerOperatorRaisesRuntimeIntegers` in `expressions.d`). Per
+  `ai/plans/overview.md`, anything the backend cannot do must be an
+  explicit unsupported diagnostic, never an assert. Those fixtures omit
+  `IR` from their `AliasSeq` until then.

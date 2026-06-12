@@ -170,3 +170,65 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
         });
     }
 }
+
+// dmd CTFE rejects int.min / -1 as integer overflow; at runtime the same
+// division raises SIGFPE on x86_64, so no runtime backend can pin a value.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("int.divisionOverflowAtIntMinIsRejected." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int dividend() {
+                return int.min;
+            }
+
+            int divisor() {
+                return -1;
+            }
+
+            unittest {
+                int a = dividend;
+                int b = divisor;
+
+                // Dividing by the negated divisor stays in range.
+                assert(a / -b == int.min);
+
+                assert(a / b == int.min);
+            }
+        }).shouldThrowWithMessage(
+            "integer overflow: `int.min / -1`\n" ~
+            "cannot compare `__error` at compile time",
+        );
+    }
+}
+
+// Same as above: CTFE rejects int.min % -1 as integer overflow and the
+// runtime instruction traps.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("int.moduloOverflowAtIntMinIsRejected." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int dividend() {
+                return int.min;
+            }
+
+            int divisor() {
+                return -1;
+            }
+
+            unittest {
+                int a = dividend;
+                int b = divisor;
+
+                // The modulo by the negated divisor stays in range.
+                assert(a % -b == 0);
+
+                assert(a % b == 0);
+            }
+        }).shouldThrowWithMessage(
+            "integer overflow: `int.min % -1`\n" ~
+            "cannot compare `__error` at compile time",
+        );
+    }
+}

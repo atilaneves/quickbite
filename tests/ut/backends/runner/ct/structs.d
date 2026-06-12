@@ -1068,3 +1068,150 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
         });
     }
 }
+
+// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
+// target."), BytecodeNewCore ("Unsupported type in bytecode core: Rank"), and
+// IR (unmapped struct type assert) cannot run struct-typed values yet.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.opCmpOrdersValues." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Rank {
+                int level;
+
+                int opCmp(in Rank other) const {
+                    return level - other.level;
+                }
+            }
+
+            Rank make(int seed) {
+                Rank r;
+                r.level = seed;
+                return r;
+            }
+
+            unittest {
+                assert(make(1) < make(2));
+                assert(make(2) > make(1));
+                assert(make(3) >= make(3));
+                assert(make(3) <= make(3));
+            }
+        });
+    }
+}
+
+// Same VM-backend limitations as struct.opCmpOrdersValues above.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.opBinaryAddsOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Money {
+                int cents;
+
+                Money opBinary(string op: "+")(in Money other) const {
+                    Money result;
+                    result.cents = cents + other.cents;
+                    return result;
+                }
+            }
+
+            Money make(int seed) {
+                Money m;
+                m.cents = seed;
+                return m;
+            }
+
+            unittest {
+                assert((make(40) + make(2)).cents == 42);
+            }
+        });
+    }
+}
+
+// Same VM-backend limitations as struct.opCmpOrdersValues above.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.opIndexSelectsElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int first;
+                int second;
+
+                int opIndex(in int index) const {
+                    return index == 0 ? first : second;
+                }
+            }
+
+            Pair make(int seed) {
+                Pair p;
+                p.first = seed;
+                p.second = seed + 1;
+                return p;
+            }
+
+            unittest {
+                assert(make(5)[0] == 5);
+                assert(make(5)[1] == 6);
+            }
+        });
+    }
+}
+
+// Same VM-backend limitations as struct.opCmpOrdersValues above.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.opUnaryNegatesValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Score {
+                int value;
+
+                Score opUnary(string op: "-")() const {
+                    Score result;
+                    result.value = -value;
+                    return result;
+                }
+            }
+
+            Score make(int seed) {
+                Score s;
+                s.value = seed;
+                return s;
+            }
+
+            unittest {
+                assert((-make(7)).value == -7);
+            }
+        });
+    }
+}
+
+// Same VM-backend limitations as struct.opCmpOrdersValues above.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.opAssignFromScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Setting {
+                int value;
+
+                void opAssign(in int newValue) {
+                    value = newValue;
+                }
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                Setting s;
+                s = seed(42);
+                assert(s.value == 42);
+            }
+        });
+    }
+}
