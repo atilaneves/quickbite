@@ -16,9 +16,15 @@ public abstract class Backend: Runner, Evaluator {
 
 // A backend that can process individual AST nodes
 public abstract class TreeNodeBackend: Backend {
-    import quickbite.backends.runner: TestResult;
+    import quickbite.backends.runner: ExecutionMode, TestResult;
     import dmd.dmodule: Module;
     import dmd.func: UnitTestDeclaration;
+
+    protected immutable ExecutionMode _mode;
+
+    protected this(in ExecutionMode mode) @safe @nogc nothrow pure {
+        _mode = mode;
+    }
 
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;

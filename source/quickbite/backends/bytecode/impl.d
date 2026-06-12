@@ -5,6 +5,7 @@ private:
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult;
+    import quickbite.backends.runner: ExecutionMode;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
@@ -12,11 +13,12 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
-    public this() @safe @nogc nothrow pure {
-        this(Engine.legacy);
+    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+        this(Engine.legacy, mode);
     }
 
-    protected this(in Engine engine) @safe @nogc nothrow pure {
+    protected this(in Engine engine, in ExecutionMode mode) @safe @nogc nothrow pure {
+        super(mode);
         _engine = engine;
     }
 
@@ -63,8 +65,10 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
 // on the new core while Bytecode defaults to the old one. Deleted when the
 // engine default flips.
 public class BytecodeNewCore: Bytecode {
-    public this() @safe @nogc nothrow pure {
-        super(Engine.typedFrames);
+    import quickbite.backends.runner: ExecutionMode;
+
+    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+        super(Engine.typedFrames, mode);
     }
 }
 
