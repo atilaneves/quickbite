@@ -13,10 +13,11 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
-    // CTFE is inherently compile-time; the mode exists for constructor
-    // uniformity across backends and is ignored.
+    // CTFE is inherently compile-time; the mode parameter exists for
+    // constructor uniformity across backends.
     public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
-        super(mode);
+        super(ExecutionMode.compileTime);
+        assert(_mode == ExecutionMode.compileTime);
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
