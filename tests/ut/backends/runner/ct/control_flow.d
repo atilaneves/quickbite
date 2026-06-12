@@ -785,6 +785,38 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
+// map the string type (compiler.d valueType assert).
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("switch.stringCases." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            string pick(int n) {
+                return n == 1 ? "red" : "green";
+            }
+
+            int classify(string s) {
+                switch (s) {
+                    case "red":
+                        return 10;
+
+                    case "green":
+                        return 20;
+
+                    default:
+                        return 0;
+                }
+            }
+
+            unittest {
+                assert(classify(pick(1)) == 10);
+                assert(classify(pick(2)) == 20);
+            }
+        });
+    }
+}
+
 
 /++
     Goto and restart points.

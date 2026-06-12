@@ -121,6 +121,38 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Interpreter, Bytecode, and IR all report TryCatch as an unsupported
+// statement.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("exception.catchByBaseReadsDerivedField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class MyError : Exception {
+                int code;
+
+                this(int c) {
+                    super("boom");
+                    code = c;
+                }
+            }
+
+            int run(int seed) {
+                try {
+                    if (seed > 0) throw new MyError(seed + 40);
+                    return 0;
+                } catch (Exception e) {
+                    return (cast(MyError) e).code;
+                }
+            }
+
+            unittest {
+                assert(run(2) == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("exception.throwExpressionInConditionalIsCaught." ~ backend.stringof)
     @Tags(backend.stringof)
