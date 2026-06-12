@@ -114,6 +114,13 @@ Deltas from current behaviour (June 2026 audit):
   rule 4 to the prelude formatter (which knows the static type) unless
   a test forces it earlier.
 - `bool`, `null`, and empty arrays conform today but are unpinned.
+- The Interpreter keeps null function-pointer/delegate struct fields
+  that the CTFE marshaling omits (`Callbacks(7, null)` vs
+  `Callbacks(7)`); found by the Tier 4 coverage fixtures
+  (`repl.backend.nullFunctionPointerFieldIsOmitted` /
+  `nullDelegateFieldIsOmitted`, Ctfe-only pending resolution). The
+  prelude formatter makes the policy question moot — one formatter,
+  one rendering — but the interim scaffolding diverges today.
 
 ## Test strategy
 
