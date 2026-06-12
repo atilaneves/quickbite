@@ -4,40 +4,44 @@ module quickbite.backends.native.system_linker;
 private:
 
 
-public class SystemLinker: imported!"quickbite.backends.runner".Runner {
+public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
     import quickbite.backends.runner: ExecutionMode, TestResult;
     import dmd.dmodule: Module;
 
-    private const string[] _linkFiles;
-    private const string[] _archiveImportPaths;
+    private const SystemLinkerInputs _inputs;
 
     // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends. The link files are prebuilt
-    // libraries (e.g. dub-built dependency archives) appended to every link;
-    // modules whose source lives under the archive import paths are defined
-    // by those libraries and must not be codegen'd again.
+    // constructor uniformity across backends.
     public this(
         in ExecutionMode mode = ExecutionMode.runtime,
-        const string[] linkFiles = [],
-        const string[] archiveImportPaths = [],
+        in SystemLinkerInputs inputs = SystemLinkerInputs.init,
     ) @safe @nogc nothrow pure {
         assert(mode == ExecutionMode.runtime);
-        _linkFiles = linkFiles;
-        _archiveImportPaths = archiveImportPaths;
+        _inputs = inputs;
+    }
+
+    public this(
+        in ExecutionMode mode,
+        const string[] linkFiles,
+        const string[] archiveImportPaths,
+    ) @safe @nogc nothrow pure {
+        this(
+            mode,
+            SystemLinkerInputs(linkFiles, archiveImportPaths, false),
+        );
     }
 
     public override TestResult[] runTests(Module module_) {
         return runTests([module_]);
     }
 
-    public TestResult[] runTests(Module[] modules) {
+    public override TestResult[] runTests(Module[] modules) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
         auto library = compileToSharedLibrary(
             modules,
-            _linkFiles,
-            _archiveImportPaths,
+            _inputs,
         );
         // The results copy everything they need out of the library, so it can
         // be unloaded as soon as the tests have run. Dead objects of classes
@@ -60,10 +64,19 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
     }
 }
 
+public struct SystemLinkerInputs {
+    // Link files are prebuilt libraries appended to every link. Modules under
+    // archive import paths are defined by those libraries and must not be
+    // codegen'd again. Default imports are only traversed when the caller
+    // knows dependency templates can need druntime/phobos members in this link.
+    public const string[] linkFiles;
+    public const string[] archiveImportPaths;
+    public bool includeDefaultImportsForTemplateCodegen;
+}
+
 private void* compileToSharedLibrary(
     imported!"dmd.dmodule".Module[] modules,
-    in string[] linkFiles,
-    in string[] archiveImportPaths,
+    in SystemLinkerInputs inputs,
 ) {
     import quickbite.frontend.compiler: withCompilerLock;
     import core.atomic: atomicFetchAdd;
@@ -86,7 +99,7 @@ private void* compileToSharedLibrary(
     const libPath = buildPath(dir, "module.so");
 
     withCompilerLock(() {
-        buildSharedLibrary(modules, dir, libPath, linkFiles, archiveImportPaths);
+        buildSharedLibrary(modules, dir, libPath, inputs);
     });
 
     return loadSharedLibrary(libPath);
@@ -102,8 +115,7 @@ private void buildSharedLibrary(
     imported!"dmd.dmodule".Module[] rootModules,
     in string dir,
     in string libPath,
-    in string[] linkFiles,
-    in string[] archiveImportPaths,
+    in SystemLinkerInputs inputs,
 ) {
     import quickbite.frontend.compiler: lightningRod;
     import dmd.dmodule: Module;
@@ -129,22 +141,25 @@ private void buildSharedLibrary(
     // are the exception: a prebuilt library on the link line already defines
     // their symbols, so they get neither the root promotion (saving their
     // semantic3) nor an object of their own.
-    auto allUserImports = userImportedModules(rootModules, linkFiles.length != 0);
+    auto allUserImports = userImportedModules(
+        rootModules,
+        inputs.includeDefaultImportsForTemplateCodegen,
+    );
     auto userImports = allUserImports
         .filter!(import_ =>
             !isUnderDefaultImportPaths(import_)
-            && !isUnderImportPaths(import_, archiveImportPaths))
+            && !isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
     auto archiveImports = allUserImports
         .filter!(import_ =>
             !isUnderDefaultImportPaths(import_)
-            && isUnderImportPaths(import_, archiveImportPaths))
+            && isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
-    auto defaultImports = linkFiles.length == 0
-        ? []
-        : allUserImports
-            .filter!(import_ => isUnderDefaultImportPaths(import_))
-            .array;
+    auto defaultImports = allUserImports
+        .filter!(import_ => isUnderDefaultImportPaths(import_))
+        .array;
+    if (!inputs.includeDefaultImportsForTemplateCodegen)
+        defaultImports = [];
     prepareForCodegen(userImports);
     prepareArchiveImportsForTemplateCodegen(archiveImports);
     prepareArchiveImportsForTemplateCodegen(defaultImports);
@@ -180,16 +195,16 @@ private void buildSharedLibrary(
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);
         foreach (archiveImport; archiveImports) {
-            pruneToTemplateCodegenMembers(archiveImport);
+            keepOnlyTemplateCodegenMembers(archiveImport);
             pruneForeignMembers(archiveImport, context);
         }
         foreach (defaultImport; defaultImports) {
-            pruneToTemplateCodegenMembers(defaultImport);
+            keepOnlyTemplateCodegenMembers(defaultImport);
             pruneForeignMembers(defaultImport, context);
         }
         adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
-        linkSharedLibrary(objPaths, libPath, linkFiles);
+        linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
     });
 }
 
@@ -331,7 +346,11 @@ private void pruneForeignMembers(
     module_.members.setDim(numKept);
 }
 
-private void pruneToTemplateCodegenMembers(
+// Archive/default modules are in the codegen list only so DMD can emit the
+// template instances and TypeInfos it appended to their members arrays. Their
+// ordinary declarations are already supplied by a prebuilt archive or
+// libphobos, so emitting them here would duplicate definitions.
+private void keepOnlyTemplateCodegenMembers(
     imported!"dmd.dmodule".Module module_,
 ) {
     if (module_.members is null)
