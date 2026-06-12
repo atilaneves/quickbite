@@ -6,7 +6,7 @@ import std.algorithm.searching: canFind;
 import std.exception: collectExceptionMsg;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("voidFunctionReturnsToCaller." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

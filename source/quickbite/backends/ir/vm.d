@@ -33,6 +33,7 @@ private struct Machine {
         Instruction,
         Load,
         ResultKind,
+        ReturnVoid,
         ReturnValue,
         StringConst,
         Store,
@@ -90,6 +91,9 @@ private struct Machine {
                     returnedValueId = return_.value;
                     result = scalarValues[return_.value];
                 },
+                (const ReturnVoid return_) {
+                    returned = true;
+                },
                 (const Branch branch) {
                     blockIndex = branch.target;
                     blockArguments = branch.args;
@@ -102,9 +106,6 @@ private struct Machine {
                         blockIndex = branch.falseTarget;
                         blockArguments = branch.falseArgs;
                     }
-                },
-                (_) {
-                    assert(0);
                 },
             );
             if (returned)
@@ -165,7 +166,8 @@ private struct Machine {
         const result = execute(functions[call.functionIndex], call.arguments);
         scalarValues = callerScalarValues;
         localScalarValues = callerLocalScalarValues;
-        scalarValues[call.result.id] = result;
+        if (call.hasResult)
+            scalarValues[call.result.id] = result;
     }
 
     private void execute(const AssertTrue assert_) {

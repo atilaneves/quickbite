@@ -36,6 +36,7 @@ private struct Compiler {
         Instruction,
         Load,
         ResultKind,
+        ReturnVoid,
         ReturnValue,
         StringConst,
         Store,
@@ -78,8 +79,9 @@ private struct Compiler {
         registerParameters(function_);
 
         const result = compileStatement(function_.fbody);
-        assert(result.hasValue);
-        return makeFunction(result.value);
+        return result.hasValue ?
+            makeFunction(result.value) :
+            makeVoidFunction;
     }
 
     private OptionalValue compileStatement(
@@ -266,11 +268,24 @@ private struct Compiler {
             foreach (argument; *call.arguments)
                 arguments ~= compileExpression(argument).id;
 
+        if (isVoid(call.type)) {
+            instructions ~= Instruction(
+                Call(
+                    functionIndex(function_),
+                    arguments,
+                    false,
+                    Value.init,
+                ),
+            );
+            return Value.init;
+        }
+
         const result = nextValue(valueType(call.type), resultKind(call.type));
         instructions ~= Instruction(
             Call(
                 functionIndex(function_),
                 arguments,
+                true,
                 result,
             ),
         );
@@ -749,6 +764,23 @@ private struct Compiler {
             [],
         );
     }
+
+    private Function makeVoidFunction() {
+        finishBlock(Terminator(ReturnVoid()));
+        return Function(
+            blocks,
+            ResultKind.int_,
+            nextValueId,
+            cast(uint) locals.length,
+            [],
+        );
+    }
+}
+
+private bool isVoid(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.toBasetype.ty == TY.Tvoid;
 }
 
 private bool isAndAnd(imported!"dmd.expression".LogicalExp expression) {
