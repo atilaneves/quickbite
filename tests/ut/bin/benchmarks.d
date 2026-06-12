@@ -97,6 +97,35 @@ unittest {
     "KiB".should.be in report;
 }
 
+@("moduleDeclarationFixtureIsNotSkipped")
+unittest {
+    with(immutable Sandbox()) {
+        writeFile(
+            "bench_module_decl_fixture.d",
+            q{
+                module bench_module_decl_fixture;
+                unittest {
+                    assert(1 == 1);
+                }
+            },
+        );
+
+        const runs = prepareFixtureRuns(
+            [inSandboxPath("bench_module_decl_fixture.d")],
+            [sandboxPath],
+            0,
+            1,
+        );
+
+        // Fixture must not be dropped even though the timed re-parse
+        // collides with the cached module in DMD's global symbol table.
+        assert(runs.length == 1);
+        assert(runs[0].displayName == "bench_module_decl_fixture");
+        assert(runs[0].module_ !is null);
+        assert(runs[0].frontendUnmeasurable);
+    }
+}
+
 @("testResultsMismatch")
 unittest {
     const passing = [TestResult(true, "t0", "loc", null)];

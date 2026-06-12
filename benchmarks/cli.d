@@ -110,7 +110,14 @@ public void run(string[] args) {
         writeln("== frontend (parse + semantic) ==");
         printHeader;
         foreach (run; fixtureRuns ~ dubRuns) {
-            printRow(run.displayName, "frontend", run.frontend);
+            if (run.frontendUnmeasurable)
+                writefln(
+                    "%-32s %-14s unmeasurable (module declaration)",
+                    run.displayName,
+                    "frontend",
+                );
+            else
+                printRow(run.displayName, "frontend", run.frontend);
         }
         writeln;
     }
@@ -300,6 +307,7 @@ public struct BenchmarkRun {
     public string displayName;
     public Module module_;
     public Result frontend;
+    public bool frontendUnmeasurable;
 }
 
 public struct BenchmarkRow {
@@ -532,21 +540,39 @@ public BenchmarkRun[] prepareFixtureRuns(
     foreach (path; fixtures) {
         const source      = readText(path);
         const displayName = moduleDisplayName(path, importPaths);
+        Module module_;
         try {
-            auto module_ = parseModule(source, importPaths).module_;
-            const frontend = measure(
+            module_ = parseModule(source, importPaths).module_;
+        } catch (Exception e) {
+            import std.stdio: stderr;
+
+            stderr.writefln("skipping %s: %s", displayName, e.msg);
+            continue;
+        }
+
+        // Re-parsing a module-declared fixture collides with the cached
+        // module in DMD's process-global symbol table, so the frontend
+        // timing can fail even though the cached module is fine for the
+        // post-parse runs.
+        Result frontend;
+        bool frontendUnmeasurable;
+        try {
+            frontend = measure(
                 () {
                     parseModuleUncached(source, importPaths);
                 },
                 warmup,
                 runs,
             );
-            fixtureRuns ~= BenchmarkRun(displayName, module_, frontend);
         } catch (Exception e) {
-            import std.stdio: stderr;
-
-            stderr.writefln("skipping %s: %s", displayName, e.msg);
+            frontendUnmeasurable = true;
         }
+        fixtureRuns ~= BenchmarkRun(
+            displayName,
+            module_,
+            frontend,
+            frontendUnmeasurable,
+        );
     }
     return fixtureRuns;
 }
