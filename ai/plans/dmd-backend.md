@@ -27,15 +27,12 @@ The pipeline has three stages — keep them separate when reasoning:
    must be re-learned on every dmd upgrade.
 3. **Loading**: object file → running code in this process. Today:
    spawned `dmd -shared` + `dlopen` (~30 ms, full druntime integration
-   via `Runtime.loadLibrary`). A mini in-process linker or LLVM
-   ORC/JITLink (`ObjectLinkingLayer` accepts precompiled ELF objects —
-   no LLVM IR involved) are stage-3 **swaps only**: out of scope until
-   the matrix is healthy on the dlopen loader, and localized to
-   `linkSharedLibrary`/`loadSharedLibrary` (~50 lines) when they happen.
-   If compile → system link → `dlopen` cannot be made correct, nothing
-   fancier will be either. Fork composes with all loaders: the child's
-   product is an object file, and loading must happen in the parent
-   regardless (results, exceptions, GC).
+   via `Runtime.loadLibrary`). Decision (2026-06-12): there will be
+   **no loader swap** — this is SystemLinker's loader, permanently. If
+   LLVM JIT is ever pursued it will be a *separate backend* (in the
+   `native` package), not a stage-3 swap inside SystemLinker. Fork
+   composes regardless: the child's product is an object file, and
+   loading must happen in the parent (results, exceptions, GC).
 
 `source/quickbite/executors/` (including the `DmdCodegenRam` hand-rolled
 ELF loader in `dmd_codegen.d`) is legacy reference code kept as
@@ -109,9 +106,20 @@ exactly them.
 - **Fatal by design in-process**: the three null-class-dereference
   diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
   test runner) and `voidInitializedScalarReadReportsUninitialized`
-  (CTFE-only diagnostic). Both excluded with comments in the test files.
-  Forking the *execution* step too would make the null-deref blocks
-  tolerable now that the fork machinery exists — possible follow-on.
+  (CTFE-only diagnostic). Both excluded with comments in the test files,
+  and they stay excluded (decision 2026-06-12): a SystemLinker variant of
+  the null-deref blocks would only assert "compiled null deref
+  segfaults" — testing dmd and the MMU, not quickbite — and compiled
+  code passes the void-init fixture regardless. Forking the *execution*
+  step is a runner-robustness measure, not a promotion vehicle: any
+  runtime crash in compiled fixture code kills `bin/ut` mid-sweep today
+  (lesson 5's `stdbuf` archaeology), and a per-test execution fork would
+  turn that whole failure class into one red test reporting a signal.
+  Adopt it on evidence — the first time a runtime crash actually kills a
+  `--random` sweep — not speculatively; the null-deref blocks then
+  graduate as the exposing tests for crash detection. Note it can never
+  apply to the slice-4 eval path, where cell N+1 depends on process
+  state mutated by cell N: it is runner-path hardening only.
 - **FFI-bridge design tests** (added after the slice-3 enumeration):
   rt/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
   expectations; compiled code would pass those fixtures, so SystemLinker
@@ -662,9 +670,9 @@ handed to slice 2.** Oracle verdicts worth keeping:
 
 `voidInitializedScalarReadReportsUninitialized` and the three
 null-class-dereference blocks stay excluded with comments (CTFE-only
-diagnostic / real SIGSEGV). Note: once slice 2's fork machinery exists,
-forking the *execution* step too would make the null-deref blocks
-tolerable — possible follow-on, not in scope.
+diagnostic / real SIGSEGV). See "Still out of the matrix" above for the
+forked-execution decision (2026-06-12): a robustness measure to adopt
+on evidence, not a way to promote these blocks.
 
 ### Slice 4 — Evaluator interface
 
@@ -677,8 +685,11 @@ migration.) Missing pieces: value transport from machine code back to a
 `quickbite.lang.Value` (does not exist), and latency — per-call
 compile+link+load is ~43 ms today (lesson 14); benchmark before promoting
 anywhere near the REPL hot path (ai/plans/repl.md puts a native session
-at step 9 of 9). With slice 2 done the fresh-parse caveat is gone, and a
-stage-3 loader swap (Scope) becomes the latency lever if needed.
+at step 9 of 9). With slice 2 done the fresh-parse caveat is gone.
+There is no loader-swap latency lever (Scope, decision 2026-06-12): if
+latency demands more than this pipeline can give, the answer is a new
+backend (e.g. LLVM JIT in the `native` package), not a faster loader
+inside SystemLinker.
 
 ## Test discipline
 
