@@ -97,7 +97,7 @@ public struct EvalSession {
                 input ~ "\n";
             const source = evalSource(
                 moduleSource,
-                transcriptSource(localCells) ~ input ~ "\n",
+                localTranscriptSource ~ input ~ "\n",
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -111,7 +111,7 @@ public struct EvalSession {
 
         const source = evalSource(
             moduleSource,
-            transcriptSource(localCells) ~ "return " ~ input ~ ";",
+            localTranscriptSource ~ "return " ~ input ~ ";",
             evalFunctionName,
         );
         return evalCellFromSource(
@@ -119,13 +119,7 @@ public struct EvalSession {
             source,
             importPaths,
             EvalHistoryTarget.local,
-            text(
-                "auto __quickbite_repl_value_",
-                valueCellCount,
-                " = ",
-                input,
-                ";\n",
-            ),
+            expressionHistory(input, valueCellCount),
         );
     }
 
@@ -171,6 +165,10 @@ public struct EvalSession {
         return moduleSource(transcriptSource(moduleCells));
     }
 
+    private string localTranscriptSource() const @safe pure {
+        return transcriptSource(localCells) ~ valueCellCount.latestValueBinding;
+    }
+
     private string moduleSource(in string replModuleTranscript) const
     @safe pure {
         if (loadedModuleSources.length == 0)
@@ -182,6 +180,38 @@ public struct EvalSession {
 
         return result ~ replLineDirective ~ replModuleTranscript;
     }
+}
+
+private string latestValueBinding(in uint valueCellCount) @safe pure {
+    import std.conv: text;
+
+    if (valueCellCount == 0)
+        return null;
+
+    return text(
+        "alias it = __quickbite_repl_value_",
+        valueCellCount - 1,
+        ";\n",
+    );
+}
+
+private string expressionHistory(
+    in string input,
+    in uint valueCellCount,
+) @safe pure {
+    import std.conv: text;
+
+    const valueSource = input == "it" && valueCellCount != 0
+        ? text("__quickbite_repl_value_", valueCellCount - 1)
+        : input;
+
+    return text(
+        "auto __quickbite_repl_value_",
+        valueCellCount,
+        " = ",
+        valueSource,
+        ";\n",
+    );
 }
 
 private string toSource(ref const LoadedModuleSource loadedModuleSource)

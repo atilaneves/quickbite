@@ -362,8 +362,10 @@ Dependencies are noted; order within independent slices is flexible.
    `#line 1 "<repl cell N>"`, so diagnostics report cell-local source
    locations instead of cumulative invisible transcript lines). Verified
    with `ninja bin/ut` and `bin/ut --random` (seed `377061793`).
-3. **Last-value binding** (T4). Independent of 1 in principle, trivial
-   after it.
+3. ~~**Last-value binding** (T4)~~ (done in `repl-line-attribution` —
+   expression cells expose the latest accepted result as `it`; failed
+   expression cells do not advance it). Verified with `ninja bin/ut` and
+   `bin/ut --random` (seed `4078371892`).
 4. **Redefinition** (T5; depends on 1): module-decl replacement first,
    local rename-the-old second.
 5. **Module-level variables** (T2, T3; classification change admitting

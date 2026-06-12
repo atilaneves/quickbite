@@ -56,6 +56,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.lastValueBindingDisplaysLatestExpressionValue." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["41 + 1", "it", "it", ":q"],
+        );
+
+        output.should == ["42", "42", "42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.failedExpressionDoesNotAdvanceLastValueBinding." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("1").should == Value(1);
+        void submitFailure() {
+            repl.submit("unknownIdentifier");
+        }
+        submitFailure.shouldThrowWithMessage(
+            "undefined identifier `unknownIdentifier`",
+        );
+        repl.submit("it").should == Value(1);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
