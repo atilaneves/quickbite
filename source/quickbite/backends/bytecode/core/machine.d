@@ -183,12 +183,22 @@ private string operandText(
     in size_t offset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program: isSigned, size;
+    import quickbite.backends.bytecode.core.program: ScalarType, isSigned, size;
     import std.conv: text;
 
     ulong raw;
     foreach_reverse (value; frame[offset .. offset + size(type)])
         raw = (raw << 8) | value;
+
+    final switch (type) with (ScalarType) {
+        case bool_:
+            return raw == 0 ? "false" : "true";
+        case char_:
+            return text("'", cast(char) raw, "'");
+        case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
+            wchar_, dchar_:
+            break;
+    }
 
     if (!isSigned(type))
         return text(raw);
