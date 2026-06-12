@@ -923,6 +923,7 @@ private struct Walker {
 
         child.runStatement(function_.fbody);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueStructArguments(function_, argumentExpressions, child);
         return child.result;
     }
 
@@ -1031,6 +1032,68 @@ private struct Walker {
 
             if (auto value = parameter in child.locals)
                 writeLocation(argument, *value);
+        }
+    }
+
+    // D slices passed inside a by-value struct share their backing array with
+    // the caller.  Write back element mutations (up to the original length)
+    // so that element writes inside the callee are visible to the caller,
+    // while descriptor changes (append, reassignment) do not leak.
+    private void writeBackByValueStructArguments(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (parameter.isReference)
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            if (argument is null || !isWritableLocation(argument))
+                continue;
+
+            auto finalParam = parameter in child.locals;
+            if (finalParam is null || !finalParam.isStruct)
+                continue;
+
+            const original = runExpression(argument);
+            if (!original.isStruct)
+                continue;
+
+            const fieldCount = original.structFieldCount;
+            if (finalParam.structFieldCount != fieldCount)
+                continue;
+
+            Value updatedStruct = original;
+            bool anyChange;
+            foreach (fieldIndex; 0 .. fieldCount) {
+                const origField = original.structFieldAt(fieldIndex);
+                const finalField = finalParam.structFieldAt(fieldIndex);
+                if (!origField.isArray || !finalField.isArray)
+                    continue;
+
+                const origLen = origField.length;
+                const finalLen = finalField.length;
+                const copyLen = origLen < finalLen ? origLen : finalLen;
+                if (copyLen == 0)
+                    continue;
+
+                Value updatedField = origField;
+                foreach (elemIdx; 0 .. copyLen)
+                    updatedField = updatedField.withArrayElement(elemIdx, finalField[elemIdx]);
+
+                updatedStruct = updatedStruct.withStructField(fieldIndex, updatedField);
+                anyChange = true;
+            }
+
+            if (anyChange)
+                writeLocation(argument, updatedStruct);
         }
     }
 
@@ -1167,6 +1230,16 @@ private struct Walker {
 
         if (auto outer = index.e1.isIndexExp)
             return runNestedIndexAssignExpression(outer, index, rhs);
+
+        if (auto dot = index.e1.isDotVarExp) {
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const updatedArray = receiver.structFieldAt(fieldIndex).withArrayElement(arrayIndex, value);
+            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            return value;
+        }
 
         auto var = index.e1.isVarExp;
         if (var is null)

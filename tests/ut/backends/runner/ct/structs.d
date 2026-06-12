@@ -245,7 +245,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.byValueArrayElementMutationLeaksThroughSlice." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -402,7 +402,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodIndexWritesArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

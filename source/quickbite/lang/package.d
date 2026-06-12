@@ -559,6 +559,27 @@ public struct Value {
         );
     }
 
+    public bool isArray() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => true,
+            (_) => false,
+        );
+    }
+
+    public size_t structFieldCount() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => struct_.fields.length,
+            (_) {
+                throw new Exception("Expected struct.");
+                return size_t.init;
+            },
+        );
+    }
+
     public Value pointerTarget() const @safe pure {
         return pointerIndex(0);
     }
