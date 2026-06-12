@@ -19,6 +19,7 @@ int main(string[] args) {
         "ut.backends.runner.ct.math",
         "ut.backends.runner.ct.structs",
         "ut.backends.runner.ct.cerealed",
+        "ut.backends.runner.ct.pollution",
         "ut.backends.runner.rt.cstdlib",
         "ut.backends.runner.rt.expressions",
         "ut.backends.runner.rt.arrays",

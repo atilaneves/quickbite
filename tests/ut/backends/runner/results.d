@@ -248,8 +248,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runBackendSourceFixtureTests.withImportPaths." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         with(immutable Sandbox()) {
             const importPath = "backend-source-import-paths";
@@ -277,8 +278,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
     @("runBackendFileFixtureTests.withImportPaths." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         with(immutable Sandbox()) {
             const importPath = "backend-file-import-paths";

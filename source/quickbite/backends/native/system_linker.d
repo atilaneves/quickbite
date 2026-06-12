@@ -58,471 +58,577 @@ private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
     // The loader keeps the library mapped after Runtime.loadLibrary, so the
     // files can go as soon as it is loaded.
     scope(exit) rmdirRecurse(dir);
-    const objPath = buildPath(dir, "module.o");
     const libPath = buildPath(dir, "module.so");
 
     withCompilerLock(() {
-        emitObjectFile(module_, objPath);
+        buildSharedLibrary(module_, dir, libPath);
     });
-    linkSharedLibrary(objPath, libPath);
 
     return loadSharedLibrary(libPath);
 }
 
-private void emitObjectFile(
+// Codegen runs in a fork child: DMD's backend is strictly once-per-process
+// (backend_init, PASS.obj/csym written-marks, deferToObj and enum/TypeInfo
+// gates), and the child gets a disposable copy-on-write image, so every
+// codegen uses the backend exactly the way a fresh dmd process would. The
+// parent's AST and globals are never mutated, which is what lets cached
+// (stale) parses be codegen'd repeatedly.
+private void buildSharedLibrary(
     imported!"dmd.dmodule".Module module_,
-    in string objPath,
+    in string dir,
+    in string libPath,
 ) {
-    import dmd.root.filename: FileName;
+    import quickbite.frontend.compiler: lightningRod;
+    import dmd.dmodule: Module;
+    import std.conv: text;
+    import std.path: buildPath;
+
+    auto rod = lightningRod;
+    // A root module parsed before the rod would have become the accumulation
+    // point for druntime/phobos instances instead of the rod, and the link
+    // would fail with undefined template symbols two tests later. Fail here.
+    assert(
+        rod !is null && Module.rootModule is rod,
+        "the lightning rod was not the first root module parsed",
+    );
 
     initialiseBackend;
 
-    module_.objfile = FileName(objPath);
-    removeForeignTemplateInstances(module_);
+    // Modules from user import paths are compiled into the link too: their
+    // functions live in no other object, and dmd emits an imported module's
+    // function bodies only if it reached semantic3.
+    auto userImports = userImportedModules(module_);
+    prepareForCodegen(userImports);
 
-    // Codegen marks every emitted symbol as written once per process, so a
-    // module that was already codegen'd would otherwise produce an empty
-    // object file.
-    resetCodegenState(module_);
-    generate(module_, objPath);
+    // The snippet first and the rod last, like dmd compiling several root
+    // modules at once: codegen of the snippet can still append late template
+    // instances to the rod's members, and the rod must pick them up.
+    auto modules = [module_] ~ userImports ~ [rod];
 
-    // DMD instantiates each template once per process, owned by whichever
-    // root module instantiated it first, and codegen only emits an instance
-    // into its owner's object. Any instance this module uses but does not
-    // own is therefore an undefined symbol in the object just written, so
-    // adopt those instances as members and re-emit until nothing new gets
-    // adopted. Each shared library links independently and template symbols
-    // are COMDATs, so the duplicate emission across objects is safe.
-    while (adoptInstancesFor(undefinedSymbols(objPath), module_)) {
-        resetCodegenState(module_);
-        generate(module_, objPath);
+    // Everything the link may legitimately reference; the rod is pruned down
+    // to members that only touch these modules (or druntime/phobos).
+    bool[Module] linkSet;
+    foreach (linkModule; modules)
+        linkSet[linkModule] = true;
+
+    string[] objPaths;
+    foreach (i; 0 .. modules.length)
+        objPaths ~= buildPath(dir, text("obj_", i, ".o"));
+
+    runInFork(() {
+        const context = LinkContext(linkSet, collectMemberInstances(linkSet));
+        // User-import modules are root modules (see prepareForCodegen), so
+        // like the rod they accumulate template instances parameterized on
+        // other compilations' types; prune them all against this link.
+        pruneForeignMembers(rod, context);
+        foreach (userImport; userImports)
+            pruneForeignMembers(userImport, context);
+        adoptTypeInfos(rod, linkSet);
+        emitObjectFiles(modules, objPaths);
+        linkSharedLibrary(objPaths, libPath);
+    });
+}
+
+// What the link being built may legitimately reference: the modules whose
+// objects are in it, and the template instances those modules hold as
+// members (an instance is emitted from whichever members array holds it, so
+// only member instances are guaranteed a definition).
+private struct LinkContext {
+    bool[imported!"dmd.dmodule".Module] modules;
+    bool[imported!"dmd.dtemplate".TemplateInstance] memberInstances;
+}
+
+// Run `work` in a fork child; the child never returns. Errors are transported
+// through a pipe and re-thrown in the parent, since a child cannot throw
+// across the fork boundary. Forking while holding the compiler lock is safe:
+// the process is single-threaded (versions "unitUnthreaded"; neither the
+// benchmark nor the repl spawn threads), so no other thread can be wedged
+// mid-lock in the child image.
+private void runInFork(scope void delegate() work) {
+    import core.stdc.errno: EINTR, errno;
+    import core.stdc.stdio: fflush;
+    import core.sys.posix.unistd: _exit, close, fork, pipe, read;
+    import core.sys.posix.sys.wait:
+        WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG, waitpid;
+    import std.conv: text;
+
+    // The child inherits stdio buffers; flush so it cannot re-emit them.
+    fflush(null);
+
+    int[2] fds;
+    if (pipe(fds) != 0)
+        throw new Exception("pipe() failed");
+
+    const pid = fork();
+    if (pid < 0)
+        throw new Exception("fork() failed");
+
+    if (pid == 0) { // child: do the work, report through the pipe, never return
+        close(fds[0]);
+        int status = 0;
+        try
+            work();
+        catch (Throwable throwable) { // also report asserts in the child
+            status = 1;
+            // toString can itself throw; the child must never unwind into
+            // the parent's frames (every inherited scope(exit) would run,
+            // including the temp-dir cleanup).
+            try
+                writeAll(fds[1], throwable.toString);
+            catch (Throwable) {}
+        }
+        close(fds[1]);
+        _exit(status);
+    }
+
+    // parent: read the error report (if any) before reaping the child so a
+    // report larger than the pipe buffer cannot deadlock against waitpid.
+    close(fds[1]);
+    string message;
+    char[4096] buffer;
+    for (;;) {
+        const got = read(fds[0], buffer.ptr, buffer.length);
+        if (got < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (got == 0)
+            break;
+        message ~= buffer[0 .. got].idup;
+    }
+    close(fds[0]);
+
+    int status;
+    for (;;) {
+        const reaped = waitpid(pid, &status, 0);
+        if (reaped == pid)
+            break;
+        if (reaped < 0 && errno == EINTR)
+            continue;
+        // An unreaped child must not pass for success: the .so was likely
+        // never linked.
+        throw new Exception("waitpid failed for the codegen child");
+    }
+    if (status != 0) {
+        const detail = WIFEXITED(status)
+            ? text("exit code ", WEXITSTATUS(status))
+            : WIFSIGNALED(status)
+                ? text("signal ", WTERMSIG(status))
+                : text("status ", status);
+        throw new Exception(
+            message.length > 0
+                ? message
+                : text("codegen child died without a report (", detail, ")"),
+        );
     }
 }
 
-// Clear the process-global "already written" codegen state
-// (FuncDeclaration.semanticRun at PASS.obj, backend Symbols cached in
-// Dsymbol.csym) so the next generateCodeAndWrite emits the symbols again,
-// into the current object file.
-private void resetCodegenState(imported!"dmd.dsymbol".Dsymbol symbol) {
-    import dmd.dsymbol: PASS;
-    import dmd.dsymbolsem: include;
+// write(2) may write partially or fail with EINTR; the report must survive
+// both or the parent sees a truncated error.
+private void writeAll(int fd, in char[] data) {
+    import core.stdc.errno: EINTR, errno;
+    import core.sys.posix.unistd: write;
 
-    // An uninstantiated template body is parse-time AST that never gets
-    // codegen'd; walking its raw statements would trip asserts downstream.
-    if (symbol.isTemplateDeclaration !is null)
+    size_t written = 0;
+    while (written < data.length) {
+        const wrote = write(fd, data.ptr + written, data.length - written);
+        if (wrote < 0) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        written += wrote;
+    }
+}
+
+// With allInst on, every druntime/phobos template instance and TypeInfo from
+// every compilation in the process accumulates on the rod (the first root
+// module parsed; appendToModuleMember and getTypeInfoType chase importedFrom
+// to it). Codegen of the rod emits all of them — needsCodegen is
+// provenance-based, never link-set-based — so instances parameterized on
+// other snippets' types would make rod.o reference symbols this link cannot
+// resolve. Drop every member that references a module outside this link
+// (druntime/phobos modules stay: their instances are exactly what the rod is
+// for). Runs in the fork child only, so nothing needs restoring.
+private void pruneForeignMembers(
+    imported!"dmd.dmodule".Module module_,
+    in LinkContext context,
+) {
+    if (module_.members is null)
         return;
 
-    symbol.csym = null;
+    size_t numKept = 0;
+    foreach (i; 0 .. module_.members.length) {
+        auto member = (*module_.members)[i];
+        if (!memberIsForeign(member, context))
+            (*module_.members)[numKept++] = member;
+    }
+    module_.members.setDim(numKept);
+}
 
-    if (auto function_ = symbol.isFuncDeclaration) {
-        // Function literals are queued for emission at most once per process
-        // (e2ir checks this flag before pushing to deferToObj).
-        if (auto literal = function_.isFuncLiteralDeclaration)
-            literal.deferToObj = false;
-        if (function_.semanticRun == PASS.obj) {
-            function_.semanticRun = PASS.semantic3done;
-            resetLocalVariables(function_);
-        }
+// The template instances some in-link module holds as a member — the only
+// instances whose emission in this link is guaranteed (an instance is
+// emitted from whichever members array holds it).
+private bool[imported!"dmd.dtemplate".TemplateInstance] collectMemberInstances(
+    bool[imported!"dmd.dmodule".Module] linkSet,
+) {
+    import dmd.dtemplate: TemplateInstance;
+
+    bool[TemplateInstance] result;
+    foreach (module_, _; linkSet) {
+        if (module_.members is null)
+            continue;
+        foreach (i; 0 .. module_.members.length)
+            if (auto instance = (*module_.members)[i].isTemplateInstance) {
+                result[instance] = true;
+                if (instance.inst !is null)
+                    result[instance.inst] = true;
+            }
+    }
+    return result;
+}
+
+// TypeInfos are created once per process (genTypeInfo only reports
+// needs-codegen on vtinfo creation) and appended to the creating module's
+// importedFrom — for a root snippet, the snippet itself. A later snippet
+// using the same type gets the cached vtinfo and no member append, so
+// nothing in its own link would emit the TypeInfo (the symbol referenced by
+// e.g. a synthesized __xtoHash stays undefined). The cache is on the type
+// (Type.stringtable); re-home every aggregate-free TypeInfo onto the rod,
+// where it emits as a COMDAT — duplicate emission across links is safe.
+private void adoptTypeInfos(
+    imported!"dmd.dmodule".Module rod,
+    bool[imported!"dmd.dmodule".Module] linkSet,
+) {
+    import dmd.declaration: TypeInfoDeclaration;
+    import dmd.mtype: Type;
+
+    // A TypeInfo already emitted by any module in this link must not be
+    // pushed onto the rod as well: emitting the same Dsymbol from two
+    // modules in one process trips symbol_add's Ssymnum assert.
+    bool[TypeInfoDeclaration] present;
+    foreach (module_, _; linkSet) {
+        if (module_.members is null)
+            continue;
+        foreach (i; 0 .. module_.members.length)
+            if (auto typeInfo = (*module_.members)[i].isTypeInfoDeclaration)
+                present[typeInfo] = true;
     }
 
-    if (auto unitTest = symbol.isUnitTestDeclaration) {
-        // Nested functions are codegen'd with their unittest, not as module
-        // members, so the member walk below cannot reach them.
-        foreach (i; 0 .. unitTest.deferredNested.length)
-            resetCodegenState(unitTest.deferredNested[i]);
+    // Two passes because the string table's opApply requires a nothrow
+    // delegate and the foreignness walk is not nothrow.
+    TypeInfoDeclaration[] cached;
+    foreach (entry; Type.stringtable) {
+        // The string table hands out const entries; pushing the declaration
+        // as a member requires mutability and the AST is logically owned by
+        // this codegen pass.
+        auto type = cast(Type) entry.value;
+        if (type !is null && type.vtinfo !is null)
+            cached ~= type.vtinfo;
     }
 
-    // Enum emission (the init symbol and TypeInfo) has its own
-    // once-per-process gate in toobj.d.
-    if (auto enum_ = symbol.isEnumDeclaration) {
-        if (enum_.semanticRun == PASS.obj)
-            enum_.semanticRun = PASS.semantic3done;
-    }
+    foreach (typeInfo; cached) {
+        import dmd.typinf: builtinTypeInfo;
 
-    // Compiler-synthesized methods hang off the struct instead of living in
-    // its members array (templatesem's InstMemberWalker visits them
-    // explicitly for the same reason).
-    if (auto struct_ = symbol.isStructDeclaration) {
-        if (struct_.xeq !is null)
-            resetCodegenState(struct_.xeq);
-        if (struct_.xcmp !is null)
-            resetCodegenState(struct_.xcmp);
-        if (struct_.xhash !is null)
-            resetCodegenState(struct_.xhash);
-    }
-
-    // Process-global appends can grow `members` while it is walked (see
-    // removeForeignTemplateInstances), so iterate by index.
-    if (auto scope_ = symbol.isScopeDsymbol) {
-        if (scope_.members !is null)
-            foreach (i; 0 .. scope_.members.length)
-                resetCodegenState((*scope_.members)[i]);
-    }
-
-    if (auto attribute = symbol.isAttribDeclaration) {
-        if (auto declarations = include(attribute, null))
-            foreach (i; 0 .. declarations.length)
-                resetCodegenState((*declarations)[i]);
+        // Only aggregate-free types (builtin compositions like
+        // const(int[])): their TypeInfos reference nothing but other
+        // builtin-composition TypeInfos and druntime vtables, so the COMDAT
+        // is self-contained. A TypeInfo involving a struct/class/enum
+        // references the aggregate's synthesized members (__xtoHash,
+        // __xopEquals, __init); those resolve only if the aggregate's
+        // declaration or instance is emitted in this link — in which case
+        // the TypeInfo is already a member of an in-link module — and
+        // adopting one created for another compilation (e.g.
+        // std.array.Appender!(int[]).Data, instantiated by unrelated
+        // in-process code) injects undefined references the snippet never
+        // asked for. Builtin TypeInfos themselves are exported by druntime.
+        if (builtinTypeInfo(typeInfo.tinfo) || typeHasAggregate(typeInfo.tinfo))
+            continue;
+        if (typeInfo in present)
+            continue;
+        present[typeInfo] = true;
+        rod.members.push(typeInfo);
     }
 }
 
-// Parameters and body-local variables get backend Symbols of their own; a
-// stale one still carries the local-symbol-table index from the previous
-// codegen and trips `assert(s.Ssymnum == SYMIDX.max)` in symbol_add when the
-// function is emitted again.
-private void resetLocalVariables(imported!"dmd.func".FuncDeclaration function_) {
-    import dmd.declaration: VarDeclaration;
-    import dmd.expression: Expression;
-    import dmd.visitor.foreachvar: foreachExpAndVar, foreachVar;
-
-    void resetVariable(VarDeclaration variable) {
-        variable.csym = null;
+// Whether any struct/class/enum anywhere in the type satisfies `predicate`.
+private bool anyAggregate(
+    imported!"dmd.mtype".Type type,
+    scope bool delegate(imported!"dmd.dsymbol".Dsymbol) predicate,
+) {
+    if (type is null)
+        return false;
+    if (auto structType = type.isTypeStruct)
+        return predicate(structType.sym);
+    if (auto classType = type.isTypeClass)
+        return predicate(classType.sym);
+    if (auto enumType = type.isTypeEnum)
+        return predicate(enumType.sym);
+    if (auto functionType = type.isTypeFunction) {
+        if (anyAggregate(functionType.next, predicate))
+            return true;
+        foreach (i; 0 .. functionType.parameterList.length)
+            if (anyAggregate(functionType.parameterList[i].type, predicate))
+                return true;
+        return false;
     }
+    if (auto aaType = type.isTypeAArray)
+        return anyAggregate(aaType.index, predicate)
+            || anyAggregate(aaType.next, predicate);
+    // TypeTuple extends Type directly (nextOf is null); D-style variadics
+    // create tuple TypeInfos whose emission references each component
+    // type's TypeInfo, so a struct component must be visible here.
+    if (auto tupleType = type.isTypeTuple) {
+        if (tupleType.arguments !is null)
+            foreach (i; 0 .. tupleType.arguments.length)
+                if (anyAggregate((*tupleType.arguments)[i].type, predicate))
+                    return true;
+        return false;
+    }
+    if (auto vectorType = type.isTypeVector)
+        return anyAggregate(vectorType.basetype, predicate);
+    if (auto next = type.nextOf)
+        return anyAggregate(next, predicate);
+    return false;
+}
 
-    // Symbols codegen'd with their parent function rather than as module
-    // members: declarations local to the body (nested functions, structs,
-    // lowering temporaries), function literals, and compiler-synthesized
-    // nested functions only reachable through references (e.g. foreach
-    // bodies). Resetting only module members would leave them marked written
-    // and absent from the re-emitted object. Druntime lowerings hide whole
-    // expression trees in `lowering` fields the generic walkers skip, so
-    // those recurse explicitly.
-    void resetHiddenSymbols(Expression expression) {
-        import dmd.declaration: Declaration;
-        import dmd.expression:
-            ArrayLiteralExp,
-            AssocArrayLiteralExp,
-            CastExp,
-            CatAssignExp,
-            CatExp,
-            DeclarationExp,
-            DelegateExp,
-            EqualExp,
-            FuncExp,
-            LoweredAssignExp,
-            NewExp,
-            SymOffExp,
-            VarExp;
-        import dmd.func: FuncDeclaration;
-        import dmd.visitor: StoppableVisitor;
-        import dmd.visitor.postorder: walkPostorder;
+private bool typeHasAggregate(imported!"dmd.mtype".Type type) {
+    return anyAggregate(type, aggregate => true);
+}
 
-        extern (C++) final class HiddenSymbolWalker: StoppableVisitor {
-            alias visit = typeof(super).visit;
-            FuncDeclaration owner;
+private bool memberIsForeign(
+    imported!"dmd.dsymbol".Dsymbol member,
+    in LinkContext context,
+) {
+    if (auto instance = member.isTemplateInstance)
+        return instanceIsForeign(instance, context);
+    if (auto typeInfo = member.isTypeInfoDeclaration)
+        return typeIsForeign(typeInfo.tinfo, context);
+    return false;
+}
 
-            extern (D) this(FuncDeclaration owner) scope @safe {
-                this.owner = owner;
-            }
+private bool instanceIsForeign(
+    imported!"dmd.dtemplate".TemplateInstance instance,
+    in LinkContext context,
+) {
+    import dmd.dsymbol: Dsymbol;
 
-            override void visit(Expression) {}
+    if (instance.tiargs !is null)
+        foreach (i; 0 .. instance.tiargs.length)
+            if (argIsForeign((*instance.tiargs)[i], context))
+                return true;
 
-            override void visit(DeclarationExp expression) {
-                resetCodegenState(expression.declaration);
-                // The initializer is a Dsymbol child, not an expression
-                // child, so the postorder walk does not descend into it.
-                if (auto variable = expression.declaration.isVarDeclaration)
-                    if (variable._init !is null)
-                        if (auto initializer = variable._init.isExpInitializer)
-                            recurse(initializer.exp);
-            }
+    // A nested instance (e.g. Impl!(int, snippet.Nested).findSlotLookup!int,
+    // whose own args are innocent) is foreign whenever the instance it is a
+    // member of is: its emitted code references its enclosing instance's
+    // symbols.
+    for (Dsymbol parent = instance.parent; parent !is null; parent = parent.parent)
+        if (auto enclosing = parent.isTemplateInstance)
+            return instanceIsForeign(enclosing, context);
 
-            override void visit(FuncExp expression) {
-                if (expression.fd !is null)
-                    resetCodegenState(expression.fd);
-            }
+    return false;
+}
 
-            override void visit(DelegateExp expression) {
-                resetIfNestedInOwner(expression.func);
-            }
+private bool argIsForeign(
+    imported!"dmd.rootobject".RootObject arg,
+    in LinkContext context,
+) {
+    import dmd.dtemplate: isDsymbol, isExpression, isTuple, isType;
 
-            override void visit(SymOffExp expression) {
-                resetIfNestedInOwner(expression.var.isFuncDeclaration);
-            }
+    if (auto type = isType(arg))
+        return typeIsForeign(type, context);
+    if (auto symbol = isDsymbol(arg))
+        return symbolIsForeign(symbol, context);
+    if (auto expression = isExpression(arg))
+        return expression.type !is null
+            && typeIsForeign(expression.type, context);
+    if (auto tuple = isTuple(arg)) {
+        foreach (i; 0 .. tuple.objects.length)
+            if (argIsForeign(tuple.objects[i], context))
+                return true;
+    }
+    return false;
+}
 
-            override void visit(VarExp expression) {
-                resetIfNestedInOwner(expression.var.isFuncDeclaration);
-            }
+private bool typeIsForeign(
+    imported!"dmd.mtype".Type type,
+    in LinkContext context,
+) {
+    return anyAggregate(type, aggregate => symbolIsForeign(aggregate, context));
+}
 
-            override void visit(ArrayLiteralExp expression) {
-                recurse(expression.lowering);
-            }
+// A symbol nested in a template instance lives wherever the instance does;
+// what makes it foreign is the instance, not the template's declaring
+// module, in two ways: the instance's arguments may come from another
+// compilation (core.internal.newaa.Impl!(int, snippet_5.Nested) is declared
+// in druntime but foreign to every link except snippet_5's), and the
+// instance may never be emitted at all — a speculative instantiation by
+// unrelated in-process code (std.array.Appender!(int[]) via a repl test)
+// lands in no members array, so its synthesized members
+// (__xtoHash/__xopEquals/__init) and TypeInfos have no definition in any
+// link. needsCodegen finalizes instance state (tnext/minst); safe here
+// because this only runs in the fork child.
+private bool symbolIsForeign(
+    imported!"dmd.dsymbol".Dsymbol symbol,
+    in LinkContext context,
+) {
+    import dmd.dsymbol: Dsymbol;
+    import dmd.templatesem: needsCodegen;
 
-            override void visit(AssocArrayLiteralExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(NewExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(CastExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(LoweredAssignExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(CatAssignExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(CatExp expression) {
-                recurse(expression.lowering);
-            }
-
-            override void visit(EqualExp expression) {
-                recurse(expression.lowering);
-            }
-
-            // Anything nested in the function being reset gets emitted with
-            // it; anything else is a reference to another module's symbol.
-            extern (D) private void resetIfNestedInOwner(FuncDeclaration function_) {
-                if (function_ is null)
-                    return;
-                for (auto parent = function_.toParent2;
-                     parent !is null;
-                     parent = parent.toParent2)
-                    if (parent is owner) {
-                        resetCodegenState(function_);
-                        return;
-                    }
-            }
-
-            extern (D) private void recurse(Expression lowering) {
-                if (lowering !is null) {
-                    foreachVar(lowering, variable => resetCodegenState(variable));
-                    walkPostorder(lowering, this);
-                }
-            }
+    for (Dsymbol parent = symbol; parent !is null; parent = parent.parent)
+        if (auto instance = parent.isTemplateInstance) {
+            if (instanceIsForeign(instance, context))
+                return true;
+            if (instance.inst is null)
+                return true; // dummy/errored: never emitted
+            return instance.inst !in context.memberInstances
+                || !needsCodegen(instance.inst);
         }
 
-        scope walker = new HiddenSymbolWalker(function_);
-        walkPostorder(expression, walker);
+    return moduleIsForeign(symbol.getModule, context);
+}
+
+// A module is foreign to this link if its symbols are in neither the link
+// (the snippet, its user imports, the rod) nor libphobos2.so / the rod's
+// emitted instances (druntime and phobos modules, identified by living under
+// the process-default import paths).
+private bool moduleIsForeign(
+    imported!"dmd.dmodule".Module module_,
+    in LinkContext context,
+) {
+    return module_ !is null
+        && module_ !in context.modules
+        && !isUnderDefaultImportPaths(module_);
+}
+
+// The modules the snippet (transitively) imports from user import paths:
+// everything reachable through aimports that is not under the default
+// (process-init, i.e. druntime/phobos) import paths. Recursion stops at
+// default-path modules; their imports are druntime's business.
+private imported!"dmd.dmodule".Module[] userImportedModules(
+    imported!"dmd.dmodule".Module module_,
+) {
+    import dmd.dmodule: Module;
+
+    Module[] result;
+    bool[Module] visited;
+    visited[module_] = true;
+
+    void walk(Module current) {
+        foreach (i; 0 .. current.aimports.length) {
+            auto imported_ = current.aimports[i];
+            if (imported_ in visited)
+                continue;
+            visited[imported_] = true;
+            if (isUnderDefaultImportPaths(imported_))
+                continue;
+            result ~= imported_;
+            walk(imported_);
+        }
     }
 
-    if (function_.parameters !is null)
-        foreach (i; 0 .. function_.parameters.length)
-            resetVariable((*function_.parameters)[i]);
-    if (function_.vthis !is null)
-        resetVariable(function_.vthis);
-    if (function_.vresult !is null)
-        resetVariable(function_.vresult);
+    walk(module_);
+    return result;
+}
 
-    foreachExpAndVar(
-        function_.fbody,
-        (Expression expression) {
-            foreachVar(expression, &resetVariable);
-            resetHiddenSymbols(expression);
-        },
-        &resetVariable,
+private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {
+    import std.algorithm.searching: any, startsWith;
+    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+    const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
+    // Match whole path components: a bare prefix check would classify a
+    // sibling directory like <root>-extra/ as under <root>.
+    return defaultImportPaths.any!(
+        root => path == root || path.startsWith(root ~ dirSeparator),
     );
 }
 
-private void generate(
-    imported!"dmd.dmodule".Module module_,
-    in string objPath,
+// The import paths registered when DMD was initialized (druntime/phobos);
+// per-parse user import paths are removed from global.path again after each
+// parse, so snapshotting at first use only ever sees the defaults.
+private string[] defaultImportPaths() {
+    import dmd.globals: global;
+    import std.path: absolutePath, buildNormalizedPath;
+    import std.string: fromStringz;
+
+    if (_defaultImportPaths.length == 0)
+        foreach (i; 0 .. global.path.length)
+            _defaultImportPaths ~= global.path[i].path.fromStringz.idup
+                .absolutePath.buildNormalizedPath;
+
+    return _defaultImportPaths;
+}
+
+// Imported modules only get semantic3 (function bodies analyzed) on demand,
+// and codegen silently emits nothing for bodies that never got it. Parent
+// side, under the compiler lock: instances created here must land on the rod
+// before the fork snapshots the process. checkaction=context to match how
+// the snippets themselves are compiled.
+private void prepareForCodegen(imported!"dmd.dmodule".Module[] modules) {
+    import dmd.astenums: CHECKACTION;
+    import dmd.dsymbolsem: runDeferredSemantic3;
+    import dmd.globals: global;
+    import dmd.semantic2: semantic2;
+    import dmd.semantic3: semantic3;
+    import quickbite.frontend.compiler: diagnosticMessage;
+
+    if (modules.length == 0)
+        return;
+
+    const originalCheckAction = global.params.checkAction;
+    global.params.checkAction = CHECKACTION.context;
+    scope(exit) global.params.checkAction = originalCheckAction;
+
+    foreach (module_; modules) {
+        // Codegen only emits functions of root modules
+        // (FuncDeclaration_toObjFile returns early on inNonRoot, glue
+        // package.d:485). Promote like dmd -i does (checkCompiledImport,
+        // dmodule.d:747). The promotion makes the module accumulate template
+        // instances like the rod; the child-side prune handles both.
+        module_.importedFrom = module_;
+        module_.semantic2(null);
+        module_.semantic3(null);
+    }
+    runDeferredSemantic3;
+
+    if (global.errors != 0)
+        throw new Exception(diagnosticMessage);
+}
+
+private void emitObjectFiles(
+    imported!"dmd.dmodule".Module[] modules,
+    in string[] objPaths,
 ) {
     import dmd.glue: generateCodeAndWrite;
     import dmd.globals: global;
+    import dmd.root.filename: FileName;
+
+    foreach (i, module_; modules)
+        module_.objfile = FileName(objPaths[i]);
 
     enum noLibModules = (const(char)*[]).init;
     enum noLibName = "";
     enum currentDirectory = "";
     enum doNotWriteLibrary = false;
     enum writeObjectFile = true;
-    enum oneObjectFile = true;
+    enum objectFilePerModule = false;
     enum doNotSplitObject = false;
     enum doNotPrintProgress = false;
 
     generateCodeAndWrite(
-        [module_],
+        modules,
         noLibModules,
         noLibName,
         currentDirectory,
         doNotWriteLibrary,
         writeObjectFile,
-        oneObjectFile,
+        objectFilePerModule,
         doNotSplitObject,
         doNotPrintProgress,
     );
     if (global.errors != 0)
-        throw new Exception("codegen failed: " ~ objPath);
-}
-
-// Append to this module's members every template instance that some other
-// module owns but whose symbols this module's object references without
-// containing (= they are undefined in the object just written). The next
-// codegen pass then emits them here: needsCodegen() is true for any
-// non-speculative instance owned by a root module, and emission location is
-// purely a question of whose members array holds the instance.
-private bool adoptInstancesFor(
-    in string[] undefinedSymbols,
-    imported!"dmd.dmodule".Module module_,
-) {
-    import dmd.dmodule: Module;
-    import std.algorithm.searching: any, canFind, startsWith;
-
-    if (undefinedSymbols.length == 0)
-        return false;
-
-    bool adopted = false;
-
-    void adoptInstance(imported!"dmd.dtemplate".TemplateInstance instance) {
-        if (instance is null
-            || instance.inst !is instance // only primaries carry code
-            || instance.errors)
-            return;
-        const prefix = mangledPrefix(instance);
-        if (!undefinedSymbols.any!(symbol => symbol.startsWith(prefix)))
-            return;
-        if ((*module_.members)[].canFind!(existing => existing is instance))
-            return;
-        // A speculative instance never gets codegen'd, but the undefined
-        // reference proves real emitted code needs it, so claim it for this
-        // module.
-        if (instance.minst is null)
-            instance.minst = module_;
-        module_.members.push(instance);
-        adopted = true;
-    }
-
-    foreach (moduleIndex; 0 .. Module.amodules.length) {
-        auto candidateModule = Module.amodules[moduleIndex];
-        if (candidateModule is module_ || candidateModule.members is null)
-            continue;
-        foreach (i; 0 .. candidateModule.members.length) {
-            auto member = (*candidateModule.members)[i];
-
-            if (auto instance = member.isTemplateInstance)
-                adoptInstance(instance);
-            // Instantiations triggered during codegen (e.g. hashOf for a
-            // TypeInfo) are never appended to any module's members; the
-            // template's own instance cache is the only place to find them.
-            else if (auto template_ = member.isTemplateDeclaration) {
-                foreach (instance; template_.instances.byValue)
-                    adoptInstance(instance.inst);
-            }
-        }
-    }
-
-    // TypeInfos created during codegen are cached only on the type
-    // (Type.vtinfo), never appended to any module, so the member scan above
-    // cannot see them. A TypeInfoDeclaration's ident is the complete symbol
-    // name; as a module member it is emitted as a COMDAT unconditionally.
-    {
-        import dmd.mtype: Type;
-
-        foreach (entry; Type.stringtable) {
-            // The string table hands out const entries; pushing the
-            // declaration as a member requires mutability and the AST is
-            // logically owned by this compilation pass.
-            auto type = cast(Type) entry.value;
-            if (type is null || type.vtinfo is null)
-                continue;
-            auto typeInfo = type.vtinfo;
-            if (!undefinedSymbols.canFind(typeInfo.ident.toString))
-                continue;
-            if ((*module_.members)[].canFind!(existing => existing is cast()typeInfo))
-                continue;
-            module_.members.push(typeInfo);
-            adopted = true;
-        }
-    }
-
-    return adopted;
-}
-
-// The mangled prefix shared by every symbol an instance emits, e.g.
-// _D4core8internal7dassert__T14_d_assert_failTiZ for _d_assert_fail!int.
-private string mangledPrefix(
-    imported!"dmd.dtemplate".TemplateInstance instance,
-) {
-    import dmd.common.outbuffer: OutBuffer;
-    import dmd.dsymbol: Dsymbol;
-    import dmd.mangle: mangleToBuffer;
-
-    OutBuffer buffer;
-    buffer.writestring("_D");
-    // The cast selects the Dsymbol overload, which mangles the fully
-    // qualified name; the TemplateInstance overload would drop the parents.
-    mangleToBuffer(cast(Dsymbol) instance, buffer);
-    return buffer.extractSlice.idup;
-}
-
-// The undefined symbols of the object file just written: exactly the set the
-// linker has to find elsewhere (`-z defs` turns any leftover into a link
-// error), read straight from the ELF symbol table.
-private string[] undefinedSymbols(in string objPath) {
-    import core.sys.linux.elf: Elf64_Ehdr, Elf64_Shdr, Elf64_Sym, SHN_UNDEF,
-        SHT_SYMTAB;
-    import std.file: read;
-    import std.string: fromStringz;
-
-    const bytes = cast(const ubyte[]) read(objPath);
-    const header = cast(const Elf64_Ehdr*) bytes.ptr;
-    const sections = cast(const Elf64_Shdr*) (bytes.ptr + header.e_shoff);
-
-    string[] result;
-    foreach (sectionIndex; 0 .. header.e_shnum) {
-        const section = sections + sectionIndex;
-        if (section.sh_type != SHT_SYMTAB)
-            continue;
-        const strings = sections + section.sh_link;
-        const symbols = cast(const Elf64_Sym*) (bytes.ptr + section.sh_offset);
-        foreach (i; 0 .. section.sh_size / Elf64_Sym.sizeof) {
-            const symbol = symbols + i;
-            if (symbol.st_shndx != SHN_UNDEF || symbol.st_name == 0)
-                continue;
-            const name =
-                cast(const char*) (bytes.ptr + strings.sh_offset + symbol.st_name);
-            result ~= name.fromStringz.idup;
-        }
-    }
-    return result;
-}
-
-// Template instances and TypeInfo declarations from *every* compilation in
-// the process get appended to the first root module's members
-// (TemplateInstance.appendToModuleMember and typinf.getTypeInfoType both
-// redirect non-root modules through importedFrom). Emitting those would make
-// the object reference symbols from other modules, so only keep what this
-// module produced itself.
-private void removeForeignTemplateInstances(imported!"dmd.dmodule".Module module_) {
-    if (module_.members is null)
-        return;
-
-    size_t numKept = 0;
-    foreach (member; *module_.members) {
-        if (auto instance = member.isTemplateInstance) {
-            if (instance.minst !is module_)
-                continue;
-        }
-        if (auto typeInfo = member.isTypeInfoDeclaration) {
-            if (typeModule(typeInfo.tinfo) !is module_)
-                continue;
-        }
-        (*module_.members)[numKept++] = member;
-    }
-    module_.members.setDim(numKept);
-}
-
-// The module a type's TypeInfo belongs in: the one declaring the aggregate at
-// the bottom of the type. Null for basic types, whose TypeInfos druntime
-// already exports.
-private imported!"dmd.dmodule".Module typeModule(imported!"dmd.mtype".Type type) {
-    for (;;) {
-        if (auto structType = type.isTypeStruct)
-            return structType.sym.getModule;
-        if (auto classType = type.isTypeClass)
-            return classType.sym.getModule;
-        if (auto next = type.nextOf) {
-            type = next;
-            continue;
-        }
-        return null;
-    }
+        throw new Exception("codegen failed");
 }
 
 private void initialiseBackend() {
@@ -543,7 +649,7 @@ private void initialiseBackend() {
     ObjcGlue_initialize;
 }
 
-private void linkSharedLibrary(in string objPath, in string libPath) {
+private void linkSharedLibrary(in string[] objPaths, in string libPath) {
     import std.conv: text;
     import std.process: execute;
 
@@ -558,8 +664,7 @@ private void linkSharedLibrary(in string objPath, in string libPath) {
         "-L=-z",
         "-L=defs",
         "-of=" ~ libPath,
-        objPath,
-    ]);
+    ] ~ objPaths);
     if (result.status != 0)
         throw new Exception(text("link failed: ", result.output));
 }
@@ -612,6 +717,7 @@ private imported!"quickbite.backends.runner".TestResult runUnitTest(
 }
 
 private __gshared uint _libraryCounter;
-// Only accessed from initialiseBackend, which only runs under the compiler
-// lock (emitObjectFile is always called inside withCompilerLock).
+// Only accessed under the compiler lock (buildSharedLibrary is always called
+// inside withCompilerLock).
 private __gshared bool _backendInitialised;
+private __gshared string[] _defaultImportPaths;

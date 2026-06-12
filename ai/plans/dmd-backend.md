@@ -47,64 +47,71 @@ unwinding through generated frames); and its ~3000-line hand-enumerated
 `pragma(mangle)` support shim existed precisely because its input objects
 were not self-contained — the ownership problem slice 2 solves upstream.
 
-## Current state (2026-06-11, slice 1 merged as PR #205)
+## Current state (2026-06-11, slice 2: fork + lightning rod)
 
-**Direction (agreed 2026-06-11):** slice 1's machinery works, but it is
-~380 of system_linker.d's 611 lines of custom code that drives dmd
-differently from how dmd drives itself, and it forces fresh parses.
-Slice 2 replaces it with fork + lightning rod (lessons 8-9, 13-14),
-deleting the adoption loop, the written-state reset walker, the
-foreign-member pruning, and every fresh-parse workaround.
+Slices 1-3 are done. Slice 2 replaced slice 1's adoption loop, reset
+walker, and fresh-parse workarounds with fork + lightning rod
+(lessons 8-9, 13-14): cached (stale) parses are now codegen'd freely,
+and the only custom machinery left is the child-side prune plus the
+TypeInfo re-homing (lesson 15).
 
-**Open bug (found 2026-06-11, investigate independently of slice 2):**
-`bin/bench --backend=system-linker` skips every fixture at the
-correctness gate (`checkRunnerResults`, benchmarks/cli.d:89) with
-"unittest symbol not found in shared library", even freshly built. The
-ut path drives SystemLinker fine; the bench's standalone-fixture path
-(module naming or parse order) does not line up.
+**Resolved by slice 2:** the open bench bug
+(`bin/bench --backend=system-linker` skipped every fixture at the
+correctness gate with "unittest symbol not found in shared library").
+The bench runs `runTests` repeatedly on the same cached module
+(correctness gate, then warmup + N timed iterations) — exactly the
+repeated-codegen-of-one-AST case fork isolates. ci.sh's bench now times
+the system-linker row (~59 ms median on `tests/example.d`) with zero
+skips.
 
-`source/quickbite/backends/native/system_linker.d` implements
-`quickbite.backends.runner.Runner.runTests`:
+How it works now:
 
-1. Caller parses the module with checkaction=context — **uncached**
-   (`parseModuleWithCheckActionContextUncached` in
-   `source/quickbite/frontend/compiler.d`; see "Lessons" for why).
-2. `emitObjectFile`: reset codegen written-state (lesson 11), prune foreign
-   members, `dmd.glue.generateCodeAndWrite` writes one object file to a
-   unique temp dir, then the adoption loop (lesson 10) re-emits until the
-   object contains every instance/TypeInfo symbol it references. Backend
-   initialised once per process with `PIC.pic`. Runs under the compiler
-   lock.
-3. `linkSharedLibrary`: spawns `dmd -shared -defaultlib=libphobos2.so
-   -L=-z -L=defs`. `-z defs` deliberately turns every missing symbol into a
-   link error instead of a load-time or call-time failure — keep it; it is
-   what makes failures diagnosable.
-4. `Runtime.loadLibrary` (registers module ctors/GC with host druntime —
-   requires the host to link shared druntime).
+1. `initializeDmdState` (compiler.d) parses the **lightning rod**
+   (`quickbite_rod.d`, an empty module) as the very first root module in
+   the process and sets `Module.rootModule` to it — dmd.frontend never
+   sets `rootModule`; only dmd's own main.d does. All druntime/phobos
+   template instances and TypeInfos funnel to the rod from then on
+   (lesson 8). Callers parse snippets with the normal **cached**
+   checkaction=context parse; `parseModuleWithCheckActionContextUncached`
+   is gone.
+2. `buildSharedLibrary` (system_linker.d), under the compiler lock:
+   asserts `Module.rootModule is lightningRod`, collects the snippet's
+   transitive user-imported modules (everything whose source is outside
+   the process-default import paths), promotes them to root the way
+   `dmd -i` does (`importedFrom = module_` — codegen skips function
+   bodies of non-root modules, glue package.d:485 `inNonRoot`) and runs
+   their `semantic2`/`semantic3` parent-side. Then `fork()`.
+3. The child prunes the rod's and the user imports' members against the
+   link set (lesson 13), re-homes cached TypeInfos onto the rod
+   (lesson 15), emits one object per module (snippet first, rod last) via
+   one `generateCodeAndWrite` call, spawns
+   `dmd -shared -defaultlib=libphobos2.so -L=-z -L=defs`, and `_exit`s.
+   Errors travel through a pipe and re-throw in the parent. `-z defs`
+   deliberately turns every missing symbol into a link error instead of a
+   load-time or call-time failure — keep it; it is what makes failures
+   diagnosable.
+4. Parent: `Runtime.loadLibrary` (registers module ctors/GC with host
+   druntime — requires the host to link shared druntime).
 5. Per unittest: `dlsym(mangleExact(unitTestDecl))`, call, catch `Throwable`.
    Per-test results come from enumerating the AST with
    `foreachUnitTestDeclaration`, not from druntime's `__modtest`.
 6. `GC.collect` before `Runtime.unloadLibrary` (lesson 12).
 
-**Passing:** 357 runner matrix blocks include `SystemLinker` (was 14
-before slice 1, 336 before slice 3 — PR #206), each tagged
+**Passing:** 360 runner matrix blocks include `SystemLinker` (14 → 336
+slice 1 → 357 slice 3/PR #206 → 360 slice 2: the two `withImportPaths`
+blocks and the pollution regression test), each tagged
 `@Tags(backend.stringof)` so `bin/ut '~@SystemLinker'` skips them (they
 are slow: compile+link+load per test) and `bin/ut @SystemLinker` runs
-exactly them. The old slice-3 dlsym miss (`reportsAssertFailureMessages`)
-is in the matrix and passing. Slice 3 oracle-arbitrated and promoted all
-the CTFE-flavoured and message-text blocks; the verdicts are in its DONE
-section below.
+exactly them.
 
 **Still out of the matrix**, by category:
 
-- **Imported user modules**:
-  `runBackend{File,Source}FixtureTests.withImportPaths` — the snippet
-  imports a module from importPaths whose functions are compiled nowhere;
-  needs multi-object compilation of imported modules.
 - **Fatal by design in-process**: the three null-class-dereference
   diagnostics blocks (compiled null deref is a real SIGSEGV that kills the
   test runner) and `voidInitializedScalarReadReportsUninitialized`
   (CTFE-only diagnostic). Both excluded with comments in the test files.
+  Forking the *execution* step too would make the null-deref blocks
+  tolerable now that the fork machinery exists — possible follow-on.
 - **FFI-bridge design tests** (added after the slice-3 enumeration):
   rt/cstdlib.d's `noSource`/bridge blocks encode interpreter-backend
   expectations; compiled code would pass those fixtures, so SystemLinker
@@ -295,10 +302,14 @@ parent before forking.
   `Compiler.mutex` it owns and never unlocks before `_exit`. Safe because
   everything is single-threaded — `versions "unitUnthreaded"` in dub.sdl,
   and neither the benchmark nor the repl spawn threads (verified).
-- Fork also dissolves all three adoption-loop candidate sources (lesson
+- Fork dissolves the first two adoption-loop candidate sources (lesson
   10): codegen-driven instantiations and codegen-time TypeInfos happen
   fresh in every child, because the parent never trips the
-  once-per-process gates.
+  once-per-process gates. It does NOT dissolve the third —
+  semantic-time TypeInfos created in the parent during an earlier
+  *snippet's* semantic are appended to that snippet, not the rod, and
+  never re-created. See lesson 15 for the fix (found in slice 2's
+  implementation, not the spike).
 - What fork+rod still needs that this lesson missed: the child-side prune
   of the rod's members (lesson 13). "The adoption loop or pruning" above
   understates it — the prune is mandatory, but it is ~40 lines, needs no
@@ -401,6 +412,42 @@ survive the prune and resolve. No restore needed — the child exits. This
 is the one piece of custom code that remains, and it encodes a real
 invariant instead of fighting the frontend.
 
+**Implementation findings (slice 2, 2026-06-11):** the criterion that
+survived the matrix and full-suite `--random` is link-set based, not
+just root-module based: foreign = references a module that is neither in
+the link (snippet + its user imports + rod) nor under the
+process-default import paths (druntime/phobos). Three refinements the
+simple arg walk missed, each found by a real link failure:
+
+- A symbol nested in a template instance is judged by the **instance**,
+  not its declaring module: `core.internal.newaa.Impl!(int,
+  snippetA.Nested)` is declared in druntime but foreign to every link
+  except snippetA's (its TypeInfo on the rod referenced the pruned
+  instance's `__xopEquals`).
+- A **nested instance** whose own args are innocent
+  (`Impl!(int, snippetA.Nested).findSlotLookup!int`) is foreign whenever
+  an enclosing instance is — walk `parent` up to the nearest
+  TemplateInstance.
+- An instance with innocent args can still be **unemittable**: a
+  speculative instantiation by unrelated in-process code
+  (`std.array.Appender!(int[])`, instantiated by a repl test's
+  evaluation) lands in **no members array**, so nothing ever emits its
+  synthesized members — yet TypeInfos and instances referencing it sit
+  on the rod and would inject dangling references into every later
+  link. A referenced instance is keepable only if it is a member of an
+  in-link module (collect the member-instance set pre-prune) **and**
+  `needsCodegen()` (templatesem.d:2778, importable; finalizes
+  tnext/minst — fine, child-only) is true. This surfaced only under
+  full-suite `--random` (~200-320 failures, all one cause), never in
+  the SystemLinker-only matrix: the polluting instantiations come from
+  *other* tests sharing the process.
+
+User-import modules must be **promoted to root** (`importedFrom = the
+module itself`, like dmd -i's checkCompiledImport) or codegen silently
+skips their function bodies (`inNonRoot`, glue package.d:485) — and once
+root, they accumulate instances exactly like the rod, so the child
+prunes them with the same criterion.
+
 The rod is deliberately not "real life": it exploits the same
 allInst+importedFrom funneling that causes the pollution, concentrating
 the unavoidable consequence of a shared in-process frontend into one known
@@ -422,6 +469,48 @@ fresh.
 - Footnotes: `_exit` skips the coverage flush, so codegen-path coverage
   is lost in `-cov` builds; debugging child crashes needs gdb
   `set follow-fork-mode child`; fork is POSIX-only.
+
+### 15. TypeInfos are once-per-process and land on the *creating snippet*, not the rod (slice 2, 2026-06-11)
+
+`getTypeInfoType` (typinf.d:112) appends a freshly created
+TypeInfoDeclaration to `sc._module.importedFrom` — and for a **root**
+snippet that is the snippet itself, not the rod (importedFrom of a root
+module is the module). `genTypeInfo` reports needs-codegen only on
+`vtinfo` *creation*, once per process. So when snippet_K's semantic
+creates `TypeInfo_xAi` (`const(int[])`), it becomes a member of
+snippet_K only; a later snippet using the same type gets the cached
+vtinfo, no member append happens anywhere in its link, and its
+synthesized `__xtoHash` referencing that TypeInfo fails the `-z defs`
+link. Order-dependent: only the 320th-ish fixture in a full matrix run
+trips it.
+
+Fix (`adoptTypeInfos`, child-side): walk `Type.stringtable`, push every
+cached `vtinfo` for an **aggregate-free** type (builtin compositions
+only — no struct/class/enum anywhere in the type) onto the rod's
+members, where they emit as COMDATs — duplicate emission across links is
+safe, and such TypeInfos reference nothing but other builtin-composition
+TypeInfos and druntime vtables. Gates, each one earned:
+
+- aggregate-free only: a TypeInfo involving an aggregate references its
+  synthesized members (`__xtoHash`/`__xopEquals`/`__init`), which
+  resolve only if the aggregate's declaration or instance emits in this
+  link — and then the TypeInfo is already a member of an in-link
+  module. Adopting them indiscriminately injected
+  `std.array.Appender!(int[]).Data`'s TypeInfo (created by unrelated
+  in-process code; that instance's `needsCodegen` is false, so nothing
+  ever emits its methods) into every link and failed ~200 random-order
+  tests. (Unqualified class TypeInfos are doubly excluded: a standalone
+  ClassInfo also hits `assert(0)` in todt.d:1599.)
+- skip `builtinTypeInfo` types (typinf.d:94's own gate) — druntime
+  exports those;
+- skip TypeInfos already members of any module **in this link** —
+  emitting the same Dsymbol from two modules in one process trips
+  symbol_add's `Ssymnum == SYMIDX.max` assert (same assert as
+  lesson 11, different cause).
+
+This is lesson 10's third candidate source surviving fork; the spike
+missed it because its fixtures used distinct types, so every TypeInfo
+was created (and owned) by the snippet that used it.
 
 ## Parallel sessions
 
@@ -458,12 +547,33 @@ requirement. The adoption loop was chosen because it was incrementally
 verifiable and self-contained. The fork path remains viable as a future
 optimization (Slice 4 territory).
 
-### Slice 2 — fork + lightning rod: delete the custom machinery
+### Slice 2 — fork + lightning rod: delete the custom machinery — DONE (2026-06-11)
 
 Goal: replace the adoption loop, written-state reset walker, and
 foreign-member pruning with fork-based codegen isolation and a
 lightning-rod module, removing the fresh-parse requirement so cached
 modules can be codegen'd.
+
+**Spike results (step 0, all criteria passed first run):** fixtures A
+and B linked under `-z defs` and reported the exact
+checkaction=context messages (`1 != 2` / `3 != 4`); B was codegen'd
+from a stale parse with A's compilation in between; the same AST
+re-codegen'd cleanly twice (lesson 7 dissolved by fork); `GC.collect`
+and throw/catch worked in every child; growth over 100 fixtures was
+flat (rod.o ~22.9 KB constant, emit 3.9→4.3 ms — the prune bounds the
+emitted rod even as the parent-side rod accumulates). Negative control:
+disabling the prune made even fixture A's link fail with undefined
+references to B's class symbols — the prune is load-bearing, the pass
+is not vacuous. The fallback rule never triggered. Spike-confirmed
+detail: an *empty* rod works — every module's semantic pulls in
+`object.d` first, so the import chains bottom out at the rod.
+
+**Implementation deltas vs the step-1 sketch below (see lessons 13/15):**
+the prune criterion is link-set based; user-import modules are promoted
+to root and pruned too; `adoptTypeInfos` re-homes cached TypeInfos onto
+the rod (lesson 15 — the one failure the spike did not predict, found
+by the matrix at fixture ~320). Final state: 360 matrix blocks, `-z
+defs` clean under repeated `--random` and both historical seeds.
 
 **Step 0 — spike (throwaway code, time-boxed, ~1 day).** The one question
 dmd source cannot answer is actual linker behavior on the rod's object
@@ -520,8 +630,8 @@ adoption loop stays until a sound criterion exists.**
 linking is native to this design. Walk `module_.aimports` for modules
 under the given import paths; the child emits each and passes all objects
 to the link. This promotes the two `withImportPaths` blocks
-(tests/ut/backends/runner/ct/results.d:251, :280) and closes the prune
-edge case where fixtures share an importPaths module.
+(tests/ut/backends/runner/results.d) and closes the prune edge case
+where fixtures share an importPaths module.
 
 ### Slice 3 — message texts and CTFE-flavoured exclusions — DONE (2026-06-11, PR #206)
 
@@ -599,13 +709,12 @@ bin/ut @SystemLinker                # just the native-backend matrix
 - `source/quickbite/frontend/compiler.d` — parse cache, `initializeDmdState`,
   `allInst=true` at :178
 - `source/quickbite/frontend/util.d` — index-based unittest walk
-- `tests/ut/backends/package.d` — fresh-parse `static if` for SystemLinker
-  (deleted by slice 2)
+- `tests/ut/backends/runner/ct/pollution.d` — the lesson-13 exposing
+  test (graduated spike scenario)
 - `source/quickbite/backends/evaluator.d` — the live Evaluator interface
   (slice 4)
-- `benchmarks/cli.d` — bench harness; parse-order pre-parse at :497-503
-  (deleted by slice 2), correctness gate at :89 (open bug, see Current
-  state)
+- `benchmarks/cli.d` — bench harness; correctness gate
+  (`checkRunnerResults`)
 - dmd (dub, 2.112.0): `templatesem.d` (`appendToModuleMember` :1233,
   `needsCodegen` :2778), `typinf.d` (`getTypeInfoType`),
   `dmd/glue/toobj.d` (`visit(TemplateInstance)` :701, instance emission),
