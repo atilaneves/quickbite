@@ -977,3 +977,63 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
         });
     }
 }
+
+
+/++
+    Struct equality.
++/
+// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
+// target."), and IR (unmapped struct type assert) cannot run struct equality
+// yet.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.defaultEqualityComparesFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+            }
+
+            Point make(int seed) {
+                Point p;
+                p.x = seed;
+                p.y = seed + 1;
+                return p;
+            }
+
+            unittest {
+                assert(make(3) == make(3));
+                assert(make(3) != make(4));
+            }
+        });
+    }
+}
+
+// Same VM-backend limitations as struct.defaultEqualityComparesFields above.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("struct.customOpEquals." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct CaseId {
+                int id;
+
+                bool opEquals(in CaseId other) const {
+                    return id == other.id;
+                }
+            }
+
+            CaseId make(int seed) {
+                CaseId c;
+                c.id = seed;
+                return c;
+            }
+
+            unittest {
+                assert(make(7) == make(7));
+                assert(make(7) != make(8));
+            }
+        });
+    }
+}
