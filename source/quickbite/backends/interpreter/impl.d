@@ -1771,18 +1771,24 @@ private struct Walker {
         if (post.op != EXP.plusPlus)
             throw new Exception("Unsupported eval post expression.");
 
-        auto var = post.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported eval post expression target.");
+        if (auto var = post.e1.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception("Unsupported eval post expression target.");
 
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported eval post expression target.");
+            auto current = variable in locals;
+            const oldValue = current is null ? defaultValue(variable) : *current;
+            locals[variable] = oldValue + Value(cast(int) 1);
+            return oldValue;
+        }
 
-        auto current = variable in locals;
-        const oldValue = current is null ? defaultValue(variable) : *current;
-        locals[variable] = oldValue + Value(cast(int) 1);
-        return oldValue;
+        if (post.e1.isDotVarExp !is null) {
+            const oldValue = runExpression(post.e1);
+            writeLocation(post.e1, oldValue + Value(cast(int) 1));
+            return oldValue;
+        }
+
+        throw new Exception("Unsupported eval post expression target.");
     }
 
     private Value runAddAssignExpression(
