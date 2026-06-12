@@ -19,7 +19,7 @@ private alias IntegralTypes = AliasSeq!(
 
 
 static foreach (T; IntegralTypes) {
-    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+    static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
         @("type." ~ T.stringof ~ "." ~ backend.stringof)
         @Tags(backend.stringof)
         unittest {
@@ -49,7 +49,7 @@ static foreach (T; IntegralTypes) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.byte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -73,7 +73,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.ubyte.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -97,7 +97,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, IR, SystemLinker)) {
     @("typeFailureMessage.uint.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
