@@ -373,11 +373,15 @@ Dependencies are noted; order within independent slices is flexible.
    preserved. Simple local variable rebinding is done for statement cells
    and preserves intervening references to the old binding. Verified with
    `ninja bin/ut` and `bin/ut --random` (latest seed `3968792440`).
-5. **Module-level variables** (T2, T3; classification change admitting
-   `VarDeclaration`): sound under replay because D requires module-level
-   initializers to be static; runtime initialization arrives via
-   statements (replayed, pure-only) or, later, lifting on the native
-   path.
+5. **Module-level variables** (T2, T3): T2 is partially done in
+   `repl-line-attribution` for the Interpreter. A module function that
+   references a prior REPL local declaration promotes that declaration into
+   the module transcript, so `int counter; int get() { return counter; }`
+   can observe later statement mutation under the Interpreter while
+   preserving existing local/display semantics for ordinary declarations.
+   CTFE's global-mutation rejection is pinned. Verified with
+   `ninja bin/ut`, `bin/ut`, and `bin/ut --random` (seed `3004154049`);
+   T3 module constructors and native lifting remain pending.
 6. ~~**interfaces.md migration**~~ (done — single `eval` primitive,
    failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
    tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split

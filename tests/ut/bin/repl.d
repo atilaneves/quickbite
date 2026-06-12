@@ -143,6 +143,40 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("repl.backend.moduleLevelVariablesAreVisibleToFunctions." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        repl.submit("counter = 5;").should == Value.void_;
+        repl.submit("get()").should == Value(5);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.moduleLevelVariablesRejectCtfeMutation." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        void mutateCounter() {
+            repl.submit("counter = 5;");
+        }
+        mutateCounter.shouldThrowWithMessage(
+            "static variable `counter` cannot be read at compile time",
+        );
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.expressionSideEffectsPersist." ~ backend.stringof)
     unittest {

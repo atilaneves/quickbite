@@ -17,6 +17,8 @@ public struct Cell {
     private string history;
     private string[] declaredNames;
     private string[] moduleFunctionSignatures;
+    private string[] promotedLocalNames;
+    private TranscriptCell[] promotedLocalCells;
 }
 
 public struct EvalSourceParseResult {
@@ -78,12 +80,30 @@ public struct EvalSession {
 
         if (isModuleDeclarationCell(input)) {
             const moduleFunctionSignatures = functionDeclarationSignatures(input);
+            const promotedLocalNames = referencedLocalDeclaredNames(
+                input,
+                localCells,
+                moduleFunctionSignatures,
+            );
+            const promotedLocalCells = cellsDeclaringNames(
+                localCells,
+                promotedLocalNames,
+            );
             const moduleCells = moduleCellsWithReplacements(
                 moduleCells,
                 moduleFunctionSignatures,
             );
+            const localCells = localCellsWithoutDeclaredNames(
+                localCells,
+                promotedLocalNames,
+            );
             const source = evalSource(
-                moduleSource(transcriptSource(moduleCells) ~ input ~ "\n"),
+                moduleSource(
+                    transcriptSource(moduleCells) ~
+                    transcriptSource(promotedLocalCells) ~
+                    input ~
+                    "\n",
+                ),
                 transcriptSource(localCells),
                 evalFunctionName,
             );
@@ -95,6 +115,8 @@ public struct EvalSession {
                 input ~ "\n",
                 [],
                 moduleFunctionSignatures,
+                promotedLocalNames,
+                promotedLocalCells,
             );
         }
 
@@ -123,6 +145,8 @@ public struct EvalSession {
                 history,
                 declaredNames,
                 [],
+                [],
+                [],
             );
         }
 
@@ -137,6 +161,8 @@ public struct EvalSession {
             importPaths,
             EvalHistoryTarget.local,
             expressionHistory(input, valueCellCount),
+            [],
+            [],
             [],
             [],
         );
@@ -159,6 +185,18 @@ public struct EvalSession {
                 );
                 break;
             case module_:
+                localCells = localCellsWithoutDeclaredNames(
+                    localCells,
+                    cell.promotedLocalNames,
+                );
+                foreach (ref promotedCell; cell.promotedLocalCells)
+                    moduleCells ~= TranscriptCell(
+                        promotedCell.source,
+                        promotedCell.kind,
+                        promotedCell.declaredNames.dup,
+                        promotedCell.functionSignatures.dup,
+                        promotedCell.cellNumber,
+                    );
                 moduleCells = moduleCellsWithReplacements(
                     moduleCells,
                     cell.moduleFunctionSignatures.dup,
@@ -337,6 +375,60 @@ private TranscriptCell[] localCellsWithRebindings(
     return result;
 }
 
+private TranscriptCell[] localCellsWithoutDeclaredNames(
+    const(TranscriptCell)[] localCells,
+    in string[] declaredNames,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; localCells) {
+        if (declaresAnyName(cell, declaredNames))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private TranscriptCell[] cellsDeclaringNames(
+    const(TranscriptCell)[] cells,
+    in string[] declaredNames,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; cells) {
+        if (!declaresAnyName(cell, declaredNames))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private bool declaresAnyName(
+    ref const TranscriptCell cell,
+    in string[] declaredNames,
+) @safe pure {
+    foreach (declaredName; declaredNames) {
+        if (cellDeclares(cell, declaredName))
+            return true;
+    }
+
+    return false;
+}
+
 private size_t latestCellDeclaring(
     const(TranscriptCell)[] cells,
     in string declaredName,
@@ -440,6 +532,8 @@ private Cell evalCellFromSource(
     in string history,
     in string[] declaredNames,
     in string[] moduleFunctionSignatures,
+    in string[] promotedLocalNames,
+    in TranscriptCell[] promotedLocalCells,
 ) {
     import quickbite.frontend.compiler: parseModule;
 
@@ -453,10 +547,28 @@ private Cell evalCellFromSource(
             history,
             declaredNames.dup,
             moduleFunctionSignatures.dup,
+            promotedLocalNames.dup,
+            copyTranscriptCells(promotedLocalCells),
         );
     } catch (Exception exception) {
         throw new Exception(withCandidateSignatures(source, exception.msg));
     }
+}
+
+private TranscriptCell[] copyTranscriptCells(
+    const(TranscriptCell)[] cells,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; cells)
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+
+    return result;
 }
 
 private string[] candidateSignatures(in string source) {
@@ -914,6 +1026,77 @@ private string[] functionDeclarationSignatures(in string input) {
             ) {
                 auto function_ = declaration.isFuncDeclaration;
                 result ~= replacementFunctionSignature(function_);
+            }
+        }
+    });
+
+    return result;
+}
+
+private string[] referencedLocalDeclaredNames(
+    in string input,
+    const(TranscriptCell)[] localCells,
+    in string[] moduleFunctionSignatures,
+) {
+    if (moduleFunctionSignatures.length == 0)
+        return [];
+
+    string[] result;
+    foreach (ref cell; localCells) {
+        foreach (declaredName; cell.declaredNames) {
+            if (
+                !contains(result, declaredName) &&
+                referencesIdentifier(input, declaredName)
+            )
+                result ~= declaredName;
+        }
+    }
+
+    return result;
+}
+
+private bool contains(in string[] values, in string value) @safe pure {
+    foreach (candidate; values) {
+        if (candidate == value)
+            return true;
+    }
+
+    return false;
+}
+
+private bool referencesIdentifier(in string source, in string identifier) {
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.lexer: Lexer;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const parseSource = source ~ '\0';
+        scope lexer = new Lexer(
+            null,
+            parseSource.ptr,
+            0,
+            parseSource.length - 1,
+            false,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+        );
+
+        for (lexer.nextToken; lexer.token.value != TOK.endOfFile;
+            lexer.nextToken) {
+            if (
+                lexer.token.value == TOK.identifier &&
+                lexer.token.ident.toString == identifier
+            ) {
+                result = true;
+                return;
             }
         }
     });

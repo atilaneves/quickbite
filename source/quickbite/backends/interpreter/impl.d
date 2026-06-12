@@ -919,9 +919,11 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.locals = datasegLocals;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         return child.result;
     }
@@ -939,9 +941,11 @@ private struct Walker {
         child.result = Value(false);
         child.thisValue = receiver;
         child.hasThis = true;
+        child.locals = datasegLocals;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackThis(receiverExpression, child.thisValue);
 
@@ -949,6 +953,23 @@ private struct Walker {
             return child.thisValue;
 
         return child.result;
+    }
+
+    private void writeBackGlobals(ref Walker child) {
+        foreach (variable, value; child.locals) {
+            if (variable.isDataseg)
+                locals[variable] = value;
+        }
+    }
+
+    private Value[VarDeclaration] datasegLocals() {
+        Value[VarDeclaration] result;
+        foreach (variable, value; locals) {
+            if (variable.isDataseg)
+                result[variable] = value;
+        }
+
+        return result;
     }
 
     private void writeBackThis(
