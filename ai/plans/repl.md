@@ -370,8 +370,9 @@ Dependencies are noted; order within independent slices is flexible.
    local rename-the-old second. Module-level same-signature function
    replacement is done in `repl-line-attribution`; rejected replacements
    keep the old definition; distinct function overloads are pinned as
-   preserved. Verified with `ninja bin/ut` and `bin/ut --random` (latest
-   seed `4159485531`).
+   preserved. Simple local variable rebinding is done for statement cells
+   and preserves intervening references to the old binding. Verified with
+   `ninja bin/ut` and `bin/ut --random` (latest seed `3968792440`).
 5. **Module-level variables** (T2, T3; classification change admitting
    `VarDeclaration`): sound under replay because D requires module-level
    initializers to be static; runtime initialization arrives via

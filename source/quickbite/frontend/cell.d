@@ -15,6 +15,7 @@ public struct Cell {
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
+    private string[] declaredNames;
     private string[] moduleFunctionSignatures;
 }
 
@@ -92,6 +93,7 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.module_,
                 input ~ "\n",
+                [],
                 moduleFunctionSignatures,
             );
         }
@@ -100,12 +102,17 @@ public struct EvalSession {
             if (const diagnostic = statementSyntaxDiagnostic(input))
                 throw new Exception(diagnostic);
 
+            const declaredNames = localVariableDeclarationNames(input);
             const history = input.isStandalonePragmaMessageStatement ?
                 null :
                 input ~ "\n";
+            const localCells = localCellsWithRebindings(
+                localCells,
+                declaredNames,
+            );
             const source = evalSource(
                 moduleSource,
-                localTranscriptSource ~ input ~ "\n",
+                localTranscriptSource(localCells) ~ input ~ "\n",
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -114,6 +121,7 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.local,
                 history,
+                declaredNames,
                 [],
             );
         }
@@ -130,6 +138,7 @@ public struct EvalSession {
             EvalHistoryTarget.local,
             expressionHistory(input, valueCellCount),
             [],
+            [],
         );
     }
 
@@ -137,10 +146,14 @@ public struct EvalSession {
         const cellNumber = evalCellCount + 1;
         final switch (cell.historyTarget) with (EvalHistoryTarget) {
             case local:
+                localCells = localCellsWithRebindings(
+                    localCells,
+                    cell.declaredNames,
+                );
                 localCells ~= TranscriptCell(
                     cell.history,
                     cell.kind,
-                    [],
+                    cell.declaredNames.dup,
                     [],
                     cellNumber,
                 );
@@ -183,6 +196,12 @@ public struct EvalSession {
 
     private string localTranscriptSource() const @safe pure {
         return transcriptSource(localCells) ~ valueCellCount.latestValueBinding;
+    }
+
+    private string localTranscriptSource(
+        const(TranscriptCell)[] cells,
+    ) const @safe pure {
+        return transcriptSource(cells) ~ valueCellCount.latestValueBinding;
     }
 
     private string moduleSource(in string replModuleTranscript) const
@@ -275,6 +294,73 @@ private TranscriptCell[] moduleCellsWithReplacements(
     return result;
 }
 
+private TranscriptCell[] localCellsWithRebindings(
+    const(TranscriptCell)[] localCells,
+    in string[] declaredNames,
+) {
+    import std.conv: text;
+
+    TranscriptCell[] result;
+    foreach (ref cell; localCells)
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+
+    foreach (declaredName; declaredNames) {
+        const index = latestCellDeclaring(result, declaredName);
+        if (index == size_t.max)
+            continue;
+
+        const hiddenName = text(
+            "__quickbite_repl_local_",
+            result[index].cellNumber,
+            "_",
+            declaredName,
+        );
+        foreach (cellIndex; index .. result.length) {
+            result[cellIndex].source = rewriteIdentifierTokens(
+                result[cellIndex].source,
+                declaredName,
+                hiddenName,
+            );
+            foreach (ref name; result[cellIndex].declaredNames) {
+                if (name == declaredName)
+                    name = hiddenName;
+            }
+        }
+    }
+
+    return result;
+}
+
+private size_t latestCellDeclaring(
+    const(TranscriptCell)[] cells,
+    in string declaredName,
+) @safe pure {
+    for (size_t index = cells.length; index > 0; --index) {
+        if (cellDeclares(cells[index - 1], declaredName))
+            return index - 1;
+    }
+
+    return size_t.max;
+}
+
+private bool cellDeclares(
+    ref const TranscriptCell cell,
+    in string declaredName,
+) @safe pure {
+    foreach (cellDeclaredName; cell.declaredNames) {
+        if (cellDeclaredName == declaredName)
+            return true;
+    }
+
+    return false;
+}
+
 private bool hasFunctionSignature(
     ref const TranscriptCell cell,
     in string[] functionSignatures,
@@ -352,6 +438,7 @@ private Cell evalCellFromSource(
     in string[] importPaths,
     in EvalHistoryTarget historyTarget,
     in string history,
+    in string[] declaredNames,
     in string[] moduleFunctionSignatures,
 ) {
     import quickbite.frontend.compiler: parseModule;
@@ -364,6 +451,7 @@ private Cell evalCellFromSource(
             evalFunction(moduleResult.module_),
             historyTarget,
             history,
+            declaredNames.dup,
             moduleFunctionSignatures.dup,
         );
     } catch (Exception exception) {
@@ -627,6 +715,101 @@ private string statementSyntaxDiagnostic(in string input) {
         parser.parseStatement(0);
         if (global.errors != 0)
             result = firstDiagnosticMessage;
+    });
+
+    return result;
+}
+
+private string[] localVariableDeclarationNames(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string[] result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        auto statement = parser.parseStatement(0);
+        auto expression = statement is null ? null : statement.isExpStatement;
+        auto declaration = expression is null || expression.exp is null
+            ? null
+            : expression.exp.isDeclarationExp;
+        auto variable = declaration is null
+            ? null
+            : declaration.declaration.isVarDeclaration;
+        if (
+            variable !is null &&
+            variable.ident !is null &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0
+        )
+            result ~= variable.ident.toString.idup;
+    });
+
+    return result;
+}
+
+private string rewriteIdentifierTokens(
+    in string source,
+    in string from,
+    in string to,
+) {
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.lexer: Lexer;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const parseSource = source ~ '\0';
+        scope lexer = new Lexer(
+            null,
+            parseSource.ptr,
+            0,
+            parseSource.length - 1,
+            false,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+        );
+
+        size_t copied;
+        for (lexer.nextToken; lexer.token.value != TOK.endOfFile;
+            lexer.nextToken) {
+            if (
+                lexer.token.value != TOK.identifier ||
+                lexer.token.ident.toString != from
+            )
+                continue;
+
+            const offset = cast(size_t)(lexer.token.ptr - parseSource.ptr);
+            result ~= source[copied .. offset];
+            result ~= to;
+            copied = offset + from.length;
+        }
+
+        result ~= source[copied .. $];
     });
 
     return result;

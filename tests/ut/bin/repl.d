@@ -14,6 +14,48 @@ unittest {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "x + 1",
+                "auto x = 1;",
+                "x + 1",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "2"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localRebindingPreservesInterveningReferences." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "auto y = x + 1;",
+                "auto x = 1;",
+                "y",
+                "x",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "1"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
