@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.literalDefaultsMissingFieldToZero." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
