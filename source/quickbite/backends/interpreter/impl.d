@@ -1197,6 +1197,12 @@ private struct Walker {
             return;
         }
 
+        // `*ptr = value`: update the pointer variable so its target holds value.
+        if (auto ptr = target.isPtrExp) {
+            writeLocation(ptr.e1, runExpression(ptr.e1).withPointerTarget(value));
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
@@ -1658,13 +1664,20 @@ private struct Walker {
     }
 
     private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
         import std.conv: text;
+
+        if (new_.placement !is null || new_.thisexp !is null)
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        if (
+            isPointerType(new_.type) &&
+            isStructType(new_.type.toBasetype.nextOf)
+        )
+            return runNewStructPointerExpression(new_);
 
         if (
             !isDynamicArrayType(new_.type) ||
-            new_.placement !is null ||
-            new_.thisexp !is null ||
             new_.member !is null ||
             new_.arguments is null ||
             new_.arguments.length == 0
@@ -1676,6 +1689,53 @@ private struct Walker {
             lengths ~= cast(size_t) runExpression(argument).asLong;
 
         return newArrayValue(new_.type, lengths);
+    }
+
+    // Handles `new T(args)` where T is a struct type, returning a `T*` value.
+    // When new_.member is null (no user-defined constructor) the arguments are
+    // used as positional aggregate field initialisers.  When new_.member is a
+    // constructor the constructor body is executed with a default-initialised
+    // receiver and the post-construction `this` value is used.
+    private Value runNewStructPointerExpression(
+        imported!"dmd.expression".NewExp new_,
+    ) {
+        import std.conv: text;
+
+        auto targetType = new_.type.toBasetype.nextOf;
+        Value structVal = defaultValue(targetType);
+
+        if (new_.member !is null) {
+            // User-defined constructor: run it and capture the resulting this.
+            Value[] arguments;
+            if (new_.arguments !is null)
+                foreach (argument; *new_.arguments)
+                    arguments ~= runExpression(argument);
+
+            Walker child;
+            child.runningCalledFunction = true;
+            child.currentFunction = new_.member;
+            child.result = Value(false);
+            child.thisValue = structVal;
+            child.hasThis = true;
+            child.bindFunctionParameters(new_.member, arguments);
+            child.runStatement(new_.member.fbody);
+            structVal = child.thisValue;
+        } else if (new_.arguments !is null) {
+            // Aggregate initialiser: assign arguments positionally to fields.
+            auto structType = targetType.isTypeStruct;
+            foreach (index, argument; *new_.arguments) {
+                if (index >= structType.sym.fields.length)
+                    throw new Exception(text(
+                        "Unsupported eval expression: ", new_.op,
+                    ));
+                structVal = structVal.withStructField(
+                    index,
+                    runExpression(argument),
+                );
+            }
+        }
+
+        return Value.pointerValue(structVal);
     }
 
     private Value newArrayValue(

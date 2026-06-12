@@ -604,7 +604,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerInitializesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -626,7 +626,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerAllocatesMutableInstance." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -653,7 +653,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerRunsConstructor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
