@@ -215,7 +215,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.byValueArrayDescriptorMutationDoesNotLeak." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -427,7 +427,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodAppendsArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -452,7 +452,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodCallsStructMethod." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

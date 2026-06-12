@@ -1399,6 +1399,14 @@ private struct Walker {
     private Value runArrayAppendAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
+        if (auto dot = assign.e1.isDotVarExp) {
+            const appended = runExpression(assign.e1).withAppendedArrayElement(
+                runExpression(assign.e2),
+            );
+            writeLocation(assign.e1, appended);
+            return appended;
+        }
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter array append target.");
