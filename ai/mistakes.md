@@ -213,3 +213,7 @@
 - For unit-threaded substring assertions, prefer
   `"expected".should.be in actual` over `actual.canFind("expected").should ==
   true`.
+
+- When summarizing a failing test run through `tail`/`head`, reconcile the
+  visible failure lines against the reported failure count before concluding
+  which tests passed; truncated output silently drops the first failures.

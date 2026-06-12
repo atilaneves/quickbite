@@ -778,3 +778,242 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker)) {
         }).shouldThrowWithMessage("11 != 12");
     }
 }
+
+// In this and all the float/real intrinsic blocks below, BytecodeNewCore
+// ("Unsupported type in bytecode core: float"/"real") and IR (f32/f64
+// valueType assert in compileIntrinsicCall) cannot run float/real
+// intrinsics.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeSqrtFloatInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                float input = 9.0f;
+                assert(sqrt(input) == 3.0f);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeSqrtRealInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: sqrt;
+
+            unittest {
+                real input = 9.0L;
+                assert(sqrt(input) == 3.0L);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeFabsFloatInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: fabs;
+
+            unittest {
+                float input = -2.5f;
+                assert(fabs(input) == 2.5f);
+
+                input = 2.5f;
+                assert(fabs(input) == 2.5f);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeFabsRealInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: fabs;
+
+            unittest {
+                real input = -2.5L;
+                assert(fabs(input) == 2.5L);
+
+                input = 2.5L;
+                assert(fabs(input) == 2.5L);
+            }
+        });
+    }
+}
+
+// SystemLinker is omitted: when an earlier test in the same process has
+// already instantiated std.math pow!(float, float), dmd-as-a-library skips
+// emitting the instance into the snippet object and the link fails with an
+// undefined symbol (libphobos2 does not ship the float instance). Recorded in
+// ai/plans/dmd-backend.md.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("evaluatesRuntimePowFloatInputs." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: pow;
+
+            unittest {
+                float base = 2.0f;
+                float exponent = 4.0f;
+                assert(pow(base, exponent) == 16.0f);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimePowRealInputs." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: pow;
+
+            unittest {
+                real base = 2.0L;
+                real exponent = 4.0L;
+                assert(pow(base, exponent) == 16.0L);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeIsNaNFloatInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isNaN;
+
+            unittest {
+                float notANumber = float.nan;
+                float finite = 21.0f;
+
+                assert(isNaN(notANumber));
+                assert(!isNaN(finite));
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeIsNaNRealInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isNaN;
+
+            unittest {
+                real notANumber = real.nan;
+                real finite = 21.0L;
+
+                assert(isNaN(notANumber));
+                assert(!isNaN(finite));
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeIsInfinityFloatInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isInfinity;
+
+            unittest {
+                float input = float.infinity;
+                assert(isInfinity(input));
+
+                input = -float.infinity;
+                assert(isInfinity(input));
+
+                input = float.max;
+                assert(!isInfinity(input));
+
+                input = float.nan;
+                assert(!isInfinity(input));
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeIsInfinityRealInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isInfinity;
+
+            unittest {
+                real input = real.infinity;
+                assert(isInfinity(input));
+
+                input = -real.infinity;
+                assert(isInfinity(input));
+
+                input = real.max;
+                assert(!isInfinity(input));
+
+                input = real.nan;
+                assert(!isInfinity(input));
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeSignbitFloatInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: signbit;
+
+            unittest {
+                float input = -0.0f;
+                assert(signbit(input) != 0);
+
+                input = 0.0f;
+                assert(signbit(input) == 0);
+
+                input = -12.25f;
+                assert(signbit(input) != 0);
+
+                input = 12.25f;
+                assert(signbit(input) == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+    @("evaluatesRuntimeSignbitRealInput." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: signbit;
+
+            unittest {
+                real input = -0.0L;
+                assert(signbit(input) != 0);
+
+                input = 0.0L;
+                assert(signbit(input) == 0);
+
+                input = -12.25L;
+                assert(signbit(input) != 0);
+
+                input = 12.25L;
+                assert(signbit(input) == 0);
+            }
+        });
+    }
+}

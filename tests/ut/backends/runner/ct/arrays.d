@@ -1158,3 +1158,114 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
+
+// Bytecode ("Unsupported bytecode assignment target."), BytecodeNewCore
+// ("Unsupported type in bytecode core: int[]"), and IR ("Unsupported IR
+// expression `[first, first + 1, first + 2]`") cannot run this .dup fixture.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("dynamicArray.dupDetachesCopyFromOriginal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+
+                int[] copy = values.dup;
+                copy[0] = value(99);
+
+                assert(copy.length == 3);
+                assert(copy[0] == 99);
+                assert(values[0] == 10);
+                assert(copy[1] == values[1]);
+            }
+        });
+    }
+}
+
+// Bytecode ("Unsupported bytecode assignment target."), BytecodeNewCore
+// ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
+// literal expression) cannot run this .idup fixture.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("dynamicArray.idupFreezesIndependentCopy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1];
+
+                immutable(int)[] frozen = values.idup;
+                values[0] = value(99);
+
+                assert(frozen[0] == 10);
+                assert(frozen[1] == 11);
+                assert(values[0] == 99);
+            }
+        });
+    }
+}
+
+// Bytecode ("Unsupported cast target: Tpointer"), BytecodeNewCore
+// ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
+// literal expression) cannot run this .ptr fixture.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("dynamicArray.ptrPointsAtFirstElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[] values = [first, first + 1, first + 2];
+
+                assert(values.ptr is &values[0]);
+                assert(*values.ptr == 10);
+                assert(values.ptr[2] == 12);
+            }
+        });
+    }
+}
+
+// Interpreter ("Unsupported interpreter array append target."), Bytecode
+// ("Unsupported expression `rows.length`"), BytecodeNewCore ("Unsupported
+// type in bytecode core: int[][]"), and IR (unsupported nested array literal)
+// cannot run jagged arrays.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("dynamicArray.jaggedRowsKeepIndependentLengths." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                int[][] rows = [[first, first + 1, first + 2], [first + 3]];
+
+                assert(rows.length == 2);
+                assert(rows[0].length == 3);
+                assert(rows[1].length == 1);
+                assert(rows[0][2] == 12);
+                assert(rows[1][0] == 13);
+
+                rows[1] ~= first + 4;
+                assert(rows[1].length == 2);
+                assert(rows[1][1] == 14);
+                assert(rows[0].length == 3);
+            }
+        });
+    }
+}

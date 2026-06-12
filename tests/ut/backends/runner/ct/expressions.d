@@ -1053,3 +1053,31 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
         });
     }
 }
+
+// The integer ^^ lowering defeats every VM backend: Interpreter ("Unsupported
+// eval statement: Switch"), Bytecode ("Unsupported expression `m & 1`"),
+// BytecodeNewCore ("Unsupported statement in bytecode core: Import"), and IR
+// (unmapped type assert in compileExpression).
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("int.powerOperatorRaisesRuntimeIntegers." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int base() {
+                return 3;
+            }
+
+            int exponent() {
+                return 4;
+            }
+
+            unittest {
+                int b = base;
+                int e = exponent;
+
+                assert(b ^^ e == 81);
+                assert(b ^^ 0 == 1);
+            }
+        });
+    }
+}
