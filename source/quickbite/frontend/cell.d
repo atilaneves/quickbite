@@ -31,6 +31,7 @@ private struct TranscriptCell {
     public string source;
     public Cell.Kind kind;
     public string[] declaredNames;
+    public uint cellNumber;
 }
 
 private enum EvalHistoryTarget {
@@ -129,12 +130,23 @@ public struct EvalSession {
     }
 
     public void accept(in Cell cell) {
+        const cellNumber = evalCellCount + 1;
         final switch (cell.historyTarget) with (EvalHistoryTarget) {
             case local:
-                localCells ~= TranscriptCell(cell.history, cell.kind, []);
+                localCells ~= TranscriptCell(
+                    cell.history,
+                    cell.kind,
+                    [],
+                    cellNumber,
+                );
                 break;
             case module_:
-                moduleCells ~= TranscriptCell(cell.history, cell.kind, []);
+                moduleCells ~= TranscriptCell(
+                    cell.history,
+                    cell.kind,
+                    [],
+                    cellNumber,
+                );
                 break;
         }
 
@@ -186,10 +198,20 @@ private string transcriptSource(
     const(TranscriptCell)[] cells,
 ) @safe pure {
     string result;
-    foreach (ref cell; cells)
-        result ~= cell.source;
+    foreach (ref cell; cells) {
+        if (cell.source.length == 0)
+            continue;
+
+        result ~= replCellLineDirective(cell.cellNumber) ~ cell.source;
+    }
 
     return result;
+}
+
+private string replCellLineDirective(in uint cellNumber) @safe pure {
+    import std.conv: text;
+
+    return lineDirective(text("<repl cell ", cellNumber, ">"));
 }
 
 private string replLineDirective() @safe pure {

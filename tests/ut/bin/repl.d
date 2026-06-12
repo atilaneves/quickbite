@@ -579,7 +579,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -599,7 +599,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(3) failed: 41 != 42";
+            "unittest at <repl cell 3>(1) failed: 41 != 42";
     }
 }
 
@@ -607,7 +607,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
-        import std.algorithm.searching: canFind;
         import quickbite.repl: Repl;
 
         auto repl = Repl(newBackend!backend);
@@ -628,10 +627,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         }
 
         const message = runTests.shouldThrow.msg;
-        message.canFind("unittest at <repl>(2) failed: 1 != 2").should ==
-            true;
-        message.canFind("unittest at <repl>(7) failed: 3 != 4").should ==
-            true;
+        "unittest at <repl cell 1>(2) failed: 1 != 2".should.be in message;
+        "unittest at <repl cell 2>(2) failed: 3 != 4".should.be in message;
     }
 }
 
@@ -663,7 +660,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -805,7 +802,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit("int twice(int i) { return i; }");
         }
         duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+            "function `twice(int i)` conflicts with previous declaration " ~
+            "at <repl cell 1>(1)";
     }
 }
 
@@ -822,7 +820,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit("int twice(int i) { return i; }");
         }
         duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+            "function `twice(int i)` conflicts with previous declaration " ~
+            "at <repl cell 1>(1)";
         repl.submit("twice(21)").should == Value(42);
     }
 }

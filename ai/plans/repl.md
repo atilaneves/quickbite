@@ -357,8 +357,11 @@ Dependencies are noted; order within independent slices is flexible.
    module/local history as `TranscriptCell[]` and joins it only when
    synthesizing snapshot source; no new tests). Verified with `ninja bin/ut`
    and `bin/ut --random` (seed `405471795`).
-2. **Per-cell `#line` attribution + diagnostic cleanup.** Needs approved
-   attribution tests.
+2. ~~**Per-cell `#line` attribution + diagnostic cleanup**~~ (done in
+   `repl-line-attribution` — accepted transcript cells now emit
+   `#line 1 "<repl cell N>"`, so diagnostics report cell-local source
+   locations instead of cumulative invisible transcript lines). Verified
+   with `ninja bin/ut` and `bin/ut --random` (seed `377061793`).
 3. **Last-value binding** (T4). Independent of 1 in principle, trivial
    after it.
 4. **Redefinition** (T5; depends on 1): module-decl replacement first,
