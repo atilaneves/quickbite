@@ -313,27 +313,24 @@ The promoted logical-not group in `logic.d`
 `logicalNotFailureMessage.1.IR`, `logicalNotFailureMessage.0.IR`,
 `logicalNotCall.IR`, and `logicalNot.IR`) passed without new production code.
 Existing unary logical-not lowering, direct calls, bool locals, and bool
-diagnostics already covered that group. `tests/ut/backends/lang/logic.d` is
+diagnostics already covered that group. `tests/ut/backends/runner/ct/logic.d` is
 complete for current IR coverage: no backend matrices in that module still
 exclude `IR`.
 
-The next implementation slice should move to the next module in
-`ai/plans/backend-test-modules-order.md`. Pick the smallest remaining current
-CTFE-backed behavior in that module that still excludes `IR`, promote the
-existing backend matrix, and run the focused test. If it is red, verify it is
-red for the expected missing behavior. If it is green, verify the greenness by
-temporarily mutating the promoted test or relevant production code, confirming
-the focused test fails, and restoring the mutation. Inspect the DMD AST that
-reaches the IR compiler, then add only the IR shape and VM support required by
-that behavior. Verify the current checkout before editing because backend
-progress notes can go stale.
+The promoted `voidFunctionReturnsToCaller.IR` test in
+`tests/ut/backends/runner/ct/diagnostics.d` added narrow support for `void`
+direct calls. `Call` now records whether it has a result, the compiler emits a
+result-less call for a DMD `void` call expression, the callee compiles to
+`ReturnVoid`, and the VM returns to the caller without writing a result slot.
+This is only direct void-call/return support for the observed shape; it is not
+general `void` expression handling, explicit `return;` coverage, or richer
+control flow.
 
 ### Next Slice Handoff
 
-Move to the next module in `ai/plans/backend-test-modules-order.md` after
-`tests/ut/backends/lang/logic.d`. Verify the current checkout before editing,
-then promote the next smallest existing backend matrix that still excludes
-`IR`.
+Continue in `tests/ut/backends/runner/ct/diagnostics.d`. Verify the current
+checkout before editing, then promote the next smallest existing backend
+matrix that still excludes `IR`.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to

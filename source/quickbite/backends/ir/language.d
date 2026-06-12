@@ -97,6 +97,7 @@ package struct Cast {
 package struct Call {
     public uint functionIndex;
     public uint[] arguments;
+    public bool hasResult;
     public Value result;
 }
 
