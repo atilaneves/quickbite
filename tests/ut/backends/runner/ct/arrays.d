@@ -932,6 +932,39 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
+// Interpreter cannot index-assign into a still-null AA ("Expected associative
+// array."); Bytecode ("Unsupported bytecode assignment target.") and IR
+// ("Unsupported IR expression `null`") cannot run AA insertion.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("assocArray.insertionGrowsAndOverwrites." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = key(10);
+                int second = key(first + 1);
+                int[int] values;
+
+                values[first] = first + 30;
+                assert(values.length == 1);
+
+                values[second] = second + 30;
+                assert(values.length == 2);
+
+                values[first] = first + 32;
+                assert(values.length == 2);
+
+                assert(values[first] == 42);
+                assert(values[second] == 41);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     unittest {

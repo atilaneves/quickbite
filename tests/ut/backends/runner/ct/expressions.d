@@ -135,6 +135,34 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Bytecode ("Unsupported expression `a % b`") and IR ("Unsupported IR
+// expression `a % b`") do not implement %.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+    @("int.moduloSignFollowsDividend." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int dividend() {
+                return -7;
+            }
+
+            int divisor() {
+                return 3;
+            }
+
+            unittest {
+                int a = dividend;
+                int b = divisor;
+
+                // The sign of % follows the dividend, not the divisor.
+                assert(a % b == -1);
+                assert(-a % b == 1);
+                assert(a % -b == -1);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("int.shiftOperators." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -151,6 +179,28 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
             unittest {
                 assert(0x80 >> rightShift == 0x20);
                 assert(0x10 << leftShift == 0x20);
+            }
+        });
+    }
+}
+
+// Interpreter ("Unsupported eval expression: rightShift"), Bytecode, and IR
+// ("Unsupported ... expression `v >> 28`") do not implement shifts.
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+    @("int.unsignedRightShiftZeroFills." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return -1;
+            }
+
+            unittest {
+                int v = seed;
+
+                // >> sign-extends, >>> zero-fills.
+                assert((v >> 28) == -1);
+                assert((v >>> 28) == 15);
             }
         });
     }
