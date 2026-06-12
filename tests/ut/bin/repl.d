@@ -163,6 +163,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.preservesFunctionOverloads." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int twice(int i) { return i * 2; }",
+                "long twice(long value) { return value * 3; }",
+                "twice(21)",
+                "twice(14L)",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "42L"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.userDefinedFunctionDoesNotCollideWithWrapper." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;

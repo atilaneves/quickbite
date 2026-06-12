@@ -369,8 +369,9 @@ Dependencies are noted; order within independent slices is flexible.
 4. **Redefinition** (T5; depends on 1): module-decl replacement first,
    local rename-the-old second. Module-level same-signature function
    replacement is done in `repl-line-attribution`; rejected replacements
-   keep the old definition. Verified with `ninja bin/ut` and
-   `bin/ut --random` (seed `1264479370`).
+   keep the old definition; distinct function overloads are pinned as
+   preserved. Verified with `ninja bin/ut` and `bin/ut --random` (latest
+   seed `4159485531`).
 5. **Module-level variables** (T2, T3; classification change admitting
    `VarDeclaration`): sound under replay because D requires module-level
    initializers to be static; runtime initialization arrives via
