@@ -27,11 +27,15 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
     }
 
     public override TestResult[] runTests(Module module_) {
+        return runTests([module_]);
+    }
+
+    public TestResult[] runTests(Module[] modules) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
         auto library = compileToSharedLibrary(
-            module_,
+            modules,
             _linkFiles,
             _archiveImportPaths,
         );
@@ -47,16 +51,17 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
         }
 
         TestResult[] cases;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            cases ~= runUnitTest(library, unitTest);
-        });
+        foreach (module_; modules)
+            foreachUnitTestDeclaration(module_, (unitTest) {
+                cases ~= runUnitTest(library, unitTest);
+            });
 
         return cases;
     }
 }
 
 private void* compileToSharedLibrary(
-    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.dmodule".Module[] modules,
     in string[] linkFiles,
     in string[] archiveImportPaths,
 ) {
@@ -81,7 +86,7 @@ private void* compileToSharedLibrary(
     const libPath = buildPath(dir, "module.so");
 
     withCompilerLock(() {
-        buildSharedLibrary(module_, dir, libPath, linkFiles, archiveImportPaths);
+        buildSharedLibrary(modules, dir, libPath, linkFiles, archiveImportPaths);
     });
 
     return loadSharedLibrary(libPath);
@@ -94,7 +99,7 @@ private void* compileToSharedLibrary(
 // parent's AST and globals are never mutated, which is what lets cached
 // (stale) parses be codegen'd repeatedly.
 private void buildSharedLibrary(
-    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.dmodule".Module[] rootModules,
     in string dir,
     in string libPath,
     in string[] linkFiles,
@@ -124,16 +129,30 @@ private void buildSharedLibrary(
     // are the exception: a prebuilt library on the link line already defines
     // their symbols, so they get neither the root promotion (saving their
     // semantic3) nor an object of their own.
-    auto allUserImports = userImportedModules(module_);
+    auto allUserImports = userImportedModules(rootModules, linkFiles.length != 0);
     auto userImports = allUserImports
-        .filter!(import_ => !isUnderImportPaths(import_, archiveImportPaths))
+        .filter!(import_ =>
+            !isUnderDefaultImportPaths(import_)
+            && !isUnderImportPaths(import_, archiveImportPaths))
         .array;
+    auto archiveImports = allUserImports
+        .filter!(import_ =>
+            !isUnderDefaultImportPaths(import_)
+            && isUnderImportPaths(import_, archiveImportPaths))
+        .array;
+    auto defaultImports = linkFiles.length == 0
+        ? []
+        : allUserImports
+            .filter!(import_ => isUnderDefaultImportPaths(import_))
+            .array;
     prepareForCodegen(userImports);
+    prepareArchiveImportsForTemplateCodegen(archiveImports);
+    prepareArchiveImportsForTemplateCodegen(defaultImports);
 
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
-    auto modules = [module_] ~ userImports ~ [rod];
+    auto modules = rootModules ~ userImports ~ archiveImports ~ defaultImports ~ [rod];
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
@@ -150,13 +169,24 @@ private void buildSharedLibrary(
         objPaths ~= buildPath(dir, text("obj_", i, ".o"));
 
     runInFork(() {
-        const context = LinkContext(linkSet, collectMemberInstances(linkSet));
+        const context = LinkContext(
+            linkSet,
+            collectMemberInstances(modules),
+        );
         // User-import modules are root modules (see prepareForCodegen), so
         // like the rod they accumulate template instances parameterized on
         // other compilations' types; prune them all against this link.
         pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);
+        foreach (archiveImport; archiveImports) {
+            pruneToTemplateCodegenMembers(archiveImport);
+            pruneForeignMembers(archiveImport, context);
+        }
+        foreach (defaultImport; defaultImports) {
+            pruneToTemplateCodegenMembers(defaultImport);
+            pruneForeignMembers(defaultImport, context);
+        }
         adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
         linkSharedLibrary(objPaths, libPath, linkFiles);
@@ -301,16 +331,31 @@ private void pruneForeignMembers(
     module_.members.setDim(numKept);
 }
 
+private void pruneToTemplateCodegenMembers(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members is null)
+        return;
+
+    size_t numKept = 0;
+    foreach (i; 0 .. module_.members.length) {
+        auto member = (*module_.members)[i];
+        if (member.isTemplateInstance || member.isTypeInfoDeclaration)
+            (*module_.members)[numKept++] = member;
+    }
+    module_.members.setDim(numKept);
+}
+
 // The template instances some in-link module holds as a member — the only
 // instances whose emission in this link is guaranteed (an instance is
 // emitted from whichever members array holds it).
 private bool[imported!"dmd.dtemplate".TemplateInstance] collectMemberInstances(
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    imported!"dmd.dmodule".Module[] modules,
 ) {
     import dmd.dtemplate: TemplateInstance;
 
     bool[TemplateInstance] result;
-    foreach (module_, _; linkSet) {
+    foreach (module_; modules) {
         if (module_.members is null)
             continue;
         foreach (i; 0 .. module_.members.length)
@@ -541,13 +586,15 @@ private bool moduleIsForeign(
 // (process-init, i.e. druntime/phobos) import paths. Recursion stops at
 // default-path modules; their imports are druntime's business.
 private imported!"dmd.dmodule".Module[] userImportedModules(
-    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.dmodule".Module[] rootModules,
+    in bool includeDefaultImports,
 ) {
     import dmd.dmodule: Module;
 
     Module[] result;
     bool[Module] visited;
-    visited[module_] = true;
+    foreach (module_; rootModules)
+        visited[module_] = true;
 
     void walk(Module current) {
         foreach (i; 0 .. current.aimports.length) {
@@ -555,14 +602,18 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
             if (imported_ in visited)
                 continue;
             visited[imported_] = true;
-            if (isUnderDefaultImportPaths(imported_))
+            if (isUnderDefaultImportPaths(imported_)) {
+                if (includeDefaultImports)
+                    result ~= imported_;
                 continue;
+            }
             result ~= imported_;
             walk(imported_);
         }
     }
 
-    walk(module_);
+    foreach (module_; rootModules)
+        walk(module_);
     return result;
 }
 
@@ -636,6 +687,13 @@ private void prepareForCodegen(imported!"dmd.dmodule".Module[] modules) {
 
     if (global.errors != 0)
         throw new Exception(diagnosticMessage);
+}
+
+private void prepareArchiveImportsForTemplateCodegen(
+    imported!"dmd.dmodule".Module[] modules,
+) {
+    foreach (module_; modules)
+        module_.importedFrom = module_;
 }
 
 private void emitObjectFiles(

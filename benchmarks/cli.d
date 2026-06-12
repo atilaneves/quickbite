@@ -177,8 +177,11 @@ public void run(string[] args) {
                         dubPkg, name,
                         measure(
                             () {
-                                foreach (module_; dubModules)
-                                    runner.runTests(module_);
+                                if (auto linker = cast(SystemLinker) runner)
+                                    linker.runTests(dubModules);
+                                else
+                                    foreach (module_; dubModules)
+                                        runner.runTests(module_);
                             },
                             warmup,
                             runs,
