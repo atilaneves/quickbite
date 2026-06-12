@@ -294,7 +294,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker)) {
     @("inFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
