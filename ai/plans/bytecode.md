@@ -861,12 +861,44 @@ on the new core before the engine default flips.
   operands through `Value.asReal`, allowing the existing `std.math.pow` builtin
   bridge to handle runtime `double` inputs and fractional bounds.
 
+## Rewrite Coverage State
+Matrix behaviours re-earned on the new typed-frame core, which the test
+matrix names `BytecodeNewCore` (the strangler-pattern handle on the engine
+switch; `Bytecode` still defaults to the old core):
+
+- `literal` in `tests/ut/backends/evaluator/eval.d`: the first eval scalar
+  block. Stood up the new core end to end: fixed-width instructions with
+  16-bit operands, a raw-bits constant pool, typed frame slots, and scalar
+  `Value` reification at the `Evaluator` boundary
+  (`backends/bytecode/core/{program,compiler,machine,reify}.d`).
+- `type.*` (all eight integral widths) in
+  `tests/ut/backends/runner/ct/integrals.d`: native-layout locals and
+  parameters at DMD-computed sizes and alignments, lazy per-function
+  compilation through a machine callback, calls with contiguous argument
+  areas, truncating and sign-extending casts, comma expressions, and the
+  `-checkaction=context` lowered equality assert compiled as a width-tagged
+  compare plus an assert-diagnostic record.
+- `typeFailureMessage.{byte,ubyte,uint}.0` in the same module, completing
+  `integrals.d` on the new core: the lowered `_d_assert_fail` operands keep
+  their unpromoted source types, so the compiler replicates D's integer
+  promotions at emit time (sign/zero-extension opcodes shared with the cast
+  path) and failed equality asserts render both operands from frame bytes
+  at the comparison width.
+
+The engine switch is an internal constructor parameter on `Bytecode`
+defaulting to the old core. The slice-1 plan called for the CTFE-only mode
+constructor parameter from the first slice; it is deliberately not added
+here because the in-flight `backend-execution-mode` branch already adds an
+`ExecutionMode` parameter to every backend constructor — the enum this
+plan's modes map onto. The new core starts consulting it in slice 2 (the
+checked/unchecked opcode split) once that branch lands; in slice 1 both
+modes are the same code.
+
 ## Current Next Step
-Begin rewrite slice 1: stand up the new typed-frame core behind an internal
-engine switch on `Bytecode` (defaulting to the old core), make the
-smallest `integrals.d` behaviour pass on the new core in CTFE-only mode,
-and stand up scalar `Value` reification so the first `eval.d` block
-re-earns alongside it.
+Continue rewrite slice 1 on the new core: re-earn the remaining `eval.d`
+scalar blocks, then `logic.d`, `math.d`, and `diagnostics.d` per the slice
+roadmap, promoting one named behaviour (or one tight failure-message
+family) at a time by adding `BytecodeNewCore` to the block's `AliasSeq`.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
