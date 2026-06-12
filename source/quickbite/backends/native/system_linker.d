@@ -8,17 +8,33 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
     import quickbite.backends.runner: ExecutionMode, TestResult;
     import dmd.dmodule: Module;
 
+    private const string[] _linkFiles;
+    private const string[] _archiveImportPaths;
+
     // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends.
-    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+    // constructor uniformity across backends. The link files are prebuilt
+    // libraries (e.g. dub-built dependency archives) appended to every link;
+    // modules whose source lives under the archive import paths are defined
+    // by those libraries and must not be codegen'd again.
+    public this(
+        in ExecutionMode mode = ExecutionMode.runtime,
+        const string[] linkFiles = [],
+        const string[] archiveImportPaths = [],
+    ) @safe @nogc nothrow pure {
         assert(mode == ExecutionMode.runtime);
+        _linkFiles = linkFiles;
+        _archiveImportPaths = archiveImportPaths;
     }
 
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
-        auto library = compileToSharedLibrary(module_);
+        auto library = compileToSharedLibrary(
+            module_,
+            _linkFiles,
+            _archiveImportPaths,
+        );
         // The results copy everything they need out of the library, so it can
         // be unloaded as soon as the tests have run. Dead objects of classes
         // the fixture defines still sit in the GC heap with vptrs into this
@@ -39,7 +55,11 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
     }
 }
 
-private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
+private void* compileToSharedLibrary(
+    imported!"dmd.dmodule".Module module_,
+    in string[] linkFiles,
+    in string[] archiveImportPaths,
+) {
     import quickbite.frontend.compiler: withCompilerLock;
     import core.atomic: atomicFetchAdd;
     import std.conv: text;
@@ -61,7 +81,7 @@ private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
     const libPath = buildPath(dir, "module.so");
 
     withCompilerLock(() {
-        buildSharedLibrary(module_, dir, libPath);
+        buildSharedLibrary(module_, dir, libPath, linkFiles, archiveImportPaths);
     });
 
     return loadSharedLibrary(libPath);
@@ -77,9 +97,13 @@ private void buildSharedLibrary(
     imported!"dmd.dmodule".Module module_,
     in string dir,
     in string libPath,
+    in string[] linkFiles,
+    in string[] archiveImportPaths,
 ) {
     import quickbite.frontend.compiler: lightningRod;
     import dmd.dmodule: Module;
+    import std.algorithm.iteration: filter;
+    import std.array: array;
     import std.conv: text;
     import std.path: buildPath;
 
@@ -96,8 +120,14 @@ private void buildSharedLibrary(
 
     // Modules from user import paths are compiled into the link too: their
     // functions live in no other object, and dmd emits an imported module's
-    // function bodies only if it reached semantic3.
-    auto userImports = userImportedModules(module_);
+    // function bodies only if it reached semantic3. Archive-backed modules
+    // are the exception: a prebuilt library on the link line already defines
+    // their symbols, so they get neither the root promotion (saving their
+    // semantic3) nor an object of their own.
+    auto allUserImports = userImportedModules(module_);
+    auto userImports = allUserImports
+        .filter!(import_ => !isUnderImportPaths(import_, archiveImportPaths))
+        .array;
     prepareForCodegen(userImports);
 
     // The snippet first and the rod last, like dmd compiling several root
@@ -107,9 +137,13 @@ private void buildSharedLibrary(
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
+    // Archive-backed modules belong here despite not being codegen'd: the
+    // prebuilt libraries define their symbols.
     bool[Module] linkSet;
     foreach (linkModule; modules)
         linkSet[linkModule] = true;
+    foreach (userImport; allUserImports)
+        linkSet[userImport] = true;
 
     string[] objPaths;
     foreach (i; 0 .. modules.length)
@@ -125,7 +159,7 @@ private void buildSharedLibrary(
             pruneForeignMembers(userImport, context);
         adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
-        linkSharedLibrary(objPaths, libPath);
+        linkSharedLibrary(objPaths, libPath, linkFiles);
     });
 }
 
@@ -533,15 +567,23 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
 }
 
 private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {
+    return isUnderImportPaths(module_, defaultImportPaths);
+}
+
+private bool isUnderImportPaths(
+    imported!"dmd.dmodule".Module module_,
+    in string[] roots,
+) {
     import std.algorithm.searching: any, startsWith;
     import std.path: absolutePath, buildNormalizedPath, dirSeparator;
 
     const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
     // Match whole path components: a bare prefix check would classify a
     // sibling directory like <root>-extra/ as under <root>.
-    return defaultImportPaths.any!(
-        root => path == root || path.startsWith(root ~ dirSeparator),
-    );
+    return roots.any!((root) {
+        const normalised = root.absolutePath.buildNormalizedPath;
+        return path == normalised || path.startsWith(normalised ~ dirSeparator);
+    });
 }
 
 // The import paths registered when DMD was initialized (druntime/phobos);
@@ -649,7 +691,11 @@ private void initialiseBackend() {
     ObjcGlue_initialize;
 }
 
-private void linkSharedLibrary(in string[] objPaths, in string libPath) {
+private void linkSharedLibrary(
+    in string[] objPaths,
+    in string libPath,
+    in string[] linkFiles,
+) {
     import std.conv: text;
     import std.process: execute;
 
@@ -657,14 +703,19 @@ private void linkSharedLibrary(in string[] objPaths, in string libPath) {
     // (one GC, one DSO registry) instead of smuggling in its own copy.
     // `-z defs` turns any symbol the generated code fails to provide into a
     // link error instead of a load-time failure.
-    const result = execute([
+    auto command = [ // const fails: appended to below
         "dmd",
         "-shared",
         "-defaultlib=libphobos2.so",
         "-L=-z",
         "-L=defs",
         "-of=" ~ libPath,
-    ] ~ objPaths);
+    ] ~ objPaths;
+    // Group-wrap the prebuilt libraries: references between archives can go
+    // in either direction, and the group makes the linker rescan to fixpoint.
+    if (linkFiles.length != 0)
+        command ~= "-L=--start-group" ~ linkFiles ~ "-L=--end-group";
+    const result = execute(command);
     if (result.status != 0)
         throw new Exception(text("link failed: ", result.output));
 }

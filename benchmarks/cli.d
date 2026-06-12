@@ -1,7 +1,7 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends.runner: Runner, TestResult;
+import quickbite.backends.runner: ExecutionMode, Runner, TestResult;
 import quickbite.benchmarks: moduleDisplayName;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.backends.native: SystemLinker;
@@ -49,11 +49,15 @@ public void run(string[] args) {
 
     string[] fixtures    = args[1 .. $].dup;
     string[] dubFixtures;
+    string[] dubLinkFiles;
+    string[] dubArchiveImportPaths;
 
     if (dubPkg.length > 0) {
         auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         dubFixtures  = dubInfo.fixtures;
+        dubLinkFiles = dubInfo.linkFiles;
+        dubArchiveImportPaths = dubInfo.archiveImportPaths;
     }
 
     if (fixtures.length == 0 && dubFixtures.length == 0)
@@ -70,7 +74,13 @@ public void run(string[] args) {
 
     Runner[string] runners;
     runners["ctfe"] = new Ctfe;
-    runners["system-linker"] = new SystemLinker;
+    // Like `dub test`: dependency objects come from the dub-built archives;
+    // only the project under test is codegen'd per run.
+    runners["system-linker"] = new SystemLinker(
+        ExecutionMode.runtime,
+        dubLinkFiles,
+        dubArchiveImportPaths,
+    );
 
     if (backendNames.length == 0)
         backendNames = ["ctfe", "system-linker"];
@@ -282,6 +292,7 @@ string firstFailureMessage(in TestResult[] results) {
 struct DubInfo {
     string[] importPaths;
     string[] linkFiles;
+    string[] archiveImportPaths;
     string[] fixtures;
 }
 
@@ -302,11 +313,30 @@ DubInfo resolveDubPkg(in string name) {
     import std.array: array;
     import std.algorithm.sorting: sort;
     import std.file: dirEntries, exists, SpanMode;
-    import std.path: buildPath;
+    import std.path: absolutePath, buildNormalizedPath, buildPath, dirSeparator;
     import std.process: Config, execute;
-    import std.string: splitLines, strip;
+    import std.string: splitLines, startsWith, strip;
 
     const pkgDir = findPkgDir(name);
+
+    // dub describe reports dependency archives whether or not they have been
+    // built; build first so the link files below actually exist. dub owns
+    // their invalidation: it rebuilds on source or dub.selections.json
+    // changes.
+    auto buildResult = execute(
+        ["dub", "build", "--config=unittest"],
+        null, Config.none, size_t.max,
+        pkgDir,
+    );
+    if (buildResult.status != 0)
+        buildResult = execute(
+            ["dub", "build"],
+            null, Config.none, size_t.max,
+            pkgDir,
+        );
+    if (buildResult.status != 0)
+        throw new Exception("dub build failed for " ~ name ~ ": " ~ buildResult.output);
+
     // Prefer the unittest config so test-only deps (e.g. unit-threaded) are included.
     auto importPathResult = execute(
         ["dub", "describe", "--config=unittest", "--data=import-paths", "--data-list"],
@@ -348,9 +378,18 @@ DubInfo resolveDubPkg(in string name) {
         .filter!(l => l.length > 0)
         .array;
 
-    const rootLibrary = buildPath(pkgDir, "bin", "lib" ~ name ~ ".a");
-    if (rootLibrary.exists)
-        linkFiles = rootLibrary ~ linkFiles;
+    // Import paths under the package belong to the project under test and
+    // are compiled fresh per run; the rest belong to dependencies, whose
+    // objects come from the dub-built archives in linkFiles.
+    const pkgRoot = pkgDir.absolutePath.buildNormalizedPath;
+    bool underPackage(in string path) {
+        const normalised = path.absolutePath.buildNormalizedPath;
+        return normalised == pkgRoot
+            || normalised.startsWith(pkgRoot ~ dirSeparator);
+    }
+    auto archiveImportPaths = importPaths
+        .filter!(path => !underPackage(path))
+        .array;
 
     const testsDir = buildPath(pkgDir, "tests");
     if (!testsDir.exists)
@@ -363,7 +402,7 @@ DubInfo resolveDubPkg(in string name) {
         .array;
     fixtures.sort;
 
-    return DubInfo(importPaths, linkFiles, fixtures);
+    return DubInfo(importPaths, linkFiles, archiveImportPaths, fixtures);
 }
 
 bool isTestRunnerFile(in string basename) {
