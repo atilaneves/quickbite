@@ -27,6 +27,12 @@ private struct LoadedModuleSource {
     public string filePath;
 }
 
+private struct TranscriptCell {
+    public string source;
+    public Cell.Kind kind;
+    public string[] declaredNames;
+}
+
 private enum EvalHistoryTarget {
     local,
     module_,
@@ -34,9 +40,9 @@ private enum EvalHistoryTarget {
 
 public struct EvalSession {
     private string[] importPaths;
-    private string localTranscript;
+    private TranscriptCell[] localCells;
     private LoadedModuleSource[] loadedModuleSources;
-    private string moduleTranscript;
+    private TranscriptCell[] moduleCells;
     private uint evalCellCount;
     private uint valueCellCount;
 
@@ -68,8 +74,8 @@ public struct EvalSession {
 
         if (isModuleDeclarationCell(input)) {
             const source = evalSource(
-                moduleSource(moduleTranscript ~ input ~ "\n"),
-                localTranscript,
+                moduleSource(transcriptSource(moduleCells) ~ input ~ "\n"),
+                transcriptSource(localCells),
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -90,7 +96,7 @@ public struct EvalSession {
                 input ~ "\n";
             const source = evalSource(
                 moduleSource,
-                localTranscript ~ input ~ "\n",
+                transcriptSource(localCells) ~ input ~ "\n",
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -104,7 +110,7 @@ public struct EvalSession {
 
         const source = evalSource(
             moduleSource,
-            localTranscript ~ "return " ~ input ~ ";",
+            transcriptSource(localCells) ~ "return " ~ input ~ ";",
             evalFunctionName,
         );
         return evalCellFromSource(
@@ -125,10 +131,10 @@ public struct EvalSession {
     public void accept(in Cell cell) {
         final switch (cell.historyTarget) with (EvalHistoryTarget) {
             case local:
-                localTranscript ~= cell.history;
+                localCells ~= TranscriptCell(cell.history, cell.kind, []);
                 break;
             case module_:
-                moduleTranscript ~= cell.history;
+                moduleCells ~= TranscriptCell(cell.history, cell.kind, []);
                 break;
         }
 
@@ -150,7 +156,7 @@ public struct EvalSession {
     }
 
     private string moduleSource() const @safe pure {
-        return moduleSource(moduleTranscript);
+        return moduleSource(transcriptSource(moduleCells));
     }
 
     private string moduleSource(in string replModuleTranscript) const
@@ -174,6 +180,16 @@ private string toSource(ref const LoadedModuleSource loadedModuleSource)
     return lineDirective(loadedModuleSource.filePath) ~
         loadedModuleSource.source ~
         "\n";
+}
+
+private string transcriptSource(
+    const(TranscriptCell)[] cells,
+) @safe pure {
+    string result;
+    foreach (ref cell; cells)
+        result ~= cell.source;
+
+    return result;
 }
 
 private string replLineDirective() @safe pure {

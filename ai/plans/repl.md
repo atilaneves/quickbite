@@ -352,8 +352,11 @@ expressiveness gaps are exposed by straight-line behaviour tests.
 Strict TDD per slice: failing test → dumbest green → refactor → ask.
 Dependencies are noted; order within independent slices is flexible.
 
-1. **Structured transcript** (`Cell[]`). Pure refactor, existing suite
-   stays green; no new tests.
+1. ~~**Structured transcript** (`Cell[]`)~~ (done in
+   `repl-structured-transcript` — `EvalSession` now stores accepted
+   module/local history as `TranscriptCell[]` and joins it only when
+   synthesizing snapshot source; no new tests). Verified with `ninja bin/ut`
+   and `bin/ut --random` (seed `405471795`).
 2. **Per-cell `#line` attribution + diagnostic cleanup.** Needs approved
    attribution tests.
 3. **Last-value binding** (T4). Independent of 1 in principle, trivial
