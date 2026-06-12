@@ -34,9 +34,10 @@ Strict TDD: failing test → dumbest passing code → green suite. No refactorin
 until all tests pass. Ask for feedback after the refactoring step.
 
 Stop and wait for approval before adding or modifying any test. Promoting an
-already-existing CTFE-backed backend-matrix test to another backend is
-pre-approved; adding a new test or changing test behaviour still requires
-approval.
+already-existing backend-matrix test to another backend is pre-approved when
+the test is backed by its family's oracle: CTFE for `ct/` tests, SystemLinker
+for `rt/` tests. Every backend except Ctfe is an `rt/` promotion candidate.
+Adding a new test or changing test behaviour still requires approval.
 
 Test behaviours, not implementations.
 

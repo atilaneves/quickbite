@@ -7,10 +7,15 @@ private:
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult;
+    import quickbite.backends.runner: ExecutionMode;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     public alias eval = Evaluator.eval;
+
+    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+        super(mode);
+    }
 
     public override EvalResult eval(FuncDeclaration function_) {
         Walker walker;

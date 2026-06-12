@@ -21,5 +21,12 @@ int main(string[] args) {
         "ut.backends.runner.ct.cerealed",
         "ut.backends.runner.ct.pollution",
         "ut.backends.runner.rt.cstdlib",
+        "ut.backends.runner.rt.expressions",
+        "ut.backends.runner.rt.arrays",
+        "ut.backends.runner.rt.control_flow",
+        "ut.backends.runner.rt.diagnostics",
+        "ut.backends.runner.rt.exceptions",
+        "ut.backends.runner.rt.logic",
+        "ut.backends.runner.rt.cerealed",
     );
 }
