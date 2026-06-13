@@ -26,7 +26,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
         final switch (instruction.op) with (Op) {
             case loadConstant:
                 const ubyte[ulong.sizeof] bytes =
-                    littleEndianBytes(program.constants[instruction.b]);
+                    scalarBytes(program.constants[instruction.b]);
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
                 ] = bytes[0 .. instruction.c];
@@ -43,8 +43,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend1to4:
-                const ubyte[int.sizeof] signWidened = littleEndianBytes(
-                    cast(int) littleEndianScalar!byte(stack, base + instruction.b),
+                const ubyte[int.sizeof] signWidened = scalarBytes(
+                    cast(int) scalarValue!byte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = signWidened;
@@ -52,8 +52,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case zeroExtend1to4:
-                const ubyte[int.sizeof] zeroWidened = littleEndianBytes(
-                    cast(int) littleEndianScalar!ubyte(stack, base + instruction.b),
+                const ubyte[int.sizeof] zeroWidened = scalarBytes(
+                    cast(int) scalarValue!ubyte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = zeroWidened;
@@ -61,8 +61,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend4to8:
-                const ubyte[long.sizeof] extended = littleEndianBytes(
-                    cast(long) littleEndianScalar!int(stack, base + instruction.b),
+                const ubyte[long.sizeof] extended = scalarBytes(
+                    cast(long) scalarValue!int(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = extended;
@@ -70,9 +70,9 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case addInt4:
-                const ubyte[int.sizeof] sum = littleEndianBytes(
-                    littleEndianScalar!int(stack, base + instruction.b) +
-                    littleEndianScalar!int(stack, base + instruction.c),
+                const ubyte[int.sizeof] sum = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) +
+                    scalarValue!int(stack, base + instruction.c),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = sum;
@@ -225,7 +225,7 @@ private string operandText(
     return text(signed);
 }
 
-private ubyte[T.sizeof] littleEndianBytes(T)(in T value)
+private ubyte[T.sizeof] scalarBytes(T)(in T value)
     @safe @nogc nothrow pure
 {
     ubyte[T.sizeof] bytes;
@@ -236,7 +236,7 @@ private ubyte[T.sizeof] littleEndianBytes(T)(in T value)
     return bytes;
 }
 
-private T littleEndianScalar(T)(
+private T scalarValue(T)(
     in ubyte[] stack,
     in size_t offset,
 ) @safe @nogc nothrow pure {
