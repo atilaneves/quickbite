@@ -72,8 +72,8 @@ Under the redefinition above, every current `rt/` module except
 Ctfe-divergence exclusion rule per block:
 
 - `arrays.d`, `control_flow.d` ✓ (done), `expressions.d`,
-  `exceptions.d`, `logic.d` ✓ (done), `cerealed.d`, `diagnostics.d`,
-  `archive.d` → `ct/`
+  `exceptions.d`, `logic.d` ✓ (done), `cerealed.d`,
+  `diagnostics.d` ✓ (done), `archive.d` → `ct/`
   (merging into the existing `ct/` file of the same name where one exists).
 - `cstdlib.d` stays in `rt/`.
 
