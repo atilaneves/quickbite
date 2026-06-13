@@ -221,3 +221,14 @@
 - When promoting backend matrix tests in files with repeated identical
   `AliasSeq` lines, patch with nearby test-name context and verify `bin/ut -l`
   shows the intended new backend instance before running the test.
+
+- An in-process ORC/LLJIT load of a dmd `.o` is not equivalent to dlopen: dmd
+  emits weak (COMDAT) druntime/phobos template instances whose bodies can be
+  degenerate stubs, and ORC binds calls to the object's own weak definition
+  (the process-symbol generator only fills *unresolved* symbols), whereas
+  dlopen gets ELF interposition to libphobos2's correct copy. Replicate
+  interposition: before `AddObjectFile`, define every object symbol the host
+  process exports (`dlsym(RTLD_DEFAULT)`) as a weak absolute symbol. Don't
+  reach for `_d_dso_registry`/`.init_array` — the LLVM C API can't run
+  initializers and the shared-druntime registry path crashes on JIT mmap'd
+  code.

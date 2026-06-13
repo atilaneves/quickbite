@@ -42,11 +42,16 @@ else (symbol resolution, calling the function) is routine; this is the
 risk. The proof bar is built to fail loudly here rather than ship a
 backend that silently can't catch assertion failures.
 
-What we expect *not* to need for the POC, and must confirm we don't:
-`ModuleInfo`/module-ctor registration and GC scan-range registration. A
-unittest that only does `assert(...)` runs no module ctor and roots no GC
-memory in its own data segment, so a no-DSO-registry load should suffice.
-A fixture that GC-allocates is the next probe (deferred — see Step 3).
+What we expected *not* to need for the POC: `ModuleInfo`/module-ctor
+registration and GC scan-range registration via `_d_dso_registry`. Confirmed
+in Step 1 — a unittest that only `assert`s (or even one that GC-allocates and
+collects) runs no module ctor and roots no GC memory in its own data segment,
+so a no-DSO-registry load suffices. The allocation that *does* happen
+(formatting the failing assert) works once weak-symbol interposition is
+replicated; see Step 1 for the full root-cause analysis. Running
+`_d_dso_registry` is moreover infeasible here (no LLVM 22 C API to run
+`.init_array`; the shared-druntime path would crash on JIT mmap'd code) — see
+Step 1.
 
 ## Why object production needs no new work
 
@@ -132,25 +137,97 @@ SystemLinker matrix stays green under `--random` and both historical seeds
 
 ### Step 1 — minimal end-to-end proof (the gate)
 
-Stand up `native/llvm_orc.d` (bindings + `pragma(lib)`/`libs`) and
-`native/llvm_jit.d` (`LLVMJit : GroupedRunner`, `this(ExecutionMode)`).
-`runTests`:
+✅ DONE. `native/llvm_orc.d` (hand-written ORC-V2 / Core / Object bindings +
+`pragma(lib)`/`libs`) and `native/llvm_jit.d` (`LLVMJit : GroupedRunner`,
+`this(ExecutionMode)`) are stood up. `runTests`:
 
-1. call `native/codegen.d` to get object paths (child emits, no link);
-2. parent: create LLJIT, add process-symbol generator, `AddObjectFile`
-   each `.o` (rod, snippet, imports) into the main `JITDylib`;
-3. per unittest: `lookup(mangleExact(decl))`, cast to `void function()`,
-   call inside `try/catch (Throwable)` — identical result handling to
+1. calls `native/codegen.d` to get object paths (child emits, no link);
+2. parent: creates LLJIT (null builder → host-default JITLink
+   `ObjectLinkingLayer`), adds a process-symbol generator, and for each `.o`
+   (rod, snippet, imports) pre-seeds host symbols (see below) then
+   `AddObjectFile`s it into the main `JITDylib`;
+3. per unittest: `lookup(mangleExact(decl))`, casts to `void function()`,
+   calls inside `try/catch (Throwable)` — identical result handling to
    SystemLinker's `runUnitTest`.
 
-Prove on two hand-written fixtures (not yet the matrix): one passing, one
-whose `assert(a == b)` fails. **Pass criterion: the failing fixture's
-`Throwable` is caught and its message byte-matches SystemLinker's** (this
-is the eh_frame/unwinding gate). **Fallback: if unwinding through JIT'd
-frames does not work, stop and determine whether forcing the JITLink
-`ObjectLinkingLayer` + explicit `EHFrameRegistrationPlugin` fixes it
-before writing any more — a backend that can't catch assert failures
-cannot enter the matrix, exactly as `DmdCodegenRam` could not.**
+**Gate met.** Three proofs, all green under `./bin/ut @LLVMJit`:
+
+- `ehFrameProofNonAllocatingAssert`: a JIT'd `assert(0)` (static-string
+  message, no allocation) is caught and byte-matches SystemLinker.
+- `failingFixtureMessageMatchesSystemLinker`: `assert(twice(n)==41)`
+  (runtime ints) → caught `Throwable`, message `"42 != 41"`, byte-identical
+  to SystemLinker's (whose formatting allocates).
+- `passingFixtureRuns`: a passing fixture reports PASS.
+
+Full suite green under `--random` (1588 tests, 0 failed) and both historical
+seeds `2828407573` / `3516581215`.
+
+#### Open questions, answered
+
+- **JITLink default + automatic eh_frame.** Yes: a null builder
+  (`LLVMOrcCreateLLJIT(&jit, null)`) gives the JITLink `ObjectLinkingLayer`
+  on this host, whose `EHFrameRegistrationPlugin` calls `__register_frame`
+  automatically. No `LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator` was
+  needed. Proof: a non-allocating JIT'd `assert(0)` unwinds into the host
+  `catch (Throwable)` and byte-matches SystemLinker.
+- **Bare `libLLVM.so`.** Present (`/usr/lib/libLLVM.so` → `libLLVM.so.22.1`,
+  LLVM 22). The plain `-lLLVM` from `dub.sdl`'s `libs "LLVM"` resolves it.
+
+#### The GC/allocation defect and its real root cause (pulled into Step 1)
+
+The user pulled the GC/DSO-registration work forward from Step 3 because the
+failing-assert gate itself allocates (formatting runtime ints via
+`_d_assert_fail` → `idup`). Initial symptom: every GC allocation from JIT'd
+code returned `"Memory allocation failed"`.
+
+Investigation (readelf/objdump of the emitted objects + gdb of the running
+JIT) showed the cause was **not** missing DSO/GC-range registration — the
+host GC was always functional (host stacks are scanned normally; a direct
+JIT call to host `gc_malloc` succeeds). The cause was **weak-symbol
+shadowing**: dmd emits many druntime/phobos template instances and TypeInfos
+into the rod object as weak (COMDAT) definitions, and some bodies are
+*degenerate stubs* — e.g. `core.checkedint.mulu` in the rod is a 10-byte
+`xor eax,eax; … ret` that returns 0, so `__arrayAlloc`'s size computation
+collapses to 0 and the array path falls into `onOutOfMemoryError`. The real
+bodies live in the host's `libphobos2.so`.
+
+SystemLinker never hits this: it `dmd -shared` + `dlopen`s, and ELF symbol
+interposition binds those in-`.so` calls to libphobos2's correct copies
+(the host is earlier in the global symbol scope). ORC has no interposition —
+a symbol the added object defines (even weakly) is "resolved" within the
+`JITDylib`, so the process-symbol generator (which only fills *unresolved*
+symbols) never overrides it and the broken stub runs.
+
+**Mechanism implemented (strategy: replicate ELF interposition, not run
+`.init_array`).** Before `AddObjectFile`, `defineHostSymbols` parses the
+object via the LLVM Object C API (`LLVMCreateBinary` +
+`LLVMObjectFileCopySymbolIterator`/`LLVMGetSymbolName`), and for every symbol
+name the running process already exports (`dlsym(RTLD_DEFAULT, name)` hits),
+defines the host's address as a **weak absolute symbol**
+(`LLVMOrcAbsoluteSymbols` + `LLVMOrcJITDylibDefine`,
+flags `Exported|Callable|Weak`). ORC then discards the object's weak
+definition in favour of ours; a symbol unique to the object (the unittest
+function, the module's own `ModuleInfo`) is not in the host, so `dlsym`
+misses it and the object keeps providing it. Weak flags mean a strong object
+definition, if any, still wins — exactly ELF semantics. No hardcoded symbol
+list: the set is derived mechanically from each object's symtab ∩ the
+process's exports.
+
+**Why this is sufficient (no `_d_dso_registry` needed for the POC, and why
+it can't be run anyway).** The LLVM 22 C API has **no** entry point to run
+an added image's `.init_array` / install an ORC platform (no
+`LLVMOrcLLJITRunConstructors`/`*Initialize`/`*Platform*`); running it is
+C++-only. And running dmd's emitted DSO ctor would crash regardless: with
+shared druntime the `version(Shared)` `_d_dso_registry` path calls
+`findForAddress`/`handleForAddr`/`getDependencies`, which use
+`dl_iterate_phdr`/`dladdr`/`dlopen(RTLD_NOLOAD)` to locate the image in the
+dynamic loader's link map — JIT'd code lives in anonymous `mmap`, has no
+link-map entry, and would fail those `safeAssert`s. For the gate fixtures
+none of that is needed: the host GC works, JIT'd frames unwind, and the
+fixtures root no GC pointers in their own data segment and run no module
+ctor. Verified beyond the gate with a throwaway probe (not committed): JIT'd
+code does `new int[](5)`, fills it, runs `GC.collect`, and reads back the
+correct sum — allocation and a mid-test collection both behave.
 
 ### Step 2 — promote into the matrix
 
@@ -160,15 +237,21 @@ Add `LLVMJit` to `tests/ut/backends/package.d` exports and to the
 opt-out-able like SystemLinker. Gate: those blocks green solo, then under
 repeated `--random`, then both historical seeds.
 
-### Step 3 — measure, and probe GC
+### Step 3 — measure (GC registration already resolved in Step 1)
 
 Time `LLVMJit` vs `SystemLinker` on the same fixtures (reuse the bench
 harness / `ci.sh` bench row). Report median per-test latency; the POC is
-justified only if it beats SystemLinker. Then add a fixture that
-GC-allocates to find out whether missing DSO/GC-range registration bites;
-if it does, that becomes the exposing test for a future
-druntime-registration step (out of POC scope, noted here so it is adopted
-on evidence, not speculatively).
+justified only if it beats SystemLinker.
+
+The GC-registration question this step originally deferred is settled in
+Step 1: allocation from JIT'd code works once weak-symbol interposition is
+replicated, and `_d_dso_registry`-style registration is neither needed (the
+host GC is functional and the fixtures root nothing in JIT data) nor
+feasible via the LLVM 22 C API. The only remaining GC work is a confirmatory
+**GC-stress probe** as a promoted matrix test (allocate, collect, read back),
+beyond the throwaway probe already run by hand in Step 1. Adopt it on
+evidence if a future allocating fixture in the matrix misbehaves; otherwise
+no further registration mechanism is warranted.
 
 ## Build wiring
 
