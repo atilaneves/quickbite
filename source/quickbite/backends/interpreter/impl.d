@@ -43,6 +43,7 @@ private struct Walker {
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
+    private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
     private size_t allocationCount;
     private Value result;
@@ -50,6 +51,7 @@ private struct Walker {
     private FuncDeclaration currentFunction;
     private Value thisValue;
     private bool hasThis;
+    private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
@@ -87,6 +89,11 @@ private struct Walker {
 
         if (auto expression = statement.isExpStatement) {
             result = runExpression(expression.exp);
+            return;
+        }
+
+        if (auto dtor = statement.isDtorExpStatement) {
+            result = runExpression(dtor.exp);
             return;
         }
 
@@ -140,6 +147,11 @@ private struct Walker {
             return;
         }
 
+        if (auto with_ = statement.isWithStatement) {
+            runWithStatement(with_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             import quickbite.backends.interpreter.messages: thrownExceptionMessage;
 
@@ -148,6 +160,28 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    // For `with(expr)` where expr is a struct lvalue, DMD semantic creates a
+    // `wthis` pointer-to-struct temporary and rewrites field accesses in the
+    // body to go through `*wthis`.  We seed locals with a pointer value wrapping
+    // the struct, run the body (mutations flow through writeLocation's PtrExp
+    // arm back into locals[wthis]), then write the final value back to the
+    // original expression.  For `with(EnumType)`, wthis is null; DMD resolves
+    // enum member references in the body at semantic time, so running the body
+    // as-is suffices.
+    private void runWithStatement(
+        imported!"dmd.statement".WithStatement with_,
+    ) {
+        if (with_.wthis !is null) {
+            const structValue = runExpression(with_.exp);
+            locals[with_.wthis] = Value.pointerValue(structValue);
+            runStatement(with_._body);
+            if (auto updated = with_.wthis in locals)
+                writeLocation(with_.exp, updated.pointerTarget);
+        } else {
+            runStatement(with_._body);
+        }
     }
 
     // DMD lowers `foreach` over arrays to a `for` loop; `break` and
@@ -919,12 +953,13 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.locals = datasegLocals;
+        child.locals = function_.isNested ? locals.dup : datasegLocals;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
         writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueStructArguments(function_, argumentExpressions, child);
         return child.result;
     }
 
@@ -939,14 +974,41 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.thisValue = receiver;
+        child.locals = locals.dup;
+        if (auto var = receiverExpression.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (auto aliases = variable in structArrayFieldAliases) {
+                    child.thisStructArrayFieldAliases = *aliases;
+                    foreach (_, sourceVariable; aliases.sources)
+                        if (auto value = sourceVariable in locals)
+                            child.locals[sourceVariable] = *value;
+                }
+        // For constructor calls, DMD may blit the target variable to zero
+        // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
+        // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
+        // the struct's proper default in that case so the ctor body can write
+        // fields.  When the receiver is already a valid struct (e.g.
+        // MapResult created from a StructLiteralExp with elements), use it
+        // as-is to preserve any hidden context fields.
+        if (function_.isCtorDeclaration !is null && !receiver.isStruct) {
+            import dmd.dstruct: StructDeclaration;
+
+            auto structDecl = function_.parent is null
+                ? null
+                : function_.parent.isStructDeclaration;
+            child.thisValue = structDecl !is null
+                ? defaultValue(structDecl.type)
+                : receiver;
+        } else {
+            child.thisValue = receiver;
+        }
         child.hasThis = true;
-        child.locals = datasegLocals;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
         writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackThisStructArrayFieldAliases(child);
         writeBackThis(receiverExpression, child.thisValue);
 
         if (function_.isCtorDeclaration !is null)
@@ -970,6 +1032,13 @@ private struct Walker {
         }
 
         return result;
+    }
+
+    private void writeBackThisStructArrayFieldAliases(ref Walker child) {
+        foreach (_, sourceVariable; child.thisStructArrayFieldAliases.sources) {
+            if (auto value = sourceVariable in child.locals)
+                locals[sourceVariable] = *value;
+        }
     }
 
     private void writeBackThis(
@@ -1034,6 +1103,68 @@ private struct Walker {
 
             if (auto value = parameter in child.locals)
                 writeLocation(argument, *value);
+        }
+    }
+
+    // D slices passed inside a by-value struct share their backing array with
+    // the caller.  Write back element mutations (up to the original length)
+    // so that element writes inside the callee are visible to the caller,
+    // while descriptor changes (append, reassignment) do not leak.
+    private void writeBackByValueStructArguments(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        if (function_.parameters is null)
+            return;
+
+        foreach (index, parameter; *function_.parameters) {
+            if (parameter.isReference)
+                continue;
+
+            if (index >= argumentExpressions.length)
+                continue;
+
+            auto argument = argumentExpressions[index];
+            if (argument is null || !isWritableLocation(argument))
+                continue;
+
+            auto finalParam = parameter in child.locals;
+            if (finalParam is null || !finalParam.isStruct)
+                continue;
+
+            const original = runExpression(argument);
+            if (!original.isStruct)
+                continue;
+
+            const fieldCount = original.structFieldCount;
+            if (finalParam.structFieldCount != fieldCount)
+                continue;
+
+            Value updatedStruct = original;
+            bool anyChange;
+            foreach (fieldIndex; 0 .. fieldCount) {
+                const origField = original.structFieldAt(fieldIndex);
+                const finalField = finalParam.structFieldAt(fieldIndex);
+                if (!origField.isArray || !finalField.isArray)
+                    continue;
+
+                const origLen = origField.length;
+                const finalLen = finalField.length;
+                const copyLen = origLen < finalLen ? origLen : finalLen;
+                if (copyLen == 0)
+                    continue;
+
+                Value updatedField = origField;
+                foreach (elemIdx; 0 .. copyLen)
+                    updatedField = updatedField.withArrayElement(elemIdx, finalField[elemIdx]);
+
+                updatedStruct = updatedStruct.withStructField(fieldIndex, updatedField);
+                anyChange = true;
+            }
+
+            if (anyChange)
+                writeLocation(argument, updatedStruct);
         }
     }
 
@@ -1121,6 +1252,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
             return;
         }
 
@@ -1137,10 +1269,55 @@ private struct Walker {
             return;
         }
 
+        if (auto index = target.isIndexExp) {
+            writeIndexLocation(index, value);
+            return;
+        }
+
+        // `*ptr = value`: update the pointer variable so its target holds value.
+        if (auto ptr = target.isPtrExp) {
+            writeLocation(ptr.e1, runExpression(ptr.e1).withPointerTarget(value));
+            return;
+        }
+
         import std.conv: text;
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    private void writeIndexLocation(
+        imported!"dmd.expression".IndexExp index,
+        in Value value,
+    ) {
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+
+        if (auto dot = index.e1.isDotVarExp) {
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const updatedArray = receiver.structFieldAt(fieldIndex)
+                .withArrayElement(arrayIndex, value);
+            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            if (dot.e1.isThisExp !is null)
+                writeThroughThisStructArrayFieldAlias(fieldIndex, arrayIndex, value);
+            return;
+        }
+
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        locals[variable] = current.withArrayElement(arrayIndex, value);
+        writeThroughSliceAlias(variable, arrayIndex, value);
+        uninitializedLocals.remove(variable);
     }
 
     private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
@@ -1170,6 +1347,16 @@ private struct Walker {
 
         if (auto outer = index.e1.isIndexExp)
             return runNestedIndexAssignExpression(outer, index, rhs);
+
+        if (auto dot = index.e1.isDotVarExp) {
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const updatedArray = receiver.structFieldAt(fieldIndex).withArrayElement(arrayIndex, value);
+            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            return value;
+        }
 
         auto var = index.e1.isVarExp;
         if (var is null)
@@ -1402,6 +1589,14 @@ private struct Walker {
     private Value runArrayAppendAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
+        if (auto dot = assign.e1.isDotVarExp) {
+            const appended = runExpression(assign.e1).withAppendedArrayElement(
+                runExpression(assign.e2),
+            );
+            writeLocation(assign.e1, appended);
+            return appended;
+        }
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter array append target.");
@@ -1477,10 +1672,33 @@ private struct Walker {
     ) {
         Value[] fields;
         if (literal.elements !is null)
-            foreach (element; *literal.elements)
-                fields ~= element is null ? Value.void_ : runExpression(element);
+            foreach (index, element; *literal.elements)
+                fields ~= element is null
+                    ? Value.void_
+                    : structLiteralFieldValue(literal, index, runExpression(element));
 
         return Value.structValue(structLiteralName(literal), fields);
+    }
+
+    private Value structLiteralFieldValue(
+        imported!"dmd.expression".StructLiteralExp literal,
+        in size_t index,
+        in Value value,
+    ) {
+        auto field = structLiteralField(literal, index);
+        if (field is null)
+            return value;
+
+        auto staticArray = field.type is null ? null : field.type.toBasetype.isTypeSArray;
+        if (staticArray is null || value.isArray)
+            return value;
+
+        const length = cast(size_t) staticArray.dim.toInteger;
+        Value[] elements;
+        foreach (_; 0 .. length)
+            elements ~= value;
+
+        return Value.arrayValue(elements);
     }
 
     // duplicate keys keep the last value, as in compiled D
@@ -1580,13 +1798,20 @@ private struct Walker {
     }
 
     private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
         import std.conv: text;
+
+        if (new_.placement !is null || new_.thisexp !is null)
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        if (
+            isPointerType(new_.type) &&
+            isStructType(new_.type.toBasetype.nextOf)
+        )
+            return runNewStructPointerExpression(new_);
 
         if (
             !isDynamicArrayType(new_.type) ||
-            new_.placement !is null ||
-            new_.thisexp !is null ||
             new_.member !is null ||
             new_.arguments is null ||
             new_.arguments.length == 0
@@ -1598,6 +1823,53 @@ private struct Walker {
             lengths ~= cast(size_t) runExpression(argument).asLong;
 
         return newArrayValue(new_.type, lengths);
+    }
+
+    // Handles `new T(args)` where T is a struct type, returning a `T*` value.
+    // When new_.member is null (no user-defined constructor) the arguments are
+    // used as positional aggregate field initialisers.  When new_.member is a
+    // constructor the constructor body is executed with a default-initialised
+    // receiver and the post-construction `this` value is used.
+    private Value runNewStructPointerExpression(
+        imported!"dmd.expression".NewExp new_,
+    ) {
+        import std.conv: text;
+
+        auto targetType = new_.type.toBasetype.nextOf;
+        Value structVal = defaultValue(targetType);
+
+        if (new_.member !is null) {
+            // User-defined constructor: run it and capture the resulting this.
+            Value[] arguments;
+            if (new_.arguments !is null)
+                foreach (argument; *new_.arguments)
+                    arguments ~= runExpression(argument);
+
+            Walker child;
+            child.runningCalledFunction = true;
+            child.currentFunction = new_.member;
+            child.result = Value(false);
+            child.thisValue = structVal;
+            child.hasThis = true;
+            child.bindFunctionParameters(new_.member, arguments);
+            child.runStatement(new_.member.fbody);
+            structVal = child.thisValue;
+        } else if (new_.arguments !is null) {
+            // Aggregate initialiser: assign arguments positionally to fields.
+            auto structType = targetType.isTypeStruct;
+            foreach (index, argument; *new_.arguments) {
+                if (index >= structType.sym.fields.length)
+                    throw new Exception(text(
+                        "Unsupported eval expression: ", new_.op,
+                    ));
+                structVal = structVal.withStructField(
+                    index,
+                    runExpression(argument),
+                );
+            }
+        }
+
+        return Value.pointerValue(structVal);
     }
 
     private Value newArrayValue(
@@ -1673,6 +1945,23 @@ private struct Walker {
         uninitializedLocals.remove(alias_.source);
     }
 
+    private void writeThroughThisStructArrayFieldAlias(
+        in size_t fieldIndex,
+        in size_t index,
+        in Value value,
+    ) {
+        auto sourceVariable = fieldIndex in thisStructArrayFieldAliases.sources;
+        if (sourceVariable is null)
+            return;
+
+        auto source = *sourceVariable in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter struct field alias target.");
+
+        locals[*sourceVariable] = source.withArrayElement(index, value);
+        uninitializedLocals.remove(*sourceVariable);
+    }
+
     private Value runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -1688,6 +1977,7 @@ private struct Walker {
         if (variable._init is null || variable._init.isExpInitializer is null) {
             const value = defaultValue(variable);
             locals[variable] = value;
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1697,7 +1987,7 @@ private struct Walker {
         else if (auto construct = initializer.isConstructExp)
             initializer = construct.e2;
         else if (auto blit = initializer.isBlitExp) {
-            import quickbite.frontend.dmd.types: isStaticArrayType;
+            import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
 
             // DMD default-initialises static array locals with `variable[] = 0`
             if (isStaticArrayType(variable.type) && blit.e1.isSliceExp !is null) {
@@ -1705,6 +1995,17 @@ private struct Walker {
                 locals[variable] = value;
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
+                structArrayFieldAliases.remove(variable);
+                return value;
+            }
+
+            // DMD default-initialises struct locals with `variable = 0`
+            if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
+                const value = defaultValue(variable);
+                locals[variable] = value;
+                uninitializedLocals.remove(variable);
+                sliceAliases.remove(variable);
+                structArrayFieldAliases.remove(variable);
                 return value;
             }
 
@@ -1723,6 +2024,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1732,6 +2034,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             recordSliceAlias(variable, slice, lower);
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1739,8 +2042,46 @@ private struct Walker {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
+        recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private void recordStructArrayFieldAliases(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto literal = initializer.isStructLiteralExp;
+        if (literal is null || literal.elements is null) {
+            structArrayFieldAliases.remove(variable);
+            return;
+        }
+
+        StructArrayFieldAliases aliases;
+        foreach (index, element; *literal.elements) {
+            if (element is null)
+                continue;
+
+            auto var = element.isVarExp;
+            if (var is null)
+                continue;
+
+            auto source = var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+
+            if (!isDynamicArrayType(source.type))
+                continue;
+
+            aliases.sources[index] = source;
+        }
+
+        if (aliases.sources.length == 0)
+            structArrayFieldAliases.remove(variable);
+        else
+            structArrayFieldAliases[variable] = aliases;
     }
 
     private void recordAssocArraySlotAlias(
@@ -1783,18 +2124,24 @@ private struct Walker {
         if (post.op != EXP.plusPlus)
             throw new Exception("Unsupported eval post expression.");
 
-        auto var = post.e1.isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported eval post expression target.");
+        if (auto var = post.e1.isVarExp) {
+            auto variable = var.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception("Unsupported eval post expression target.");
 
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported eval post expression target.");
+            auto current = variable in locals;
+            const oldValue = current is null ? defaultValue(variable) : *current;
+            locals[variable] = oldValue + Value(cast(int) 1);
+            return oldValue;
+        }
 
-        auto current = variable in locals;
-        const oldValue = current is null ? defaultValue(variable) : *current;
-        locals[variable] = oldValue + Value(cast(int) 1);
-        return oldValue;
+        if (post.e1.isDotVarExp !is null) {
+            const oldValue = runExpression(post.e1);
+            writeLocation(post.e1, oldValue + Value(cast(int) 1));
+            return oldValue;
+        }
+
+        throw new Exception("Unsupported eval post expression target.");
     }
 
     private Value runAddAssignExpression(
@@ -1824,6 +2171,17 @@ private string structLiteralName(
 }
 
 
+private imported!"dmd.declaration".VarDeclaration structLiteralField(
+    imported!"dmd.expression".StructLiteralExp literal,
+    in size_t index,
+) @safe {
+    if (literal.sd is null || index >= literal.sd.fields.length)
+        return null;
+
+    return literal.sd.fields[index];
+}
+
+
 // @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
 // string owned by the AST node, which we copy with `idup` before returning,
 // so no unsafe pointer escapes.
@@ -1837,6 +2195,11 @@ private string expressionChars(imported!"dmd.expression".Expression expression) 
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t lower;
+}
+
+
+private struct StructArrayFieldAliases {
+    public imported!"dmd.declaration".VarDeclaration[size_t] sources;
 }
 
 

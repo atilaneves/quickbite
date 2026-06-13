@@ -39,24 +39,36 @@ instead of codegen'ing dependency modules per run, matching `dub test`.
   loads under `-z defs`). `dub describe --data=linker-files` lists only
   dependency archives, never the root package's own.
 
-## Next: make --dub actually measure (blocks everything below)
-
-`bin/bench --dub=<pkg>` currently skips every fixture that has a
-`module` declaration: the per-iteration frontend measurement
+Bench fixture-skip fix (2026-06-12): module-declared fixtures used to
+be dropped entirely — the per-iteration frontend measurement
 (`parseModuleUncached`) re-parses the fixture, which collides with the
-first parse's entry in DMD's package symbol table. DMD emits "conflicts
-with another module" and hands back the old module (dmodule.d, failed
-`dst.insert`; there is no eviction or overwrite in the load path).
-`prepareFixtureRuns` wraps parse and measurement in one try/catch, so
-the whole fixture drops out and the post-parse sections never run.
-Real packages' fixtures are module-declared, so --dub measures nothing.
+first parse's entry in DMD's package symbol table (dmodule.d, failed
+`dst.insert`; no eviction in the load path), and the single try/catch
+in `prepareFixtureRuns` took the whole fixture with it.
+`prepareFixtureRuns` now separates the one-time parse failure (still
+skips the fixture) from the frontend-measure failure, which only marks
+the run `frontendUnmeasurable`; the frontend row prints "unmeasurable
+(module declaration)" and `runTests` proceeds on the cached module.
+Covered by the `moduleDeclarationFixtureIsNotSkipped` bench-behaviour
+test.
 
-Fix: separate the frontend-measure failure from the parse failure so
-`runTests` timings still happen on the cached module; report the
-frontend row as unmeasurable for module-declared fixtures instead of
-dropping the fixture. Needs a bench-behaviour test (approval gate).
+Dub fixture-group link fix (2026-06-12): `--dub cerealed -b
+system-linker` now links and measures the whole cerealed test suite
+instead of reporting "skipping cerealed system-linker".
 
-## Then, in order
+- `SystemLinker` has a multi-module `runTests` path so a dub package's
+  fixture modules are codegen'd into one shared library for the timed
+  group run.
+- Archive-backed and default-path imports still avoid normal dependency
+  codegen. For dub links only, their member lists are pruned to
+  template/TypeInfo members before object emission, giving DMD a place
+  to emit template instances borrowed by the current fixture group while
+  leaving ordinary dependency declarations to the dub-built archives.
+- Verified: `bin/bench --dub cerealed -b system-linker` reports a
+  `cerealed system-linker` row (median 975.745 ms on the verification
+  run), not a skip.
+
+## Next, in order
 
 1. Benchmark random dub projects: make `--dub` robust across package
    layouts and grow the corpus. Known-good simple entry: cerealed

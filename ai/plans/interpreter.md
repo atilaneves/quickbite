@@ -1202,6 +1202,69 @@ required:
   them): reads through a pointer do not see later writes to the array
   local, and pointer writes (`*p = x`) remain unsupported diagnostics.
 
+### CT Structs Promotion
+
+`tests/ut/backends/runner/ct/structs.d` was promoted in branch
+`interpreter-ct-structs`. A bulk probe promoted all 38 backend-matrix
+blocks; one was already green and kept immediately, while the remaining
+passing promotions were implemented as per-category slices. The full
+suite is green with `bin/ut --random`.
+
+Kept from the probe (already green on `Interpreter`, no production
+change): `struct.literalDefaultsMissingFieldToZero`. This was a bulk
+promotion and has not had individual mutation-based signal verification.
+
+The implemented categories were:
+
+- Struct-typed local default initialization: DMD lowers `Value v;` to
+  a `BlitExp` assigning `0`; `defaultValue` now handles `Tstruct`, and
+  the interpreter materializes struct defaults instead of storing a
+  scalar zero.
+- Dynamic array fields default to empty arrays: `defaultValue` handles
+  `Tarray` so struct fields like `ubyte[] bytes;` start as `[]`.
+- Struct field post-increment: `DotVarExp` post-increment targets use
+  the normal lvalue writer to update the receiver field.
+- Constructor calls on default-initialized receivers: constructor member
+  walkers seed `this` from the struct default when DMD has blitted the
+  receiver to scalar zero before the call.
+- Dynamic array field append and indexed writes: `DotVarExp` array
+  append and `IndexExp`-on-`DotVarExp` writes update the containing
+  struct and write it back. By-value struct arguments copy array-field
+  element writes back up to the original slice length, matching D slice
+  descriptor semantics for the promoted tests.
+- `new T(...)` for struct pointers: struct allocation builds a struct
+  value, runs positional initialization or the user constructor, and
+  wraps the result in `Value.pointerValue`; `*ptr = value` writes update
+  the pointer target.
+- `with`: `WithStatement` seeds DMD's `wthis` temporary for struct
+  receivers and writes the pointer target back to the original receiver
+  after the body. Enum `with` bodies run directly because semantic
+  analysis has already resolved the member references.
+- Static-array struct literal fields from scalar initializers: when a
+  struct literal field is a static array and DMD provides a scalar
+  initializer, the interpreter repeats that value to the static length.
+- Nested struct methods reading captured locals: member-function walkers
+  inherit the caller locals so nested struct methods can read enclosing
+  locals captured through semantic lowering. Captured-local mutation is
+  not implemented by this slice.
+- Narrow destructor expressions: `DtorExpStatement` evaluates DMD's
+  synthesized destructor expression. The promoted fixture also needed
+  narrow dynamic-array field alias tracking for `S(sink)` so
+  `this.sink[index] += value` in the destructor updates the original
+  local array backing value. This is not general lifetime support.
+
+Deferred:
+
+- `with.structLocalGotoRestartsInsideBody`: the first red failure is
+  `Unsupported eval statement: Goto`. The interpreter has no
+  `GotoStatement` or `LabelStatement` machinery yet, and the general
+  goto coverage in `ct/control_flow.d` is still outside `Interpreter`.
+- `struct.staticArrayCopyRunsPostblitAndDtors`: a narrow `TryFinally`
+  handler reaches the next missing piece, `symbolOffset`, and the test
+  then needs location-backed pointers stored in struct fields so
+  postblit/destructor calls can mutate original locals. This is broader
+  pointer/write-back semantics, not a small CT structs slice.
+
 ### Implementation Review Notes
 
 **Finding 4 — `StringExp` handled in `EvalFunctionWalker` but absent from

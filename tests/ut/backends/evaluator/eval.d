@@ -42,6 +42,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+    @("integerLikeBinaryOperands." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("cast(char) 65 + 1").should == Value(66);
+        newBackend!backend.eval("true + 1").should == Value(2);
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("arithmetic." ~ backend.stringof)
     unittest {
