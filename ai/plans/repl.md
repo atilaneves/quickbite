@@ -386,10 +386,12 @@ Dependencies are noted; order within independent slices is flexible.
    failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
    tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split
    is deferred and is not a prerequisite for backend-owned sessions.
-7. **Backend-owned sessions** (depends on 6): introduce
-   `createReplSession`/`ReplSession`; pure backends wrap today's replay
-   behaviour behind it (no behaviour change, suite stays green); frontend
-   moves to the session API.
+7. ~~**Backend-owned sessions**~~ (done in `repl-backend-sessions` —
+   `Backend` now provides an overrideable replay-backed
+   `createReplSession` default, pure backends run REPL cells through
+   `ReplSession.submit`, and the REPL keeps separate frontend and backend
+   sessions so later persistent backends can own execution state). Verified
+   with `ninja bin/ut` and `bin/ut --random` (seed `3527759054`).
 8. **Formatter prelude** (the canonical display formatter,
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
    compiled unittests).

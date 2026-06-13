@@ -3,7 +3,7 @@ module quickbite.backends;
 
 // awkward to use imported!"" when deriving
 import quickbite.backends.runner: Runner;
-import quickbite.backends.evaluator: Evaluator;
+import quickbite.backends.evaluator: Evaluator, ReplSession, replayReplSession;
 
 
 private:
@@ -11,7 +11,9 @@ private:
 
 // A backend that does it all. Needed notably by the REPL.
 public abstract class Backend: Runner, Evaluator {
-
+    public override ReplSession createReplSession() {
+        return replayReplSession(this);
+    }
 }
 
 // A backend that can process individual AST nodes
