@@ -93,8 +93,10 @@ code.
 
 ## Code organisation
 
-* Backends should not import each other, they must be completely
-  isolated.
+* Backends must not import each other: nothing in one backend's package
+  may import another backend's package, and vice versa. Within a single
+  backend package, modules can and should import each other, including
+  package-private code.
 
 # Testing
 
