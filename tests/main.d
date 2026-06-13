@@ -26,7 +26,6 @@ int main(string[] args) {
         "ut.backends.runner.rt.control_flow",
         "ut.backends.runner.rt.diagnostics",
         "ut.backends.runner.rt.exceptions",
-        "ut.backends.runner.rt.logic",
         "ut.backends.runner.rt.cerealed",
         "ut.backends.runner.rt.archive",
     );
