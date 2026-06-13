@@ -17,7 +17,13 @@ package imported!"quickbite.backends.ir.language".Function compileFunction(
 }
 
 private struct Compiler {
-    import dmd.expression: AddAssignExp, BinExp, CmpExp, Expression;
+    import dmd.expression:
+        AddAssignExp,
+        AssignExp,
+        BinExp,
+        CmpExp,
+        Expression,
+        IdentityExp;
     import dmd.declaration: VarDeclaration;
     import dmd.func: FuncDeclaration;
     import quickbite.backends.ir.language:
@@ -35,6 +41,7 @@ private struct Compiler {
         Function,
         Instruction,
         Load,
+        RefWriteback,
         ResultKind,
         ReturnVoid,
         ReturnValue,
@@ -42,6 +49,7 @@ private struct Compiler {
         Store,
         Terminator,
         ThrowException,
+        ThrowIfNull,
         Type,
         UnaryIntrinsicOp,
         UnaryIntrinsicOperation,
@@ -57,6 +65,7 @@ private struct Compiler {
     private Function[] compiledFunctions;
     private Block[] blocks;
     private Value[] currentBlockParams;
+    private FuncDeclaration currentFunction;
     private uint nextValueId;
 
     private Function compileEntryFunction(FuncDeclaration function_) {
@@ -75,6 +84,7 @@ private struct Compiler {
         localInfos = null;
         blocks = null;
         currentBlockParams = null;
+        currentFunction = function_;
         nextValueId = 0;
         registerParameters(function_);
 
@@ -107,6 +117,9 @@ private struct Compiler {
         if (auto return_ = statement.isReturnStatement)
             return OptionalValue(compileExpression(return_.exp), true);
 
+        if (auto if_ = statement.isIfStatement)
+            return compileIfStatement(if_);
+
         if (auto throw_ = statement.isThrowStatement)
             return OptionalValue(compileThrow(throw_), true);
 
@@ -120,6 +133,43 @@ private struct Compiler {
         );
     }
 
+    private OptionalValue compileIfStatement(
+        imported!"dmd.statement".IfStatement if_,
+    ) {
+        const condition = compileExpression(if_.condition);
+        const trueBlock = cast(uint) blocks.length + 1;
+        const falseBlock = trueBlock + 1;
+        const joinBlock = falseBlock + 1;
+        finishBlock(Terminator(
+            CondBranch(
+                condition.id,
+                trueBlock,
+                [],
+                falseBlock,
+                [],
+            ),
+        ));
+
+        const trueResult = compileStatement(if_.ifbody);
+        if (!trueResult.hasValue)
+            throw new Exception("Unsupported IR if statement.");
+
+        finishBlock(Terminator(Branch(joinBlock, [trueResult.value.id])));
+
+        const falseResult = compileStatement(if_.elsebody);
+        if (!falseResult.hasValue)
+            throw new Exception("Unsupported IR if statement.");
+
+        finishBlock(Terminator(Branch(joinBlock, [falseResult.value.id])));
+
+        const result = nextValue(
+            trueResult.value.type,
+            trueResult.value.resultKind,
+        );
+        currentBlockParams = [result];
+        return OptionalValue(result, true);
+    }
+
     private Value compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
         instructions ~= Instruction(
             ThrowException(newExceptionMessage(throw_.exp)),
@@ -130,6 +180,9 @@ private struct Compiler {
     private Value compileExpression(Expression expression) {
         if (auto integer = expression.isIntegerExp)
             return compileInteger(integer);
+
+        if (expression.isNullExp !is null)
+            return compileNull(expression.type);
 
         if (auto declaration = expression.isDeclarationExp) {
             auto variable = declaration.declaration.isVarDeclaration;
@@ -153,7 +206,10 @@ private struct Compiler {
         }
 
         if (auto equal = expression.isEqualExp)
-            return compileBinaryExpression(equal, BinaryOperation.equal);
+            return compileBinaryExpression(equal, equalityOperation(equal));
+
+        if (auto identity = expression.isIdentityExp)
+            return compileBinaryExpression(identity, identityOperation(identity));
 
         if (isComparisonExpression(expression))
             return compileComparisonExpression(castComparisonExpression(expression));
@@ -174,6 +230,9 @@ private struct Compiler {
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssign(addAssign);
 
+        if (auto assign = expression.isAssignExp)
+            return compileAssign(assign);
+
         if (auto real_ = expression.isRealExp)
             return compileReal(real_);
 
@@ -182,6 +241,12 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp)
             return compileIntrinsicCall(call);
+
+        if (auto dot = expression.isDotVarExp)
+            return compileDotVarExpression(dot);
+
+        if (auto typeid_ = expression.isTypeidExp)
+            return compileTypeid(typeid_);
 
         if (auto not = expression.isNotExp)
             return compileUnaryExpression(not.e1, UnaryOperation.not_);
@@ -217,6 +282,7 @@ private struct Compiler {
 
         if (auto function_ = callFunction(call))
             if (!isImplementedBuiltin(function_)) {
+                compileClassMethodReceiverCheck(call);
                 if (hasNoAvailableSource(function_))
                     throw new Exception(noAvailableSourceMessage(function_));
                 return compileCall(call, function_);
@@ -245,6 +311,55 @@ private struct Compiler {
         }
     }
 
+    private void compileClassMethodReceiverCheck(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return;
+
+        const receiver = compileExpression(dot.e1);
+        instructions ~= Instruction(
+            ThrowIfNull(
+                receiver.id,
+                "function call through null class reference `null`",
+            ),
+        );
+    }
+
+    private Value compileDotVarExpression(
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        const receiver = compileExpression(dot.e1);
+        instructions ~= Instruction(
+            ThrowIfNull(
+                receiver.id,
+                nullClassFieldMessage(dot),
+            ),
+        );
+        instructions ~= Instruction(
+            ThrowException("Unsupported IR field read."),
+        );
+        return compileIntegerLiteral(0);
+    }
+
+    private Value compileTypeid(imported!"dmd.expression".TypeidExp typeid_) {
+        import dmd.dtemplate: isExpression;
+
+        auto expression = isExpression(typeid_.obj);
+        if (expression !is null) {
+            const value = compileExpression(expression);
+            instructions ~= Instruction(
+                ThrowIfNull(
+                    value.id,
+                    nullTypeidMessage(expression),
+                ),
+            );
+        }
+
+        return compileString("ir.typeid");
+    }
+
     private bool isImplementedBuiltin(FuncDeclaration function_) {
         import dmd.builtin: isBuiltin;
         import dmd.func: BUILTIN;
@@ -264,15 +379,21 @@ private struct Compiler {
         FuncDeclaration function_,
     ) {
         uint[] arguments;
+        RefWriteback[] refWritebacks;
         if (call.arguments !is null)
-            foreach (argument; *call.arguments)
+            foreach (i, argument; *call.arguments) {
                 arguments ~= compileExpression(argument).id;
+                const writeback = refWriteback(function_, i, argument);
+                if (writeback.hasValue)
+                    refWritebacks ~= writeback.value;
+            }
 
         if (isVoid(call.type)) {
             instructions ~= Instruction(
                 Call(
                     functionIndex(function_),
                     arguments,
+                    refWritebacks,
                     false,
                     Value.init,
                 ),
@@ -285,6 +406,7 @@ private struct Compiler {
             Call(
                 functionIndex(function_),
                 arguments,
+                refWritebacks,
                 true,
                 result,
             ),
@@ -293,8 +415,30 @@ private struct Compiler {
     }
 
     private Value compileAssert(imported!"dmd.expression".AssertExp assert_) {
+        if (hasLazyAssertMessage(assert_.msg))
+            return compileAssertWithLazyMessage(assert_);
+
+        const charResult = compileDmdAssertFailCharMessage(assert_.msg);
+        if (charResult.hasValue)
+            return charResult.value;
+
         if (auto equal = assertEqualExpression(assert_.e1))
-            return compileAssertCompare(equal, BinaryOperation.equal);
+            return compileAssertCompare(
+                equal,
+                equalityOperation(equal),
+            );
+
+        if (auto identity = assertIdentityExpression(assert_.e1))
+            return compileAssertCompare(
+                identity,
+                identityOperation(identity),
+            );
+
+        if (auto comparison = assertComparisonExpression(assert_.e1))
+            return compileAssertCompare(
+                comparison,
+                comparisonOperation(comparison),
+            );
 
         const result = compileDmdAssertFailEqualMessage(assert_.msg);
         if (result.hasValue)
@@ -302,15 +446,125 @@ private struct Compiler {
 
         if (auto not = assert_.e1.isNotExp) {
             const condition = compileExpression(not.e1);
-            instructions ~= Instruction(AssertFalse(condition.id));
+            instructions ~= Instruction(
+                AssertFalse(
+                    condition.id,
+                    false,
+                    0,
+                ),
+            );
             return condition;
         }
 
         const condition = compileExpression(assert_.e1);
+        if (assert_.e1.isIntegerExp is null &&
+            condition.resultKind == ResultKind.bool_)
+            return compileAssertCompare(
+                condition,
+                compileIntegerLiteral(1, Type.i1, ResultKind.bool_),
+                BinaryOperation.equal,
+            );
+
         instructions ~= Instruction(
-            AssertTrue(condition.id, assertFailureMessage(assert_.e1)),
+            AssertTrue(
+                condition.id,
+                assertFailureMessage(assert_.e1),
+                false,
+                0,
+            ),
         );
         return condition;
+    }
+
+    private Value compileAssertWithLazyMessage(
+        imported!"dmd.expression".AssertExp assert_,
+    ) {
+        assert(assert_.msg !is null);
+        return compileLazyAssertTrue(assert_.e1, assert_.msg);
+    }
+
+    private Value compileLazyAssertTrue(
+        Expression conditionExpression,
+        Expression messageExpression,
+    ) {
+        const condition = compileExpression(conditionExpression);
+        const passBlock = cast(uint) blocks.length + 1;
+        const failBlock = passBlock + 1;
+        const joinBlock = failBlock + 1;
+        finishBlock(Terminator(
+            CondBranch(
+                condition.id,
+                passBlock,
+                [],
+                failBlock,
+                [],
+            ),
+        ));
+
+        finishBlock(Terminator(Branch(joinBlock, [condition.id])));
+
+        const message = compileExpression(messageExpression);
+        instructions ~= Instruction(
+            AssertTrue(
+                condition.id,
+                null,
+                true,
+                message.id,
+            ),
+        );
+        finishBlock(Terminator(Branch(joinBlock, [condition.id])));
+
+        const result = nextValue(condition.type, condition.resultKind);
+        currentBlockParams = [result];
+        return result;
+    }
+
+    private bool hasLazyAssertMessage(Expression message) {
+        return message !is null && !isDmdAssertFailCall(message);
+    }
+
+    private bool isDmdAssertFailCall(Expression expression) {
+        import dmd.id: Id;
+
+        auto call = expression.isCallExp;
+        return call !is null &&
+            call.f !is null &&
+            call.f.ident == Id._d_assert_fail;
+    }
+
+    private OptionalValue compileDmdAssertFailCharMessage(Expression message) {
+        if (message is null)
+            return OptionalValue.init;
+
+        auto call = message.isCallExp;
+        if (call is null || call.arguments is null)
+            return OptionalValue.init;
+
+        if (call.arguments.length != 3)
+            return OptionalValue.init;
+
+        if (!isCharExpression((*call.arguments)[1]) ||
+            !isCharExpression((*call.arguments)[2]))
+            return OptionalValue.init;
+
+        auto operator = (*call.arguments)[0].isStringExp;
+        if (operator is null)
+            return OptionalValue.init;
+
+        const operatorText = operator.peekString;
+        if (operatorText != "==" && operatorText != "!=")
+            return OptionalValue.init;
+
+        return OptionalValue(
+            compileAssertCompare(
+                (*call.arguments)[1],
+                (*call.arguments)[2],
+                operatorText == "==" ?
+                    BinaryOperation.equal :
+                    BinaryOperation.notEqual,
+            ),
+            true,
+        );
     }
 
     private OptionalValue compileDmdAssertFailEqualMessage(Expression message) {
@@ -325,14 +579,20 @@ private struct Compiler {
             return OptionalValue.init;
 
         auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null || operator.peekString != "==")
+        if (operator is null)
+            return OptionalValue.init;
+
+        const operatorText = operator.peekString;
+        if (operatorText != "==" && operatorText != "!=")
             return OptionalValue.init;
 
         return OptionalValue(
             compileAssertCompare(
                 (*call.arguments)[1],
                 (*call.arguments)[2],
-                BinaryOperation.equal,
+                operatorText == "==" ?
+                    BinaryOperation.equal :
+                    BinaryOperation.notEqual,
             ),
             true,
         );
@@ -341,32 +601,70 @@ private struct Compiler {
     private Value compileAssertCompare(
         BinExp expression,
         in BinaryOperation operation,
+        in OptionalValue message = OptionalValue.init,
     ) {
-        return compileAssertCompare(expression.e1, expression.e2, operation);
+        return compileAssertCompare(
+            expression.e1,
+            expression.e2,
+            operation,
+            message,
+        );
     }
 
     private Value compileAssertCompare(
         Expression lhsExpression,
         Expression rhsExpression,
         in BinaryOperation operation,
+        in OptionalValue message = OptionalValue.init,
     ) {
         const lhs = compileExpression(lhsExpression);
         const rhs = compileExpression(rhsExpression);
+        return compileAssertCompare(
+            lhs,
+            rhs,
+            operation,
+            message,
+            assertionResultKind(lhsExpression, rhsExpression, lhs.resultKind),
+        );
+    }
+
+    private Value compileAssertCompare(
+        in Value lhs,
+        in Value rhs,
+        in BinaryOperation operation,
+        in OptionalValue message = OptionalValue.init,
+        in ResultKind diagnosticKind = ResultKind.init,
+    ) {
         const result = compileBinaryExpression(lhs, rhs, operation);
+        const resultKind = diagnosticKind == ResultKind.init ?
+            lhs.resultKind :
+            diagnosticKind;
         instructions ~= Instruction(
             AssertCompare(
                 operation,
                 lhs.type,
-                lhs.resultKind,
+                resultKind,
                 result.id,
                 lhs.id,
                 rhs.id,
+                message.hasValue,
+                message.value.id,
             ),
         );
         return result;
     }
 
     private Value compileVariableDeclaration(VarDeclaration variable) {
+        if (variable._init !is null && isVoidInitializer(variable._init)) {
+            localIndex(variable);
+            localInfos[variable] = LocalInfo(
+                valueType(variable.type),
+                resultKind(variable.type),
+                true,
+            );
+            return compileDefaultValue(variable.type);
+        }
+
         const value = variable._init is null ?
             compileDefaultValue(variable.type) :
             compileInitializer(variable._init);
@@ -377,7 +675,7 @@ private struct Compiler {
                 value.id,
             ),
         );
-        localInfos[variable] = LocalInfo(value.type, value.resultKind);
+        localInfos[variable] = LocalInfo(value.type, value.resultKind, false);
         return value;
     }
 
@@ -388,6 +686,9 @@ private struct Compiler {
             Load(
                 localIndex(variable),
                 result,
+                local.uninitialized ?
+                    uninitializedVariableMessage(variable, currentFunction) :
+                    null,
             ),
         );
         return result;
@@ -399,12 +700,19 @@ private struct Compiler {
         auto expression = initializer.isExpInitializer;
         assert(expression !is null);
 
-        return compileExpression(initializerExpression(expression.exp));
+        auto initializer_ = initializerExpression(expression.exp);
+        if (initializer_.isVoidInitExp !is null)
+            return compileDefaultValue(expression.exp.type);
+
+        return compileExpression(initializer_);
     }
 
     private Value compileCast(imported!"dmd.expression".CastExp cast_) {
         const source = compileExpression(cast_.e1);
         const targetType = valueType(cast_.to);
+        if (source.resultKind == ResultKind.string_ && targetType == Type.ptr)
+            return source;
+
         if (source.type == Type.i1 && targetType == Type.i32)
             return source;
 
@@ -445,6 +753,11 @@ private struct Compiler {
                 result.id,
             ),
         );
+        localInfos[declaration] = LocalInfo(
+            result.type,
+            result.resultKind,
+            false,
+        );
         return result;
     }
 
@@ -474,6 +787,34 @@ private struct Compiler {
                 result.id,
             ),
         );
+        localInfos[declaration] = LocalInfo(
+            result.type,
+            result.resultKind,
+            false,
+        );
+        return result;
+    }
+
+    private Value compileAssign(AssignExp assign) {
+        auto variable = assign.e1.isVarExp;
+        assert(variable !is null);
+
+        auto declaration = variable.var.isVarDeclaration;
+        assert(declaration !is null);
+
+        const result = compileExpression(assign.e2);
+        instructions ~= Instruction(
+            Store(
+                localIndex(declaration),
+                result.type,
+                result.id,
+            ),
+        );
+        localInfos[declaration] = LocalInfo(
+            result.type,
+            result.resultKind,
+            false,
+        );
         return result;
     }
 
@@ -500,6 +841,10 @@ private struct Compiler {
             ),
         );
         return result;
+    }
+
+    private Value compileNull(imported!"dmd.mtype".Type type) {
+        return compileIntegerLiteral(0, valueType(type), resultKind(type));
     }
 
     private Value compileDefaultValue(imported!"dmd.mtype".Type type) {
@@ -537,10 +882,14 @@ private struct Compiler {
     }
 
     private Value compileString(imported!"dmd.expression".StringExp string_) {
+        return compileString(string_.peekString.idup);
+    }
+
+    private Value compileString(in string value) {
         const result = nextValue(Type.ptr, ResultKind.string_);
         instructions ~= Instruction(
             StringConst(
-                string_.peekString.idup,
+                value,
                 result,
             ),
         );
@@ -641,19 +990,7 @@ private struct Compiler {
     }
 
     private Value compileComparisonExpression(CmpExp expression) {
-        import dmd.tokens: EXP;
-
-        if (expression.op == EXP.lessThan)
-            return compileBinaryExpression(expression, BinaryOperation.lessThan);
-
-        if (expression.op == EXP.greaterThan)
-            return compileBinaryExpression(expression, BinaryOperation.greaterThan);
-
-        import std.conv: text;
-        throw new Exception(text(
-            "Unsupported IR comparison: ",
-            expression.op,
-        ));
+        return compileBinaryExpression(expression, comparisonOperation(expression));
     }
 
     private Value compileBinaryExpression(
@@ -734,6 +1071,36 @@ private struct Compiler {
         return null;
     }
 
+    private OptionalRefWriteback refWriteback(
+        FuncDeclaration function_,
+        in size_t parameterIndex,
+        Expression argument,
+    ) {
+        if (function_.parameters is null ||
+            parameterIndex >= function_.parameters.length)
+            return OptionalRefWriteback.init;
+
+        auto parameter = (*function_.parameters)[parameterIndex];
+        if (!isRefParameter(parameter))
+            return OptionalRefWriteback.init;
+
+        auto variable = argument.isVarExp;
+        assert(variable !is null);
+
+        auto declaration = variable.var.isVarDeclaration;
+        assert(declaration !is null);
+
+        const info = localInfo(declaration);
+        return OptionalRefWriteback(
+            RefWriteback(
+                cast(uint) parameterIndex,
+                localIndex(declaration),
+                info.type,
+            ),
+            true,
+        );
+    }
+
     private void registerParameters(FuncDeclaration function_) {
         if (function_.parameters is null)
             return;
@@ -743,6 +1110,7 @@ private struct Compiler {
             localInfos[parameter] = LocalInfo(
                 valueType(parameter.type),
                 resultKind(parameter.type),
+                false,
             );
         }
     }
@@ -751,7 +1119,11 @@ private struct Compiler {
         if (auto existing = variable in localInfos)
             return *existing;
 
-        return LocalInfo(valueType(variable.type), resultKind(variable.type));
+        return LocalInfo(
+            valueType(variable.type),
+            resultKind(variable.type),
+            false,
+        );
     }
 
     private Function makeFunction(in Value result) {
@@ -799,7 +1171,9 @@ private bool isComparisonExpression(imported!"dmd.expression".Expression express
     import dmd.tokens: EXP;
 
     return expression.op == EXP.lessThan ||
-        expression.op == EXP.greaterThan;
+        expression.op == EXP.lessOrEqual ||
+        expression.op == EXP.greaterThan ||
+        expression.op == EXP.greaterOrEqual;
 }
 
 private imported!"dmd.expression".CmpExp castComparisonExpression(
@@ -821,8 +1195,11 @@ private bool isBoolResult(
 
     final switch (operation) with (BinaryOperation) {
         case equal:
+        case notEqual:
         case lessThan:
+        case lessOrEqual:
         case greaterThan:
+        case greaterOrEqual:
             return true;
         case add:
         case subtract:
@@ -849,6 +1226,103 @@ private imported!"dmd.expression".EqualExp assertEqualExpression(
     return null;
 }
 
+private imported!"dmd.expression".CmpExp assertComparisonExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (isComparisonExpression(expression))
+        return castComparisonExpression(expression);
+
+    if (auto comma = expression.isCommaExp)
+        return assertComparisonExpression(comma.e2);
+
+    if (auto cast_ = expression.isCastExp)
+        return assertComparisonExpression(cast_.e1);
+
+    return null;
+}
+
+private imported!"dmd.expression".IdentityExp assertIdentityExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto identity = expression.isIdentityExp)
+        return identity;
+
+    if (auto comma = expression.isCommaExp)
+        return assertIdentityExpression(comma.e2);
+
+    if (auto cast_ = expression.isCastExp)
+        return assertIdentityExpression(cast_.e1);
+
+    return null;
+}
+
+private imported!"quickbite.backends.ir.language".BinaryOperation equalityOperation(
+    imported!"dmd.expression".EqualExp equal,
+) @safe pure {
+    import dmd.tokens: EXP;
+    import quickbite.backends.ir.language: BinaryOperation;
+
+    return equal.op == EXP.notEqual ?
+        BinaryOperation.notEqual :
+        BinaryOperation.equal;
+}
+
+private imported!"quickbite.backends.ir.language".BinaryOperation identityOperation(
+    imported!"dmd.expression".IdentityExp identity,
+) @safe pure {
+    import dmd.tokens: EXP;
+    import quickbite.backends.ir.language: BinaryOperation;
+
+    return identity.op == EXP.notIdentity ?
+        BinaryOperation.notEqual :
+        BinaryOperation.equal;
+}
+
+private imported!"quickbite.backends.ir.language".BinaryOperation comparisonOperation(
+    imported!"dmd.expression".CmpExp comparison,
+) @safe pure {
+    import dmd.tokens: EXP;
+    import quickbite.backends.ir.language: BinaryOperation;
+
+    with (EXP) switch (comparison.op) {
+        case lessThan:
+            return BinaryOperation.lessThan;
+        case lessOrEqual:
+            return BinaryOperation.lessOrEqual;
+        case greaterThan:
+            return BinaryOperation.greaterThan;
+        case greaterOrEqual:
+            return BinaryOperation.greaterOrEqual;
+        default:
+            assert(0);
+    }
+}
+
+private imported!"quickbite.backends.ir.language".ResultKind assertionResultKind(
+    imported!"dmd.expression".Expression lhs,
+    imported!"dmd.expression".Expression rhs,
+    in imported!"quickbite.backends.ir.language".ResultKind fallback,
+) {
+    import quickbite.backends.ir.language: ResultKind;
+
+    return isCharExpression(lhs) && isCharExpression(rhs) ?
+        ResultKind.char_ :
+        fallback;
+}
+
+private bool isCharExpression(imported!"dmd.expression".Expression expression) {
+    import dmd.astenums: TY;
+
+    if (auto comma = expression.isCommaExp)
+        return isCharExpression(comma.e2);
+
+    if (auto cast_ = expression.isCastExp)
+        return isCharExpression(cast_.e1);
+
+    const type = expression.type is null ? null : expression.type.toBasetype;
+    return type !is null && type.ty == TY.Tchar;
+}
+
 private string assertFailureMessage(imported!"dmd.expression".Expression expression) {
     import std.array: replace;
     import std.conv: text;
@@ -866,6 +1340,36 @@ private string expressionText(imported!"dmd.expression".Expression expression) {
     return expression.toChars.fromStringz.idup;
 }
 
+private string nullTypeidMessage(imported!"dmd.expression".Expression expression) {
+    import std.conv: text;
+
+    return text(
+        "null pointer dereference evaluating typeid. `",
+        receiverName(expression),
+        "` is `null`",
+    );
+}
+
+private string nullClassFieldMessage(
+    imported!"dmd.expression".DotVarExp dot,
+) {
+    import std.conv: text;
+
+    return text(
+        "class `",
+        receiverName(dot.e1),
+        "` is `null` and cannot be dereferenced",
+    );
+}
+
+private string receiverName(imported!"dmd.expression".Expression receiver) {
+    auto variable = receiver.isVarExp;
+    if (variable is null)
+        return "null";
+
+    return variable.var.ident.toString.idup;
+}
+
 private imported!"quickbite.backends.ir.language".Function withFunctions(
     imported!"quickbite.backends.ir.language".Function function_,
     imported!"quickbite.backends.ir.language".Function[] functions,
@@ -879,9 +1383,40 @@ private struct OptionalValue {
     public bool hasValue;
 }
 
+private struct OptionalRefWriteback {
+    public imported!"quickbite.backends.ir.language".RefWriteback value;
+    public bool hasValue;
+}
+
 private struct LocalInfo {
     public imported!"quickbite.backends.ir.language".Type type;
     public imported!"quickbite.backends.ir.language".ResultKind resultKind;
+    public bool uninitialized;
+}
+
+private bool isVoidInitializer(imported!"dmd.init".Initializer initializer) {
+    if (initializer.isVoidInitializer !is null)
+        return true;
+
+    auto expression = initializer.isExpInitializer;
+    return expression !is null &&
+        initializerExpression(expression.exp).isVoidInitExp !is null;
+}
+
+private string uninitializedVariableMessage(
+    imported!"dmd.declaration".VarDeclaration variable,
+    imported!"dmd.func".FuncDeclaration currentFunction,
+) {
+    import quickbite.backends.interpreter.messages:
+        uninitializedVariableMessage;
+
+    return uninitializedVariableMessage(variable, currentFunction);
+}
+
+private bool isRefParameter(imported!"dmd.declaration".VarDeclaration parameter) {
+    import dmd.astenums: STC;
+
+    return (parameter.storage_class & STC.ref_) != STC.none;
 }
 
 private imported!"dmd.expression".Expression initializerExpression(
@@ -915,6 +1450,7 @@ private imported!"quickbite.backends.ir.language".Type valueType(
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
+    import quickbite.backends.ir.language: Type;
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
@@ -941,6 +1477,13 @@ private imported!"quickbite.backends.ir.language".Type valueType(
             return valueType!Tfloat32;
         case Tfloat64:
             return valueType!Tfloat64;
+        case Tarray:
+            if (isStringType(type))
+                return Type.ptr;
+            goto default;
+        case Tclass:
+        case Tnull:
+            return Type.ptr;
         default:
             assert(0);
     }
@@ -976,6 +1519,7 @@ private imported!"quickbite.backends.ir.language".ResultKind resultKind(
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
+    import quickbite.backends.ir.language: ResultKind;
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
@@ -1002,9 +1546,26 @@ private imported!"quickbite.backends.ir.language".ResultKind resultKind(
             return resultKind!Tfloat32;
         case Tfloat64:
             return resultKind!Tfloat64;
+        case Tarray:
+            if (isStringType(type))
+                return ResultKind.string_;
+            goto default;
+        case Tclass:
+        case Tnull:
+            return ResultKind.class_;
         default:
             assert(0);
     }
+}
+
+private bool isStringType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type.toBasetype.ty != TY.Tarray)
+        return false;
+
+    auto element = type.toBasetype.nextOf;
+    return element !is null && element.toBasetype.ty == TY.Tchar;
 }
 
 private imported!"quickbite.backends.ir.language".ResultKind resultKind(
