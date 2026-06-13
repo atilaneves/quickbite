@@ -24,6 +24,24 @@ result. A backend cannot produce a different *type* for an expression,
 only different runtime *bits* — which the value digits and behavioural
 probes catch (see "Test strategy").
 
+Decision 2026-06-13 (implemented): the `EvalResult` contract now carries
+the rendered display `string` (or a `Diagnostic`), completing decision 1.
+`EvalResult._payload` is `SumType!(string, Diagnostic)`; `value()` is
+replaced by `display()`. The `Value -> display-string` rendering moved to
+the per-backend `eval(FuncDeclaration)` boundary via a single shared helper
+`displayString(Value, FuncDeclaration)` in
+`source/quickbite/backends/evaluator.d`, so every backend and the
+`eval(Cell)`/`eval(string)` paths render identically: `void` -> `""`, a
+character-array return -> the quoted string with its width suffix,
+everything else -> `Value.toString`. Per decision 4 this is interim: each
+backend keeps its private reify -> `Value` -> `toString` scaffolding behind
+the string-returning interface, to be deleted per backend as it learns to
+execute the prelude formatter. `Value`, `value.d`, `asCharArrayString`,
+`stringTypeAnnotation` and `dText` are unchanged. The REPL
+(`source/quickbite/repl.d`) keeps the synthetic-name scrubbing
+(`userDiagnostic`/`userValueString`), now applied to the display string
+carried by `EvalResult`; `Repl.submit` returns the display `string`.
+
 ## Audit findings (June 2026)
 
 - The REPL uses `Value`'s structure only for display/control decisions:

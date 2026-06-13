@@ -118,14 +118,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("1").should == Value(1);
+        repl.submit("1").should == "1";
         void submitFailure() {
             repl.submit("unknownIdentifier");
         }
         submitFailure.shouldThrowWithMessage(
             "undefined identifier `unknownIdentifier`",
         );
-        repl.submit("it").should == Value(1);
+        repl.submit("it").should == "1";
     }
 }
 
@@ -151,10 +151,10 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int counter;").should == Value.void_;
-        repl.submit("int get() { return counter; }").should == Value.void_;
-        repl.submit("counter = 5;").should == Value.void_;
-        repl.submit("get()").should == Value(5);
+        repl.submit("int counter;").should == "";
+        repl.submit("int get() { return counter; }").should == "";
+        repl.submit("counter = 5;").should == "";
+        repl.submit("get()").should == "5";
     }
 }
 
@@ -166,8 +166,8 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int counter;").should == Value.void_;
-        repl.submit("int get() { return counter; }").should == Value.void_;
+        repl.submit("int counter;").should == "";
+        repl.submit("int get() { return counter; }").should == "";
         void mutateCounter() {
             repl.submit("counter = 5;");
         }
@@ -337,15 +337,15 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int dup() {").should == Value.void_;
-        repl.submit("return unknown;").should == Value.void_;
+        repl.submit("int dup() {").should == "";
+        repl.submit("return unknown;").should == "";
         void completeRejectedDeclaration() {
             repl.submit("}");
         }
         completeRejectedDeclaration.shouldThrowWithMessage(
             "undefined identifier `unknown`",
         );
-        repl.submit("42").should == Value(42);
+        repl.submit("42").should == "42";
     }
 }
 
@@ -356,16 +356,16 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int answer() {").should == Value.void_;
+        repl.submit("int answer() {").should == "";
         void quitWhilePending() {
             repl.submit(":q");
         }
         quitWhilePending.shouldThrowWithMessage(
             "cannot run REPL command `:q` while input is pending",
         );
-        repl.submit("return 42;").should == Value.void_;
-        repl.submit("}").should == Value.void_;
-        repl.submit("answer()").should == Value(42);
+        repl.submit("return 42;").should == "";
+        repl.submit("}").should == "";
+        repl.submit("answer()").should == "42";
     }
 }
 
@@ -738,9 +738,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int x;").should == Value.void_;
-        repl.submit("++x;").should == Value.void_;
-        repl.submit("x").should == Value(1);
+        repl.submit("int x;").should == "";
+        repl.submit("++x;").should == "";
+        repl.submit("x").should == "1";
     }
 }
 
@@ -752,8 +752,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("unittest { assert(2 + 2 == 4); }").should == Value.void_;
-        repl.submit(":t").should == Value.void_;
+        repl.submit("unittest { assert(2 + 2 == 4); }").should == "";
+        repl.submit(":t").should == "";
     }
 }
 
@@ -765,7 +765,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit(":t").should == Value.void_;
+        repl.submit(":t").should == "";
     }
 }
 
@@ -777,7 +777,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("unittest { assert(1 == 2); }").should == Value.void_;
+        repl.submit("unittest { assert(1 == 2); }").should == "";
         void runTests() {
             repl.submit(":t");
         }
@@ -794,10 +794,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("unittest { assert(2 == 2); }").should == Value.void_;
-        repl.submit("int value() { return 41; }").should == Value.void_;
-        repl.submit("unittest { assert(value() == 42); }").should ==
-            Value.void_;
+        repl.submit("unittest { assert(2 == 2); }").should == "";
+        repl.submit("int value() { return 41; }").should == "";
+        repl.submit("unittest { assert(value() == 42); }").should == "";
         void runTests() {
             repl.submit(":t");
         }
@@ -844,7 +843,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         auto repl = Repl(newBackend!backend);
 
         repl.loadModuleSource("unittest { assert(2 + 2 == 4); }");
-        repl.submit(":t").should == Value.void_;
+        repl.submit(":t").should == "";
     }
 }
 
@@ -858,7 +857,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         auto repl = Repl(newBackend!backend);
 
         repl.loadModuleSource("int loadedValue() { return 41; }\n");
-        repl.submit("unittest { assert(1 == 2); }").should == Value.void_;
+        repl.submit("unittest { assert(1 == 2); }").should == "";
         void runTests() {
             repl.submit(":t");
         }
@@ -942,15 +941,15 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int good = 41;").should == Value.void_;
-        repl.submit("import core.stdc.stdlib;").should == Value.void_;
+        repl.submit("int good = 41;").should == "";
+        repl.submit("import core.stdc.stdlib;").should == "";
         void allocateAtCompileTime() {
             repl.submit("auto ptr = malloc(42);");
         }
         allocateAtCompileTime.shouldThrowWithMessage(
             "`malloc` cannot be interpreted at compile time, because it has no available source code",
         );
-        repl.submit("good + 1").should == Value(42);
+        repl.submit("good + 1").should == "42";
     }
 }
 
@@ -983,7 +982,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("auto arr = [1,2,3];").should == Value.void_;
+        repl.submit("auto arr = [1,2,3];").should == "";
         void outOfBoundsIndex() {
             repl.submit("arr[99]");
         }
@@ -1017,14 +1016,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int twice(int i) { return i * 2; }").should == Value.void_;
+        repl.submit("int twice(int i) { return i * 2; }").should == "";
         void rejectedReplacement() {
             repl.submit("int twice(int i) { return unknown; }");
         }
         rejectedReplacement.shouldThrowWithMessage(
             "undefined identifier `unknown`",
         );
-        repl.submit("twice(21)").should == Value(42);
+        repl.submit("twice(21)").should == "42";
     }
 }
 

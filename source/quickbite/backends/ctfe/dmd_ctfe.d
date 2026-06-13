@@ -6,7 +6,7 @@ private:
 
 public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
     import quickbite.backends.runner: ExecutionMode;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
@@ -27,7 +27,7 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
             diagnostic,
         );
         return diagnostic.length == 0
-            ? EvalResult(ctfeValue(interpreted))
+            ? EvalResult(displayString(ctfeValue(interpreted), function_))
             : EvalResult(EvalResult.Diagnostic(diagnostic));
     }
 }

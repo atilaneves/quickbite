@@ -6,7 +6,7 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
     import quickbite.backends.runner: ExecutionMode;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
@@ -23,7 +23,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.runStatement(function_.fbody);
         catch (Exception exception)
             return EvalResult(EvalResult.Diagnostic(exception.msg));
-        return EvalResult(walker.result);
+        return EvalResult(displayString(walker.result, function_));
     }
 }
 
