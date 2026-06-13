@@ -12,6 +12,13 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == "42";
 }
 
+@("repl.formatter.rendersCharacterLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat('a');
+
+    actual.should == "'a'";
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;
