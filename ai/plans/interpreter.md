@@ -452,6 +452,27 @@ for wide character values; signal was verified by temporarily mutating the
 `wchar` conversion path, which changed the first displayed result from `"ab"`
 to `"bc"`.
 
+Diagnostics promotion probe:
+All current CTFE-backed backend-matrix tests in
+`tests/ut/backends/runner/ct/diagnostics.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only diagnostics module run left exactly one failing promoted test:
+
+- `nullClassNotIdentityUsesNotEqualPolarity.Interpreter`: the interpreter
+  reports `false != true` for `assert(thing !is null)` when `thing` is a null
+  class reference, while the CTFE oracle reports `` `null` is `null` ``.
+
+Failure cause: the interpreter currently treats the lowered `!is` assertion as
+a generic boolean equality assertion and formats the generated helper result.
+It needs to preserve the identity expression's null-class diagnostic polarity
+for this DMD assertion shape, matching the existing CTFE-backed test without
+adding broad class identity semantics beyond the promoted case.
+
+Resolution: assertion formatting now recognizes DMD-lowered identity
+expressions, follows the generated helper variable back to its initializer, and
+formats failed class-null identity with the original `is`/`!is` polarity. The
+full focused `diagnostics.d` Interpreter-only run now passes: 31 run, 0 failed.
+
 REPL promotion probe:
 All remaining CTFE-backed backend-matrix tests in
 `tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
@@ -1114,6 +1135,76 @@ green through existing nested-slice evaluation, local array append detachment,
 index-read, and equality assertion message support; signal was verified by
 temporarily mutating the append handler to write through the slice alias, which
 made the promoted fixture fail before the expected `4 != 5` assertion message.
+
+Arrays promotion probe:
+`assocArray.insertionGrowsAndOverwrites` in
+`tests/ut/backends/runner/ct/arrays.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only arrays module run left exactly one failing promoted test:
+
+- `assocArray.insertionGrowsAndOverwrites.Interpreter`: assigning
+  `values[first] = first + 30` into a default-initialized `int[int]` local
+  reports `Expected associative array.`
+
+Failure cause: the interpreter's associative-array index assignment path
+expects an existing AA value and does not treat a null/default-initialized
+associative-array local as an empty AA that can accept first insertion. The
+fix should be limited to local AA insertion/overwrite for the promoted shape;
+existing missing-key read diagnostics should remain unchanged.
+
+Resolution: default-initialized and explicit-null associative-array locals now
+materialize as empty AA values in the interpreter, allowing first insertion and
+overwrite while preserving missing-key read diagnostics. The focused promoted
+test and the missing-key regression both pass.
+
+Arrays promotion probe:
+`dynamicArray.jaggedRowsKeepIndependentLengths` in
+`tests/ut/backends/runner/ct/arrays.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only arrays module run left exactly one failing promoted test:
+
+- `dynamicArray.jaggedRowsKeepIndependentLengths.Interpreter`: appending
+  `first + 4` to `rows[1]` reports
+  `Unsupported interpreter array append target.`
+
+Failure cause: the interpreter already evaluates nested dynamic array literals,
+lengths, and nested index reads for this fixture, but its append-assignment
+target handling only supports local/ref-style array targets and does not write
+an appended nested row back through an indexed array element target. The fix
+should be limited to appending one element to a dynamic-array element selected
+from a local nested dynamic array; the test also guards that sibling row
+lengths stay independent.
+
+Resolution: append-assignment now supports an indexed local dynamic-array
+target for the promoted nested-row shape by appending to the selected row and
+writing that row back into the outer array. The focused promoted test passes.
+
+Structs promotion probe:
+`with.structLocalGotoRestartsInsideBody` in
+`tests/ut/backends/runner/ct/structs.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only structs module run left exactly one failing promoted test:
+
+- `with.structLocalGotoRestartsInsideBody.Interpreter`: the interpreter reports
+  `Unsupported eval statement: Goto` for a `goto target;` inside an otherwise
+  supported `with (point)` body.
+
+Failure cause: the interpreter's module-backed statement walker does not
+handle DMD `GotoStatement`/label flow for the simple intra-block shape used by
+the promoted struct `with` fixture. Existing `with` field access and mutation
+already work; the missing behavior is restarting execution at a later label
+inside the same body without running skipped statements.
+
+Resolution: the statement walker now tracks a pending goto target while
+iterating compound and unrolled statement lists, skips statements until the
+matching label target, and executes label bodies normally. The focused promoted
+test passes.
+
+Structs progress: `struct.opAssignFromScalar` in
+`tests/ut/backends/runner/ct/structs.d` now runs on `Interpreter`. It was
+already green through existing struct assignment/operator handling; signal was
+verified by temporarily changing the promoted fixture's expected value from
+`42` to `43`, which failed the focused Interpreter test with `42 != 43`.
 
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already

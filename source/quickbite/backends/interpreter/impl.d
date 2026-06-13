@@ -37,6 +37,7 @@ private struct Walker {
     import dmd.declaration: VarDeclaration;
     import dmd.expression: DivExp, ModExp;
     import dmd.func: FuncDeclaration;
+    import dmd.statement: Statement;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
@@ -54,6 +55,7 @@ private struct Walker {
     private bool hasThis;
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
+    private Statement pendingGotoTarget;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null || returned)
@@ -61,15 +63,21 @@ private struct Walker {
 
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
             return;
         }
 
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
             return;
         }
 
@@ -80,8 +88,27 @@ private struct Walker {
 
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             if (unrolled.statements !is null)
-                foreach (child; *unrolled.statements)
+                foreach (child; *unrolled.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
+            return;
+        }
+
+        if (auto goto_ = statement.isGotoStatement) {
+            if (goto_.label is null || goto_.label.statement is null)
+                throw new Exception("Unsupported eval statement: Goto");
+
+            auto label = goto_.label.statement;
+            pendingGotoTarget = label.gotoTarget is null
+                ? label.statement
+                : label.gotoTarget;
+            return;
+        }
+
+        if (auto label = statement.isLabelStatement) {
+            runStatement(label.statement);
             return;
         }
 
@@ -161,6 +188,28 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    private bool skipUntilGotoTarget(Statement statement) {
+        if (pendingGotoTarget is null)
+            return false;
+
+        if (statement is pendingGotoTarget) {
+            pendingGotoTarget = null;
+            return false;
+        }
+
+        if (auto label = statement.isLabelStatement) {
+            if (
+                label.statement is pendingGotoTarget ||
+                label.gotoTarget is pendingGotoTarget
+            ) {
+                pendingGotoTarget = null;
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // For `with(expr)` where expr is a struct lvalue, DMD semantic creates a
@@ -1629,6 +1678,9 @@ private struct Walker {
             return appended;
         }
 
+        if (auto index = assign.e1.isIndexExp)
+            return runIndexedArrayAppendAssignExpression(index, assign.e2);
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter array append target.");
@@ -1646,6 +1698,30 @@ private struct Walker {
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
         return locals[variable];
+    }
+
+    private Value runIndexedArrayAppendAssignExpression(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const appended = (*current)[arrayIndex]
+            .withAppendedArrayElement(runExpression(rhs));
+        locals[variable] = current.withArrayElement(arrayIndex, appended);
+        uninitializedLocals.remove(variable);
+        return appended;
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {
@@ -2007,7 +2083,7 @@ private struct Walker {
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            const value = defaultValue(variable);
+            const value = defaultLocalValue(variable);
             locals[variable] = value;
             structArrayFieldAliases.remove(variable);
             return value;
@@ -2049,10 +2125,19 @@ private struct Walker {
             return Value.void_;
         }
 
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isAssocArrayType, isDynamicArrayType;
 
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             auto value = Value.arrayValue([]);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
+            return value;
+        }
+
+        if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
+            auto value = Value.assocArrayValue([], []);
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
@@ -2077,6 +2162,15 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private Value defaultLocalValue(VarDeclaration variable) {
+        import quickbite.frontend.dmd.types: isAssocArrayType;
+
+        if (isAssocArrayType(variable.type))
+            return Value.assocArrayValue([], []);
+
+        return defaultValue(variable);
     }
 
     private void recordStructArrayFieldAliases(
