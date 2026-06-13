@@ -1200,6 +1200,12 @@ iterating compound and unrolled statement lists, skips statements until the
 matching label target, and executes label bodies normally. The focused promoted
 test passes.
 
+Structs progress: `struct.opAssignFromScalar` in
+`tests/ut/backends/runner/ct/structs.d` now runs on `Interpreter`. It was
+already green through existing struct assignment/operator handling; signal was
+verified by temporarily changing the promoted fixture's expected value from
+`42` to `43`, which failed the focused Interpreter test with `42 != 43`.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`

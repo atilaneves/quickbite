@@ -1188,7 +1188,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Same VM-backend limitations as struct.opCmpOrdersValues above.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.opAssignFromScalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
