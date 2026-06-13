@@ -394,7 +394,10 @@ Dependencies are noted; order within independent slices is flexible.
    with `ninja bin/ut` and `bin/ut --random` (seed `3527759054`).
 8. **Formatter prelude** (the canonical display formatter,
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
-   compiled unittests).
+   compiled unittests). First CTFE-capable prelude case is done in
+   `repl-backend-sessions`: `__quickbiteFormat(42)` renders `"42"`.
+   Verified with `ninja bin/ut` and `bin/ut --random` (seed
+   `2104170672`).
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on

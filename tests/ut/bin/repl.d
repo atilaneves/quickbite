@@ -2,7 +2,15 @@ module ut.bin.repl;
 
 
 import ut.backends;
+import quickbite.repl_prelude: __quickbiteFormat;
 
+
+@("repl.formatter.rendersIntegerLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat(42);
+
+    actual.should == "42";
+}
 
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
