@@ -123,7 +123,9 @@ SystemLinker matrix stays green under `--random` and both historical seeds
 ### Step 1 — minimal end-to-end proof (the gate)
 
 Stand up `native/llvm_orc.d` (bindings + `pragma(lib)`/`libs`) and
-`native/llvm_jit.d` (`LLVMJit : GroupedRunner`, `this(ExecutionMode)`).
+`native/llvm_jit.d` (`LLVMJit : GroupedRunner`, no-mode constructor like
+`SystemLinker` — native is inherently runtime, see
+`ai/plans/single-oracle.md`).
 `runTests`:
 
 1. call `native/codegen.d` to get object paths (child emits, no link);
@@ -196,7 +198,7 @@ bin/ut @LLVMJit                     # the new backend's matrix blocks
   fork-and-emit out of (Step 0) and the `runUnitTest` shape to mirror
 - `source/quickbite/backends/native/package.d` — re-export point for both
   backends
-- `source/quickbite/backends/runner.d` — `GroupedRunner`, `ExecutionMode`
+- `source/quickbite/backends/runner.d` — `GroupedRunner`
 - `tests/ut/backends/package.d` — `newBackend`, backend exports
 - `ai/plans/dmd-backend.md` — Scope stage 3 (load in parent) and the
   `DmdCodegenRam` druntime-registration warning (the central risk here)

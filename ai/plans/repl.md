@@ -25,7 +25,7 @@ This design has genuine strengths that this plan must preserve:
   (Cling's equivalent — Transactions + DeclUnloader — is its most fragile
   subsystem.)
 - **Backend-agnostic frontend**: one session drives all backends, enabling
-  the CTFE-oracle testing strategy.
+  the single-oracle testing strategy (`ai/plans/single-oracle.md`).
 - **Coherent whole-program semantics** for pure code.
 
 And structural faults, established finding by finding (June 2026 review,
@@ -97,12 +97,13 @@ Benchmarks below):
   loading mechanics (memfd + mold + dlopen, in-process relocation) only;
   re-validate at implementation time. Its REPL slices are superseded by
   this plan.
-- **CTFE remains the canonical oracle for pure behaviour.** Replay is
-  *correct* for pure backends and stays as their session implementation.
-  The redesign adds a persistent-state path; both must agree on pure
-  programs. Where the language itself forbids CTFE (mutating globals,
-  module ctors, I/O), compiled-D behaviour is the oracle and tests are
-  gated to capable backends.
+- **`SystemLinker` (compiled D) is the single oracle**
+  (`ai/plans/single-oracle.md`). Replay is *correct* for pure backends and
+  stays as their session implementation, but it is an implementation note,
+  not an oracle claim: the redesign adds a persistent-state path, and both
+  must agree with compiled-D behaviour. `Ctfe` is not an oracle; where it
+  diverges its behaviour is characterized. Tests are gated to capable
+  backends.
 - **AGENTS.md**: strict TDD; no test additions or changes without
   approval (all tests below are designs awaiting approval); serial test
   runs; no per-test process spawning.

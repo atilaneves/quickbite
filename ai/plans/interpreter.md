@@ -1195,8 +1195,10 @@ required:
   against the pre-slice interpreter ("Expected array."). Note: a
   temporary independence probe showed real DMD CTFE *aliases* `copy`
   and `source` in this shape while compiled code copies independently
-  (the Interpreter matches compiled code) — a CTFE-oracle divergence to
-  revisit once dmd codegen is the oracle.
+  (the Interpreter matches compiled code) — a `Ctfe` characterization
+  divergence: `SystemLinker` (compiled D) is the oracle and the Interpreter
+  agrees with it; `Ctfe`'s aliasing is pinned as what `Ctfe` does, not as
+  truth (`ai/plans/single-oracle.md`).
 - Associative arrays (all 8): DMD lowers AA operations to
   `core.internal.newaa` and `object` template hooks (`_d_aaLen`,
   `_d_aaGetRvalueX`, `_d_aaGetY`, `_d_aaIn`, `_d_aaDel`, `_d_aaEqual`,
@@ -1370,10 +1372,9 @@ support together, the chosen test is too broad for the first PR.
 - Add tree-walker-specific tests only for walker-native contracts:
   unsupported node diagnostics and environment scoping invariants.
 - Never remove or weaken an existing test to satisfy the walker.
-- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
-  backend language modules run against CTFE, so use
-  `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
-  required D language features.
+- Use `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets
+  by required D language features, not by file length or coverage counts.
+  `SystemLinker` is the oracle (`ai/plans/single-oracle.md`).
 - After each slice, run `dub test -- --random` to catch regressions.
 
 ## Assumptions
