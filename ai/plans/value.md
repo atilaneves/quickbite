@@ -86,6 +86,16 @@ probes catch (see "Test strategy").
    `typeof`/`it.typeof` (`ai/plans/repl.md`) — since display no longer
    encodes type for no-literal types (decision 2); `:t` stays
    frontend-answered for latency, not routed through a backend.
+
+   Progress 2026-06-13: `:t`/type-expression cells are now actually
+   frontend-answered. `EvalSession.typeExpressionName` resolves the type
+   from the DMD AST (the alias-probe type's `Type.toChars`, which DMD also
+   uses to compute a type's `.stringof`, so the rendering is byte-for-byte
+   identical) and `ReplSession.submit` records it on the `ReplCell`. The
+   REPL short-circuits these cells, displaying the name bare without
+   calling `backend.eval`, `Value.asCharArrayString`, or `Value.typeName`.
+   The old `.stringof`-via-backend path remains only as a fallback for
+   inputs the frontend cannot resolve.
 6. The native backend is the behaviour oracle in the absence of a formal,
    machine-verifiable language specification (it remains one option among
    many for benchmarking). CTFE keeps its oracle role for pure code per

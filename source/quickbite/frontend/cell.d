@@ -68,6 +68,15 @@ public struct EvalSession {
         return isReplTypeExpressionCell(input, moduleSource, importPaths);
     }
 
+    // The resolved type name for a type-expression cell, or null when the type
+    // cannot be resolved in the frontend. Equals `input.stringof` evaluated by
+    // a backend (DMD computes a type's `.stringof` via the same `Type.toChars`
+    // this returns), letting the REPL answer `:t`/type cells without a backend
+    // round-trip.
+    public string typeExpressionName(in string input) {
+        return resolvedTypeExpressionName(input, moduleSource, importPaths);
+    }
+
     private Cell submitImpl(
         in string input,
         in bool allowIncomplete,
@@ -1270,6 +1279,37 @@ private bool isResolvedTypeAliasCell(
     } catch (Exception) {
         return false;
     }
+}
+
+private string resolvedTypeExpressionName(
+    in string input,
+    in string moduleSource,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseModuleUncached;
+
+    try {
+        auto moduleResult = parseModuleUncached(
+            moduleSource ~ typeExpressionProbeSource(input),
+            importPaths,
+        );
+        auto alias_ = syntheticTypeAlias(moduleResult.module_);
+        return alias_ is null ? null : typeName(alias_.type);
+    } catch (Exception) {
+        return null;
+    }
+}
+
+private string typeName(imported!"dmd.mtype".Type type) {
+    import std.string: fromStringz;
+
+    // @trusted: DMD's Type.toChars is not @safe; it reads the already-resolved
+    // type and returns a borrowed C string we immediately copy with idup.
+    static const(char)* toChars(imported!"dmd.mtype".Type type) @trusted {
+        return type.toChars;
+    }
+
+    return fromStringz(toChars(type)).idup;
 }
 
 private string typeExpressionProbeSource(in string input) @safe pure {

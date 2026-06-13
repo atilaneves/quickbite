@@ -25,6 +25,9 @@ public struct Repl {
         import quickbite.lang: Value;
 
         const result = submitResult(input);
+        if (result.display == ReplDisplay.typeName)
+            return result.toString;
+
         return result.value == Value.void_ ? null : result.toString;
     }
 
@@ -78,6 +81,16 @@ public struct Repl {
             if (cell.kind == ReplCellKind.incomplete) {
                 pendingInput = source;
                 return ReplResult(Value.void_);
+            }
+
+            // A type-expression cell's type is resolved by the frontend (DMD
+            // has the type), so the REPL answers it without a backend
+            // round-trip and displays the name bare.
+            if (cell.kind == ReplCellKind.typeExpression &&
+                cell.typeName !is null) {
+                pendingInput = null;
+                session.accept(cell);
+                return ReplResult(cell.typeName);
             }
 
             const result = evalReplCell(cell);
@@ -136,6 +149,26 @@ public struct Repl {
 private struct ReplResult {
     public imported!"quickbite.lang".Value value;
     public ReplDisplay display;
+    // The frontend-resolved type name for a typeExpression cell, displayed
+    // bare. The backend is never consulted for these cells.
+    public string typeName;
+
+    public this(in imported!"quickbite.lang".Value value) @safe pure {
+        this.value = value;
+    }
+
+    public this(
+        in imported!"quickbite.lang".Value value,
+        in ReplDisplay display,
+    ) @safe pure {
+        this.value = value;
+        this.display = display;
+    }
+
+    public this(in string typeName) @safe pure {
+        this.display = ReplDisplay.typeName;
+        this.typeName = typeName;
+    }
 
     public string toString() const @safe pure {
         final switch (display) with (ReplDisplay) {
@@ -144,6 +177,8 @@ private struct ReplResult {
             case string:
                 return `"` ~ this.value.asCharArrayString.userValueString ~ `"` ~
                     this.value.stringTypeAnnotation;
+            case typeName:
+                return this.typeName.userDiagnostic;
         }
     }
 }
@@ -151,6 +186,7 @@ private struct ReplResult {
 private enum ReplDisplay {
     value,
     string,
+    typeName,
 }
 
 private ReplDisplay replDisplay(
