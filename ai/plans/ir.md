@@ -325,12 +325,22 @@ result-less call for a DMD `void` call expression, the callee compiles to
 This is only direct void-call/return support for the observed shape; it is not
 general `void` expression handling, explicit `return;` coverage, or richer
 control flow.
+The rest of `tests/ut/backends/runner/ct/diagnostics.d` is now promoted for
+`IR`. That module forced the remaining narrow diagnostics support for integer
+`<=`, `>=`, and `!=`, explicit and dynamic assert messages, lazy assert
+message evaluation, simple `if`/`else`, scalar `ref` parameter writeback,
+null-class method/field/`typeid` diagnostics, class/null identity diagnostics,
+and void-initialized scalar local reads. The VM also evaluates assertion
+comparisons with D-visible result metadata where the diagnostic requires
+unsigned ordering, while keeping the implementation scoped to the promoted
+diagnostics shapes.
 
 ### Next Slice Handoff
 
-Continue in `tests/ut/backends/runner/ct/diagnostics.d`. Verify the current
-checkout before editing, then promote the next smallest existing backend
-matrix that still excludes `IR`.
+Continue with the next module in `ai/plans/backend-test-modules-order.md`,
+currently `tests/ut/backends/runner/ct/arrays.d`. Verify the current checkout
+before editing, then promote the next smallest existing backend matrix that
+can honestly run through the current IR pipeline.
 
 The completed cast slices promoted only existing backend matrices and added a
 backend-local `Cast` instruction plus VM support for the observed `f64` to
