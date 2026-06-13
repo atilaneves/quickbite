@@ -43,6 +43,7 @@ private struct Walker {
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
+    private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
     private size_t allocationCount;
     private Value result;
@@ -50,6 +51,7 @@ private struct Walker {
     private FuncDeclaration currentFunction;
     private Value thisValue;
     private bool hasThis;
+    private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
@@ -87,6 +89,11 @@ private struct Walker {
 
         if (auto expression = statement.isExpStatement) {
             result = runExpression(expression.exp);
+            return;
+        }
+
+        if (auto dtor = statement.isDtorExpStatement) {
+            result = runExpression(dtor.exp);
             return;
         }
 
@@ -966,6 +973,10 @@ private struct Walker {
         child.currentFunction = function_;
         child.result = Value(false);
         child.locals = locals.dup;
+        if (auto var = receiverExpression.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (auto aliases = variable in structArrayFieldAliases)
+                    child.thisStructArrayFieldAliases = *aliases;
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -990,12 +1001,20 @@ private struct Walker {
 
         child.runStatement(function_.fbody);
         writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackThisStructArrayFieldAliases(child);
         writeBackThis(receiverExpression, child.thisValue);
 
         if (function_.isCtorDeclaration !is null)
             return child.thisValue;
 
         return child.result;
+    }
+
+    private void writeBackThisStructArrayFieldAliases(ref Walker child) {
+        foreach (_, sourceVariable; child.thisStructArrayFieldAliases.sources) {
+            if (auto value = sourceVariable in child.locals)
+                locals[sourceVariable] = *value;
+        }
     }
 
     private void writeBackThis(
@@ -1209,6 +1228,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
             return;
         }
 
@@ -1225,6 +1245,11 @@ private struct Walker {
             return;
         }
 
+        if (auto index = target.isIndexExp) {
+            writeIndexLocation(index, value);
+            return;
+        }
+
         // `*ptr = value`: update the pointer variable so its target holds value.
         if (auto ptr = target.isPtrExp) {
             writeLocation(ptr.e1, runExpression(ptr.e1).withPointerTarget(value));
@@ -1235,6 +1260,40 @@ private struct Walker {
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    private void writeIndexLocation(
+        imported!"dmd.expression".IndexExp index,
+        in Value value,
+    ) {
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+
+        if (auto dot = index.e1.isDotVarExp) {
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const updatedArray = receiver.structFieldAt(fieldIndex)
+                .withArrayElement(arrayIndex, value);
+            writeLocation(dot.e1, receiver.withStructField(fieldIndex, updatedArray));
+            if (dot.e1.isThisExp !is null)
+                writeThroughThisStructArrayFieldAlias(fieldIndex, arrayIndex, value);
+            return;
+        }
+
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter assignment target.");
+
+        locals[variable] = current.withArrayElement(arrayIndex, value);
+        writeThroughSliceAlias(variable, arrayIndex, value);
+        uninitializedLocals.remove(variable);
     }
 
     private size_t structFieldIndex(imported!"dmd.expression".DotVarExp dot) {
@@ -1862,6 +1921,23 @@ private struct Walker {
         uninitializedLocals.remove(alias_.source);
     }
 
+    private void writeThroughThisStructArrayFieldAlias(
+        in size_t fieldIndex,
+        in size_t index,
+        in Value value,
+    ) {
+        auto sourceVariable = fieldIndex in thisStructArrayFieldAliases.sources;
+        if (sourceVariable is null)
+            return;
+
+        auto source = *sourceVariable in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter struct field alias target.");
+
+        locals[*sourceVariable] = source.withArrayElement(index, value);
+        uninitializedLocals.remove(*sourceVariable);
+    }
+
     private Value runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
@@ -1877,6 +1953,7 @@ private struct Walker {
         if (variable._init is null || variable._init.isExpInitializer is null) {
             const value = defaultValue(variable);
             locals[variable] = value;
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1894,6 +1971,7 @@ private struct Walker {
                 locals[variable] = value;
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
+                structArrayFieldAliases.remove(variable);
                 return value;
             }
 
@@ -1903,6 +1981,7 @@ private struct Walker {
                 locals[variable] = value;
                 uninitializedLocals.remove(variable);
                 sliceAliases.remove(variable);
+                structArrayFieldAliases.remove(variable);
                 return value;
             }
 
@@ -1921,6 +2000,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1930,6 +2010,7 @@ private struct Walker {
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             recordSliceAlias(variable, slice, lower);
+            structArrayFieldAliases.remove(variable);
             return value;
         }
 
@@ -1937,8 +2018,46 @@ private struct Walker {
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
+        recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private void recordStructArrayFieldAliases(
+        VarDeclaration variable,
+        imported!"dmd.expression".Expression initializer,
+    ) {
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
+
+        auto literal = initializer.isStructLiteralExp;
+        if (literal is null || literal.elements is null) {
+            structArrayFieldAliases.remove(variable);
+            return;
+        }
+
+        StructArrayFieldAliases aliases;
+        foreach (index, element; *literal.elements) {
+            if (element is null)
+                continue;
+
+            auto var = element.isVarExp;
+            if (var is null)
+                continue;
+
+            auto source = var.var.isVarDeclaration;
+            if (source is null)
+                continue;
+
+            if (!isDynamicArrayType(source.type))
+                continue;
+
+            aliases.sources[index] = source;
+        }
+
+        if (aliases.sources.length == 0)
+            structArrayFieldAliases.remove(variable);
+        else
+            structArrayFieldAliases[variable] = aliases;
     }
 
     private void recordAssocArraySlotAlias(
@@ -2052,6 +2171,11 @@ private string expressionChars(imported!"dmd.expression".Expression expression) 
 private struct SliceAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public size_t lower;
+}
+
+
+private struct StructArrayFieldAliases {
+    public imported!"dmd.declaration".VarDeclaration[size_t] sources;
 }
 
 

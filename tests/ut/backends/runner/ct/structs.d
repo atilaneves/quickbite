@@ -879,7 +879,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Destructors, postblits, and lifetime effects.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.scopeDestructorRunsAtCtfe." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
