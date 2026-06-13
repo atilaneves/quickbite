@@ -2007,7 +2007,7 @@ private struct Walker {
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            const value = defaultValue(variable);
+            const value = defaultLocalValue(variable);
             locals[variable] = value;
             structArrayFieldAliases.remove(variable);
             return value;
@@ -2049,10 +2049,19 @@ private struct Walker {
             return Value.void_;
         }
 
-        import quickbite.frontend.dmd.types: isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isAssocArrayType, isDynamicArrayType;
 
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             auto value = Value.arrayValue([]);
+            locals[variable] = value;
+            uninitializedLocals.remove(variable);
+            sliceAliases.remove(variable);
+            structArrayFieldAliases.remove(variable);
+            return value;
+        }
+
+        if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
+            auto value = Value.assocArrayValue([], []);
             locals[variable] = value;
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
@@ -2077,6 +2086,15 @@ private struct Walker {
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
+    }
+
+    private Value defaultLocalValue(VarDeclaration variable) {
+        import quickbite.frontend.dmd.types: isAssocArrayType;
+
+        if (isAssocArrayType(variable.type))
+            return Value.assocArrayValue([], []);
+
+        return defaultValue(variable);
     }
 
     private void recordStructArrayFieldAliases(

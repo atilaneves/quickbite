@@ -1136,6 +1136,27 @@ index-read, and equality assertion message support; signal was verified by
 temporarily mutating the append handler to write through the slice alias, which
 made the promoted fixture fail before the expected `4 != 5` assertion message.
 
+Arrays promotion probe:
+`assocArray.insertionGrowsAndOverwrites` in
+`tests/ut/backends/runner/ct/arrays.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only arrays module run left exactly one failing promoted test:
+
+- `assocArray.insertionGrowsAndOverwrites.Interpreter`: assigning
+  `values[first] = first + 30` into a default-initialized `int[int]` local
+  reports `Expected associative array.`
+
+Failure cause: the interpreter's associative-array index assignment path
+expects an existing AA value and does not treat a null/default-initialized
+associative-array local as an empty AA that can accept first insertion. The
+fix should be limited to local AA insertion/overwrite for the promoted shape;
+existing missing-key read diagnostics should remain unchanged.
+
+Resolution: default-initialized and explicit-null associative-array locals now
+materialize as empty AA values in the interpreter, allowing first insertion and
+overwrite while preserving missing-key read diagnostics. The focused promoted
+test and the missing-key regression both pass.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`

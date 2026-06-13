@@ -932,10 +932,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-// Interpreter cannot index-assign into a still-null AA ("Expected associative
-// array."); Bytecode ("Unsupported bytecode assignment target.") and IR
-// ("Unsupported IR expression `null`") cannot run AA insertion.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode ("Unsupported bytecode assignment target.") and IR ("Unsupported
+// IR expression `null`") cannot run AA insertion.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("assocArray.insertionGrowsAndOverwrites." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
