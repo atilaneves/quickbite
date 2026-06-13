@@ -357,17 +357,31 @@ Dependencies are noted; order within independent slices is flexible.
    module/local history as `TranscriptCell[]` and joins it only when
    synthesizing snapshot source; no new tests). Verified with `ninja bin/ut`
    and `bin/ut --random` (seed `405471795`).
-2. **Per-cell `#line` attribution + diagnostic cleanup.** Needs approved
-   attribution tests.
-3. **Last-value binding** (T4). Independent of 1 in principle, trivial
-   after it.
+2. ~~**Per-cell `#line` attribution + diagnostic cleanup**~~ (done in
+   `repl-line-attribution` — accepted transcript cells now emit
+   `#line 1 "<repl cell N>"`, so diagnostics report cell-local source
+   locations instead of cumulative invisible transcript lines). Verified
+   with `ninja bin/ut` and `bin/ut --random` (seed `377061793`).
+3. ~~**Last-value binding** (T4)~~ (done in `repl-line-attribution` —
+   expression cells expose the latest accepted result as `it`; failed
+   expression cells do not advance it). Verified with `ninja bin/ut` and
+   `bin/ut --random` (seed `4078371892`).
 4. **Redefinition** (T5; depends on 1): module-decl replacement first,
-   local rename-the-old second.
-5. **Module-level variables** (T2, T3; classification change admitting
-   `VarDeclaration`): sound under replay because D requires module-level
-   initializers to be static; runtime initialization arrives via
-   statements (replayed, pure-only) or, later, lifting on the native
-   path.
+   local rename-the-old second. Module-level same-signature function
+   replacement is done in `repl-line-attribution`; rejected replacements
+   keep the old definition; distinct function overloads are pinned as
+   preserved. Simple local variable rebinding is done for statement cells
+   and preserves intervening references to the old binding. Verified with
+   `ninja bin/ut` and `bin/ut --random` (latest seed `3968792440`).
+5. **Module-level variables** (T2, T3): T2 is partially done in
+   `repl-line-attribution` for the Interpreter. A module function that
+   references a prior REPL local declaration promotes that declaration into
+   the module transcript, so `int counter; int get() { return counter; }`
+   can observe later statement mutation under the Interpreter while
+   preserving existing local/display semantics for ordinary declarations.
+   CTFE's global-mutation rejection is pinned. Verified with
+   `ninja bin/ut`, `bin/ut`, and `bin/ut --random` (seed `3004154049`);
+   T3 module constructors and native lifting remain pending.
 6. ~~**interfaces.md migration**~~ (done — single `eval` primitive,
    failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
    tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split

@@ -14,6 +14,48 @@ unittest {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "x + 1",
+                "auto x = 1;",
+                "x + 1",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "2"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localRebindingPreservesInterveningReferences." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "auto y = x + 1;",
+                "auto x = 1;",
+                "y",
+                "x",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "1"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -56,6 +98,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.lastValueBindingDisplaysLatestExpressionValue." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["41 + 1", "it", "it", ":q"],
+        );
+
+        output.should == ["42", "42", "42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.failedExpressionDoesNotAdvanceLastValueBinding." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("1").should == Value(1);
+        void submitFailure() {
+            repl.submit("unknownIdentifier");
+        }
+        submitFailure.shouldThrowWithMessage(
+            "undefined identifier `unknownIdentifier`",
+        );
+        repl.submit("it").should == Value(1);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -66,6 +140,40 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
         );
 
         output.should == ["0"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("repl.backend.moduleLevelVariablesAreVisibleToFunctions." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        repl.submit("counter = 5;").should == Value.void_;
+        repl.submit("get()").should == Value(5);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.moduleLevelVariablesRejectCtfeMutation." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        void mutateCounter() {
+            repl.submit("counter = 5;");
+        }
+        mutateCounter.shouldThrowWithMessage(
+            "static variable `counter` cannot be read at compile time",
+        );
     }
 }
 
@@ -108,6 +216,45 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
         );
 
         output.should == ["42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.replacesSameSignatureFunctionDeclarations." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int answer() { return 41; }",
+                "int answer() { return 42; }",
+                "answer()",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.preservesFunctionOverloads." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int twice(int i) { return i * 2; }",
+                "long twice(long value) { return value * 3; }",
+                "twice(21)",
+                "twice(14L)",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "42L"];
     }
 }
 
@@ -579,7 +726,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -599,7 +746,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(3) failed: 41 != 42";
+            "unittest at <repl cell 3>(1) failed: 41 != 42";
     }
 }
 
@@ -607,7 +754,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
-        import std.algorithm.searching: canFind;
         import quickbite.repl: Repl;
 
         auto repl = Repl(newBackend!backend);
@@ -628,10 +774,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         }
 
         const message = runTests.shouldThrow.msg;
-        message.canFind("unittest at <repl>(2) failed: 1 != 2").should ==
-            true;
-        message.canFind("unittest at <repl>(7) failed: 3 != 4").should ==
-            true;
+        "unittest at <repl cell 1>(2) failed: 1 != 2".should.be in message;
+        "unittest at <repl cell 2>(2) failed: 3 != 4".should.be in message;
     }
 }
 
@@ -663,7 +807,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -800,12 +944,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int twice(int i) { return i; }");
+        repl.submit("struct Twice { }");
         void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+            repl.submit("struct Twice { }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+        const message = duplicateDeclaration.shouldThrow.msg;
+        "at <repl cell 1>(1)".should.be in message;
     }
 }
 
@@ -818,11 +962,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         auto repl = Repl(newBackend!backend);
 
         repl.submit("int twice(int i) { return i * 2; }").should == Value.void_;
-        void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+        void rejectedReplacement() {
+            repl.submit("int twice(int i) { return unknown; }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+        rejectedReplacement.shouldThrowWithMessage(
+            "undefined identifier `unknown`",
+        );
         repl.submit("twice(21)").should == Value(42);
     }
 }

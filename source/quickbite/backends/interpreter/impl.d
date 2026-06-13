@@ -953,9 +953,11 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.locals = function_.isNested ? locals.dup : datasegLocals;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
         return child.result;
@@ -975,8 +977,12 @@ private struct Walker {
         child.locals = locals.dup;
         if (auto var = receiverExpression.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
-                if (auto aliases = variable in structArrayFieldAliases)
+                if (auto aliases = variable in structArrayFieldAliases) {
                     child.thisStructArrayFieldAliases = *aliases;
+                    foreach (_, sourceVariable; aliases.sources)
+                        if (auto value = sourceVariable in locals)
+                            child.locals[sourceVariable] = *value;
+                }
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -1000,6 +1006,7 @@ private struct Walker {
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        writeBackGlobals(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         writeBackThis(receiverExpression, child.thisValue);
@@ -1008,6 +1015,23 @@ private struct Walker {
             return child.thisValue;
 
         return child.result;
+    }
+
+    private void writeBackGlobals(ref Walker child) {
+        foreach (variable, value; child.locals) {
+            if (variable.isDataseg)
+                locals[variable] = value;
+        }
+    }
+
+    private Value[VarDeclaration] datasegLocals() {
+        Value[VarDeclaration] result;
+        foreach (variable, value; locals) {
+            if (variable.isDataseg)
+                result[variable] = value;
+        }
+
+        return result;
     }
 
     private void writeBackThisStructArrayFieldAliases(ref Walker child) {
