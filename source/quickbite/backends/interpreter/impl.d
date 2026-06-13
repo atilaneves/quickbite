@@ -1435,9 +1435,14 @@ private struct Walker {
     }
 
     private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        import quickbite.backends.interpreter.messages: stringChars;
+        import quickbite.backends.interpreter.messages: stringChars,
+            stringCodeUnits;
 
-        return Value.stringValue(stringChars(string_));
+        switch (string_.sz) {
+            case 2: return Value.stringValue(stringCodeUnits!wchar(string_));
+            case 4: return Value.stringValue(stringCodeUnits!dchar(string_));
+            default: return Value.stringValue(stringChars(string_));
+        }
     }
 
     private Value arrayValue(

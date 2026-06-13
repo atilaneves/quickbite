@@ -618,5 +618,8 @@ private string compareOperandMessage(
     if (value.isIntegerCompatibleScalar)
         return text(value.asLong);
 
+    if (value.isFloatingScalar)
+        return value.dText;
+
     return text(value);
 }

@@ -142,7 +142,8 @@ private struct ReplResult {
             case value:
                 return this.value.toString.userDiagnostic;
             case string:
-                return `"` ~ this.value.asCharArrayString.userValueString ~ `"`;
+                return `"` ~ this.value.asCharArrayString.userValueString ~ `"` ~
+                    this.value.stringTypeAnnotation;
         }
     }
 }
@@ -351,7 +352,8 @@ private SyntheticNameReplacement syntheticNameReplacement(in string input)
 
 private bool isSyntheticEvalFunctionName(in string value)
 @safe pure nothrow {
-    return syntheticEvalFunctionNameReplacement(value).consumed == value.length;
+    return value.length != 0 &&
+        syntheticEvalFunctionNameReplacement(value).consumed == value.length;
 }
 
 private SyntheticNameReplacement syntheticEvalFunctionNameReplacement(

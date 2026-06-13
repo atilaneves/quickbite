@@ -356,10 +356,16 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 
         const output = runReplLoop(
             newBackend!backend,
-            [`"wide"w`, `"wide"d`, `"\U0001F600"d`, ":q"],
+            [`"wide"w`, `"wide"d`, `"\U0001F600"d`, `""w`, `""d`, ":q"],
         );
 
-        output.should == [`"wide"`, `"wide"`, `"` ~ "\U0001F600" ~ `"`];
+        output.should == [
+            `"wide"w`,
+            `"wide"d`,
+            `"` ~ "\U0001F600" ~ `"d`,
+            `""w`,
+            `""d`,
+        ];
     }
 }
 
@@ -377,7 +383,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
             ],
         );
 
-        output.should == [`"ab"`, `"ab"`];
+        output.should == [`"ab"w`, `"ab"d`];
     }
 }
 
@@ -518,11 +524,61 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             "42UL",
             "3.8",
             "3.8f",
-            "42: byte",
-            "42: short",
-            "42: ubyte",
-            "42: ushort",
-            "3.8: real",
+            "42",
+            "42",
+            "42",
+            "42",
+            "3.8L",
+        ];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+
+    @("repl.backend.characterScalarDisplayCollapsesToCharLiteral." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "'a'",
+                "cast(wchar) 'a'",
+                "cast(dchar) 'a'",
+                "'\U0001F600'",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "'a'",
+            "'a'",
+            "'a'",
+            "'\U0001F600'",
+        ];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+
+    @("repl.backend.wholeFloatingScalarDisplayKeepsDecimalPoint." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "3.0",
+                "3.0f",
+                "cast(real) 3.0",
+                ":q",
+            ],
+        );
+
+        output.should == [
+            "3.0",
+            "3.0f",
+            "3.0L",
         ];
     }
 }

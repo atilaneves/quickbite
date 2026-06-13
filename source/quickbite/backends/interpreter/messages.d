@@ -65,6 +65,14 @@ public bool isTruthy(in imported!"quickbite.lang".Value value) {
     return value.castTo!bool == Value(true);
 }
 
+public T[] stringCodeUnits(T)(imported!"dmd.expression".StringExp string_) {
+    T[] values;
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        values ~= cast(T) string_.getIndex(index);
+
+    return values;
+}
+
 public char[] stringChars(imported!"dmd.expression".StringExp string_) {
     import std.utf: encode;
 
@@ -261,13 +269,16 @@ public string equalityOperandMessage(
         return text(isTruthy(value));
 
     if (isCharExpression(expression))
-        return text("'", value, "'");
+        return text("'", value.asChar, "'");
 
     if (isUnsignedLongExpression(expression))
         return text(value.asLong);
 
     if (isIntegralExpression(expression))
         return text(value.asLong);
+
+    if (value.isFloatingScalar)
+        return value.dText;
 
     return text(value);
 }

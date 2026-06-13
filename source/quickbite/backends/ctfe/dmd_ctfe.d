@@ -152,7 +152,21 @@ private imported!"quickbite.lang".Value stringValue(
 ) {
     import quickbite.lang: Value;
 
-    return Value.stringValue(stringChars(string_));
+    switch (string_.sz) {
+        case 2: return Value.stringValue(stringCodeUnits!wchar(string_));
+        case 4: return Value.stringValue(stringCodeUnits!dchar(string_));
+        default: return Value.stringValue(stringChars(string_));
+    }
+}
+
+private T[] stringCodeUnits(T)(
+    imported!"dmd.expression".StringExp string_,
+) {
+    T[] values;
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        values ~= cast(T) string_.getIndex(index);
+
+    return values;
 }
 
 private char[] stringChars(
