@@ -1588,10 +1588,33 @@ private struct Walker {
     ) {
         Value[] fields;
         if (literal.elements !is null)
-            foreach (element; *literal.elements)
-                fields ~= element is null ? Value.void_ : runExpression(element);
+            foreach (index, element; *literal.elements)
+                fields ~= element is null
+                    ? Value.void_
+                    : structLiteralFieldValue(literal, index, runExpression(element));
 
         return Value.structValue(structLiteralName(literal), fields);
+    }
+
+    private Value structLiteralFieldValue(
+        imported!"dmd.expression".StructLiteralExp literal,
+        in size_t index,
+        in Value value,
+    ) {
+        auto field = structLiteralField(literal, index);
+        if (field is null)
+            return value;
+
+        auto staticArray = field.type is null ? null : field.type.toBasetype.isTypeSArray;
+        if (staticArray is null || value.isArray)
+            return value;
+
+        const length = cast(size_t) staticArray.dim.toInteger;
+        Value[] elements;
+        foreach (_; 0 .. length)
+            elements ~= value;
+
+        return Value.arrayValue(elements);
     }
 
     // duplicate keys keep the last value, as in compiled D
@@ -2001,6 +2024,17 @@ private string structLiteralName(
     imported!"dmd.expression".StructLiteralExp literal,
 ) @safe {
     return literal.sd is null ? "" : literal.sd.ident.toString.idup;
+}
+
+
+private imported!"dmd.declaration".VarDeclaration structLiteralField(
+    imported!"dmd.expression".StructLiteralExp literal,
+    in size_t index,
+) @safe {
+    if (literal.sd is null || index >= literal.sd.fields.length)
+        return null;
+
+    return literal.sd.fields[index];
 }
 
 
