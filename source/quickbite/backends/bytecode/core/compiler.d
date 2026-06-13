@@ -29,7 +29,8 @@ private struct Compiler {
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
         ScalarType, isSigned, size;
     import dmd.declaration: VarDeclaration;
-    import dmd.expression: AssertExp, CallExp, CastExp, Expression, StringExp;
+    import dmd.expression:
+        AssertExp, BinExp, CallExp, CastExp, Expression, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -245,42 +246,49 @@ private struct Compiler {
     }
 
     private Operand compileAddExpression(Expression expression) {
-        import dmd.expression: BinExp;
-        import std.conv: text;
-
         auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
-        const lhs = compileExpression(add.e1);
-        const rhs = compileExpression(add.e2);
-        const type = scalarType(expression.type);
-        if (type != ScalarType.int_ ||
-            lhs.type != ScalarType.int_ ||
-            rhs.type != ScalarType.int_)
-            throw new Exception(text(
-                "Unsupported addition in bytecode core: ",
-                expressionChars(expression),
-            ));
-
-        const offset = allocate(type);
-        _code ~= Instruction(Op.addInt4, offset, lhs.offset, rhs.offset);
-        return Operand(offset, type);
+        assert(add !is null);
+        return compileIntBinaryExpression(
+            add,
+            Op.addInt4,
+            ScalarType.int_,
+            "Unsupported addition in bytecode core: ",
+        );
     }
 
     private Operand compileEqualExpression(Expression expression) {
-        import dmd.expression: BinExp;
+        auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        assert(equal !is null);
+        return compileIntBinaryExpression(
+            equal,
+            Op.equal4,
+            ScalarType.bool_,
+            "Unsupported equality in bytecode core: ",
+        );
+    }
+
+    private Operand compileIntBinaryExpression(
+        BinExp expression,
+        in Op op,
+        in ScalarType resultType,
+        in string unsupportedMessage,
+    ) {
         import std.conv: text;
 
-        auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
-        const lhs = compileExpression(equal.e1);
-        const rhs = compileExpression(equal.e2);
-        if (lhs.type != ScalarType.int_ || rhs.type != ScalarType.int_)
+        const lhs = compileExpression(expression.e1);
+        const rhs = compileExpression(expression.e2);
+        if (lhs.type != ScalarType.int_ ||
+            rhs.type != ScalarType.int_ ||
+            (resultType == ScalarType.int_ &&
+                scalarType(expression.type) != ScalarType.int_))
             throw new Exception(text(
-                "Unsupported equality in bytecode core: ",
+                unsupportedMessage,
                 expressionChars(expression),
             ));
 
-        const offset = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.equal4, offset, lhs.offset, rhs.offset);
-        return Operand(offset, ScalarType.bool_);
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, resultType);
     }
 
     private Operand extend(in Operand source, in ScalarType target) {

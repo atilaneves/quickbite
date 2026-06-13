@@ -14,7 +14,6 @@ package(quickbite.backends.bytecode) ubyte[] run(
     scope CompileFunction compileFunction,
 ) {
     import quickbite.backends.bytecode.core.program: Op, size;
-    import std.bitmanip: nativeToLittleEndian;
 
     auto stack = new ubyte[](program.functions[0].frameSize);
     Frame[] frames;
@@ -27,7 +26,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
         final switch (instruction.op) with (Op) {
             case loadConstant:
                 const ubyte[ulong.sizeof] bytes =
-                    nativeToLittleEndian(program.constants[instruction.b]);
+                    littleEndianBytes(program.constants[instruction.b]);
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
                 ] = bytes[0 .. instruction.c];
@@ -44,7 +43,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend1to4:
-                const ubyte[int.sizeof] signWidened = nativeToLittleEndian(
+                const ubyte[int.sizeof] signWidened = littleEndianBytes(
                     cast(int) littleEndianScalar!byte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
@@ -53,7 +52,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case zeroExtend1to4:
-                const ubyte[int.sizeof] zeroWidened = nativeToLittleEndian(
+                const ubyte[int.sizeof] zeroWidened = littleEndianBytes(
                     cast(int) littleEndianScalar!ubyte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
@@ -62,7 +61,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend4to8:
-                const ubyte[long.sizeof] extended = nativeToLittleEndian(
+                const ubyte[long.sizeof] extended = littleEndianBytes(
                     cast(long) littleEndianScalar!int(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
@@ -71,7 +70,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case addInt4:
-                const ubyte[int.sizeof] sum = nativeToLittleEndian(
+                const ubyte[int.sizeof] sum = littleEndianBytes(
                     littleEndianScalar!int(stack, base + instruction.b) +
                     littleEndianScalar!int(stack, base + instruction.c),
                 );
@@ -226,12 +225,24 @@ private string operandText(
     return text(signed);
 }
 
+private ubyte[T.sizeof] littleEndianBytes(T)(in T value)
+    @safe @nogc nothrow pure
+{
+    ubyte[T.sizeof] bytes;
+    const raw = cast(ulong) value;
+    foreach (i; 0 .. T.sizeof)
+        bytes[i] = cast(ubyte) ((raw >> (8 * i)) & 0xff);
+
+    return bytes;
+}
+
 private T littleEndianScalar(T)(
     in ubyte[] stack,
     in size_t offset,
-) @safe pure {
-    import std.bitmanip: littleEndianToNative;
+) @safe @nogc nothrow pure {
+    ulong raw;
+    foreach (i; 0 .. T.sizeof)
+        raw |= cast(ulong) stack[offset + i] << (8 * i);
 
-    const ubyte[T.sizeof] raw = stack[offset .. offset + T.sizeof];
-    return littleEndianToNative!T(raw);
+    return cast(T) raw;
 }
