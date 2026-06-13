@@ -386,13 +386,20 @@ Dependencies are noted; order within independent slices is flexible.
    failure-as-data; slices 1–3 in `PLAN.md`) — prerequisite for 7,
    tracked in `ai/plans/interfaces.md`. The `Evaluator`/`Runner` split
    is deferred and is not a prerequisite for backend-owned sessions.
-7. **Backend-owned sessions** (depends on 6): introduce
-   `createReplSession`/`ReplSession`; pure backends wrap today's replay
-   behaviour behind it (no behaviour change, suite stays green); frontend
-   moves to the session API.
+7. ~~**Backend-owned sessions**~~ (done in `repl-backend-sessions` —
+   `Backend` now provides an overrideable replay-backed
+   `createReplSession` default, pure backends run REPL cells through
+   `ReplSession.submit`, and the REPL keeps separate frontend and backend
+   sessions so later persistent backends can own execution state). Verified
+   with `ninja bin/ut` and `bin/ut --random` (seed `3527759054`).
 8. **Formatter prelude** (the canonical display formatter,
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
-   compiled unittests).
+   compiled unittests). Initial CTFE-capable prelude cases are done in
+   `repl-backend-sessions`: `__quickbiteFormat(42)` renders `"42"`,
+   `__quickbiteFormat('a')` renders `"'a'"`,
+   `__quickbiteFormat("quickbite")` renders `"\"quickbite\""`, and
+   `__quickbiteFormat(3.0)` renders `"3.0"`. Verified with
+   `ninja bin/ut` and `bin/ut --random` (latest seed `2822468755`).
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on

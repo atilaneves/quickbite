@@ -2,7 +2,36 @@ module ut.bin.repl;
 
 
 import ut.backends;
+import quickbite.repl_prelude: __quickbiteFormat;
 
+
+@("repl.formatter.rendersIntegerLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat(42);
+
+    actual.should == "42";
+}
+
+@("repl.formatter.rendersCharacterLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat('a');
+
+    actual.should == "'a'";
+}
+
+@("repl.formatter.rendersStringLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat("quickbite");
+
+    actual.should == `"quickbite"`;
+}
+
+@("repl.formatter.rendersWholeDoubleWithDecimalPointAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat(3.0);
+
+    actual.should == "3.0";
+}
 
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
