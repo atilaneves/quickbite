@@ -19,6 +19,13 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == "'a'";
 }
 
+@("repl.formatter.rendersWholeDoubleWithDecimalPointAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat(3.0);
+
+    actual.should == "3.0";
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;
