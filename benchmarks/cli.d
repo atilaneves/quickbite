@@ -1,10 +1,9 @@
 module benchmarks.cli;
 
 import benchmarks.harness: measure, Result;
-import quickbite.backends.runner: ExecutionMode, Runner, TestResult, runTests;
+import benchmarks.backends: BackendEnv, makeRunners;
+import quickbite.backends.runner: Runner, TestResult, runTests;
 import quickbite.benchmarks: moduleDisplayName;
-import quickbite.backends.ctfe: Ctfe;
-import quickbite.backends.native: SystemLinker, SystemLinkerInputs;
 import quickbite.frontend.compiler: parseModule, parseModuleUncached;
 import dmd.dmodule: Module;
 
@@ -49,15 +48,16 @@ public void run(string[] args) {
 
     string[] fixtures    = args[1 .. $].dup;
     string[] dubFixtures;
-    string[] dubLinkFiles;
-    string[] dubArchiveImportPaths;
+    BackendEnv env;
 
     if (dubPkg.length > 0) {
         auto dubInfo = resolveDubPkg(dubPkg);
         importPaths ~= dubInfo.importPaths;
         dubFixtures  = dubInfo.fixtures;
-        dubLinkFiles = dubInfo.linkFiles;
-        dubArchiveImportPaths = dubInfo.archiveImportPaths;
+        // The raw dub import paths, not the merged importPaths (which also
+        // carries CLI --import-path args): the backend derives the archive
+        // import paths from these and the package root.
+        env = BackendEnv(dubInfo.importPaths, dubInfo.linkFiles, dubInfo.packageRoot);
     }
 
     if (fixtures.length == 0 && dubFixtures.length == 0)
@@ -72,18 +72,7 @@ public void run(string[] args) {
 
     printRunHeader(warmup, runs);
 
-    Runner[string] runners;
-    runners["ctfe"] = new Ctfe;
-    // Like `dub test`: dependency objects come from the dub-built archives;
-    // only the project under test is codegen'd per run.
-    runners["system-linker"] = new SystemLinker(
-        ExecutionMode.runtime,
-        SystemLinkerInputs(
-            dubLinkFiles,
-            dubArchiveImportPaths,
-            dubPkg.length > 0,
-        ),
-    );
+    auto runners = makeRunners(env);
 
     if (backendNames.length == 0)
         backendNames = ["ctfe", "system-linker"];
@@ -125,20 +114,41 @@ public void run(string[] args) {
         writeln;
     }
 
+    BenchmarkUnit[] units;
+    foreach (run; fixtureRuns)
+        units ~= BenchmarkUnit(run.displayName, [run], false);
+    if (dubRuns.length > 0)
+        units ~= BenchmarkUnit(dubPkg, dubRuns, true);
+
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     foreach (name; backendNames) {
         auto runner = runners[name];
 
-        foreach (run; fixtureRuns) {
-            if (!check.passingPairs.get(pairKey(run.displayName, name), false))
+        foreach (unit; units) {
+            const allPassing = unit.members.all!(
+                member => check.passingPairs.get(pairKey(member.displayName, name), false),
+            );
+            if (!allPassing) {
+                // A standalone fixture's own skip reason was already printed by
+                // checkRunnerResults; a group needs its own line because it is
+                // reported under one name its failing member does not carry.
+                if (unit.grouped)
+                    stderr.writefln(
+                        "skipping %s %s: failing fixtures", unit.displayName, name,
+                    );
                 continue;
+            }
+
+            Module[] modules;
+            foreach (member; unit.members)
+                modules ~= member.module_;
 
             try {
                 printRow(
-                    run.displayName, name,
+                    unit.displayName, name,
                     measure(
-                        () { runner.runTests(run.module_); },
+                        () { runTests(runner, modules); },
                         warmup,
                         runs,
                     ),
@@ -146,47 +156,9 @@ public void run(string[] args) {
             } catch (Exception e) {
                 stderr.writefln(
                     "skipping %s %s: %s",
-                    run.displayName, name, e.msg.firstLine,
+                    unit.displayName, name,
+                    unit.grouped ? e.msg : e.msg.firstLine,
                 );
-            }
-            writeln;
-        }
-    }
-
-    if (dubRuns.length > 0) {
-        Module[] dubModules;
-        foreach (run; dubRuns)
-            dubModules ~= run.module_;
-
-        if (dubModules.length > 0) {
-            foreach (name; backendNames) {
-                auto runner = runners[name];
-
-                const allPassing = dubRuns.all!(
-                    run => check.passingPairs.get(
-                        pairKey(run.displayName, name),
-                        false,
-                    ),
-                );
-                if (!allPassing) {
-                    stderr.writefln(
-                        "skipping %s %s: failing fixtures", dubPkg, name,
-                    );
-                    continue;
-                }
-
-                try {
-                    printRow(
-                        dubPkg, name,
-                        measure(
-                            () { runTests(runner, dubModules); },
-                            warmup,
-                            runs,
-                        ),
-                    );
-                } catch (Exception e) {
-                    stderr.writefln("skipping %s %s: %s", dubPkg, name, e.msg);
-                }
             }
             writeln;
         }
@@ -299,7 +271,7 @@ string firstFailureMessage(in TestResult[] results) {
 struct DubInfo {
     string[] importPaths;
     string[] linkFiles;
-    string[] archiveImportPaths;
+    string packageRoot;
     string[] fixtures;
 }
 
@@ -308,6 +280,12 @@ public struct BenchmarkRun {
     public Module module_;
     public Result frontend;
     public bool frontendUnmeasurable;
+}
+
+struct BenchmarkUnit {
+    string displayName;
+    BenchmarkRun[] members;   // 1 for a standalone fixture, N for a dub package
+    bool grouped;             // a dub package reports under one name across N modules
 }
 
 public struct BenchmarkRow {
@@ -321,9 +299,9 @@ DubInfo resolveDubPkg(in string name) {
     import std.array: array;
     import std.algorithm.sorting: sort;
     import std.file: dirEntries, exists, SpanMode;
-    import std.path: absolutePath, buildNormalizedPath, buildPath, dirSeparator;
+    import std.path: buildPath;
     import std.process: Config, execute;
-    import std.string: splitLines, startsWith, strip;
+    import std.string: splitLines, strip;
 
     const pkgDir = findPkgDir(name);
 
@@ -386,19 +364,6 @@ DubInfo resolveDubPkg(in string name) {
         .filter!(l => l.length > 0)
         .array;
 
-    // Import paths under the package belong to the project under test and
-    // are compiled fresh per run; the rest belong to dependencies, whose
-    // objects come from the dub-built archives in linkFiles.
-    const pkgRoot = pkgDir.absolutePath.buildNormalizedPath;
-    bool underPackage(in string path) {
-        const normalised = path.absolutePath.buildNormalizedPath;
-        return normalised == pkgRoot
-            || normalised.startsWith(pkgRoot ~ dirSeparator);
-    }
-    auto archiveImportPaths = importPaths
-        .filter!(path => !underPackage(path))
-        .array;
-
     const testsDir = buildPath(pkgDir, "tests");
     if (!testsDir.exists)
         throw new Exception("no tests/ directory found in " ~ pkgDir);
@@ -410,7 +375,7 @@ DubInfo resolveDubPkg(in string name) {
         .array;
     fixtures.sort;
 
-    return DubInfo(importPaths, linkFiles, archiveImportPaths, fixtures);
+    return DubInfo(importPaths, linkFiles, pkgDir, fixtures);
 }
 
 bool isTestRunnerFile(in string basename) {
