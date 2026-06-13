@@ -1629,6 +1629,9 @@ private struct Walker {
             return appended;
         }
 
+        if (auto index = assign.e1.isIndexExp)
+            return runIndexedArrayAppendAssignExpression(index, assign.e2);
+
         auto var = assign.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter array append target.");
@@ -1646,6 +1649,30 @@ private struct Walker {
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
         return locals[variable];
+    }
+
+    private Value runIndexedArrayAppendAssignExpression(
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception("Unsupported interpreter array append target.");
+
+        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const appended = (*current)[arrayIndex]
+            .withAppendedArrayElement(runExpression(rhs));
+        locals[variable] = current.withArrayElement(arrayIndex, appended);
+        uninitializedLocals.remove(variable);
+        return appended;
     }
 
     private Value castValue(imported!"dmd.expression".CastExp cast_) {

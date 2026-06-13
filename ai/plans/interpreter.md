@@ -1157,6 +1157,28 @@ materialize as empty AA values in the interpreter, allowing first insertion and
 overwrite while preserving missing-key read diagnostics. The focused promoted
 test and the missing-key regression both pass.
 
+Arrays promotion probe:
+`dynamicArray.jaggedRowsKeepIndependentLengths` in
+`tests/ut/backends/runner/ct/arrays.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only arrays module run left exactly one failing promoted test:
+
+- `dynamicArray.jaggedRowsKeepIndependentLengths.Interpreter`: appending
+  `first + 4` to `rows[1]` reports
+  `Unsupported interpreter array append target.`
+
+Failure cause: the interpreter already evaluates nested dynamic array literals,
+lengths, and nested index reads for this fixture, but its append-assignment
+target handling only supports local/ref-style array targets and does not write
+an appended nested row back through an indexed array element target. The fix
+should be limited to appending one element to a dynamic-array element selected
+from a local nested dynamic array; the test also guards that sibling row
+lengths stay independent.
+
+Resolution: append-assignment now supports an indexed local dynamic-array
+target for the promoted nested-row shape by appending to the selected row and
+writing that row back into the outer array. The focused promoted test passes.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`
