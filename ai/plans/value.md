@@ -9,6 +9,21 @@ of this file). The trigger: the bytecode rewrite removed `Value` from its
 VM, prompting an audit of what still needs the struct. Answer: nothing
 structural in production code. What can be deleted, should.
 
+Decision 2026-06-13: the display principle is reversed from "injective per
+static type" to "round-trips as valid D". REPL output must be parseable D
+that evaluates back to the value; it is no longer the channel for telling
+the user a value's type. Type queries move to `typeof`/`it.typeof`
+(`ai/plans/repl.md`). This drops the invented `: type` annotations the
+2026-06-12 spec introduced; see the rewritten "Display format spec" and
+"Test strategy" below. `EvalResult` stays a display `string` or a
+`Diagnostic` — carrying a separate static type alongside it was considered
+and rejected this session: the type is resolved by semantic analysis
+(including `auto`-deduced return types) before any backend runs and is
+identical across backends, so it belongs to the frontend, not the eval
+result. A backend cannot produce a different *type* for an expression,
+only different runtime *bits* — which the value digits and behavioural
+probes catch (see "Test strategy").
+
 ## Audit findings (June 2026)
 
 - The REPL uses `Value`'s structure only for display/control decisions:
@@ -31,12 +46,18 @@ structural in production code. What can be deleted, should.
 1. `quickbite.lang.Value` leaves the `Evaluator` contract: `EvalResult`
    carries the rendered display `string` (or a `Diagnostic`). The struct
    is deleted entirely once no backend needs it internally.
-2. Display stays type-revealing — the point of REPL output is to tell the
-   user what type a value is (`3u`, quoted strings; plain `42` is
-   ambiguous) — and must become injective per type: every rendering
-   unambiguously identifies the static type. The spec was agreed on
-   2026-06-12 — see "Display format spec" below; the formatter and the
-   migrated tests are both downstream of it.
+2. Display round-trips as valid D: every rendering is a D expression that
+   parses and evaluates to a value equal to the original (Python's `repr`
+   principle). It is *not* the channel for revealing a value's static
+   type. Where D has no literal form for a type, the rendering's static
+   type widens on re-parse (the *value* round-trips, the type does not)
+   and the user reaches for `typeof`/`it.typeof` instead. The spec was
+   reversed on 2026-06-13 (it required injectivity per type on
+   2026-06-12); see "Display format spec" below. The change is small in
+   practice: the literal-suffix renderings (`3u`, `42L`, `3.0f`, `3.0L`,
+   `"x"w`) already round-trip *and* reveal type; only the invented
+   `: type` annotations (former rules 2 and 4) are dropped. The formatter
+   and the migrated tests are both downstream of it.
 3. The canonical formatter's end state is an in-program prelude template,
    `string __quickbiteFormat(T)(T value)`, written once in ordinary D
    with `static if` introspection. The frontend synthesizes expression
@@ -61,58 +82,83 @@ structural in production code. What can be deleted, should.
    synthesis time (the frontend knows when `typeof(expr)` is `void`, and
    `Cell.Kind.noDisplay` already exists), `:t` already round-trips
    `.stringof` as a string, and string quoting moves into the formatter.
+   Type disambiguation of display output is now an explicit user action —
+   `typeof`/`it.typeof` (`ai/plans/repl.md`) — since display no longer
+   encodes type for no-literal types (decision 2); `:t` stays
+   frontend-answered for latency, not routed through a backend.
 6. The native backend is the behaviour oracle in the absence of a formal,
    machine-verifiable language specification (it remains one option among
    many for benchmarking). CTFE keeps its oracle role for pure code per
    `ai/plans/repl.md`.
 
-## Display format spec (agreed 2026-06-12)
+## Display format spec (agreed 2026-06-12; principle reversed 2026-06-13)
 
-Principle: rendering is injective per static type, up to the listed
-exceptions. Conventions, in order:
+Principle: every rendering is valid D that parses and evaluates to a value
+equal to the original (round-trip / Python-`repr`). Rendering is *not*
+required to be injective per type — where D has no literal form for a type,
+the rendering's static type widens on re-parse (the value round-trips, the
+type does not) and `typeof`/`it.typeof` disambiguates. Conventions, in
+order:
 
-1. D literal syntax where it exists: `42`, `42u`, `42L`, `42UL`, `3.8`,
-   `3.8f`, `true`/`false`, `'a'`, `"text"`, `null`, `[1, 2]`,
-   `[1:10, 2:20]`.
-2. One trailing `: type` annotation where D has no literal form:
-   `42: byte`, `42: short`, `42: ubyte`, `42: ushort`, `3.8: real`,
-   `'a': wchar`, `'a': dchar`, `"wide": wstring`, `"wide": dstring`.
-   (The scalar suffix/annotation convention was already pinned by
+1. D literal (or literal-like) syntax where it exists, round-tripping both
+   value and type: `42`, `42u`, `42L`, `42UL`, `3.0`, `3.0f`, `3.0L`
+   (real — the `L` float suffix round-trips), `true`/`false`, `'a'`,
+   `"text"`, `"text"w` (wstring), `"text"d` (dstring), `null`, `[1, 2]`,
+   `[1:10, 2:20]`. The suffix convention was already pinned by
    `repl.backend.numericScalarDisplayUsesDLiteralSuffixes`,
-   tests/ut/bin/repl.d; the rest extends it.)
+   tests/ut/bin/repl.d.
+2. Types with no D literal form render in their natural bare/literal form,
+   accepting that the static type widens on re-parse:
+   - `byte`/`ubyte`/`short`/`ushort` → `42` (re-parses as `int`).
+   - `char`/`wchar`/`dchar` → `'a'` (re-parses as `char`).
+   `typeof`/`it.typeof` disambiguates. The former `: type` annotations
+   (`42: byte`, `'a': wchar`) are dropped — they are not parseable D. (A
+   round-tripping `cast(wchar)'a'` form is available if exact-type
+   round-trip is later wanted, but bare + `typeof` is the default.)
 3. Floating values always include a decimal point or exponent: `3.0`,
-   `3.0f`, `3.0: real` — never a bare `3` that collides with `int`.
-4. Default types render bare; aggregates of non-default types get a
-   single trailing annotation: `[1, 2]` is `int[]`; otherwise
-   `[1, 2]: long[]`, `[]: ubyte[]`, `[1:10]: short[int]`. Elements,
-   struct fields, and AA keys/values render bare — the aggregate
-   annotation carries the type.
-5. Structs and enums are already injective via their rendered names
-   (`Point(1, 2)`, `E.a`); unchanged.
-6. Width is displayed for strings and characters; type qualifiers
-   (`const`/`immutable`) and mutability are not.
-7. `void` results display nothing (REPL suppression); functions,
-   delegates, and other non-renderable values display
-   `<undisplayable>`. Pointer display is unspecified until pointers
-   become a displayable feature — spec it then.
+   `3.0f`, `3.0L` — never a bare `3` that re-parses as `int`. (Now a
+   round-trip requirement, not an injectivity one.)
+4. Aggregates round-trip element-wise: each element/key/value renders in
+   its own round-tripping form, so the aggregate self-identifies without
+   an annotation. `[1, 2]` is `int[]`; `[1L, 2L]` is `long[]`; `[1:10]`
+   is `int[int]`. Aggregates whose element type has no literal form stay
+   ambiguous (`[1, 2]` could be `ubyte[]`) — `typeof` disambiguates, same
+   as the scalar case. The former trailing `: long[]` annotation is gone,
+   and with it the need for element-type metadata on `Value.Array`.
+5. Structs and enums round-trip via their rendered names (`Point(1, 2)`,
+   `E.a`); unchanged.
+6. Width round-trips for strings via the literal suffix (`"x"w`, `"x"d`);
+   for characters it does not (all widths render `'a'`, disambiguated by
+   `typeof`). Type qualifiers (`const`/`immutable`) and mutability are not
+   displayed.
+7. `void` results display nothing (REPL suppression). Functions,
+   delegates, pointers, and other values with no D expression form cannot
+   round-trip; there is no contract to honour, so render whatever is most
+   useful to the reader (e.g. `<function int(int)>`, `&name`) — optimise
+   for convenience, not parseability. Pointer display is otherwise
+   unspecified until pointers become a displayable feature — spec it then.
 
 Deltas from current behaviour (June 2026 audit):
 
 - `char`/`wchar`/`dchar` scalars render bare and unquoted today (`a` —
   colliding with ints and each other); unpinned by tests, free to fix.
+  Target: `'a'` for all three (the wide ones re-parse as `char`; `typeof`
+  disambiguates).
 - Whole-number doubles render `3` today, colliding with `int 3`;
-  unpinned at the `Value.toString` level (only `3.8` is pinned).
+  unpinned at the `Value.toString` level (only `3.8` is pinned). Target:
+  `3.0`.
 - Wide strings are normalized to plain `"..."` today, pinned
   deliberately by `displaysWideStringValues` and
-  `displaysWideCharacterArrayValues` (tests/ut/bin/repl.d); the agreed
-  spec changes those assertions to `"wide": wstring` etc. — the test
+  `displaysWideCharacterArrayValues` (tests/ut/bin/repl.d); the
+  round-trip spec changes those assertions to `"wide"w`/`"wide"d` (the
+  literal suffix, not the dropped `: wstring` annotation) — the test
   changes still need the usual approval at implementation time.
-- Aggregate annotation (rule 4) has no existing test exercising a
-  non-default aggregate, and `Value.Array` does not store its element
-  type. Implementing rule 4 in the interim `Value` scaffolding would
-  mean adding type metadata to a struct slated for deletion — defer
-  rule 4 to the prelude formatter (which knows the static type) unless
-  a test forces it earlier.
+- Aggregates of non-default element type need no annotation under the
+  round-trip spec: the elements carry their own suffixes (`[1L, 2L]`), so
+  the aggregate self-identifies and `Value.Array` needs no element-type
+  metadata. The former rule 4 (a trailing `: long[]` annotation) is gone;
+  nothing to defer. Aggregates whose element type has no literal form
+  (`ubyte[]`) stay ambiguous by design — `typeof` disambiguates.
 - `bool`, `null`, and empty arrays conform today but are unpinned.
 - The Interpreter keeps null function-pointer/delegate struct fields
   that the CTFE marshaling omits (`Callbacks(7, null)` vs
@@ -132,18 +178,43 @@ Three layers replace structural `Value` assertions:
    consistency as a side effect. Slow (~43 ms per native call, see
    `ai/plans/dmd-backend.md`) — a matrix job, not the inner loop.
 2. Hand-written text expectations for the fast hermetic suite:
-   `tests/ut/backends/evaluator/eval.d` migrates mechanically from
-   `.should == Value(3u)` to `.should == "3u"`. Lossless once the display
-   format is injective per type (decision 2).
+   `tests/ut/backends/evaluator/eval.d` migrates from
+   `.should == Value(3u)` to `.should == "3u"`. One display string now
+   carries two distinct assertions, and the migration must keep them
+   straight:
+   - The **suffix** witnesses the **static type** — but only where D has a
+     literal form (`3u`, `42L`, `3.0f`, `'a'`, `"x"w`). That is a frontend
+     fact, identical on every backend, so a suffix assertion pins semantic
+     analysis, not backend behaviour. Types with no literal form (`byte`,
+     `wchar`) carry no suffix and cannot be pinned this way — by design;
+     the round-trip spec dropped the annotations that used to.
+   - The **value digits** witness the **backend's runtime behaviour**.
+     Narrowing/widening/signedness are caught here, not by the suffix, by
+     constructing expressions where the bug changes observable digits:
+     drive the static type with an explicit `cast` so the formatter
+     renders at the narrow type, and pick operands where truncation,
+     wrap-around, or sign flips the result — e.g.
+     `cast(ubyte)(255 + 1)` → `"0"`, `cast(byte)(byte.max + 1)` →
+     `"-128"`, `-1 / 2u` → `"2147483647u"`, `-8 >> 1` → `"-4"`.
+   The migration is no longer "lossless because injective per type" (the
+   2026-06-12 framing): a bare `42` no longer pins `int` vs `byte`. Where a
+   test must pin a no-literal subtype, it asserts a value-observable
+   behaviour (this layer) or queries `typeof` (a frontend fact), not the
+   bare display.
 3. Behavioural probes for runtime semantics display cannot reveal:
    wrap-around, truncation, signed/unsigned comparison and division,
-   float-width effects. These test execution, not formatting.
+   float-width effects. These test execution, not formatting — and, per
+   layer 2, they are the *only* layer that exercises a backend's runtime
+   type handling. The boundary: a width/storage difference that never
+   changes an observable value is untestable through the string, but also
+   unobservable to any program — not a bug that can matter.
 
 `tests/ut/backends/evaluator/value.d` (15 blocks testing `Value`'s own
-equality and rendering) is deleted together with the struct. Do not
-replace structural assertions with `typeof(expr).stringof` checks: those
-are computed by the shared frontend and pass even when a backend widens a
-value at runtime.
+equality and rendering) is deleted together with the struct. Do not pin a
+backend's runtime type via `typeof(expr).stringof` or any static-type
+channel: those are computed by the shared frontend and pass even when a
+backend widens a value at runtime — that is what layer 2's digit
+assertions and layer 3 are for.
 
 All test additions/changes require approval first (AGENTS.md).
 
@@ -156,6 +227,9 @@ before; it dies with the legacy executors.
 
 - The display format spec above is the contract: no formatter or
   test-migration work may diverge from it without updating it first.
+- Display renderings must round-trip as valid D (decision 2): a rendering
+  that cannot be parsed back and evaluated to an equal value is a spec
+  violation, except for the no-D-expression values of rule 7.
 - Do not use string heuristics in REPL/frontend code to classify D
   source.
 - Do not use failed evaluation as REPL control flow.
