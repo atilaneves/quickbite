@@ -834,7 +834,7 @@ switch; `Bytecode` still defaults to the old core):
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
-dual-mode model and the `ExecutionMode` enum are being removed
+dual-mode model and the `ExecutionMode` enum have been removed
 (`ai/plans/single-oracle.md`); the VM targets full D against the
 `SystemLinker` oracle.
 

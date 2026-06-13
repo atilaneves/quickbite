@@ -49,7 +49,6 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
                 [inSandboxPath(importPath)],
             );
             auto runner = new backend(
-                ExecutionMode.runtime,
                 [archivePath],
                 [inSandboxPath(importPath)],
             );

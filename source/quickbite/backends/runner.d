@@ -30,12 +30,3 @@ public struct TestResult {
     public string location;
     public string message;
 }
-
-// Whether a backend should mimic D's compile-time (CTFE) semantics or the
-// behaviour of compiled code at runtime. A no-op for Ctfe (inherently
-// compile-time) and SystemLinker (inherently runtime); the interpretation
-// backends switch behaviour on it.
-public enum ExecutionMode {
-    runtime,
-    compileTime,
-}

@@ -46,6 +46,8 @@ not what should be.
 
 ## Task: remove `ExecutionMode`
 
+Status: done (2026-06-13)
+
 The `ExecutionMode` enum (added 2026-06-11) is dormant scaffolding — the
 interpretation backends store `_mode` but never read it — and encodes the
 abandoned dual-mode model. Remove it:

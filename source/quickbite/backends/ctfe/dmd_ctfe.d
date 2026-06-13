@@ -7,18 +7,10 @@ private:
 public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult;
-    import quickbite.backends.runner: ExecutionMode;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     public alias eval = Evaluator.eval;
-
-    // CTFE is inherently compile-time; the mode parameter exists for
-    // constructor uniformity across backends.
-    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
-        super(ExecutionMode.compileTime);
-        assert(_mode == ExecutionMode.compileTime);
-    }
 
     public override EvalResult eval(FuncDeclaration function_) {
         string diagnostic;

@@ -2,7 +2,7 @@ module ut.backends;
 
 
 public import ut;
-public import quickbite.backends.runner: ExecutionMode, TestResult;
+public import quickbite.backends.runner: TestResult;
 public import quickbite.lang: Value;
 public import quickbite.backends.ctfe;
 public import quickbite.backends.interpreter;
@@ -12,51 +12,46 @@ public import quickbite.backends.native;
 public import std.meta: AliasSeq;
 
 
-auto newBackend(T)(in ExecutionMode mode = ExecutionMode.runtime) {
-    return new T(mode);
+auto newBackend(T)() {
+    return new T;
 }
 
 public void runBackendSourceFixtureTests(T)(
     in string moduleSource,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
-    runBackendSourceFixtureTests!T(moduleSource, [], mode);
+    runBackendSourceFixtureTests!T(moduleSource, []);
 }
 
 public void runBackendSourceFixtureTests(T)(
     in string moduleSource,
     in string[] importPaths,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
-    runBackendSourceFixtureTestResults!T(moduleSource, importPaths, mode)
+    runBackendSourceFixtureTestResults!T(moduleSource, importPaths)
         .throwOnTestFailure;
 }
 
 public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
-    return runBackendSourceFixtureTestResults!T(moduleSource, [], mode);
+    return runBackendSourceFixtureTestResults!T(moduleSource, []);
 }
 
 public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
     in string[] importPaths,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
     import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
     auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
-    auto backend = newBackend!T(mode);
+    auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }
 
 public void runBackendFileFixtureTests(T)(
     in string filePath,
     in string[] importPaths,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
-    runBackendFileFixtureTestResults!T(filePath, importPaths, mode)
+    runBackendFileFixtureTestResults!T(filePath, importPaths)
         .throwOnTestFailure;
 }
 
@@ -64,7 +59,6 @@ public TestResult[]
 runBackendFileFixtureTestResults(T)(
     in string filePath,
     in string[] importPaths,
-    in ExecutionMode mode = ExecutionMode.runtime,
 ) {
     import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
 
@@ -72,7 +66,7 @@ runBackendFileFixtureTestResults(T)(
         filePath,
         importPaths,
     );
-    auto backend = newBackend!T(mode);
+    auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }
 
