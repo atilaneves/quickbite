@@ -14,7 +14,6 @@ package(quickbite.backends.bytecode) ubyte[] run(
     scope CompileFunction compileFunction,
 ) {
     import quickbite.backends.bytecode.core.program: Op, size;
-    import std.bitmanip: nativeToLittleEndian;
 
     auto stack = new ubyte[](program.functions[0].frameSize);
     Frame[] frames;
@@ -27,7 +26,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
         final switch (instruction.op) with (Op) {
             case loadConstant:
                 const ubyte[ulong.sizeof] bytes =
-                    nativeToLittleEndian(program.constants[instruction.b]);
+                    scalarBytes(program.constants[instruction.b]);
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
                 ] = bytes[0 .. instruction.c];
@@ -44,8 +43,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend1to4:
-                const ubyte[int.sizeof] signWidened = nativeToLittleEndian(
-                    cast(int) littleEndianScalar!byte(stack, base + instruction.b),
+                const ubyte[int.sizeof] signWidened = scalarBytes(
+                    cast(int) scalarValue!byte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = signWidened;
@@ -53,8 +52,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case zeroExtend1to4:
-                const ubyte[int.sizeof] zeroWidened = nativeToLittleEndian(
-                    cast(int) littleEndianScalar!ubyte(stack, base + instruction.b),
+                const ubyte[int.sizeof] zeroWidened = scalarBytes(
+                    cast(int) scalarValue!ubyte(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = zeroWidened;
@@ -62,11 +61,21 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case signExtend4to8:
-                const ubyte[long.sizeof] extended = nativeToLittleEndian(
-                    cast(long) littleEndianScalar!int(stack, base + instruction.b),
+                const ubyte[long.sizeof] extended = scalarBytes(
+                    cast(long) scalarValue!int(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = extended;
+                ++ip;
+                break;
+
+            case addInt4:
+                const ubyte[int.sizeof] sum = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) +
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = sum;
                 ++ip;
                 break;
 
@@ -76,6 +85,14 @@ package(quickbite.backends.bytecode) ubyte[] run(
                     stack[base + instruction.b .. base + instruction.b + operandSize]
                     == stack[base + instruction.c .. base + instruction.c + operandSize];
                 ++ip;
+                break;
+
+            case jump:
+                ip = instruction.a;
+                break;
+
+            case jumpIfFalse:
+                ip = stack[base + instruction.a] == 0 ? instruction.b : ip + 1;
                 break;
 
             case call:
@@ -183,12 +200,22 @@ private string operandText(
     in size_t offset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program: isSigned, size;
+    import quickbite.backends.bytecode.core.program: ScalarType, isSigned, size;
     import std.conv: text;
 
     ulong raw;
     foreach_reverse (value; frame[offset .. offset + size(type)])
         raw = (raw << 8) | value;
+
+    final switch (type) with (ScalarType) {
+        case bool_:
+            return raw == 0 ? "false" : "true";
+        case char_:
+            return text("'", cast(char) raw, "'");
+        case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
+            wchar_, dchar_:
+            break;
+    }
 
     if (!isSigned(type))
         return text(raw);
@@ -198,12 +225,24 @@ private string operandText(
     return text(signed);
 }
 
-private T littleEndianScalar(T)(
+private ubyte[T.sizeof] scalarBytes(T)(in T value)
+    @safe @nogc nothrow pure
+{
+    ubyte[T.sizeof] bytes;
+    const raw = cast(ulong) value;
+    foreach (i; 0 .. T.sizeof)
+        bytes[i] = cast(ubyte) ((raw >> (8 * i)) & 0xff);
+
+    return bytes;
+}
+
+private T scalarValue(T)(
     in ubyte[] stack,
     in size_t offset,
-) @safe pure {
-    import std.bitmanip: littleEndianToNative;
+) @safe @nogc nothrow pure {
+    ulong raw;
+    foreach (i; 0 .. T.sizeof)
+        raw |= cast(ulong) stack[offset + i] << (8 * i);
 
-    const ubyte[T.sizeof] raw = stack[offset .. offset + T.sizeof];
-    return littleEndianToNative!T(raw);
+    return cast(T) raw;
 }

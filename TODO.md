@@ -3,5 +3,7 @@
 * Plan and implement runtime execution for CTFE-parity backends.
 * Deal with and cache dub dependencies instead of
   interpreting/compiling everything at once. Even dub doesn't do this,
-  it builds the dependencies then links them in at the end.
+  it builds the dependencies then links them in at the end. Done for
+  SystemLinker (links dub-built archives); the rest of the plan is in
+  `ai/plans/dub-deps.md`.
 * LLVMJit

@@ -32,11 +32,14 @@ private struct Machine {
         Function,
         Instruction,
         Load,
+        RefWriteback,
         ResultKind,
+        ReturnVoid,
         ReturnValue,
         StringConst,
         Store,
         ThrowException,
+        ThrowIfNull,
         Type,
         UnaryIntrinsicOp,
         UnaryIntrinsicOperation,
@@ -48,6 +51,8 @@ private struct Machine {
     private ulong[] scalarValues;
     private string[] stringValues;
     private ulong[] localScalarValues;
+    private string[] localStringValues;
+    private bool[] localInitializedValues;
     private const(Function)[] functions;
     private uint returnedValueId;
 
@@ -65,11 +70,18 @@ private struct Machine {
             stringValues.length = function_.valueCount;
         if (localScalarValues.length < function_.localCount)
             localScalarValues.length = function_.localCount;
+        if (localStringValues.length < function_.localCount)
+            localStringValues.length = function_.localCount;
+        if (localInitializedValues.length < function_.localCount)
+            localInitializedValues.length = function_.localCount;
     }
 
     private ulong execute(in Function function_, in uint[] arguments) {
-        foreach (i, argument; arguments)
+        localInitializedValues[0 .. function_.localCount] = false;
+        foreach (i, argument; arguments) {
             localScalarValues[i] = scalarValues[argument];
+            localInitializedValues[i] = true;
+        }
 
         uint blockIndex;
         const(uint)[] blockArguments;
@@ -90,6 +102,9 @@ private struct Machine {
                     returnedValueId = return_.value;
                     result = scalarValues[return_.value];
                 },
+                (const ReturnVoid return_) {
+                    returned = true;
+                },
                 (const Branch branch) {
                     blockIndex = branch.target;
                     blockArguments = branch.args;
@@ -102,9 +117,6 @@ private struct Machine {
                         blockIndex = branch.falseTarget;
                         blockArguments = branch.falseArgs;
                     }
-                },
-                (_) {
-                    assert(0);
                 },
             );
             if (returned)
@@ -122,6 +134,7 @@ private struct Machine {
             (const AssertFalse assert_) => execute(assert_),
             (const AssertCompare assert_) => execute(assert_),
             (const ThrowException throw_) => execute(throw_),
+            (const ThrowIfNull throw_) => execute(throw_),
             (const Load load) => execute(load),
             (const UnaryOp unary) => execute(unary),
             (const UnaryIntrinsicOp intrinsic) => execute(intrinsic),
@@ -161,22 +174,62 @@ private struct Machine {
     private void execute(const Call call) {
         // Needs mutable array storage when restored after callee execution.
         auto callerScalarValues = scalarValues.dup;
+        auto callerStringValues = stringValues.dup;
         auto callerLocalScalarValues = localScalarValues.dup;
+        auto callerLocalStringValues = localStringValues.dup;
+        auto callerLocalInitializedValues = localInitializedValues.dup;
         const result = execute(functions[call.functionIndex], call.arguments);
+        const writebackValues = refWritebackValues(call.refWritebacks);
         scalarValues = callerScalarValues;
+        stringValues = callerStringValues;
         localScalarValues = callerLocalScalarValues;
-        scalarValues[call.result.id] = result;
+        localStringValues = callerLocalStringValues;
+        localInitializedValues = callerLocalInitializedValues;
+        foreach (i, writeback; call.refWritebacks) {
+            localScalarValues[writeback.callerLocal] = writebackValues[i];
+            localInitializedValues[writeback.callerLocal] = true;
+        }
+        if (call.hasResult)
+            scalarValues[call.result.id] = result;
+    }
+
+    private ulong[] refWritebackValues(const RefWriteback[] writebacks) {
+        ulong[] values;
+        foreach (writeback; writebacks) {
+            final switch (writeback.type) with (Type) {
+                case i32:
+                case i8:
+                case i16:
+                case i64:
+                case f64:
+                case f32:
+                case i1:
+                    values ~= localScalarValues[writeback.parameterLocal];
+                    break;
+                case ptr:
+                    assert(0);
+            }
+        }
+        return values;
     }
 
     private void execute(const AssertTrue assert_) {
         if (scalarValues[assert_.condition] == 0) {
-            throw new Exception(assert_.message);
+            throw new Exception(assertMessage(
+                assert_.message,
+                assert_.hasMessageValue,
+                assert_.messageValue,
+            ));
         }
     }
 
     private void execute(const AssertFalse assert_) {
         if (scalarValues[assert_.condition] != 0)
-            throw new Exception("true == true");
+            throw new Exception(assertMessage(
+                "true == true",
+                assert_.hasMessageValue,
+                assert_.messageValue,
+            ));
     }
 
     private void castI1(const Cast cast_) {
@@ -197,22 +250,60 @@ private struct Machine {
     }
 
     private void execute(const AssertCompare assert_) {
-        if (scalarValues[assert_.condition] != 0)
+        if (assertCompareSucceeded(assert_))
             return;
+
+        if (assert_.resultKind == ResultKind.class_) {
+            import std.conv: text;
+
+            if (assert_.hasMessageValue)
+                throw new Exception(stringValues[assert_.messageValue]);
+
+            throw new Exception(text(
+                "`null` ",
+                inverseIdentityOperator(assert_.operation),
+                " `null`",
+            ));
+        }
 
         if (assert_.resultKind == ResultKind.bool_) {
             import std.conv: text;
 
+            if (assert_.hasMessageValue)
+                throw new Exception(stringValues[assert_.messageValue]);
+
             throw new Exception(text(
                 assertionBool(assert_.lhs),
-                " != ",
+                " ",
+                inverseComparisonOperator(assert_.operation),
+                " ",
                 assertionBool(assert_.rhs),
+            ));
+        }
+
+        if (assert_.resultKind == ResultKind.char_) {
+            import std.conv: text;
+
+            if (assert_.hasMessageValue)
+                throw new Exception(stringValues[assert_.messageValue]);
+
+            throw new Exception(text(
+                "'",
+                cast(char) scalarValues[assert_.lhs],
+                "' ",
+                inverseComparisonOperator(assert_.operation),
+                " '",
+                cast(char) scalarValues[assert_.rhs],
+                "'",
             ));
         }
 
         import quickbite.unittest_assertions:
             AssertionMessageMode,
             failedAssertionMessage;
+
+        if (assert_.hasMessageValue)
+            throw new Exception(stringValues[assert_.messageValue]);
 
         throw new Exception(failedAssertionMessage(
             AssertionMessageMode.context,
@@ -222,8 +313,192 @@ private struct Machine {
         ));
     }
 
+    private bool assertCompareSucceeded(in AssertCompare assert_) {
+        final switch (assert_.operation) with (BinaryOperation) {
+            case equal:
+                return valuesEqual(assert_.type, assert_.lhs, assert_.rhs);
+            case notEqual:
+                return !valuesEqual(assert_.type, assert_.lhs, assert_.rhs);
+            case lessThan:
+            case lessOrEqual:
+            case greaterThan:
+            case greaterOrEqual:
+                return orderedCompareSucceeded(assert_);
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case bitwiseOr:
+            case pow:
+                assert(0);
+        }
+    }
+
+    private bool valuesEqual(
+        in Type type,
+        in uint lhsValue,
+        in uint rhsValue,
+    ) {
+        final switch (type) with (Type) {
+            case i1:
+                return cast(bool) scalarValues[lhsValue] ==
+                    cast(bool) scalarValues[rhsValue];
+            case i8:
+                return cast(ubyte) scalarValues[lhsValue] ==
+                    cast(ubyte) scalarValues[rhsValue];
+            case i16:
+                return cast(ushort) scalarValues[lhsValue] ==
+                    cast(ushort) scalarValues[rhsValue];
+            case i32:
+                return cast(uint) scalarValues[lhsValue] ==
+                    cast(uint) scalarValues[rhsValue];
+            case i64:
+            case ptr:
+                return scalarValues[lhsValue] == scalarValues[rhsValue];
+            case f32:
+            case f64:
+                assert(0);
+        }
+    }
+
+    private bool orderedCompareSucceeded(in AssertCompare assert_) {
+        final switch (assert_.type) with (Type) {
+            case i8:
+                return useUnsignedComparison(assert_.resultKind) ?
+                    compareUnsigned(
+                        cast(ubyte) scalarValues[assert_.lhs],
+                        cast(ubyte) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    ) :
+                    compareSigned(
+                        cast(byte) scalarValues[assert_.lhs],
+                        cast(byte) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    );
+            case i16:
+                return useUnsignedComparison(assert_.resultKind) ?
+                    compareUnsigned(
+                        cast(ushort) scalarValues[assert_.lhs],
+                        cast(ushort) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    ) :
+                    compareSigned(
+                        cast(short) scalarValues[assert_.lhs],
+                        cast(short) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    );
+            case i32:
+                return useUnsignedComparison(assert_.resultKind) ?
+                    compareUnsigned(
+                        cast(uint) scalarValues[assert_.lhs],
+                        cast(uint) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    ) :
+                    compareSigned(
+                        cast(int) scalarValues[assert_.lhs],
+                        cast(int) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    );
+            case i64:
+                return useUnsignedComparison(assert_.resultKind) ?
+                    compareUnsigned(
+                        scalarValues[assert_.lhs],
+                        scalarValues[assert_.rhs],
+                        assert_.operation,
+                    ) :
+                    compareSigned(
+                        cast(long) scalarValues[assert_.lhs],
+                        cast(long) scalarValues[assert_.rhs],
+                        assert_.operation,
+                    );
+            case i1:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private bool useUnsignedComparison(in ResultKind kind) @safe pure nothrow {
+        final switch (kind) with (ResultKind) {
+            case ubyte_:
+            case ushort_:
+            case uint_:
+            case ulong_:
+            case char_:
+                return true;
+            case bool_:
+            case byte_:
+            case short_:
+            case int_:
+            case long_:
+            case float_:
+            case double_:
+            case string_:
+            case class_:
+                return false;
+        }
+    }
+
+    private bool compareSigned(
+        in long lhs,
+        in long rhs,
+        in BinaryOperation operation,
+    ) @safe pure nothrow {
+        final switch (operation) with (BinaryOperation) {
+            case lessThan:
+                return lhs < rhs;
+            case lessOrEqual:
+                return lhs <= rhs;
+            case greaterThan:
+                return lhs > rhs;
+            case greaterOrEqual:
+                return lhs >= rhs;
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case bitwiseOr:
+            case pow:
+            case equal:
+            case notEqual:
+                assert(0);
+        }
+    }
+
+    private bool compareUnsigned(
+        in ulong lhs,
+        in ulong rhs,
+        in BinaryOperation operation,
+    ) @safe pure nothrow {
+        final switch (operation) with (BinaryOperation) {
+            case lessThan:
+                return lhs < rhs;
+            case lessOrEqual:
+                return lhs <= rhs;
+            case greaterThan:
+                return lhs > rhs;
+            case greaterOrEqual:
+                return lhs >= rhs;
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case bitwiseOr:
+            case pow:
+            case equal:
+            case notEqual:
+                assert(0);
+        }
+    }
+
     private void execute(const ThrowException throw_) {
         throw new Exception(throw_.message);
+    }
+
+    private void execute(const ThrowIfNull throw_) {
+        if (scalarValues[throw_.value] == 0)
+            throw new Exception(throw_.message);
     }
 
     private void castF64(const Cast cast_) {
@@ -281,6 +556,15 @@ private struct Machine {
     }
 
     private void execute(const Load load) {
+        if (load.uninitializedMessage !is null &&
+            !localInitializedValues[load.local])
+            throw new Exception(load.uninitializedMessage);
+
+        if (load.result.resultKind == ResultKind.string_) {
+            stringValues[load.result.id] = localStringValues[load.local];
+            return;
+        }
+
         scalarValues[load.result.id] = localScalarValues[load.local];
     }
 
@@ -351,10 +635,21 @@ private struct Machine {
             case f32:
             case i1:
                 localScalarValues[store.local] = scalarValues[store.value];
+                localInitializedValues[store.local] = true;
                 break;
             case ptr:
-                assert(0);
+                localStringValues[store.local] = stringValues[store.value];
+                localInitializedValues[store.local] = true;
+                break;
         }
+    }
+
+    private string assertMessage(
+        in string fallback,
+        in bool hasMessageValue,
+        in uint messageValue,
+    ) {
+        return hasMessageValue ? stringValues[messageValue] : fallback;
     }
 
     private void execute(const BinaryOp binary) {
@@ -380,11 +675,20 @@ private struct Machine {
             case equal:
                 executeEqual(binary);
                 break;
+            case notEqual:
+                executeNotEqual(binary);
+                break;
             case lessThan:
                 executeLessThan(binary);
                 break;
+            case lessOrEqual:
+                executeLessOrEqual(binary);
+                break;
             case greaterThan:
                 executeGreaterThan(binary);
+                break;
+            case greaterOrEqual:
+                executeGreaterOrEqual(binary);
                 break;
         }
     }
@@ -396,6 +700,10 @@ private struct Machine {
                     cast(int) scalarValues[binary.lhs] +
                     cast(int) scalarValues[binary.rhs];
                 break;
+            case i64:
+                scalarValues[binary.result.id] =
+                    scalarValues[binary.lhs] + scalarValues[binary.rhs];
+                break;
             case f32:
                 scalarValues[binary.result.id] = floatBits(
                     floatFromBits(scalarValues[binary.lhs]) +
@@ -405,7 +713,6 @@ private struct Machine {
             case i1:
             case i8:
             case i16:
-            case i64:
             case f64:
             case ptr:
                 assert(0);
@@ -540,9 +847,48 @@ private struct Machine {
                     cast(bool) scalarValues[binary.lhs] ==
                     cast(bool) scalarValues[binary.rhs];
                 break;
+            case ptr:
+                scalarValues[binary.result.id] =
+                    scalarValues[binary.lhs] == scalarValues[binary.rhs];
+                break;
             case f32:
             case f64:
+                assert(0);
+        }
+    }
+
+    private void executeNotEqual(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i8:
+                scalarValues[binary.result.id] =
+                    cast(ubyte) scalarValues[binary.lhs] !=
+                    cast(ubyte) scalarValues[binary.rhs];
+                break;
+            case i16:
+                scalarValues[binary.result.id] =
+                    cast(ushort) scalarValues[binary.lhs] !=
+                    cast(ushort) scalarValues[binary.rhs];
+                break;
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(uint) scalarValues[binary.lhs] !=
+                    cast(uint) scalarValues[binary.rhs];
+                break;
+            case i64:
+                scalarValues[binary.result.id] =
+                    scalarValues[binary.lhs] != scalarValues[binary.rhs];
+                break;
+            case i1:
+                scalarValues[binary.result.id] =
+                    cast(bool) scalarValues[binary.lhs] !=
+                    cast(bool) scalarValues[binary.rhs];
+                break;
             case ptr:
+                scalarValues[binary.result.id] =
+                    scalarValues[binary.lhs] != scalarValues[binary.rhs];
+                break;
+            case f32:
+            case f64:
                 assert(0);
         }
     }
@@ -565,11 +911,47 @@ private struct Machine {
         }
     }
 
+    private void executeLessOrEqual(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] <=
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
     private void executeGreaterThan(const BinaryOp binary) {
         final switch (binary.type) with (Type) {
             case i32:
                 scalarValues[binary.result.id] =
                     cast(int) scalarValues[binary.lhs] >
+                    cast(int) scalarValues[binary.rhs];
+                break;
+            case i1:
+            case i8:
+            case i16:
+            case i64:
+            case f32:
+            case f64:
+            case ptr:
+                assert(0);
+        }
+    }
+
+    private void executeGreaterOrEqual(const BinaryOp binary) {
+        final switch (binary.type) with (Type) {
+            case i32:
+                scalarValues[binary.result.id] =
+                    cast(int) scalarValues[binary.lhs] >=
                     cast(int) scalarValues[binary.rhs];
                 break;
             case i1:
@@ -618,18 +1000,74 @@ private struct Machine {
         return scalarValues[value] != 0;
     }
 
-    private string comparisonOperator(in BinaryOperation operation) @safe pure {
+    private string inverseComparisonOperator(in BinaryOperation operation)
+        @safe pure
+    {
         final switch (operation) with (BinaryOperation) {
             case equal:
+                return "!=";
+            case notEqual:
                 return "==";
+            case lessThan:
+                return ">=";
+            case lessOrEqual:
+                return ">";
+            case greaterThan:
+                return "<=";
+            case greaterOrEqual:
+                return "<";
             case add:
             case subtract:
             case multiply:
             case divide:
             case bitwiseOr:
             case pow:
+                assert(0);
+        }
+    }
+
+    private string inverseIdentityOperator(in BinaryOperation operation)
+        @safe pure
+    {
+        final switch (operation) with (BinaryOperation) {
+            case equal:
+                return "!is";
+            case notEqual:
+                return "is";
             case lessThan:
+            case lessOrEqual:
             case greaterThan:
+            case greaterOrEqual:
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case bitwiseOr:
+            case pow:
+                assert(0);
+        }
+    }
+
+    private string comparisonOperator(in BinaryOperation operation) @safe pure {
+        final switch (operation) with (BinaryOperation) {
+            case equal:
+                return "==";
+            case notEqual:
+                return "!=";
+            case lessThan:
+                return "<";
+            case lessOrEqual:
+                return "<=";
+            case greaterThan:
+                return ">";
+            case greaterOrEqual:
+                return ">=";
+            case add:
+            case subtract:
+            case multiply:
+            case divide:
+            case bitwiseOr:
+            case pow:
                 assert(0);
         }
     }
@@ -666,6 +1104,8 @@ private struct Machine {
                 return Value(doubleFromBits(scalarValues[valueId]));
             case string_:
                 return Value(stringValues[valueId]);
+            case class_:
+                assert(0);
         }
     }
 }

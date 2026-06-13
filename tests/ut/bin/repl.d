@@ -14,6 +14,48 @@ unittest {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localDeclarationsCanRebindNames." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "x + 1",
+                "auto x = 1;",
+                "x + 1",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "2"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.localRebindingPreservesInterveningReferences." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto x = 41;",
+                "auto y = x + 1;",
+                "auto x = 1;",
+                "y",
+                "x",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "1"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.evaluatesExpressionCellsUntilQuit." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -56,6 +98,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.lastValueBindingDisplaysLatestExpressionValue." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["41 + 1", "it", "it", ":q"],
+        );
+
+        output.should == ["42", "42", "42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.failedExpressionDoesNotAdvanceLastValueBinding." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("1").should == Value(1);
+        void submitFailure() {
+            repl.submit("unknownIdentifier");
+        }
+        submitFailure.shouldThrowWithMessage(
+            "undefined identifier `unknownIdentifier`",
+        );
+        repl.submit("it").should == Value(1);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.declarationCellsPersistWithoutDisplay." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -66,6 +140,40 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
         );
 
         output.should == ["0"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("repl.backend.moduleLevelVariablesAreVisibleToFunctions." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        repl.submit("counter = 5;").should == Value.void_;
+        repl.submit("get()").should == Value(5);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.moduleLevelVariablesRejectCtfeMutation." ~
+        backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int counter;").should == Value.void_;
+        repl.submit("int get() { return counter; }").should == Value.void_;
+        void mutateCounter() {
+            repl.submit("counter = 5;");
+        }
+        mutateCounter.shouldThrowWithMessage(
+            "static variable `counter` cannot be read at compile time",
+        );
     }
 }
 
@@ -108,6 +216,45 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
         );
 
         output.should == ["42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.replacesSameSignatureFunctionDeclarations." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int answer() { return 41; }",
+                "int answer() { return 42; }",
+                "answer()",
+                ":q",
+            ],
+        );
+
+        output.should == ["42"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+    @("repl.backend.preservesFunctionOverloads." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "int twice(int i) { return i * 2; }",
+                "long twice(long value) { return value * 3; }",
+                "twice(21)",
+                "twice(14L)",
+                ":q",
+            ],
+        );
+
+        output.should == ["42", "42L"];
     }
 }
 
@@ -635,7 +782,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -655,7 +802,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(3) failed: 41 != 42";
+            "unittest at <repl cell 3>(1) failed: 41 != 42";
     }
 }
 
@@ -663,7 +810,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
     @("repl.backend.runLoadedTestsReportsEveryFailedUnittest." ~ backend.stringof)
     unittest {
-        import std.algorithm.searching: canFind;
         import quickbite.repl: Repl;
 
         auto repl = Repl(newBackend!backend);
@@ -684,10 +830,8 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         }
 
         const message = runTests.shouldThrow.msg;
-        message.canFind("unittest at <repl>(2) failed: 1 != 2").should ==
-            true;
-        message.canFind("unittest at <repl>(7) failed: 3 != 4").should ==
-            true;
+        "unittest at <repl cell 1>(2) failed: 1 != 2".should.be in message;
+        "unittest at <repl cell 2>(2) failed: 3 != 4".should.be in message;
     }
 }
 
@@ -719,7 +863,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             repl.submit(":t");
         }
         runTests.shouldThrow.msg.should ==
-            "unittest at <repl>(1) failed: 1 != 2";
+            "unittest at <repl cell 1>(1) failed: 1 != 2";
     }
 }
 
@@ -856,12 +1000,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         auto repl = Repl(newBackend!backend);
 
-        repl.submit("int twice(int i) { return i; }");
+        repl.submit("struct Twice { }");
         void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+            repl.submit("struct Twice { }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+        const message = duplicateDeclaration.shouldThrow.msg;
+        "at <repl cell 1>(1)".should.be in message;
     }
 }
 
@@ -874,11 +1018,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         auto repl = Repl(newBackend!backend);
 
         repl.submit("int twice(int i) { return i * 2; }").should == Value.void_;
-        void duplicateDeclaration() {
-            repl.submit("int twice(int i) { return i; }");
+        void rejectedReplacement() {
+            repl.submit("int twice(int i) { return unknown; }");
         }
-        duplicateDeclaration.shouldThrow.msg.should ==
-            "function `twice(int i)` conflicts with previous declaration at <repl>(1)";
+        rejectedReplacement.shouldThrowWithMessage(
+            "undefined identifier `unknown`",
+        );
         repl.submit("twice(21)").should == Value(42);
     }
 }
@@ -950,5 +1095,172 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
             "Candidates:\n" ~
             "- int twice(int i)\n" ~
             "- string twice(string value)";
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.structValueRendersTypeNameAndFields." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "Point(a, b)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Point(1, 2)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.arrayOfStructsRendersEachElement." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "[Point(a, b), Point(b, a)]",
+                ":q",
+            ],
+        );
+
+        output.should == ["[Point(1, 2), Point(2, 1)]"];
+    }
+}
+
+// The Interpreter keeps the null field (`Callbacks(7, null)`) instead of
+// omitting it; Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.nullFunctionPointerFieldIsOmitted." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Callbacks { int id; void function() onDone; }",
+                "int a = 7;",
+                "Callbacks(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Callbacks(7)"];
+    }
+}
+
+// The Interpreter keeps the null field (`Handler(9, null)`) instead of
+// omitting it; Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("repl.backend.nullDelegateFieldIsOmitted." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Handler { int id; void delegate() onEvent; }",
+                "int a = 9;",
+                "Handler(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Handler(9)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullClassFieldRendersAsNull." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Node { int id; Object payload; }",
+                "int a = 5;",
+                "Node(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Node(5, null)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nullPointerFieldRendersAsNull." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Link { int id; int* next; }",
+                "int a = 4;",
+                "Link(a, null)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Link(4, null)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.nestedStructOmitsSyntheticContextField." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        // dmd synthesises a void* context field for the nested struct;
+        // it must not appear in the rendered value.
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "auto makeNested(int seed) { struct Inner { int v; int doubled() { return v * seed; } } Inner i; i.v = seed; return i; }",
+                "int a = 3;",
+                "makeNested(a)",
+                ":q",
+            ],
+        );
+
+        output.should == ["Inner(3)"];
+    }
+}
+
+// Bytecode reports struct literals as an unsupported expression.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.assocArrayWithStructValuesRendersEntries." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            [
+                "struct Point { int x; int y; }",
+                "int a = 1;",
+                "int b = 2;",
+                "[a: Point(a, b)]",
+                ":q",
+            ],
+        );
+
+        output.should == ["[1:Point(1, 2)]"];
     }
 }

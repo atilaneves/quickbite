@@ -4,21 +4,45 @@ module quickbite.backends.native.system_linker;
 private:
 
 
-public class SystemLinker: imported!"quickbite.backends.runner".Runner {
+public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
     import quickbite.backends.runner: ExecutionMode, TestResult;
     import dmd.dmodule: Module;
 
+    private const SystemLinkerInputs _inputs;
+
     // Native code is inherently runtime; the mode parameter exists for
     // constructor uniformity across backends.
-    public this(in ExecutionMode mode = ExecutionMode.runtime) @safe @nogc nothrow pure {
+    public this(
+        in ExecutionMode mode = ExecutionMode.runtime,
+        in SystemLinkerInputs inputs = SystemLinkerInputs.init,
+    ) @safe @nogc nothrow pure {
         assert(mode == ExecutionMode.runtime);
+        _inputs = inputs;
+    }
+
+    public this(
+        in ExecutionMode mode,
+        const string[] linkFiles,
+        const string[] archiveImportPaths,
+    ) @safe @nogc nothrow pure {
+        this(
+            mode,
+            SystemLinkerInputs(linkFiles, archiveImportPaths, false),
+        );
     }
 
     public override TestResult[] runTests(Module module_) {
+        return runTests([module_]);
+    }
+
+    public override TestResult[] runTests(Module[] modules) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
-        auto library = compileToSharedLibrary(module_);
+        auto library = compileToSharedLibrary(
+            modules,
+            _inputs,
+        );
         // The results copy everything they need out of the library, so it can
         // be unloaded as soon as the tests have run. Dead objects of classes
         // the fixture defines still sit in the GC heap with vptrs into this
@@ -31,15 +55,29 @@ public class SystemLinker: imported!"quickbite.backends.runner".Runner {
         }
 
         TestResult[] cases;
-        foreachUnitTestDeclaration(module_, (unitTest) {
-            cases ~= runUnitTest(library, unitTest);
-        });
+        foreach (module_; modules)
+            foreachUnitTestDeclaration(module_, (unitTest) {
+                cases ~= runUnitTest(library, unitTest);
+            });
 
         return cases;
     }
 }
 
-private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
+public struct SystemLinkerInputs {
+    // Link files are prebuilt libraries appended to every link. Modules under
+    // archive import paths are defined by those libraries and must not be
+    // codegen'd again. Default imports are only traversed when the caller
+    // knows dependency templates can need druntime/phobos members in this link.
+    public const string[] linkFiles;
+    public const string[] archiveImportPaths;
+    public bool includeDefaultImportsForTemplateCodegen;
+}
+
+private void* compileToSharedLibrary(
+    imported!"dmd.dmodule".Module[] modules,
+    in SystemLinkerInputs inputs,
+) {
     import quickbite.frontend.compiler: withCompilerLock;
     import core.atomic: atomicFetchAdd;
     import std.conv: text;
@@ -61,7 +99,7 @@ private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
     const libPath = buildPath(dir, "module.so");
 
     withCompilerLock(() {
-        buildSharedLibrary(module_, dir, libPath);
+        buildSharedLibrary(modules, dir, libPath, inputs);
     });
 
     return loadSharedLibrary(libPath);
@@ -74,12 +112,15 @@ private void* compileToSharedLibrary(imported!"dmd.dmodule".Module module_) {
 // parent's AST and globals are never mutated, which is what lets cached
 // (stale) parses be codegen'd repeatedly.
 private void buildSharedLibrary(
-    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.dmodule".Module[] rootModules,
     in string dir,
     in string libPath,
+    in SystemLinkerInputs inputs,
 ) {
     import quickbite.frontend.compiler: lightningRod;
     import dmd.dmodule: Module;
+    import std.algorithm.iteration: filter;
+    import std.array: array;
     import std.conv: text;
     import std.path: buildPath;
 
@@ -96,36 +137,74 @@ private void buildSharedLibrary(
 
     // Modules from user import paths are compiled into the link too: their
     // functions live in no other object, and dmd emits an imported module's
-    // function bodies only if it reached semantic3.
-    auto userImports = userImportedModules(module_);
+    // function bodies only if it reached semantic3. Archive-backed modules
+    // are the exception: a prebuilt library on the link line already defines
+    // their symbols, so they get neither the root promotion (saving their
+    // semantic3) nor an object of their own.
+    auto allUserImports = userImportedModules(
+        rootModules,
+        inputs.includeDefaultImportsForTemplateCodegen,
+    );
+    auto userImports = allUserImports
+        .filter!(import_ =>
+            !isUnderDefaultImportPaths(import_)
+            && !isUnderImportPaths(import_, inputs.archiveImportPaths))
+        .array;
+    auto archiveImports = allUserImports
+        .filter!(import_ =>
+            !isUnderDefaultImportPaths(import_)
+            && isUnderImportPaths(import_, inputs.archiveImportPaths))
+        .array;
+    auto defaultImports = allUserImports
+        .filter!(import_ => isUnderDefaultImportPaths(import_))
+        .array;
+    if (!inputs.includeDefaultImportsForTemplateCodegen)
+        defaultImports = [];
     prepareForCodegen(userImports);
+    prepareArchiveImportsForTemplateCodegen(archiveImports);
+    prepareArchiveImportsForTemplateCodegen(defaultImports);
 
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
-    auto modules = [module_] ~ userImports ~ [rod];
+    auto modules = rootModules ~ userImports ~ archiveImports ~ defaultImports ~ [rod];
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
+    // Archive-backed modules belong here despite not being codegen'd: the
+    // prebuilt libraries define their symbols.
     bool[Module] linkSet;
     foreach (linkModule; modules)
         linkSet[linkModule] = true;
+    foreach (userImport; allUserImports)
+        linkSet[userImport] = true;
 
     string[] objPaths;
     foreach (i; 0 .. modules.length)
         objPaths ~= buildPath(dir, text("obj_", i, ".o"));
 
     runInFork(() {
-        const context = LinkContext(linkSet, collectMemberInstances(linkSet));
+        const context = LinkContext(
+            linkSet,
+            collectMemberInstances(modules),
+        );
         // User-import modules are root modules (see prepareForCodegen), so
         // like the rod they accumulate template instances parameterized on
         // other compilations' types; prune them all against this link.
         pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);
+        foreach (archiveImport; archiveImports) {
+            keepOnlyTemplateCodegenMembers(archiveImport);
+            pruneForeignMembers(archiveImport, context);
+        }
+        foreach (defaultImport; defaultImports) {
+            keepOnlyTemplateCodegenMembers(defaultImport);
+            pruneForeignMembers(defaultImport, context);
+        }
         adoptTypeInfos(rod, linkSet);
         emitObjectFiles(modules, objPaths);
-        linkSharedLibrary(objPaths, libPath);
+        linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
     });
 }
 
@@ -267,16 +346,35 @@ private void pruneForeignMembers(
     module_.members.setDim(numKept);
 }
 
+// Archive/default modules are in the codegen list only so DMD can emit the
+// template instances and TypeInfos it appended to their members arrays. Their
+// ordinary declarations are already supplied by a prebuilt archive or
+// libphobos, so emitting them here would duplicate definitions.
+private void keepOnlyTemplateCodegenMembers(
+    imported!"dmd.dmodule".Module module_,
+) {
+    if (module_.members is null)
+        return;
+
+    size_t numKept = 0;
+    foreach (i; 0 .. module_.members.length) {
+        auto member = (*module_.members)[i];
+        if (member.isTemplateInstance || member.isTypeInfoDeclaration)
+            (*module_.members)[numKept++] = member;
+    }
+    module_.members.setDim(numKept);
+}
+
 // The template instances some in-link module holds as a member — the only
 // instances whose emission in this link is guaranteed (an instance is
 // emitted from whichever members array holds it).
 private bool[imported!"dmd.dtemplate".TemplateInstance] collectMemberInstances(
-    bool[imported!"dmd.dmodule".Module] linkSet,
+    imported!"dmd.dmodule".Module[] modules,
 ) {
     import dmd.dtemplate: TemplateInstance;
 
     bool[TemplateInstance] result;
-    foreach (module_, _; linkSet) {
+    foreach (module_; modules) {
         if (module_.members is null)
             continue;
         foreach (i; 0 .. module_.members.length)
@@ -507,13 +605,15 @@ private bool moduleIsForeign(
 // (process-init, i.e. druntime/phobos) import paths. Recursion stops at
 // default-path modules; their imports are druntime's business.
 private imported!"dmd.dmodule".Module[] userImportedModules(
-    imported!"dmd.dmodule".Module module_,
+    imported!"dmd.dmodule".Module[] rootModules,
+    in bool includeDefaultImports,
 ) {
     import dmd.dmodule: Module;
 
     Module[] result;
     bool[Module] visited;
-    visited[module_] = true;
+    foreach (module_; rootModules)
+        visited[module_] = true;
 
     void walk(Module current) {
         foreach (i; 0 .. current.aimports.length) {
@@ -521,27 +621,39 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
             if (imported_ in visited)
                 continue;
             visited[imported_] = true;
-            if (isUnderDefaultImportPaths(imported_))
+            if (isUnderDefaultImportPaths(imported_)) {
+                if (includeDefaultImports)
+                    result ~= imported_;
                 continue;
+            }
             result ~= imported_;
             walk(imported_);
         }
     }
 
-    walk(module_);
+    foreach (module_; rootModules)
+        walk(module_);
     return result;
 }
 
 private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {
+    return isUnderImportPaths(module_, defaultImportPaths);
+}
+
+private bool isUnderImportPaths(
+    imported!"dmd.dmodule".Module module_,
+    in string[] roots,
+) {
     import std.algorithm.searching: any, startsWith;
     import std.path: absolutePath, buildNormalizedPath, dirSeparator;
 
     const path = module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
     // Match whole path components: a bare prefix check would classify a
     // sibling directory like <root>-extra/ as under <root>.
-    return defaultImportPaths.any!(
-        root => path == root || path.startsWith(root ~ dirSeparator),
-    );
+    return roots.any!((root) {
+        const normalised = root.absolutePath.buildNormalizedPath;
+        return path == normalised || path.startsWith(normalised ~ dirSeparator);
+    });
 }
 
 // The import paths registered when DMD was initialized (druntime/phobos);
@@ -594,6 +706,13 @@ private void prepareForCodegen(imported!"dmd.dmodule".Module[] modules) {
 
     if (global.errors != 0)
         throw new Exception(diagnosticMessage);
+}
+
+private void prepareArchiveImportsForTemplateCodegen(
+    imported!"dmd.dmodule".Module[] modules,
+) {
+    foreach (module_; modules)
+        module_.importedFrom = module_;
 }
 
 private void emitObjectFiles(
@@ -649,7 +768,11 @@ private void initialiseBackend() {
     ObjcGlue_initialize;
 }
 
-private void linkSharedLibrary(in string[] objPaths, in string libPath) {
+private void linkSharedLibrary(
+    in string[] objPaths,
+    in string libPath,
+    in string[] linkFiles,
+) {
     import std.conv: text;
     import std.process: execute;
 
@@ -657,14 +780,19 @@ private void linkSharedLibrary(in string[] objPaths, in string libPath) {
     // (one GC, one DSO registry) instead of smuggling in its own copy.
     // `-z defs` turns any symbol the generated code fails to provide into a
     // link error instead of a load-time failure.
-    const result = execute([
+    auto command = [ // const fails: appended to below
         "dmd",
         "-shared",
         "-defaultlib=libphobos2.so",
         "-L=-z",
         "-L=defs",
         "-of=" ~ libPath,
-    ] ~ objPaths);
+    ] ~ objPaths;
+    // Group-wrap the prebuilt libraries: references between archives can go
+    // in either direction, and the group makes the linker rescan to fixpoint.
+    if (linkFiles.length != 0)
+        command ~= "-L=--start-group" ~ linkFiles ~ "-L=--end-group";
+    const result = execute(command);
     if (result.status != 0)
         throw new Exception(text("link failed: ", result.output));
 }

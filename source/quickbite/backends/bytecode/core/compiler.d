@@ -29,7 +29,8 @@ private struct Compiler {
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
         ScalarType, isSigned, size;
     import dmd.declaration: VarDeclaration;
-    import dmd.expression: AssertExp, CallExp, CastExp, Expression, StringExp;
+    import dmd.expression:
+        AssertExp, BinExp, CallExp, CastExp, Expression, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -108,10 +109,29 @@ private struct Compiler {
             return;
         }
 
+        if (auto if_ = statement.isIfStatement) {
+            compileIfStatement(if_);
+            return;
+        }
+
         throw new Exception(text(
             "Unsupported statement in bytecode core: ",
             statement.stmt,
         ));
+    }
+
+    private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
+        const condition = compileExpression(if_.condition);
+        const falseJump = emitJumpIfFalse(condition);
+
+        compileStatement(if_.ifbody);
+        const endJump = emitJump;
+
+        patchJump(falseJump);
+        if (if_.elsebody !is null)
+            compileStatement(if_.elsebody);
+
+        patchJump(endJump);
     }
 
     private Operand compileExpression(Expression expression) {
@@ -159,6 +179,12 @@ private struct Compiler {
 
         if (auto cast_ = expression.isCastExp)
             return compileCastExpression(cast_);
+
+        if (auto add = expression.isAddExp)
+            return compileAddExpression(add);
+
+        if (auto equal = expression.isEqualExp)
+            return compileEqualExpression(equal);
 
         if (auto call = expression.isCallExp)
             return compileCall(call);
@@ -219,6 +245,52 @@ private struct Compiler {
         return extend(source, target);
     }
 
+    private Operand compileAddExpression(Expression expression) {
+        auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        assert(add !is null);
+        return compileIntBinaryExpression(
+            add,
+            Op.addInt4,
+            ScalarType.int_,
+            "Unsupported addition in bytecode core: ",
+        );
+    }
+
+    private Operand compileEqualExpression(Expression expression) {
+        auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        assert(equal !is null);
+        return compileIntBinaryExpression(
+            equal,
+            Op.equal4,
+            ScalarType.bool_,
+            "Unsupported equality in bytecode core: ",
+        );
+    }
+
+    private Operand compileIntBinaryExpression(
+        BinExp expression,
+        in Op op,
+        in ScalarType resultType,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        const lhs = compileExpression(expression.e1);
+        const rhs = compileExpression(expression.e2);
+        if (lhs.type != ScalarType.int_ ||
+            rhs.type != ScalarType.int_ ||
+            (resultType == ScalarType.int_ &&
+                scalarType(expression.type) != ScalarType.int_))
+            throw new Exception(text(
+                unsupportedMessage,
+                expressionChars(expression),
+            ));
+
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, resultType);
+    }
+
     private Operand extend(in Operand source, in ScalarType target) {
         const offset = allocate(target);
         _code ~= Instruction(
@@ -261,6 +333,24 @@ private struct Compiler {
             : allocate(returnType);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType);
+    }
+
+    private size_t emitJump() @safe pure {
+        const index = _code.length;
+        _code ~= Instruction(Op.jump);
+        return index;
+    }
+
+    private size_t emitJumpIfFalse(in Operand condition) @safe pure {
+        const index = _code.length;
+        _code ~= Instruction(Op.jumpIfFalse, condition.offset);
+        return index;
+    }
+
+    private void patchJump(in size_t index) @safe pure {
+        _code[index].b = cast(ushort) _code.length;
+        if (_code[index].op == Op.jump)
+            _code[index].a = _code[index].b;
     }
 
     private void compileAssert(AssertExp assert_) {
@@ -377,6 +467,8 @@ private struct Compiler {
         switch (type.toBasetype.ty) with (TY) {
             case Tvoid:
                 return ScalarType.void_;
+            case Tbool:
+                return ScalarType.bool_;
             case Tint8:
                 return ScalarType.byte_;
             case Tuns8:
@@ -393,6 +485,12 @@ private struct Compiler {
                 return ScalarType.long_;
             case Tuns64:
                 return ScalarType.ulong_;
+            case Tchar:
+                return ScalarType.char_;
+            case Twchar:
+                return ScalarType.wchar_;
+            case Tdchar:
+                return ScalarType.dchar_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",

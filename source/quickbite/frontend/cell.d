@@ -15,6 +15,10 @@ public struct Cell {
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
+    private string[] declaredNames;
+    private string[] moduleFunctionSignatures;
+    private string[] promotedLocalNames;
+    private TranscriptCell[] promotedLocalCells;
 }
 
 public struct EvalSourceParseResult {
@@ -27,6 +31,14 @@ private struct LoadedModuleSource {
     public string filePath;
 }
 
+private struct TranscriptCell {
+    public string source;
+    public Cell.Kind kind;
+    public string[] declaredNames;
+    public string[] functionSignatures;
+    public uint cellNumber;
+}
+
 private enum EvalHistoryTarget {
     local,
     module_,
@@ -34,9 +46,9 @@ private enum EvalHistoryTarget {
 
 public struct EvalSession {
     private string[] importPaths;
-    private string localTranscript;
+    private TranscriptCell[] localCells;
     private LoadedModuleSource[] loadedModuleSources;
-    private string moduleTranscript;
+    private TranscriptCell[] moduleCells;
     private uint evalCellCount;
     private uint valueCellCount;
 
@@ -67,9 +79,32 @@ public struct EvalSession {
             return Cell(Cell.Kind.incomplete);
 
         if (isModuleDeclarationCell(input)) {
+            const moduleFunctionSignatures = functionDeclarationSignatures(input);
+            const promotedLocalNames = referencedLocalDeclaredNames(
+                input,
+                localCells,
+                moduleFunctionSignatures,
+            );
+            const promotedLocalCells = cellsDeclaringNames(
+                localCells,
+                promotedLocalNames,
+            );
+            const moduleCells = moduleCellsWithReplacements(
+                moduleCells,
+                moduleFunctionSignatures,
+            );
+            const localCells = localCellsWithoutDeclaredNames(
+                localCells,
+                promotedLocalNames,
+            );
             const source = evalSource(
-                moduleSource(moduleTranscript ~ input ~ "\n"),
-                localTranscript,
+                moduleSource(
+                    transcriptSource(moduleCells) ~
+                    transcriptSource(promotedLocalCells) ~
+                    input ~
+                    "\n",
+                ),
+                transcriptSource(localCells),
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -78,6 +113,10 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.module_,
                 input ~ "\n",
+                [],
+                moduleFunctionSignatures,
+                promotedLocalNames,
+                promotedLocalCells,
             );
         }
 
@@ -85,12 +124,17 @@ public struct EvalSession {
             if (const diagnostic = statementSyntaxDiagnostic(input))
                 throw new Exception(diagnostic);
 
+            const declaredNames = localVariableDeclarationNames(input);
             const history = input.isStandalonePragmaMessageStatement ?
                 null :
                 input ~ "\n";
+            const localCells = localCellsWithRebindings(
+                localCells,
+                declaredNames,
+            );
             const source = evalSource(
                 moduleSource,
-                localTranscript ~ input ~ "\n",
+                localTranscriptSource(localCells) ~ input ~ "\n",
                 evalFunctionName,
             );
             return evalCellFromSource(
@@ -99,12 +143,16 @@ public struct EvalSession {
                 importPaths,
                 EvalHistoryTarget.local,
                 history,
+                declaredNames,
+                [],
+                [],
+                [],
             );
         }
 
         const source = evalSource(
             moduleSource,
-            localTranscript ~ "return " ~ input ~ ";",
+            localTranscriptSource ~ "return " ~ input ~ ";",
             evalFunctionName,
         );
         return evalCellFromSource(
@@ -112,23 +160,54 @@ public struct EvalSession {
             source,
             importPaths,
             EvalHistoryTarget.local,
-            text(
-                "auto __quickbite_repl_value_",
-                valueCellCount,
-                " = ",
-                input,
-                ";\n",
-            ),
+            expressionHistory(input, valueCellCount),
+            [],
+            [],
+            [],
+            [],
         );
     }
 
     public void accept(in Cell cell) {
+        const cellNumber = evalCellCount + 1;
         final switch (cell.historyTarget) with (EvalHistoryTarget) {
             case local:
-                localTranscript ~= cell.history;
+                localCells = localCellsWithRebindings(
+                    localCells,
+                    cell.declaredNames,
+                );
+                localCells ~= TranscriptCell(
+                    cell.history,
+                    cell.kind,
+                    cell.declaredNames.dup,
+                    [],
+                    cellNumber,
+                );
                 break;
             case module_:
-                moduleTranscript ~= cell.history;
+                localCells = localCellsWithoutDeclaredNames(
+                    localCells,
+                    cell.promotedLocalNames,
+                );
+                foreach (ref promotedCell; cell.promotedLocalCells)
+                    moduleCells ~= TranscriptCell(
+                        promotedCell.source,
+                        promotedCell.kind,
+                        promotedCell.declaredNames.dup,
+                        promotedCell.functionSignatures.dup,
+                        promotedCell.cellNumber,
+                    );
+                moduleCells = moduleCellsWithReplacements(
+                    moduleCells,
+                    cell.moduleFunctionSignatures.dup,
+                );
+                moduleCells ~= TranscriptCell(
+                    cell.history,
+                    cell.kind,
+                    [],
+                    cell.moduleFunctionSignatures.dup,
+                    cellNumber,
+                );
                 break;
         }
 
@@ -150,7 +229,17 @@ public struct EvalSession {
     }
 
     private string moduleSource() const @safe pure {
-        return moduleSource(moduleTranscript);
+        return moduleSource(transcriptSource(moduleCells));
+    }
+
+    private string localTranscriptSource() const @safe pure {
+        return transcriptSource(localCells) ~ valueCellCount.latestValueBinding;
+    }
+
+    private string localTranscriptSource(
+        const(TranscriptCell)[] cells,
+    ) const @safe pure {
+        return transcriptSource(cells) ~ valueCellCount.latestValueBinding;
     }
 
     private string moduleSource(in string replModuleTranscript) const
@@ -166,6 +255,38 @@ public struct EvalSession {
     }
 }
 
+private string latestValueBinding(in uint valueCellCount) @safe pure {
+    import std.conv: text;
+
+    if (valueCellCount == 0)
+        return null;
+
+    return text(
+        "alias it = __quickbite_repl_value_",
+        valueCellCount - 1,
+        ";\n",
+    );
+}
+
+private string expressionHistory(
+    in string input,
+    in uint valueCellCount,
+) @safe pure {
+    import std.conv: text;
+
+    const valueSource = input == "it" && valueCellCount != 0
+        ? text("__quickbite_repl_value_", valueCellCount - 1)
+        : input;
+
+    return text(
+        "auto __quickbite_repl_value_",
+        valueCellCount,
+        " = ",
+        valueSource,
+        ";\n",
+    );
+}
+
 private string toSource(ref const LoadedModuleSource loadedModuleSource)
 @safe pure {
     if (loadedModuleSource.filePath.length == 0)
@@ -174,6 +295,182 @@ private string toSource(ref const LoadedModuleSource loadedModuleSource)
     return lineDirective(loadedModuleSource.filePath) ~
         loadedModuleSource.source ~
         "\n";
+}
+
+private string transcriptSource(
+    const(TranscriptCell)[] cells,
+) @safe pure {
+    string result;
+    foreach (ref cell; cells) {
+        if (cell.source.length == 0)
+            continue;
+
+        result ~= replCellLineDirective(cell.cellNumber) ~ cell.source;
+    }
+
+    return result;
+}
+
+private TranscriptCell[] moduleCellsWithReplacements(
+    const(TranscriptCell)[] moduleCells,
+    in string[] functionSignatures,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; moduleCells) {
+        if (hasFunctionSignature(cell, functionSignatures))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private TranscriptCell[] localCellsWithRebindings(
+    const(TranscriptCell)[] localCells,
+    in string[] declaredNames,
+) {
+    import std.conv: text;
+
+    TranscriptCell[] result;
+    foreach (ref cell; localCells)
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+
+    foreach (declaredName; declaredNames) {
+        const index = latestCellDeclaring(result, declaredName);
+        if (index == size_t.max)
+            continue;
+
+        const hiddenName = text(
+            "__quickbite_repl_local_",
+            result[index].cellNumber,
+            "_",
+            declaredName,
+        );
+        foreach (cellIndex; index .. result.length) {
+            result[cellIndex].source = rewriteIdentifierTokens(
+                result[cellIndex].source,
+                declaredName,
+                hiddenName,
+            );
+            foreach (ref name; result[cellIndex].declaredNames) {
+                if (name == declaredName)
+                    name = hiddenName;
+            }
+        }
+    }
+
+    return result;
+}
+
+private TranscriptCell[] localCellsWithoutDeclaredNames(
+    const(TranscriptCell)[] localCells,
+    in string[] declaredNames,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; localCells) {
+        if (declaresAnyName(cell, declaredNames))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private TranscriptCell[] cellsDeclaringNames(
+    const(TranscriptCell)[] cells,
+    in string[] declaredNames,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; cells) {
+        if (!declaresAnyName(cell, declaredNames))
+            continue;
+
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+    }
+
+    return result;
+}
+
+private bool declaresAnyName(
+    ref const TranscriptCell cell,
+    in string[] declaredNames,
+) @safe pure {
+    foreach (declaredName; declaredNames) {
+        if (cellDeclares(cell, declaredName))
+            return true;
+    }
+
+    return false;
+}
+
+private size_t latestCellDeclaring(
+    const(TranscriptCell)[] cells,
+    in string declaredName,
+) @safe pure {
+    for (size_t index = cells.length; index > 0; --index) {
+        if (cellDeclares(cells[index - 1], declaredName))
+            return index - 1;
+    }
+
+    return size_t.max;
+}
+
+private bool cellDeclares(
+    ref const TranscriptCell cell,
+    in string declaredName,
+) @safe pure {
+    foreach (cellDeclaredName; cell.declaredNames) {
+        if (cellDeclaredName == declaredName)
+            return true;
+    }
+
+    return false;
+}
+
+private bool hasFunctionSignature(
+    ref const TranscriptCell cell,
+    in string[] functionSignatures,
+) @safe pure {
+    foreach (cellSignature; cell.functionSignatures) {
+        foreach (signature; functionSignatures) {
+            if (cellSignature == signature)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+private string replCellLineDirective(in uint cellNumber) @safe pure {
+    import std.conv: text;
+
+    return lineDirective(text("<repl cell ", cellNumber, ">"));
 }
 
 private string replLineDirective() @safe pure {
@@ -233,6 +530,10 @@ private Cell evalCellFromSource(
     in string[] importPaths,
     in EvalHistoryTarget historyTarget,
     in string history,
+    in string[] declaredNames,
+    in string[] moduleFunctionSignatures,
+    in string[] promotedLocalNames,
+    in TranscriptCell[] promotedLocalCells,
 ) {
     import quickbite.frontend.compiler: parseModule;
 
@@ -244,10 +545,30 @@ private Cell evalCellFromSource(
             evalFunction(moduleResult.module_),
             historyTarget,
             history,
+            declaredNames.dup,
+            moduleFunctionSignatures.dup,
+            promotedLocalNames.dup,
+            copyTranscriptCells(promotedLocalCells),
         );
     } catch (Exception exception) {
         throw new Exception(withCandidateSignatures(source, exception.msg));
     }
+}
+
+private TranscriptCell[] copyTranscriptCells(
+    const(TranscriptCell)[] cells,
+) @safe pure {
+    TranscriptCell[] result;
+    foreach (ref cell; cells)
+        result ~= TranscriptCell(
+            cell.source,
+            cell.kind,
+            cell.declaredNames.dup,
+            cell.functionSignatures.dup,
+            cell.cellNumber,
+        );
+
+    return result;
 }
 
 private string[] candidateSignatures(in string source) {
@@ -511,6 +832,101 @@ private string statementSyntaxDiagnostic(in string input) {
     return result;
 }
 
+private string[] localVariableDeclarationNames(in string input) {
+    import dmd.astcodegen: ASTCodegen;
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.parse: Parser;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string[] result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const source = input ~ '\0';
+        scope parser = new Parser!ASTCodegen(
+            null,
+            source,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+            true,
+        );
+
+        parser.nextToken;
+        auto statement = parser.parseStatement(0);
+        auto expression = statement is null ? null : statement.isExpStatement;
+        auto declaration = expression is null || expression.exp is null
+            ? null
+            : expression.exp.isDeclarationExp;
+        auto variable = declaration is null
+            ? null
+            : declaration.declaration.isVarDeclaration;
+        if (
+            variable !is null &&
+            variable.ident !is null &&
+            parser.token.value == TOK.endOfFile &&
+            global.errors == 0
+        )
+            result ~= variable.ident.toString.idup;
+    });
+
+    return result;
+}
+
+private string rewriteIdentifierTokens(
+    in string source,
+    in string from,
+    in string to,
+) {
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.lexer: Lexer;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const parseSource = source ~ '\0';
+        scope lexer = new Lexer(
+            null,
+            parseSource.ptr,
+            0,
+            parseSource.length - 1,
+            false,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+        );
+
+        size_t copied;
+        for (lexer.nextToken; lexer.token.value != TOK.endOfFile;
+            lexer.nextToken) {
+            if (
+                lexer.token.value != TOK.identifier ||
+                lexer.token.ident.toString != from
+            )
+                continue;
+
+            const offset = cast(size_t)(lexer.token.ptr - parseSource.ptr);
+            result ~= source[copied .. offset];
+            result ~= to;
+            copied = offset + from.length;
+        }
+
+        result ~= source[copied .. $];
+    });
+
+    return result;
+}
+
 private bool isStandalonePragmaMessageStatement(in string input) {
     import dmd.astcodegen: ASTCodegen;
     import dmd.errors: diagnostics;
@@ -575,6 +991,152 @@ private bool isModuleDeclarationCell(in string input) {
     });
 
     return result;
+}
+
+private string[] functionDeclarationSignatures(in string input) {
+    import dmd.errors: diagnostics;
+    import dmd.frontend: parseModule;
+    import dmd.globals: global;
+    import std.conv: text;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    string[] result;
+    withCompilerLock(() {
+        import core.atomic: atomicFetchAdd;
+
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        auto moduleResult = parseModule(
+            text("eval_cell_", atomicFetchAdd(_evalModuleCounter, 1u), ".d"),
+            input,
+        );
+        if (
+            moduleResult.diagnostics.hasErrors ||
+            moduleResult.module_.members is null
+        )
+            return;
+
+        foreach (declaration; *moduleResult.module_.members) {
+            if (
+                isEvalFunctionDeclaration(declaration) &&
+                declaration.isUnitTestDeclaration is null &&
+                declaration.ident !is null
+            ) {
+                auto function_ = declaration.isFuncDeclaration;
+                result ~= replacementFunctionSignature(function_);
+            }
+        }
+    });
+
+    return result;
+}
+
+private string[] referencedLocalDeclaredNames(
+    in string input,
+    const(TranscriptCell)[] localCells,
+    in string[] moduleFunctionSignatures,
+) {
+    if (moduleFunctionSignatures.length == 0)
+        return [];
+
+    string[] result;
+    foreach (ref cell; localCells) {
+        foreach (declaredName; cell.declaredNames) {
+            if (
+                !contains(result, declaredName) &&
+                referencesIdentifier(input, declaredName)
+            )
+                result ~= declaredName;
+        }
+    }
+
+    return result;
+}
+
+private bool contains(in string[] values, in string value) @safe pure {
+    foreach (candidate; values) {
+        if (candidate == value)
+            return true;
+    }
+
+    return false;
+}
+
+private bool referencesIdentifier(in string source, in string identifier) {
+    import dmd.errors: diagnostics;
+    import dmd.globals: global;
+    import dmd.lexer: Lexer;
+    import dmd.tokens: TOK;
+    import quickbite.frontend.compiler: withCompilerLock;
+
+    bool result;
+    withCompilerLock(() {
+        global.errors = 0;
+        global.warnings = 0;
+        diagnostics.length = 0;
+
+        const parseSource = source ~ '\0';
+        scope lexer = new Lexer(
+            null,
+            parseSource.ptr,
+            0,
+            parseSource.length - 1,
+            false,
+            false,
+            global.errorSink,
+            &global.compileEnv,
+        );
+
+        for (lexer.nextToken; lexer.token.value != TOK.endOfFile;
+            lexer.nextToken) {
+            if (
+                lexer.token.value == TOK.identifier &&
+                lexer.token.ident.toString == identifier
+            ) {
+                result = true;
+                return;
+            }
+        }
+    });
+
+    return result;
+}
+
+private string replacementFunctionSignature(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.conv: text;
+
+    auto type = function_.type is null
+        ? null
+        : function_.type.isTypeFunction;
+    return text(function_.ident.toString, "(", parameterSignature(type), ")");
+}
+
+private string parameterSignature(imported!"dmd.mtype".TypeFunction type) {
+    import std.array: join;
+    import std.conv: text;
+
+    if (type is null)
+        return null;
+
+    string[] parameters;
+    foreach (index; 0 .. type.parameterList.length) {
+        auto parameter = type.parameterList[index];
+        parameters ~= parameter.type is null
+            ? null
+            : parameter.type.typeSyntax;
+    }
+
+    return text(parameters.join(","), "/", type.parameterList.varargs);
+}
+
+private string typeSyntax(imported!"dmd.mtype".Type type) {
+    import std.string: fromStringz;
+
+    return fromStringz(type.toChars).idup;
 }
 
 private bool isDeclarationCell(in string input) {

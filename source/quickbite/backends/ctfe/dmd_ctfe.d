@@ -257,9 +257,9 @@ private bool isUndisplayableCtfeStructField(
 private bool isSyntheticThisField(
     imported!"dmd.declaration".VarDeclaration field,
 ) {
-    import dmd.declaration: ThisDeclaration;
-
-    return cast(ThisDeclaration) field !is null;
+    // a D cast on the extern(C++) dmd AST classes is unchecked, so
+    // cast(ThisDeclaration) would be non-null for every field
+    return field.isThisDeclaration !is null;
 }
 
 private imported!"dmd.declaration".VarDeclaration structLiteralField(

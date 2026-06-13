@@ -454,17 +454,37 @@ These need the REPL driver because only the eval path reaches
 `dmd_ctfe.d`. Verify the exact rendered string against the oracle
 before pinning it.
 
-- [ ] **Struct value result** — declare `struct Point { int x; int y;
-  }`, runtime locals `a`, `b`, evaluate `Point(a, b)`.
-- [ ] **Array of structs** — `arrayValue` recursing into
-  `structValue`.
-- [ ] **Struct with a null function-pointer field** — pointer-to-
-  function arm of `isFunctionLikeType` (field is skipped).
-- [ ] **Struct with a null delegate field** — delegate arm.
-- [ ] **Struct with a null class/pointer field** — kept as
-  `Value.null_`; the only path producing a `null` result.
-- [ ] **Nested struct with a synthetic `this` context field** —
+- [x] **Struct value result** — declare `struct Point { int x; int y;
+  }`, runtime locals `a`, `b`, evaluate `Point(a, b)`. *Done:
+  `repl.backend.structValueRendersTypeNameAndFields` (Ctfe,
+  Interpreter) — Bytecode reports struct literals as an unsupported
+  expression (likewise for every fixture below).*
+- [x] **Array of structs** — `arrayValue` recursing into
+  `structValue`. *Done: `repl.backend.arrayOfStructsRendersEachElement`
+  (Ctfe, Interpreter).*
+- [x] **Struct with a null function-pointer field** — pointer-to-
+  function arm of `isFunctionLikeType` (field is skipped). *Done:
+  `repl.backend.nullFunctionPointerFieldIsOmitted` (Ctfe) — the
+  Interpreter keeps the null field (`Callbacks(7, null)`) instead of
+  omitting it; recorded in `ai/plans/value.md`.*
+- [x] **Struct with a null delegate field** — delegate arm. *Done:
+  `repl.backend.nullDelegateFieldIsOmitted` (Ctfe) — same Interpreter
+  divergence.*
+- [x] **Struct with a null class/pointer field** — kept as
+  `Value.null_`; the only path producing a `null` result. *Done:
+  `repl.backend.nullClassFieldRendersAsNull` and
+  `repl.backend.nullPointerFieldRendersAsNull` (Ctfe, Interpreter) —
+  exposed a real bug: `isSyntheticThisField` used a D cast on the
+  extern(C++) dmd AST (unchecked, always non-null), so *every*
+  null-valued field was silently dropped. Fixed via
+  `isThisDeclaration`; these fixtures are the exposing tests.*
+- [x] **Nested struct with a synthetic `this` context field** —
   `isSyntheticThisField`. Confirm dmd actually synthesises it in the
-  CTFE literal first.
-- [ ] **Assoc array with struct values** — `assocArrayValue` into
-  `structValue`.
+  CTFE literal first. *Done:
+  `repl.backend.nestedStructOmitsSyntheticContextField` (Ctfe,
+  Interpreter) — dmd does synthesise a `void*` context element in the
+  CTFE literal; verified skipped post-fix.*
+- [x] **Assoc array with struct values** — `assocArrayValue` into
+  `structValue`. *Done:
+  `repl.backend.assocArrayWithStructValuesRendersEntries` (Ctfe,
+  Interpreter).*

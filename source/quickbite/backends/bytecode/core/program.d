@@ -6,6 +6,7 @@ private:
 // types to these tags at emit time; no runtime value carries a tag.
 package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     void_,
+    bool_,
     byte_,
     ubyte_,
     short_,
@@ -14,6 +15,9 @@ package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     uint_,
     long_,
     ulong_,
+    char_,
+    wchar_,
+    dchar_,
 }
 
 package(quickbite.backends.bytecode) uint size(in ScalarType type)
@@ -22,11 +26,11 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     final switch (type) with (ScalarType) {
         case void_:
             return 0;
-        case byte_, ubyte_:
+        case bool_, byte_, ubyte_, char_:
             return 1;
-        case short_, ushort_:
+        case short_, ushort_, wchar_:
             return 2;
-        case int_, uint_:
+        case int_, uint_, dchar_:
             return 4;
         case long_, ulong_:
             return 8;
@@ -39,7 +43,8 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
     final switch (type) with (ScalarType) {
         case byte_, short_, int_, long_:
             return true;
-        case void_, ubyte_, ushort_, uint_, ulong_:
+        case void_, bool_, ubyte_, ushort_, uint_, ulong_,
+            char_, wchar_, dchar_:
             return false;
     }
 }
@@ -52,10 +57,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
+    addInt4, // a: destination frame offset, b: lhs, c: rhs
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,
     equal8,
+    jump, // a: absolute instruction index
+    jumpIfFalse, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     ret, // a: frame offset of the return value

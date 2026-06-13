@@ -1068,7 +1068,7 @@ directly on the new core per the slice roadmap.
   based on `T.init`.
 - [x] Replace manual string code-unit conversion with DMD literal slice
   support; no `std.utf`/`std.uni` helper is needed for the current AST node.
-- [ ] Include bool and character value kinds in integer-like binary operations
+- [x] Include bool and character value kinds in integer-like binary operations
   if DMD treats them that way.
 - [x] Decide whether `incrementLocal` should remain distinct from `add`.
 - [x] Clarify or remove the `CastTarget` enum if the current operand shape is

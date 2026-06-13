@@ -27,6 +27,7 @@ package enum ResultKind {
     float_,
     double_,
     string_,
+    class_,
 }
 
 package struct Value {
@@ -43,8 +44,11 @@ package enum BinaryOperation {
     bitwiseOr,
     pow,
     equal,
+    notEqual,
     lessThan,
+    lessOrEqual,
     greaterThan,
+    greaterOrEqual,
 }
 
 package enum UnaryOperation {
@@ -97,16 +101,28 @@ package struct Cast {
 package struct Call {
     public uint functionIndex;
     public uint[] arguments;
+    public RefWriteback[] refWritebacks;
+    public bool hasResult;
     public Value result;
+}
+
+package struct RefWriteback {
+    public uint parameterLocal;
+    public uint callerLocal;
+    public Type type;
 }
 
 package struct AssertTrue {
     public uint condition;
     public string message;
+    public bool hasMessageValue;
+    public uint messageValue;
 }
 
 package struct AssertFalse {
     public uint condition;
+    public bool hasMessageValue;
+    public uint messageValue;
 }
 
 package struct AssertCompare {
@@ -116,15 +132,23 @@ package struct AssertCompare {
     public uint condition;
     public uint lhs;
     public uint rhs;
+    public bool hasMessageValue;
+    public uint messageValue;
 }
 
 package struct ThrowException {
     public string message;
 }
 
+package struct ThrowIfNull {
+    public uint value;
+    public string message;
+}
+
 package struct Load {
     public uint local;
     public Value result;
+    public string uninitializedMessage;
 }
 
 package struct Store {
@@ -145,6 +169,7 @@ package alias Instruction = imported!"std.sumtype".SumType!(
     AssertFalse,
     AssertCompare,
     ThrowException,
+    ThrowIfNull,
     Load,
     Store,
 );

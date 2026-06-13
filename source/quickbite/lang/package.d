@@ -610,8 +610,57 @@ public struct Value {
         );
     }
 
+    public bool isStruct() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => true,
+            (_) => false,
+        );
+    }
+
+    public bool isArray() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => true,
+            (_) => false,
+        );
+    }
+
+    public size_t structFieldCount() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Struct) struct_) => struct_.fields.length,
+            (_) {
+                throw new Exception("Expected struct.");
+                return size_t.init;
+            },
+        );
+    }
+
     public Value pointerTarget() const @safe pure {
         return pointerIndex(0);
+    }
+
+    // Returns a new pointer value identical to this one except that the element
+    // at offset 0 is replaced with `value`.  Only valid for single-element
+    // struct-pointer allocations (those created by `pointerValue`).
+    public Value withPointerTarget(in Value value) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) {
+                auto target = pointer.target.dup;
+                target[cast(size_t) pointer.offset] = value;
+                return Value(Pointer(target, pointer.allocation, pointer.offset));
+            },
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
     }
 
     public Value pointerIndex(in size_t index) const @safe pure {

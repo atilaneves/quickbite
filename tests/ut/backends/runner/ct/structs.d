@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Struct fields, defaults, and basic value construction.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.scalarFieldReadWrite." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -27,7 +27,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -51,7 +51,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.scalarFieldsDefaultToZero." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -74,7 +74,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.arrayFieldDefaultsToEmpty." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.literalDefaultsMissingFieldToZero." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -115,7 +115,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.literalFillsStaticArrayFieldFromScalar." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -142,7 +142,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Passing structs by value.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.scalarStructPassedToFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -165,7 +165,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.multiFieldStructPassedToFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -190,7 +190,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.byValueScalarFieldMutationDoesNotLeak." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -215,7 +215,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.byValueArrayDescriptorMutationDoesNotLeak." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -245,7 +245,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.byValueArrayElementMutationLeaksThroughSlice." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -274,7 +274,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Struct methods.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodReadsField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -297,7 +297,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodPostIncrementsSizeTField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -320,7 +320,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodPostIncrementsRuntimeSizeTField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -345,7 +345,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodReadsArrayFieldAtPostIncrementedField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -371,7 +371,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodReadsArrayFieldAtRuntimePostIncrementedField." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -402,7 +402,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodIndexWritesArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -427,7 +427,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodAppendsArrayField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -452,7 +452,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodCallsStructMethod." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -485,7 +485,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Ref parameters involving struct fields.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.arrayFieldPassedByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -510,7 +510,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.methodPassesFieldByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +539,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.templateMethodPassesFieldByRef." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -572,7 +572,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Constructors, `new`, and mutable struct pointers.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.constructorStoresDynamicArrayParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -604,7 +604,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerInitializesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -626,7 +626,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerAllocatesMutableInstance." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -653,7 +653,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.newPointerRunsConstructor." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -680,7 +680,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Dynamic array struct field return values.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayFieldReturnValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -713,7 +713,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayReturnValueAssignsField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -751,7 +751,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.dynamicArrayFieldReturnValueIndexesCallResult." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -785,7 +785,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     `with`.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("with.structInstanceUsesRuntimeShapedFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -847,7 +847,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("with.enumExecutesBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -879,7 +879,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Destructors, postblits, and lifetime effects.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.scopeDestructorRunsAtCtfe." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -954,7 +954,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Nested structs.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.nestedReadsCapturedLocalThroughDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -978,10 +978,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
-// target."), and IR (unmapped struct type assert) cannot run struct-typed
-// fields yet.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode ("Unsupported bytecode assignment target.") and IR (unmapped struct
+// type assert) cannot run struct-typed fields yet.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.fieldChainReadsInnerStructMember." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1013,10 +1012,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Struct equality.
 +/
-// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
-// target."), and IR (unmapped struct type assert) cannot run struct equality
-// yet.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode ("Unsupported bytecode assignment target.") and IR (unmapped struct
+// type assert) cannot run struct equality yet.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.defaultEqualityComparesFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1042,7 +1040,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Same VM-backend limitations as struct.defaultEqualityComparesFields above.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.customOpEquals." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

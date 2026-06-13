@@ -13,7 +13,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1 + 2").should == Value(3);
@@ -39,6 +39,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.float." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
+    @("integerLikeBinaryOperands." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("cast(char) 65 + 1").should == Value(66);
+        newBackend!backend.eval("true + 1").should == Value(2);
     }
 }
 
