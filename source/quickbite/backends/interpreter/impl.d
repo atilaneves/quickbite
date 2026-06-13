@@ -35,6 +35,7 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
 
 private struct Walker {
     import dmd.declaration: VarDeclaration;
+    import dmd.expression: DivExp, ModExp;
     import dmd.func: FuncDeclaration;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
@@ -295,10 +296,10 @@ private struct Walker {
             return runExpression(mul.e1) * runExpression(mul.e2);
 
         if (auto div = expression.isDivExp)
-            return runExpression(div.e1) / runExpression(div.e2);
+            return runDivExpression(div);
 
         if (auto mod = expression.isModExp)
-            return runExpression(mod.e1) % runExpression(mod.e2);
+            return runModExpression(mod);
 
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
@@ -509,6 +510,37 @@ private struct Walker {
             );
 
         return left - right;
+    }
+
+    private Value runDivExpression(DivExp div) {
+        const left = runExpression(div.e1);
+        const right = runExpression(div.e2);
+        rejectIntMinMinusOneOverflow(left, right, "/");
+        return left / right;
+    }
+
+    private Value runModExpression(ModExp mod) {
+        const left = runExpression(mod.e1);
+        const right = runExpression(mod.e2);
+        rejectIntMinMinusOneOverflow(left, right, "%");
+        return left % right;
+    }
+
+    private void rejectIntMinMinusOneOverflow(
+        in Value left,
+        in Value right,
+        in string operator,
+    ) const {
+        import std.conv: text;
+
+        if (left != Value(int.min) || right != Value(-1))
+            return;
+
+        throw new Exception(text(
+            "integer overflow: `int.min ",
+            operator,
+            " -1`\ncannot compare `__error` at compile time",
+        ));
     }
 
     // DMD semantic scales pointer arithmetic operands to byte offsets
