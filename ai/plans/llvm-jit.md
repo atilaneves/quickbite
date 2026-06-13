@@ -112,6 +112,16 @@ to `dlsym`. If the host triple's prefix is non-empty, prepend it.
 
 ### Step 0 — extract the shared codegen path (refactor, no behavior change)
 
+✅ DONE. Extracted the fork + `emitObjectFiles` flow and its prep (rod-root
+assertion, user-import promotion, child-side prune, `adoptTypeInfos`) into the
+package-private `native/codegen.d` module, exposing `CodegenInputs` and
+`string[] emitObjectFilesForLink(Module[], string dir, CodegenInputs)`. The
+fork child emits objects to disk and exits; the parent gets the paths back.
+`SystemLinker` now calls it and continues with its own `linkSharedLibrary`
+(`dmd -shared`) + `loadSharedLibrary` as before. Gate met:
+`bin/ut @SystemLinker` (403 tests, 0 failed), `bin/ut --random`, and both
+historical seeds (`2828407573`, `3516581215`) all green — behavior preserved.
+
 Pull the fork + `emitObjectFiles` flow (and its prep: rod-root assertion,
 user-import promotion, child-side prune, `adoptTypeInfos`) out of
 `system_linker.d` into a package-private `native/codegen.d` that returns
