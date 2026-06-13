@@ -785,7 +785,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     `with`.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("with.structInstanceUsesRuntimeShapedFields." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -847,7 +847,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("with.enumExecutesBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

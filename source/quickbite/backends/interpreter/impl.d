@@ -140,6 +140,11 @@ private struct Walker {
             return;
         }
 
+        if (auto with_ = statement.isWithStatement) {
+            runWithStatement(with_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             import quickbite.backends.interpreter.messages: thrownExceptionMessage;
 
@@ -148,6 +153,28 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    // For `with(expr)` where expr is a struct lvalue, DMD semantic creates a
+    // `wthis` pointer-to-struct temporary and rewrites field accesses in the
+    // body to go through `*wthis`.  We seed locals with a pointer value wrapping
+    // the struct, run the body (mutations flow through writeLocation's PtrExp
+    // arm back into locals[wthis]), then write the final value back to the
+    // original expression.  For `with(EnumType)`, wthis is null; DMD resolves
+    // enum member references in the body at semantic time, so running the body
+    // as-is suffices.
+    private void runWithStatement(
+        imported!"dmd.statement".WithStatement with_,
+    ) {
+        if (with_.wthis !is null) {
+            const structValue = runExpression(with_.exp);
+            locals[with_.wthis] = Value.pointerValue(structValue);
+            runStatement(with_._body);
+            if (auto updated = with_.wthis in locals)
+                writeLocation(with_.exp, updated.pointerTarget);
+        } else {
+            runStatement(with_._body);
+        }
     }
 
     // DMD lowers `foreach` over arrays to a `for` loop; `break` and
