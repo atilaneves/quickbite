@@ -965,6 +965,7 @@ private struct Walker {
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
+        child.locals = locals.dup;
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from

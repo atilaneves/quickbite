@@ -954,7 +954,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Nested structs.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.nestedReadsCapturedLocalThroughDefaultInit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
