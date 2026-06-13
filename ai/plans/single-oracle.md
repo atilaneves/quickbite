@@ -71,7 +71,7 @@ Under the redefinition above, every current `rt/` module except
 `cstdlib.d` is misfiled. Move each into `ct/`, applying the
 Ctfe-divergence exclusion rule per block:
 
-- `arrays.d`, `control_flow.d` ✓ (done), `expressions.d`,
+- `arrays.d` ✓ (done), `control_flow.d` ✓ (done), `expressions.d`,
   `exceptions.d` ✓ (done), `logic.d` ✓ (done), `cerealed.d`,
   `diagnostics.d` ✓ (done), `archive.d` → `ct/`
   (merging into the existing `ct/` file of the same name where one exists).
