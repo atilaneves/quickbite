@@ -44,26 +44,36 @@ carried by `EvalResult`; `Repl.submit` returns the display `string`.
 
 ## Audit findings (June 2026)
 
-- The REPL uses `Value`'s structure only for display/control decisions:
-  void suppression (`== Value.void_`), `:t` cells
-  (`Value.typeName(asCharArrayString)`), string quoting, and
+- At audit time the REPL used `Value`'s structure only for
+  display/control decisions: void suppression (`== Value.void_`), `:t`
+  cells (`Value.typeName(asCharArrayString)`), string quoting, and
   success/failure gating (the `Diagnostic` arm of `EvalResult`, not
   `Value`). No `Value` ever feeds a later evaluation — session state is
-  replayed from source.
+  replayed from source. Since implemented away on this branch: void
+  suppression is now an empty-display-string check and `:t` is
+  frontend-answered (see decision 5 Progress and the Status "implemented"
+  paragraph).
 - `repl/main.d` consumes only `submitDisplay` (a string). Benchmarks
   compare `TestResult[]` (strings). `Runner` never touches `Value`.
 - The execution cores already exclude it by design (`ai/plans/bytecode.md`
   "No universal runtime value type"; `ai/plans/ir.md`); the interpreter's
   internal use is first-generation scaffolding.
-- The only remaining customers of the structure are ~110 structural test
-  assertions and the planned native value transport — both addressed
-  below.
+- The remaining customers of the structure (post-implementation): the
+  EvalResult-contract assertions in `eval.d`/`repl.d` have been migrated
+  to display strings, so what is left is
+  `tests/ut/backends/evaluator/value.d` (`Value`'s own equality/rendering)
+  plus the interpreter's internal `Value`-based execution scaffolding —
+  both addressed below.
 
 ## Approved decisions
 
 1. `quickbite.lang.Value` leaves the `Evaluator` contract: `EvalResult`
    carries the rendered display `string` (or a `Diagnostic`). The struct
    is deleted entirely once no backend needs it internally.
+
+   Done 2026-06-13: the contract flip is implemented; see the Status
+   "implemented" paragraph. The struct itself is NOT yet deleted — it
+   survives as private per-backend scaffolding per decision 4.
 2. Display round-trips as valid D: every rendering is a D expression that
    parses and evaluates to a value equal to the original (Python's `repr`
    principle). It is *not* the channel for revealing a value's static
@@ -206,8 +216,10 @@ Three layers replace structural `Value` assertions:
    consistency as a side effect. Slow (~43 ms per native call, see
    `ai/plans/dmd-backend.md`) — a matrix job, not the inner loop.
 2. Hand-written text expectations for the fast hermetic suite:
-   `tests/ut/backends/evaluator/eval.d` migrates from
-   `.should == Value(3u)` to `.should == "3u"`. One display string now
+   `tests/ut/backends/evaluator/eval.d` has migrated (done 2026-06-13)
+   from `.should == Value(3u)` to `.should == "3u"`;
+   `tests/ut/backends/evaluator/value.d` is still present, to be deleted
+   with the struct. One display string now
    carries two distinct assertions, and the migration must keep them
    straight:
    - The **suffix** witnesses the **static type** — but only where D has a
@@ -245,6 +257,19 @@ backend widens a value at runtime — that is what layer 2's digit
 assertions and layer 3 are for.
 
 All test additions/changes require approval first (AGENTS.md).
+
+## Remaining work
+
+The contract flip (decision 1) and frontend-answered `:t` (decision 5)
+are done; what is still pending, in order:
+
+1. Build the prelude formatter `string __quickbiteFormat(T)(T value)`
+   (decision 3) so backends render by executing D rather than via the
+   interim `displayString`/`Value.toString` scaffolding.
+2. Delete the private reify → `Value` → `toString` scaffolding per
+   backend (decision 4) as each gains the formatter.
+3. Once no backend needs `Value` internally, delete the struct and
+   `tests/ut/backends/evaluator/value.d` together.
 
 ## Out of scope
 
