@@ -396,9 +396,10 @@ Dependencies are noted; order within independent slices is flexible.
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
    compiled unittests). Initial CTFE-capable prelude cases are done in
    `repl-backend-sessions`: `__quickbiteFormat(42)` renders `"42"`,
-   `__quickbiteFormat('a')` renders `"'a'"`, and
+   `__quickbiteFormat('a')` renders `"'a'"`,
+   `__quickbiteFormat("quickbite")` renders `"\"quickbite\""`, and
    `__quickbiteFormat(3.0)` renders `"3.0"`. Verified with
-   `ninja bin/ut` and `bin/ut --random` (latest seed `82919610`).
+   `ninja bin/ut` and `bin/ut --random` (latest seed `2822468755`).
 9. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on

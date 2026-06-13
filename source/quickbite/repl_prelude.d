@@ -8,6 +8,8 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
 
     static if (is(T == char)) {
         return text("'", value, "'");
+    } else static if (is(T == string)) {
+        return text(`"`, value, `"`);
     } else static if (is(T == double)) {
         const rendered = text(value);
         if (rendered.canFind(".") || rendered.canFind("e") ||

@@ -19,6 +19,13 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == "'a'";
 }
 
+@("repl.formatter.rendersStringLiteralAtCompileTime")
+@safe pure unittest {
+    enum actual = __quickbiteFormat("quickbite");
+
+    actual.should == `"quickbite"`;
+}
+
 @("repl.formatter.rendersWholeDoubleWithDecimalPointAtCompileTime")
 @safe pure unittest {
     enum actual = __quickbiteFormat(3.0);
