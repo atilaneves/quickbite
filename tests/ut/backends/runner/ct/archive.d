@@ -1,4 +1,4 @@
-module ut.backends.runner.rt.archive;
+module ut.backends.runner.ct.archive;
 
 
 import ut.backends;
@@ -8,7 +8,8 @@ import ut.backends;
 // rewritten to return 0 before the fixture is parsed. Sema sees a matching
 // signature either way, so a passing run proves the symbol was linked from
 // the archive and the archive-backed module was not codegen'd from its
-// source.
+// source. Archive linking is a runtime linking mechanism, so `Ctfe` (which
+// wraps dmd.dinterpret) cannot express it; only `SystemLinker` is listed.
 static foreach (backend; AliasSeq!(SystemLinker)) {
     @("runTests.archiveBackedImportLinksFromArchive." ~ backend.stringof)
     @Tags(backend.stringof)

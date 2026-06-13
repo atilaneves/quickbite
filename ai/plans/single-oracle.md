@@ -67,13 +67,15 @@ by virtue of what they are — by class, not by a parameter.
 
 ## Task: migrate `rt/` tests to `ct/`
 
+Status: done (2026-06-13)
+
 Under the redefinition above, every current `rt/` module except
 `cstdlib.d` is misfiled. Move each into `ct/`, applying the
 Ctfe-divergence exclusion rule per block:
 
 - `arrays.d` ✓ (done), `control_flow.d` ✓ (done), `expressions.d` ✓ (done),
   `exceptions.d` ✓ (done), `logic.d` ✓ (done), `cerealed.d` ✓ (done),
-  `diagnostics.d` ✓ (done), `archive.d` → `ct/`
+  `diagnostics.d` ✓ (done), `archive.d` ✓ (done)
   (merging into the existing `ct/` file of the same name where one exists).
 - `cstdlib.d` stays in `rt/`.
 

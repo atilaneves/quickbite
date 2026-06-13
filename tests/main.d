@@ -20,7 +20,7 @@ int main(string[] args) {
         "ut.backends.runner.ct.structs",
         "ut.backends.runner.ct.cerealed",
         "ut.backends.runner.ct.pollution",
+        "ut.backends.runner.ct.archive",
         "ut.backends.runner.rt.cstdlib",
-        "ut.backends.runner.rt.archive",
     );
 }
