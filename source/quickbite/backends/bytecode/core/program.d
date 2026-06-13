@@ -6,6 +6,7 @@ private:
 // types to these tags at emit time; no runtime value carries a tag.
 package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     void_,
+    bool_,
     byte_,
     ubyte_,
     short_,
@@ -14,6 +15,9 @@ package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     uint_,
     long_,
     ulong_,
+    char_,
+    wchar_,
+    dchar_,
 }
 
 package(quickbite.backends.bytecode) uint size(in ScalarType type)
@@ -22,11 +26,11 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     final switch (type) with (ScalarType) {
         case void_:
             return 0;
-        case byte_, ubyte_:
+        case bool_, byte_, ubyte_, char_:
             return 1;
-        case short_, ushort_:
+        case short_, ushort_, wchar_:
             return 2;
-        case int_, uint_:
+        case int_, uint_, dchar_:
             return 4;
         case long_, ulong_:
             return 8;
@@ -39,7 +43,8 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
     final switch (type) with (ScalarType) {
         case byte_, short_, int_, long_:
             return true;
-        case void_, ubyte_, ushort_, uint_, ulong_:
+        case void_, bool_, ubyte_, ushort_, uint_, ulong_,
+            char_, wchar_, dchar_:
             return false;
     }
 }

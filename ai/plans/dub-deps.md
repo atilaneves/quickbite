@@ -52,20 +52,23 @@ the run `frontendUnmeasurable`; the frontend row prints "unmeasurable
 Covered by the `moduleDeclarationFixtureIsNotSkipped` bench-behaviour
 test.
 
-## Next: link the dub fixture group (blocks everything below)
+Dub fixture-group link fix (2026-06-12): `--dub cerealed -b
+system-linker` now links and measures the whole cerealed test suite
+instead of reporting "skipping cerealed system-linker".
 
-With fixtures no longer skipped, `--dub cerealed -b system-linker`
-reaches the post-parse run but SystemLinker fails to link the cerealed
-group: 20+ undefined symbols, all template instantiations and
-ClassInfos belonging to the `tests.*` fixture modules themselves (e.g.
-`tests.structs.PostBlitStruct.postBlit!(Decerealiser)`,
-`tests.classes.DerivedClass.__Class`), referenced from cerealed code in
-`obj_0.o`. The object set for the group does not carry the fixture
-modules' own symbols; root cause not yet investigated. The failure is
-caught and reported as "skipping cerealed system-linker", so the bench
-still completes.
+- `SystemLinker` has a multi-module `runTests` path so a dub package's
+  fixture modules are codegen'd into one shared library for the timed
+  group run.
+- Archive-backed and default-path imports still avoid normal dependency
+  codegen. For dub links only, their member lists are pruned to
+  template/TypeInfo members before object emission, giving DMD a place
+  to emit template instances borrowed by the current fixture group while
+  leaving ordinary dependency declarations to the dub-built archives.
+- Verified: `bin/bench --dub cerealed -b system-linker` reports a
+  `cerealed system-linker` row (median 975.745 ms on the verification
+  run), not a skip.
 
-## Then, in order
+## Next, in order
 
 1. Benchmark random dub projects: make `--dub` robust across package
    layouts and grow the corpus. Known-good simple entry: cerealed

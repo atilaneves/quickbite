@@ -52,25 +52,28 @@ code.
 
 ### General
 
-- One True Brace Style. For functions with many attributes, `{` on its
+* One True Brace Style. For functions with many attributes, `{` on its
   own line is acceptable.
-- Use UFCS liberally.
-- Always re-read files before editing; another agent or person may have
+* Use UFCS liberally.
+* Always re-read files before editing; another agent or person may have
   changed them in the meantime.
-- Trailing commas.
-- Maximise attributes: `@safe @nogc nothrow pure const scope`. Do not
+* Trailing commas.
+* Maximise attributes: `@safe @nogc nothrow pure const scope`. Do not
   abuse `@trusted` to make functions `@safe`.
-- Private functions below their first use, as close as possible.
-- Prefer `std.conv.text`; use `text(x)` not `x.to!string`.
-- Make parameters `in` if possible.
-- Prefer `const`; use `auto` with a comment if `const` fails; explicit
+* Private functions below their first use, as close as possible.
+* Prefer `std.conv.text`; use `text(x)` not `x.to!string`.
+* Make parameters `in` if possible.
+* Prefer `const`; use `auto` with a comment if `const` fails; explicit
   LHS type only if `auto` fails (comment why). Explicit types are fine
   for uninitialised declarations.
-- No `synchronized`.
-- Omit empty parens: `doStuff;` not `doStuff();`.
-- Variables as close to their usage as possible.
-- Use `with` in `switch`/`final switch` with enums for more readability.
-- private variables start with an underscore, e.g. `_member`.
+* No `synchronized`.
+* Omit empty parens: `doStuff;` not `doStuff();`.
+* Variables as close to their usage as possible.
+* Use `with` in `switch`/`final switch` with enums for more readability.
+* private variables start with an underscore, e.g. `_member`.
+* D has modules and types within types, do not use C-like naming
+  conventions like `Foo` and `FooEnum`, instead place enums inside the
+  corresponding class/struct so that one uses `Foo.Enum` instead.
 
 ### Production code (in `source`)
 
@@ -133,6 +136,8 @@ Never delete test code to make tests pass.
 - Label PR comments as from an agent (identify which one).
 - Open new PRs in the browser.
 - Check for local worktrees before using `gh` to look at diffs etc.
+- When you create a PR, check to see if it can be merged, don't wait
+  to be told there are merge conflicts.
 
 ## CI
 

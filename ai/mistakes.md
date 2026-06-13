@@ -217,3 +217,7 @@
 - When summarizing a failing test run through `tail`/`head`, reconcile the
   visible failure lines against the reported failure count before concluding
   which tests passed; truncated output silently drops the first failures.
+
+- When promoting backend matrix tests in files with repeated identical
+  `AliasSeq` lines, patch with nearby test-name context and verify `bin/ut -l`
+  shows the intended new backend instance before running the test.

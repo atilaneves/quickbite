@@ -377,6 +377,8 @@ private struct Compiler {
         switch (type.toBasetype.ty) with (TY) {
             case Tvoid:
                 return ScalarType.void_;
+            case Tbool:
+                return ScalarType.bool_;
             case Tint8:
                 return ScalarType.byte_;
             case Tuns8:
@@ -393,6 +395,12 @@ private struct Compiler {
                 return ScalarType.long_;
             case Tuns64:
                 return ScalarType.ulong_;
+            case Tchar:
+                return ScalarType.char_;
+            case Twchar:
+                return ScalarType.wchar_;
+            case Tdchar:
+                return ScalarType.dchar_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
