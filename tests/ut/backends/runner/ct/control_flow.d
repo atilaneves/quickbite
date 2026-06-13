@@ -179,6 +179,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// Ctfe diverges from SystemLinker here: CTFE-evaluated `assert(false)` raises
+// the message "`assert(false)` failed", so this block characterizes Ctfe
+// rather than the SystemLinker oracle below.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
@@ -196,6 +199,29 @@ static foreach (backend; AliasSeq!(Ctfe)) {
                 assert(false);
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
+    }
+}
+
+// Compiled `assert(false)` in a unittest body raises the plain _d_unittest
+// hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("function.structMethodReturnDoesNotSkipCallerStatements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Worker {
+                void stop() {
+                    return;
+                }
+            }
+
+            unittest {
+                Worker worker;
+                worker.stop;
+                assert(false);
+            }
+        }).shouldThrowWithMessage("unittest failure");
     }
 }
 
