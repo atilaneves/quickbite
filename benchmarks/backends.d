@@ -16,13 +16,13 @@ public struct BackendEnv {
 
 // One registry entry per backend; adding bytecode/ir/interpreter later is a
 // single line in the AA below.
-Runner makeCtfe(in BackendEnv env) {
+private Runner makeCtfe(in BackendEnv env) {
     return new Ctfe;
 }
 
 // Like `dub test`: dependency objects come from the dub-built archives; only
 // the project under test is codegen'd per run.
-Runner makeSystemLinker(in BackendEnv env) {
+private Runner makeSystemLinker(in BackendEnv env) {
     return new SystemLinker(
         ExecutionMode.runtime,
         env.linkFiles,
