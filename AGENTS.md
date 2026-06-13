@@ -136,8 +136,8 @@ Never delete test code to make tests pass.
 - Label PR comments as from an agent (identify which one).
 - Open new PRs in the browser.
 - Check for local worktrees before using `gh` to look at diffs etc.
-- When you create a PR, check to see if it can be merged, don't wait
-  to be told there are merge conflicts.
+- When you create a PR, check to see if it can be merged and fix any
+  conflicts, don't wait to be told to do so.
 
 ## CI
 
