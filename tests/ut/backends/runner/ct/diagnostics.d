@@ -527,7 +527,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, IR)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     @("nullClassNotIdentityUsesNotEqualPolarity." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

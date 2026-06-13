@@ -452,6 +452,27 @@ for wide character values; signal was verified by temporarily mutating the
 `wchar` conversion path, which changed the first displayed result from `"ab"`
 to `"bc"`.
 
+Diagnostics promotion probe:
+All current CTFE-backed backend-matrix tests in
+`tests/ut/backends/runner/ct/diagnostics.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only diagnostics module run left exactly one failing promoted test:
+
+- `nullClassNotIdentityUsesNotEqualPolarity.Interpreter`: the interpreter
+  reports `false != true` for `assert(thing !is null)` when `thing` is a null
+  class reference, while the CTFE oracle reports `` `null` is `null` ``.
+
+Failure cause: the interpreter currently treats the lowered `!is` assertion as
+a generic boolean equality assertion and formats the generated helper result.
+It needs to preserve the identity expression's null-class diagnostic polarity
+for this DMD assertion shape, matching the existing CTFE-backed test without
+adding broad class identity semantics beyond the promoted case.
+
+Resolution: assertion formatting now recognizes DMD-lowered identity
+expressions, follows the generated helper variable back to its initializer, and
+formats failed class-null identity with the original `is`/`!is` polarity. The
+full focused `diagnostics.d` Interpreter-only run now passes: 31 run, 0 failed.
+
 REPL promotion probe:
 All remaining CTFE-backed backend-matrix tests in
 `tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
