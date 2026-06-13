@@ -37,6 +37,7 @@ private struct Walker {
     import dmd.declaration: VarDeclaration;
     import dmd.expression: DivExp, ModExp;
     import dmd.func: FuncDeclaration;
+    import dmd.statement: Statement;
     import quickbite.frontend.dmd.values: defaultValue;
     import quickbite.lang: Value;
 
@@ -54,6 +55,7 @@ private struct Walker {
     private bool hasThis;
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
+    private Statement pendingGotoTarget;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
         if (statement is null || returned)
@@ -61,15 +63,21 @@ private struct Walker {
 
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
             return;
         }
 
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
-                foreach (child; *compound.statements)
+                foreach (child; *compound.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
             return;
         }
 
@@ -80,8 +88,27 @@ private struct Walker {
 
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             if (unrolled.statements !is null)
-                foreach (child; *unrolled.statements)
+                foreach (child; *unrolled.statements) {
+                    if (skipUntilGotoTarget(child))
+                        continue;
                     runStatement(child);
+                }
+            return;
+        }
+
+        if (auto goto_ = statement.isGotoStatement) {
+            if (goto_.label is null || goto_.label.statement is null)
+                throw new Exception("Unsupported eval statement: Goto");
+
+            auto label = goto_.label.statement;
+            pendingGotoTarget = label.gotoTarget is null
+                ? label.statement
+                : label.gotoTarget;
+            return;
+        }
+
+        if (auto label = statement.isLabelStatement) {
+            runStatement(label.statement);
             return;
         }
 
@@ -161,6 +188,28 @@ private struct Walker {
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    private bool skipUntilGotoTarget(Statement statement) {
+        if (pendingGotoTarget is null)
+            return false;
+
+        if (statement is pendingGotoTarget) {
+            pendingGotoTarget = null;
+            return false;
+        }
+
+        if (auto label = statement.isLabelStatement) {
+            if (
+                label.statement is pendingGotoTarget ||
+                label.gotoTarget is pendingGotoTarget
+            ) {
+                pendingGotoTarget = null;
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // For `with(expr)` where expr is a struct lvalue, DMD semantic creates a

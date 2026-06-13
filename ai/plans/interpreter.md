@@ -1179,6 +1179,27 @@ Resolution: append-assignment now supports an indexed local dynamic-array
 target for the promoted nested-row shape by appending to the selected row and
 writing that row back into the outer array. The focused promoted test passes.
 
+Structs promotion probe:
+`with.structLocalGotoRestartsInsideBody` in
+`tests/ut/backends/runner/ct/structs.d` was promoted to also run on
+`Interpreter` in branch `interpreter-ct-diagnostics`. The focused
+Interpreter-only structs module run left exactly one failing promoted test:
+
+- `with.structLocalGotoRestartsInsideBody.Interpreter`: the interpreter reports
+  `Unsupported eval statement: Goto` for a `goto target;` inside an otherwise
+  supported `with (point)` body.
+
+Failure cause: the interpreter's module-backed statement walker does not
+handle DMD `GotoStatement`/label flow for the simple intra-block shape used by
+the promoted struct `with` fixture. Existing `with` field access and mutation
+already work; the missing behavior is restarting execution at a later label
+inside the same body without running skipped statements.
+
+Resolution: the statement walker now tracks a pending goto target while
+iterating compound and unrolled statement lists, skips statements until the
+matching label target, and executes label bodies normally. The focused promoted
+test passes.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`

@@ -816,7 +816,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("with.structLocalGotoRestartsInsideBody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
