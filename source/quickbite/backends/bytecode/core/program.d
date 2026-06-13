@@ -57,10 +57,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
+    addInt4, // a: destination frame offset, b: lhs, c: rhs
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,
     equal8,
+    jump, // a: absolute instruction index
+    jumpIfFalse, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
     ret, // a: frame offset of the return value

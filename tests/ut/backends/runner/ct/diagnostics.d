@@ -197,7 +197,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    BytecodeNewCore,
+    IR,
+    SystemLinker,
+)) {
     @("functionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -213,7 +220,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    BytecodeNewCore,
+    IR,
+    SystemLinker,
+)) {
     @("tenFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -241,7 +255,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    BytecodeNewCore,
+    IR,
+    SystemLinker,
+)) {
     @("functionParameterOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -257,7 +278,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    BytecodeNewCore,
+    IR,
+    SystemLinker,
+)) {
     @("ifElseOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -294,7 +322,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker)) {
+static foreach (backend; AliasSeq!(
+    Ctfe,
+    Interpreter,
+    Bytecode,
+    BytecodeNewCore,
+    IR,
+    SystemLinker,
+)) {
     @("inFunctionParametersOops." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
