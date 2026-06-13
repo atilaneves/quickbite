@@ -173,7 +173,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
 
 // dmd CTFE rejects int.min / -1 as integer overflow; at runtime the same
 // division raises SIGFPE on x86_64, so no runtime backend can pin a value.
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("int.divisionOverflowAtIntMinIsRejected." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -204,7 +204,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Same as above: CTFE rejects int.min % -1 as integer overflow and the
 // runtime instruction traps.
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("int.moduloOverflowAtIntMinIsRejected." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

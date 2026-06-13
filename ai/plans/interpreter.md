@@ -270,6 +270,29 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Integrals progress:
+All remaining CTFE-only backend-matrix tests in
+`tests/ut/backends/runner/ct/integrals.d` were promoted to also run on
+`Interpreter` in branch `interpreter-module-promotion-20260613`.
+
+Running only the integrals Interpreter tests made the two newly promoted
+overflow diagnostics crash with SIGFPE before unit-threaded could report a
+normal failure:
+
+- `int.divisionOverflowAtIntMinIsRejected.Interpreter`
+- `int.moduloOverflowAtIntMinIsRejected.Interpreter`
+
+Failure cause: the interpreter's `DivExp` and `ModExp` paths evaluated
+`int.min / -1` and `int.min % -1` with native D integer operators before
+checking D's CTFE overflow diagnostic case. On x86_64 this raises SIGFPE,
+matching why native runtime backends stay excluded. The interpreter now guards
+exactly the signed 32-bit `int.min`/`-1` division and modulo cases and throws
+the same diagnostic strings expected by the existing CTFE-backed tests:
+`integer overflow: `int.min / -1`` and
+`integer overflow: `int.min % -1``, followed by
+`cannot compare `__error` at compile time` from the surrounding comparison.
+All current `integrals.d` backend-matrix tests now cover `Interpreter`.
+
 Arrays progress:
 `nestedSliceWritesPropagateToOriginalArrayFailureMessage.0` in
 `tests/ut/backends/lang/arrays.d` now runs on `Interpreter`. It was already
