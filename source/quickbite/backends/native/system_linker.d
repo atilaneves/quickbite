@@ -5,29 +5,41 @@ private:
 
 
 public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
-    import quickbite.backends.runner: ExecutionMode, TestResult;
+    import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
 
     private const SystemLinkerInputs _inputs;
 
-    // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends.
     public this(
-        in ExecutionMode mode = ExecutionMode.runtime,
         in SystemLinkerInputs inputs = SystemLinkerInputs.init,
     ) @safe @nogc nothrow pure {
-        assert(mode == ExecutionMode.runtime);
         _inputs = inputs;
     }
 
     public this(
-        in ExecutionMode mode,
         const string[] linkFiles,
         const string[] archiveImportPaths,
     ) @safe @nogc nothrow pure {
         this(
-            mode,
-            SystemLinkerInputs(linkFiles, archiveImportPaths, false),
+            SystemLinkerInputs(linkFiles, archiveImportPaths),
+        );
+    }
+
+    // Derives the archive import paths from the raw dub import paths and the
+    // package root: the driver forwards what dub reported and lets the backend
+    // decide what is already compiled into the archives. The filtering uses
+    // std.path/std.algorithm, so this constructor cannot be @nogc nothrow pure
+    // like its siblings.
+    public this(
+        const string[] linkFiles,
+        const string[] importPaths,
+        in string packageRoot,
+    ) @safe {
+        this(
+            SystemLinkerInputs(
+                linkFiles,
+                archiveImportPathsUnder(importPaths, packageRoot),
+            ),
         );
     }
 
@@ -67,11 +79,30 @@ public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
 public struct SystemLinkerInputs {
     // Link files are prebuilt libraries appended to every link. Modules under
     // archive import paths are defined by those libraries and must not be
-    // codegen'd again. Default imports are only traversed when the caller
-    // knows dependency templates can need druntime/phobos members in this link.
+    // codegen'd again.
     public const string[] linkFiles;
     public const string[] archiveImportPaths;
-    public bool includeDefaultImportsForTemplateCodegen;
+}
+
+// import paths under the package belong to the project under test and are
+// compiled fresh per run; the rest belong to dependencies, whose objects
+// come from the dub-built archives in linkFiles.
+private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
+    import std.algorithm.iteration: filter, map;
+    import std.algorithm.searching: startsWith;
+    import std.array: array;
+    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+    const root = packageRoot.absolutePath.buildNormalizedPath;
+    bool underPackage(in string path) {
+        const normalised = path.absolutePath.buildNormalizedPath;
+        return normalised == root
+            || normalised.startsWith(root ~ dirSeparator);
+    }
+    return importPaths
+        .filter!(path => !underPackage(path))
+        .map!(path => path.idup)
+        .array;
 }
 
 private void* compileToSharedLibrary(
@@ -141,25 +172,33 @@ private void buildSharedLibrary(
     // are the exception: a prebuilt library on the link line already defines
     // their symbols, so they get neither the root promotion (saving their
     // semantic3) nor an object of their own.
-    auto allUserImports = userImportedModules(
-        rootModules,
-        inputs.includeDefaultImportsForTemplateCodegen,
-    );
-    auto userImports = allUserImports
+    // The non-default (user-path) imports are the same whether or not default
+    // imports are requested, so walk once without them to split them and to
+    // derive whether default-path codegen is needed.
+    auto nonDefaultImports = userImportedModules(rootModules, false);
+    auto userImports = nonDefaultImports
         .filter!(import_ =>
-            !isUnderDefaultImportPaths(import_)
-            && !isUnderImportPaths(import_, inputs.archiveImportPaths))
+            !isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
-    auto archiveImports = allUserImports
+    auto archiveImports = nonDefaultImports
         .filter!(import_ =>
-            !isUnderDefaultImportPaths(import_)
-            && isUnderImportPaths(import_, inputs.archiveImportPaths))
+            isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
-    auto defaultImports = allUserImports
-        .filter!(import_ => isUnderDefaultImportPaths(import_))
-        .array;
-    if (!inputs.includeDefaultImportsForTemplateCodegen)
-        defaultImports = [];
+    // Derive the need for druntime/phobos template-instance codegen from the
+    // modules themselves rather than from how the caller was invoked. The
+    // signal is an archive-backed module that holds template-instance members:
+    // a prebuilt library defines its ordinary symbols, but the snippet's use
+    // of its templates instantiates them here (often parameterized on the
+    // snippet's or phobos' types), and emitting those instances pulls in the
+    // druntime/phobos members they reference, so the default-path modules must
+    // join this link. A trivial archive dep with no templates instantiates
+    // none, so root-promoting the default-path modules would only pollute
+    // later links in this process; leave them out.
+    auto defaultImports = anyHasTemplateInstanceMember(archiveImports)
+        ? userImportedModules(rootModules, true)
+            .filter!(import_ => isUnderDefaultImportPaths(import_))
+            .array
+        : null;
     prepareForCodegen(userImports);
     prepareArchiveImportsForTemplateCodegen(archiveImports);
     prepareArchiveImportsForTemplateCodegen(defaultImports);
@@ -176,7 +215,7 @@ private void buildSharedLibrary(
     bool[Module] linkSet;
     foreach (linkModule; modules)
         linkSet[linkModule] = true;
-    foreach (userImport; allUserImports)
+    foreach (userImport; userImports ~ archiveImports ~ defaultImports)
         linkSet[userImport] = true;
 
     string[] objPaths;
@@ -634,6 +673,23 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
     foreach (module_; rootModules)
         walk(module_);
     return result;
+}
+
+// Whether any of these modules holds a template instance as a member. The
+// snippet's semantic pass appends an archive-backed module's instantiated
+// templates to that module's members, so a non-empty hit means this link will
+// emit instances that can reference druntime/phobos members.
+private bool anyHasTemplateInstanceMember(
+    imported!"dmd.dmodule".Module[] modules,
+) {
+    foreach (module_; modules) {
+        if (module_.members is null)
+            continue;
+        foreach (i; 0 .. module_.members.length)
+            if ((*module_.members)[i].isTemplateInstance)
+                return true;
+    }
+    return false;
 }
 
 private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {

@@ -204,6 +204,39 @@ public bool isLogicalExpression(
     return expression.isLogicalExp !is null;
 }
 
+private imported!"dmd.expression".IdentityExp identityExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    while (auto cast_ = expression.isCastExp)
+        expression = cast_.e1;
+
+    if (auto comma = expression.isCommaExp)
+        return identityExpression(comma.e2);
+
+    if (auto identity = expression.isIdentityExp)
+        return identity;
+
+    if (auto var = expression.isVarExp) {
+        auto variable = var.var.isVarDeclaration;
+        if (variable is null ||
+            variable._init is null ||
+            variable._init.isExpInitializer is null)
+            return null;
+
+        auto initializer = variable._init.isExpInitializer.exp;
+        if (auto assign = initializer.isAssignExp)
+            initializer = assign.e2;
+        else if (auto construct = initializer.isConstructExp)
+            initializer = construct.e2;
+        else if (auto blit = initializer.isBlitExp)
+            initializer = blit.e2;
+
+        return identityExpression(initializer);
+    }
+
+    return null;
+}
+
 public bool isVariableMessage(
     imported!"dmd.expression".Expression expression,
 ) {
@@ -390,6 +423,9 @@ public string dmdAssertFailMessage(
 
     auto left = (*call.arguments)[1];
     auto right = (*call.arguments)[2];
+    if (auto message = dmdAssertFailIdentityMessage(left, right, eval))
+        return message;
+
     const useBoolMessage =
         isBoolExpression(left) ||
         isBoolExpression(right) ||
@@ -407,6 +443,58 @@ public string dmdAssertFailMessage(
         " ",
         equalityOperandMessage(rightValue, useBoolMessage, right),
     );
+}
+
+private string dmdAssertFailIdentityMessage(
+    imported!"dmd.expression".Expression left,
+    imported!"dmd.expression".Expression right,
+    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+) {
+    if (auto identity = identityExpression(left)) {
+        if (assertExpectedTrue(right))
+            return identityFailureMessage(identity, eval);
+    }
+
+    if (auto identity = identityExpression(right)) {
+        if (assertExpectedTrue(left))
+            return identityFailureMessage(identity, eval);
+    }
+
+    return null;
+}
+
+private bool assertExpectedTrue(imported!"dmd.expression".Expression expression) {
+    if (auto integer = expression.isIntegerExp)
+        return integer.toInteger == 1;
+
+    return false;
+}
+
+private string identityFailureMessage(
+    imported!"dmd.expression".IdentityExp identity,
+    scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
+) {
+    import dmd.tokens: EXP;
+    import std.conv: text;
+
+    const operator = identity.op == EXP.notIdentity ? "is" : "!is";
+    return text(
+        identityOperandMessage(eval(identity.e1)),
+        " ",
+        operator,
+        " ",
+        identityOperandMessage(eval(identity.e2)),
+    );
+}
+
+private string identityOperandMessage(in imported!"quickbite.lang".Value value) {
+    import quickbite.lang: Value;
+    import std.conv: text;
+
+    if (value == Value.null_)
+        return "`null`";
+
+    return text(value);
 }
 
 public string equalFailureMessage(
@@ -477,6 +565,9 @@ public string assertFailureMessage(
 
     if (auto equal = assert_.e1.isEqualExp)
         return equalFailureMessage(equal, eval);
+
+    if (auto identity = identityExpression(assert_.e1))
+        return identityFailureMessage(identity, eval);
 
     if (assert_.e1.isIntegerExp is null && isBoolExpression(assert_.e1)) {
         return text(isTruthy(eval(assert_.e1)), " != true");

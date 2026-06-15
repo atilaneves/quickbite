@@ -46,26 +46,24 @@ corpus, its observable behaviour is indistinguishable from the oracle's:
   diagnostic** — never a wrong answer, never a silent skip, never
   delegation to another backend (per `ai/plans/overview.md`).
 
-## Oracle hierarchy
+## Oracle
 
-1. **Compiled code is ground truth.** Where real dmd codegen runs a
-   fixture (via `SystemLinker`, or an actual compiled binary when
-   needed to settle a dispute), its behaviour — including exact message
-   text — is definitive. No "CTFE quirk" excuses for native results.
-   (Making compiled dmd the systematic arbiter is
-   `ai/plans/dmd-compiled-fixture-sentinel.md`.)
-2. **CTFE is the working oracle** (`Ctfe`,
-   `source/quickbite/backends/ctfe/dmd_ctfe.d`) for everything compiled
-   code hasn't been brought to yet. A fixture written against CTFE
-   passes by construction (it is real D) and becomes a cross-backend
-   obligation when other backends join its block.
-3. **Disagreements:** backend vs CTFE → assume the backend or the test
-   is wrong unless compiled D code proves otherwise. CTFE vs compiled
-   code → compiled code wins; pin the compiled behaviour where the
-   backend targets native semantics, and record the divergence in a
-   comment next to the test (the known one: druntime's CTFE assert
-   formatter emits `<double not supported>` for float failure
-   messages).
+`SystemLinker` (compiled, linked, executed native D) is the single
+behaviour oracle for every backend except `Ctfe`
+(`ai/plans/single-oracle.md`). Its behaviour — including exact message
+text — is definitive; a backend that disagrees with it is wrong. (Making
+compiled dmd the systematic arbiter is
+`ai/plans/dmd-compiled-fixture-sentinel.md`.)
+
+`Ctfe` (`source/quickbite/backends/ctfe/dmd_ctfe.d`) is **not** an oracle.
+It is a convenient real-D fixture source — a fixture written against it
+passes by construction and becomes a cross-backend obligation when other
+backends join its block — but where it diverges from `SystemLinker`, its
+behaviour is *characterized*, not treated as truth: pin what `Ctfe`
+actually does in a separate `Ctfe`-tagged test with a comment naming the
+divergence (the known one: druntime's CTFE assert formatter emits
+`<double not supported>` for float failure messages), and keep
+`SystemLinker`'s behaviour as the statement of what is correct.
 
 ## The generative mechanisms
 
@@ -87,8 +85,9 @@ same finishing steps: verify the expected value/message against the
 oracle empirically before pinning it; show the fixture and stop for
 approval (the approval gate); write its block as
 `static foreach (backend; AliasSeq!(...))` listing **every backend
-that passes it** — `Ctfe` at minimum, and adding backends to the
-`AliasSeq` is pre-approved. A backend that *fails* the new fixture is
+that passes it** — `SystemLinker` at minimum (the oracle), plus `Ctfe`
+and the VM backends where they agree; adding backends to the `AliasSeq`
+is pre-approved. A backend that *fails* the new fixture is
 the plan working as intended: a found semantic divergence. Fix it if
 the fix is small (strict TDD — the fixture is the failing test);
 otherwise leave that backend out of the `AliasSeq` with a comment
@@ -159,9 +158,10 @@ The loop:
 
 1. Take the next open section.
 2. Extract its testable normative claims — statements of the form
-   "X evaluates to / converts to / is an error" about pure
-   computation. Skip claims CTFE cannot run (record them in the
-   checklist as deferred-to-native).
+   "X evaluates to / converts to / is an error" about computation,
+   verified against the `SystemLinker` oracle. Claims that need the
+   runtime environment (libc/OS) belong in `rt/`; record any that no
+   current backend can yet run in the checklist as deferred.
 3. For each claim, grep the corpus (`tests/ut/backends/runner/`) for
    an existing test. Misses become proposed fixtures (approval gate,
    oracle-verified, every passing backend in the `AliasSeq`).
@@ -213,7 +213,7 @@ or mutation work flags as thin (e.g. `arrayop`, `switch`, `bitops`,
 | math intrinsics | `math.d` |
 | boolean / short-circuit logic | `logic.d` |
 | assert/diagnostic messages | `diagnostics.d` |
-| impure / runtime-only (unsupported) | `../rt/` |
+| needs the runtime environment (libc/OS) | `../rt/` (today only `cstdlib`) |
 | struct/null value round-trip | REPL driver, `tests/ut/bin/repl.d` |
 
 The fixture helper is `runBackendSourceFixtureTests!backend(q{...})`

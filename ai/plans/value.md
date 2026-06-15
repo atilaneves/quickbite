@@ -124,10 +124,11 @@ carried by `EvalResult`; `Repl.submit` returns the display `string`.
    calling `backend.eval`, `Value.asCharArrayString`, or `Value.typeName`.
    The old `.stringof`-via-backend path remains only as a fallback for
    inputs the frontend cannot resolve.
-6. The native backend is the behaviour oracle in the absence of a formal,
-   machine-verifiable language specification (it remains one option among
-   many for benchmarking). CTFE keeps its oracle role for pure code per
-   `ai/plans/repl.md`.
+6. The native backend (`SystemLinker`) is the single behaviour oracle in the
+   absence of a formal, machine-verifiable language specification (it remains
+   one option among many for benchmarking). CTFE is not an oracle; where it
+   diverges, its behaviour is characterized, not treated as truth
+   (`ai/plans/single-oracle.md`).
 
 ## Display format spec (agreed 2026-06-12; principle reversed 2026-06-13)
 

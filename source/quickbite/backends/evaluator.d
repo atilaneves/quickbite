@@ -17,6 +17,8 @@ public interface Evaluator {
     // the shared `displayString` helper below.
     public EvalResult eval(FuncDeclaration function_);
 
+    public ReplSession createReplSession();
+
     // Convenience for tests / ad-hoc eval. Throwing here is a terminal
     // boundary for a single expression, not internal control flow.
     public final string eval(in string expr) {
@@ -56,6 +58,31 @@ public interface Evaluator {
                       )
                     : result;
         }
+    }
+}
+
+public interface ReplSession {
+    import quickbite.frontend.repl: ReplCell;
+
+    public EvalResult submit(ReplCell cell);
+}
+
+public ReplSession replayReplSession(Evaluator evaluator) {
+    return new ReplayReplSession(evaluator);
+}
+
+private class ReplayReplSession: ReplSession {
+    private Evaluator _evaluator;
+
+    public this(Evaluator evaluator) {
+        _evaluator = evaluator;
+    }
+
+    public override EvalResult submit(ReplCell cell) {
+        // `:t`/type-expression cells are answered in the frontend (and repl.d
+        // unwraps the backend `.stringof` fallback), so the session just
+        // evaluates the cell and returns the rendered display string contract.
+        return _evaluator.eval(cell.evalCell);
     }
 }
 

@@ -19,7 +19,7 @@ configuration "unittest" {
 
     mainSourceFile "tests/main.d"
     sourcePaths "tests" "benchmarks"
-    sourceFiles "benchmarks/cli.d" "benchmarks/harness.d"
+    sourceFiles "benchmarks/cli.d" "benchmarks/harness.d" "benchmarks/backends.d"
     importPaths "tests" "benchmarks"
     versions "unitUnthreaded"
     // Shared druntime so DynamicLibrary can Runtime.loadLibrary the shared

@@ -3,7 +3,8 @@ module quickbite.repl;
 private:
 
 public struct Repl {
-    private imported!"quickbite.frontend.repl".ReplSession session;
+    private imported!"quickbite.frontend.repl".ReplSession frontendSession;
+    private imported!"quickbite.backends.evaluator".ReplSession backendSession;
     private imported!"quickbite.backends".Backend backend;
     private string pendingInput;
     private string[] importPaths;
@@ -14,7 +15,8 @@ public struct Repl {
     ) {
         this.backend = backend;
         this.importPaths = importPaths.dup;
-        this.session = typeof(session)(this.importPaths);
+        this.frontendSession = typeof(frontendSession)(this.importPaths);
+        this.backendSession = backend.createReplSession;
     }
 
     public string submit(in string input) {
@@ -38,7 +40,7 @@ public struct Repl {
         import quickbite.frontend.compiler: parseModule;
 
         parseModule(source, importPaths);
-        session.loadModuleSource(source);
+        frontendSession.loadModuleSource(source);
     }
 
     public void loadModuleFile(in string filePath) {
@@ -47,8 +49,8 @@ public struct Repl {
 
         try {
             const source = filePath.readText;
-            session.loadModuleFile(filePath, source);
-            parseModule(session.loadedModuleSource, importPaths);
+            frontendSession.loadModuleFile(filePath, source);
+            parseModule(frontendSession.loadedModuleSource, importPaths);
         } catch (Exception exception) {
             throw new Exception(userDiagnostic(exception.msg));
         }
@@ -75,7 +77,7 @@ public struct Repl {
             pendingInput ~ "\n" ~ input;
 
         try {
-            auto cell = session.submit(source);
+            auto cell = frontendSession.submit(source);
             if (cell.kind == ReplCellKind.incomplete) {
                 pendingInput = source;
                 return ReplResult.void_;
@@ -87,17 +89,17 @@ public struct Repl {
             if (cell.kind == ReplCellKind.typeExpression &&
                 cell.typeName !is null) {
                 pendingInput = null;
-                session.accept(cell);
+                frontendSession.accept(cell);
                 return ReplResult.typeNameResult(cell.typeName);
             }
 
-            const result = backend.eval(cell.evalCell);
+            const result = backendSession.submit(cell);
             pendingInput = null;
             if (result.failed)
                 throw new Exception(userDiagnostic(result.diagnostic));
 
             // Accept only on success — explicit, not via exception unwinding.
-            session.accept(cell);
+            frontendSession.accept(cell);
 
             // A type-expression cell the frontend could not resolve (e.g.
             // `typeof(local)`) is answered by the backend evaluating
@@ -121,12 +123,12 @@ public struct Repl {
     private ReplResult runLoadedTests() {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-        if (session.loadedModuleSource.length == 0)
+        if (frontendSession.loadedModuleSource.length == 0)
             return ReplResult.void_;
 
         const result = backend.runTests(
             parseModuleWithCheckActionContext(
-                session.loadedModuleSource,
+                frontendSession.loadedModuleSource,
                 importPaths,
             )
                 .module_,

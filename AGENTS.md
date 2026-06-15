@@ -33,20 +33,24 @@ in this repo unless instructed otherwise.
 Strict TDD: failing test → dumbest passing code → green suite. No refactoring
 until all tests pass. Ask for feedback after the refactoring step.
 
-Stop and wait for approval before adding or modifying any test. Promoting an
-already-existing backend-matrix test to another backend is pre-approved when
-the test is backed by its family's oracle: CTFE for `ct/` tests, SystemLinker
-for `rt/` tests. Every backend except Ctfe is an `rt/` promotion candidate.
-Adding a new test or changing test behaviour still requires approval.
+Stop and wait for approval before adding or modifying any test. `SystemLinker`
+(compiled D) is the single behaviour oracle for every backend except `Ctfe`
+(`ai/plans/single-oracle.md`). Promoting an already-existing backend-matrix
+test to another backend is pre-approved when the test is backed by that oracle.
+`ct/` holds behaviour expressible at compile time; `rt/` holds behaviour that
+needs the runtime environment (libc/OS — today only `cstdlib`). Every backend
+except `Ctfe` is a promotion candidate. Adding a new test or changing test
+behaviour still requires approval.
 
 Test behaviours, not implementations.
 
-Language-surface tests must match D's compiled-code behaviour. In `pure_`,
-`ExecutorBackend.dmdCtfe` is the canonical oracle for supported behaviour until
-the dmd codegen backend is complete; if CTFE disagrees with a backend, assume
-the backend or test is wrong unless compiled D code proves otherwise. Once dmd
-codegen is complete, resolve any CTFE/codegen disagreement against compiled
-code.
+Language-surface tests must match D's compiled-code behaviour, with
+`SystemLinker` as the oracle (`ai/plans/single-oracle.md`). If a backend
+disagrees with `SystemLinker`, the backend or test is wrong. `Ctfe` is not an
+oracle: where it diverges from `SystemLinker`, pin `Ctfe`'s actual behaviour as
+a characterization test (with a comment naming the divergence) rather than
+treating it as truth. `Ctfe` is still a convenient real-D fixture source — a
+fixture written for it is real D — but it never arbitrates correctness.
 
 ## Style
 
@@ -93,8 +97,10 @@ code.
 
 ## Code organisation
 
-* Backends should not import each other, they must be completely
-  isolated.
+* Backends must not import each other: nothing in one backend's package
+  may import another backend's package, and vice versa. Within a single
+  backend package, modules can and should import each other, including
+  package-private code.
 
 # Testing
 

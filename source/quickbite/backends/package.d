@@ -3,7 +3,7 @@ module quickbite.backends;
 
 // awkward to use imported!"" when deriving
 import quickbite.backends.runner: Runner;
-import quickbite.backends.evaluator: Evaluator;
+import quickbite.backends.evaluator: Evaluator, ReplSession, replayReplSession;
 
 
 private:
@@ -11,20 +11,16 @@ private:
 
 // A backend that does it all. Needed notably by the REPL.
 public abstract class Backend: Runner, Evaluator {
-
+    public override ReplSession createReplSession() {
+        return replayReplSession(this);
+    }
 }
 
 // A backend that can process individual AST nodes
 public abstract class TreeNodeBackend: Backend {
-    import quickbite.backends.runner: ExecutionMode, TestResult;
+    import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
     import dmd.func: UnitTestDeclaration;
-
-    protected immutable ExecutionMode _mode;
-
-    protected this(in ExecutionMode mode) @safe @nogc nothrow pure {
-        _mode = mode;
-    }
 
     public override TestResult[] runTests(Module module_) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;

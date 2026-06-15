@@ -467,12 +467,12 @@ is added when a test requires control flow.
 - Prefer public backend behavior tests over implementation-detail tests.
   Add IR-specific tests only for IR-native contracts such as operand typing,
   block/CFG invariants, or explicitly unsupported features.
-- When a behavior is already covered by CTFE, treat CTFE as the oracle for
-  language-surface behavior unless compiled D code proves otherwise.
-- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
-  backend language modules run against CTFE, so use
-  `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
-  required D language features, not by file length or coverage counts.
+- `SystemLinker` (compiled D) is the oracle for language-surface behaviour
+  (`ai/plans/single-oracle.md`); a fixture covered by `Ctfe` is real D and a
+  useful starting point, but where `Ctfe` diverges from `SystemLinker` its
+  behaviour is characterized, not treated as truth.
+- Use `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets
+  by required D language features, not by file length or coverage counts.
 - After each slice, run the focused promoted tests and then `dub test --
   --random`.
 

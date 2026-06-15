@@ -925,9 +925,9 @@ newly-compiled (dub-dependency image, §3–§5): needs load + module-ctor +
 The resident native-call resolver is shared infrastructure, not per-backend
 code and not a backend choice (proposed module `quickbite.native`). The first
 mechanical trigger is a resolved `FuncDeclaration` with `fbody is null`, but
-runtime mode should use the same resolver for every supported already-resident
-native call, including functions that CTFE mode currently reaches through
-DMD-builtin bridges such as `fabs` and `pow`. It contains:
+the resolver should serve every supported already-resident native call,
+including functions reached today through DMD-builtin bridges such as `fabs`
+and `pow`. It contains:
 
 ```text
 - the frontend native-call descriptor: linkage, symbol name (mangling),
@@ -935,8 +935,7 @@ DMD-builtin bridges such as `fabs` and `pow`. It contains:
   FuncDeclaration, kept behind the quickbite interface so no dmd.* type
   leaks into a public quickbite.* API
 - the single resident native-call chokepoint every backend routes supported
-  native runtime calls through
-- the execution-mode gate (§21.2)
+  native runtime calls through (§21.2)
 - dlsym(RTLD_DEFAULT, ...) resolution against the resident process
 - the typed call plus scalar/pointer marshalling
 ```
@@ -946,45 +945,41 @@ call and delegating to the chokepoint, and (b) converting between the backend's
 value representation and the ABI. No backend is privileged; whichever backend
 reaches CTFE parity first can adopt it.
 
-### 21.2 The mode gate (also the future CTFE-drop-in seam)
+### 21.2 The native-call chokepoint
 
-Quickbite is also intended to become a faster drop-in CTFE engine for D, so
-the same native-call chokepoint must be **mode-parameterized** from the start:
-
-```text
-runtime mode:          supported resident native call -> dlsym + native call
-CTFE-compatible mode:  preserve DMD CTFE behavior; reject body-less calls
-                       unless the function is a CTFE-supported builtin
-```
-
-The CTFE-compatible-mode rejection is driven by the builtin/purity
-classification the other backends already copy from `dmd.builtin`
-(`isBuiltin`, the `BUILTIN` enum). Builtin bridges exist only to preserve DMD
-CTFE behavior. Runtime mode routes supported calls such as `malloc`, `free`,
-`fabs`, and `pow` through the same resident native-call resolver, with no
-backend-local special cases. Routing both modes through one chokepoint keeps
-the runtime/CTFE fork in exactly one place.
-
-### 21.3 Oracles
+Supported resident native calls route through one chokepoint:
 
 ```text
-CTFE mode (failure case): CTFE is the oracle. DMD CTFE throws when malloc is
-  called at compile time; a CTFE-faithful backend must reproduce that throw.
-  AGENTS.md's "CTFE is the canonical oracle" rule holds here unchanged.
-runtime mode (success case): compiled native D is the oracle. CTFE cannot
-  call malloc, so it cannot oracle the success path; the truth is the
-  compiled-D result (dmd_codegen / known value). This is the first place the
-  success oracle is compiled D rather than CTFE.
+supported resident native call -> dlsym + native call
 ```
 
-The two oracles deliberately diverge on the same source: CTFE throws,
-compiled D returns a non-null pointer. That divergence is the content of the
-first test.
+The chokepoint resolves the symbol and marshals scalars/pointers, with no
+backend-local special cases: `malloc`, `free`, `fabs`, and `pow` all go
+through the same resident native-call resolver.
+
+A CTFE-compatible variant (rejecting body-less calls unless the function is
+a CTFE-supported builtin, to match DMD CTFE) is **deferred** with the
+CTFE-engine-replacement goal (`ai/plans/single-oracle.md`,
+`ai/plans/bytecode.md`). It is not built now; the chokepoint is left so the
+gate can be reintroduced in one place if that goal is revived.
+
+### 21.3 Oracle
+
+```text
+Oracle: compiled native D via SystemLinker. malloc returns a non-null
+  pointer; that compiled-D result is the truth (ai/plans/single-oracle.md).
+```
+
+`Ctfe` is not an oracle here. DMD CTFE throws when `malloc` is called at
+compile time; that is a `Ctfe` characteristic, pinned as a `Ctfe`
+characterization test, not as the definition of correct behaviour. The
+success path is defined by `SystemLinker`.
 
 ## 22. Increment 1: first resident native call
 
-The first test pins the mode seam in place from day one. `malloc`/`free` are
-the first pointer-returning proof, not a special case in the implementation.
+The first test pins the native-call chokepoint in place from day one.
+`malloc`/`free` are the first pointer-returning proof, not a special case in
+the implementation.
 
 Source under test:
 
@@ -998,26 +993,24 @@ unittest {
 ```
 
 `malloc`/`free` are `extern(C)`, body-less, not pure, and absent from DMD's
-`BUILTIN` whitelist — the cleanest pointer-returning probe of the seam.
+`BUILTIN` whitelist — the cleanest pointer-returning probe of the chokepoint.
 `free(p)` also exercises passing a pointer **back** into a native call.
 
 Expectations:
 
 ```text
-CTFE mode, all backends:  rejected — the call throws / fails to interpret,
-  exactly as DMD CTFE does. Oracle: CTFE. Already true for the Ctfe backend,
-  so this half is green from day one and is the invariant every backend's
-  future CTFE mode is held to.
-runtime mode:             succeeds — malloc returns non-null, free accepts
-  it. Oracle: compiled native D. This is the red test that drives the work.
+Oracle (SystemLinker): succeeds — malloc returns non-null, free accepts it.
+  This is the red test that drives the work.
+Ctfe (characterization): rejected — the call fails to interpret, exactly as
+  DMD CTFE does. Already true for the Ctfe backend, so this is pinned as a
+  Ctfe characterization test, not as the definition of correct behaviour.
 ```
 
 What Increment 1 forces into existence (all in `quickbite.native` unless
 noted):
 
 ```text
-- an execution-mode parameter (CTFE vs runtime) reaching the chokepoint
-- the single resident native-call chokepoint that consults mode (§21.2)
+- the single resident native-call chokepoint (§21.2)
 - the frontend native-call descriptor (linkage, symbol, ABI types)
 - dlsym(RTLD_DEFAULT, symbol)
 - a general pointer Value kind in quickbite.lang (a machine word, NOT
@@ -1033,9 +1026,8 @@ malloc-specific.
 Explicitly still rejected after Increment 1 (scope guard):
 
 ```text
-runtime mode: anything but extern(C) scalar/pointer signatures of this shape
+anything but extern(C) scalar/pointer signatures of this shape
   — arrays, strings, structs, extern(D), exceptions, GC-returning calls
-CTFE mode: every body-less call that is not a pure builtin
 ```
 
 This is the first resident-native-call rung of the ladder. Pointer

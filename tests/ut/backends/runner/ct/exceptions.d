@@ -7,6 +7,9 @@ import ut.backends;
 /++
     Throwing and basic catch semantics.
 +/
+// Ctfe diverges: it wraps the throw in an "uncaught CTFE exception" message
+// rather than reporting the exception's own message. SystemLinker (compiled
+// code with -checkaction=context) reports "boom" directly.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     unittest {
@@ -20,6 +23,21 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
+// Compiled code (dmd -unittest -checkaction=context) reports the exception's
+// own message; the "uncaught CTFE exception" wrapper is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                throw new Exception("boom");
+            }
+        }).shouldThrowWithMessage("boom");
+    }
+}
+
+// Ctfe diverges: see exception.uncaughtThrowReportsMessage above.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
     unittest {
@@ -33,6 +51,22 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
+// Compiled code reports the exception's own message (see above).
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                throw new Exception("domain failure");
+            }
+        }).shouldThrowWithMessage("domain failure");
+    }
+}
+
+// Ctfe diverges: a literal `assert(false)` failure is reported as
+// "`assert(false)` failed", whereas compiled code raises the plain
+// _d_unittest hook message "unittest failure".
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     unittest {
@@ -44,6 +78,23 @@ static foreach (backend; AliasSeq!(Ctfe)) {
                 }
             }
         }).shouldThrowWithMessage("`assert(false)` failed");
+    }
+}
+
+// Compiled `assert(false)` in a unittest body raises the plain _d_unittest
+// hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
+static foreach (backend; AliasSeq!(SystemLinker)) {
+    @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                try {
+                    assert(false);
+                } catch (Exception) {
+                }
+            }
+        }).shouldThrowWithMessage("unittest failure");
     }
 }
 
