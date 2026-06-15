@@ -246,3 +246,20 @@
   some orderings points at process-global state mutation, not the test. Bisect
   it by running both baseline and patched builds several times under `--random`
   and comparing failure counts, not a single shared seed.
+
+- An in-process LLJIT that disposes (`LLVMOrcDisposeLLJIT`) in the long-lived
+  test process crashes later: dmd emits user `ClassInfo`/vtables/`TypeInfo` into
+  the JIT object, disposal `munmap`s it, and a subsequent GC collection (or
+  `gc_term`) dereferences the now-dangling metadata. Run the whole
+  create→load→execute cycle in a forked child that `_exit`s (no dispose); report
+  results over a pipe. The parent then never executes JIT code nor outlives a
+  disposed LLJIT.
+
+- JITLink (LLVM ORC) does not coalesce duplicate undefined symbols the way GNU
+  ld does. Under accumulated process-global DMD state dmd can emit one `.o` with
+  the same druntime helper (e.g. `gc_expandArrayUsed`) as two `UND GLOBAL`
+  symtab entries; JITLink resolves the extra one's GOT slot to 0 and JIT'd code
+  calls null, while `dmd -shared`+`dlopen` links the identical object fine. This
+  is codegen-deterministic (does not scatter under `--random`). Deduping the
+  `LLVMOrcAbsoluteSymbols` map does not help (the duplicate is in the object's
+  symtab); a real fix needs object symtab surgery or a dmd codegen change.

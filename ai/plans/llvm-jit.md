@@ -307,7 +307,7 @@ approval. All other ci.sh steps pass: `bin/ut` (1597 tests, 0 failed, 4/4
 expected failures), `tests/example.d`, `bin/bench`, `bin/qb`, and the other
 14 REPL tests.
 
-## Step 4 — promote the full SystemLinker matrix to LLVMJit: BLOCKED
+## Step 4 — promote the full SystemLinker matrix to LLVMJit ✅ DONE (with a documented residual)
 
 **Goal.** Promote every `SystemLinker`-tagged matrix block to also run on
 `LLVMJit`. `SystemLinker` is `LLVMJit`'s single behaviour oracle
@@ -321,111 +321,107 @@ native runtime backend) appears throughout `ct/`, so `LLVMJit` belongs there
 too; the earlier "LLVMJit must not appear in `ct/` blocks" note from Step 2 was
 over-conservative and is superseded here.
 
-**Outcome: blocked.** Adding `LLVMJit` after `SystemLinker` in all ~390 matrix
-blocks compiles and each promoted test **passes in isolation**, but running the
-promoted tests together **segfaults the suite** (`bin/ut` exits 139). The full
-`bin/ut` crashes deterministically mid-run (in fixed order, inside
-`ct/control_flow.foreach.*`), with no summary printed. The blocker is a backend
-defect, not a test or oracle problem, so **no bulk promotion was landed.** Only
-the pre-existing `LLVMJit` coverage (the Step 1 gate proofs plus the Step 2
-`rt/cstdlib.d` `malloc` block) remains.
+**Outcome.** The cumulative-segfault blocker is **fixed** (see "The fork fix"
+below): `LLVMJit` is now promoted alongside `SystemLinker` in every
+SystemLinker-oracle matrix block across `ct/{arrays,cerealed,control_flow,
+diagnostics,exceptions,expressions,integrals,logic,math,pollution,structs}.d`
+and `results.d` — including the `AliasSeq!(SystemLinker)`-only characterization
+blocks, whose assertion/diagnostic text `LLVMJit` reproduces byte-for-byte. Two
+sets are *not* promoted: `ct/archive.d` (structurally unsupported, below) and
+**5 array fixtures** that hit a second, distinct backend defect (the duplicate-
+undefined-symbol issue, below). Result: `bin/ut @LLVMJit` is 395/0; the full
+`bin/ut` is 2021/0 and **stable** across `--random` (5 runs) and both historical
+seeds (`2828407573`, `3516581215`).
 
-### What is mechanically promotable vs. not
+### The fork fix (resolves the cumulative dangling-metadata segfault)
 
-- **Not promotable at all — `ct/archive.d`** (`runTests.archiveBackedImport*`):
-  the fixture constructs `new backend([archivePath], [importPath])`, i.e. the
-  `SystemLinker(string[] linkFiles, string[] importPaths)` constructor.
-  `LLVMJitInputs` has **no `linkFiles` field** and the ORC loader resolves only
-  druntime/phobos *process* symbols, not external `.a` archive symbols (an
-  explicit non-goal in `LLVMJitInputs`' comment). Archive linking through the
-  in-process JIT is unimplemented; this test cannot compile under `LLVMJit`.
-- **Mechanically promotable but suite-unsafe — everything else.** All other
-  `SystemLinker` blocks across `ct/{arrays,cerealed,control_flow,diagnostics,
-  exceptions,expressions,integrals,logic,math,pollution,structs}.d` (including
-  the `AliasSeq!(SystemLinker)`-only characterization blocks, whose
-  assertion/diagnostic text `LLVMJit` reproduces byte-for-byte) compile and pass
-  individually, but hit the cumulative segfault below when run in bulk.
+The original blocker: `LLVMJit.runTests` ran one
+create→load→execute→`LLVMOrcDisposeLLJIT` cycle per fixture *in the long-lived
+parent*. Disposal `munmap`s the JIT code/data while GC-heap objects created
+during the test (user `ClassInfo`/vtables, the module's own `TypeInfo`,
+Throwable subtypes — metadata unique to the JIT object, which weak-symbol
+interposition does not redirect to the host) are still live and point into that
+memory. A later collection (or the `gc_term` teardown sweep) dereferenced a
+dangling `ClassInfo`/vtable and crashed (`bin/ut` exit 139, no summary).
 
-### Root cause of the cumulative segfault (the thing to fix)
+The fix, as foreseen: **run the whole `runTests` create→load→execute cycle in a
+forked child that `_exit`s when done** (`runTestsInChild` in
+`native/llvm_jit.d`). The long-lived parent never touches LLVM, never executes
+JIT code, never GC-allocates JIT-resident metadata, and never outlives a
+disposed LLJIT. The child builds the JIT, runs the unittests, writes a
+length-prefixed result frame (per-test pass/fail + name + location + message, or
+an error frame for an infrastructure failure) over a pipe, and `_exit`s — taking
+all JIT-tainted heap and eh_frame state with it. The child does **not** call
+`LLVMOrcDisposeLLJIT`: `_exit` reclaims the mapping without the munmap-then-
+collect that caused the crash. This mirrors the codegen fork the child itself
+then performs (`native/codegen.d`). Cost: one extra `fork`+IPC per `runTests`
+group, cheap next to the codegen child already spawned and far below the
+`dmd -shared` spawn this backend exists to kill. `disposeJit` was removed.
 
-`LLVMJit.runTests` runs one create→load→execute→`LLVMOrcDisposeLLJIT` cycle per
-fixture. **Disposal `munmap`s the test's JIT code/data while GC-heap objects
-created during the test are still live and still point into that memory.** dmd
-emits each module's `ModuleInfo`, `ClassInfo`/vtables, and template-instantiated
-`TypeInfo` into the JIT object; weak-symbol interposition (Step 1) redirects
-only the symbols the *host* process also exports (druntime/phobos), so metadata
-**unique to the JIT object** (user classes, the module's own `TypeInfo`,
-Throwable subtypes) stays JIT-resident and becomes a **dangling pointer** the
-moment the LLJIT is disposed. A later GC collection — an array realloc that
-triggers a collect, or the final `gc_term` teardown collect — sweeps a survivor
-and dereferences its now-unmapped `ClassInfo`/vtable, and the process crashes.
+(Rejected alternatives, unchanged: manual `__deregister_frame` — deregistration
+already happens and is balanced, and does not touch the live GC survivors; never
+disposing the LLJIT in the long-lived parent — leaks unbounded and still risks a
+mid-run collect.)
 
-Evidence (gdb on the built binary; two reproducible crash modes):
+### Not promotable at all — `ct/archive.d`
 
-- **Mode 1 — in-process JIT crash.** `bin/ut @LLVMJit
-  ut.backends.runner.ct.arrays` crashes at the 25th test
-  (`dynamicArray.lengthAssignmentResizesArray`, an `arr.length = n` →
-  `_d_arraysetlengthT` GC realloc). Backtrace: `rip = 0x0`, caller frame inside
-  a (now-unmapped) anonymous `r-xp` JIT region — control transferred through a
-  null/garbage pointer during a collection.
-- **Mode 2 — GC teardown / forked-child crash.** `bin/ut @LLVMJit
-  ...exceptions` crashes in `rt_finalize2+89` (`mov (%rdx),%rbx; mov
-  0x58(%rbx),%rsi` — reading an object's `ClassInfo` then its finalizer slot
-  through a dangling pointer), under `gc_term → fullcollect → sweep →
-  rt_finalizeFromGC`. At crash time **no JIT `r-xp` regions remain mapped**. A
-  variant manifests as `"codegen child died without a report (signal 11)"`: the
-  corrupted parent heap is COW-copied into the next fork'd codegen child, which
-  then segfaults.
+`runTests.archiveBackedImport*` constructs `new backend([archivePath],
+[importPath])`, i.e. the `SystemLinker(string[] linkFiles, string[]
+importPaths)` constructor. `LLVMJitInputs` has **no `linkFiles` field** and the
+ORC loader resolves only druntime/phobos *process* symbols, not external `.a`
+archive symbols (an explicit non-goal in `LLVMJitInputs`' comment). Archive
+linking through the in-process JIT is unimplemented; this test cannot compile
+under `LLVMJit`. Left unpromoted, unchanged.
 
-**`__register_frame`/`__deregister_frame` is NOT the cause** (initial
-hypothesis, refuted): gdb shows them balanced across a run (LLVM's JITLink
-alloc-actions deregister the eh_frame on dylib teardown), and neither crash is
-in the unwinder. Adding manual FDE deregistration would not help.
+### Residual defect — duplicate undefined symbol → JITLink resolves it to 0
 
-**Why excluding the obvious culprits is insufficient.** `arrays` and
-`exceptions` crash *alone* (heavy GC realloc / Throwable allocation), while
-`control_flow` (65 tests), `math` (56), `expressions` (49), `structs` (43),
-`logic` (34), `diagnostics` (26), `cerealed` (23), `integrals` (13), and
-`pollution` (1) each pass *alone* — so it is **not a fixed count threshold**.
-The non-`arrays`/`exceptions` set even passes together in an `@LLVMJit`-only run
-(314 tests, 0 failed). But the **full** `bin/ut` still crashes (at
-`control_flow`), because the extra GC pressure from the other backends
-(`Ctfe`/`Interpreter`/`Bytecode`/`IR`/`SystemLinker`) triggers a collection
-earlier, and that collection walks a disposed-JIT survivor left by *some* prior
-`LLVMJit` test. The crash is therefore **latent across all promoted LLVMJit
-tests** and depends on GC-collection timing — under `--random` the crash point
-would scatter. No safe static subset exists; the existing ~5 `LLVMJit` tests are
-below the practical danger zone, but any bulk promotion reintroduces it.
+Five array fixtures crash their JIT child even after the fork fix, due to a
+**second, distinct** backend defect (the fork fix newly *exposes* it — it was
+previously masked by the cumulative segfault). They are excluded from `LLVMJit`
+(each block carries a one-line comment pointing here):
 
-### Fix another agent must land first (then promotion is trivial)
+- `ct/arrays.d`: `dynamicArray.lengthAssignmentResizesArray`,
+  `dynamicArray.nestedSliceAppendKeepsOriginalArrayTail`,
+  `dynamicArray.jaggedRowsKeepIndependentLengths`
+- `ct/cerealed.d`: `projects.cerealed.protocolUnitLengthFieldRoundTrip`
+- `ct/control_flow.d`: `foreach.reverseIntArrayVisitsBackToFront`
 
-**Run each test's load+execute (or each whole `runTests` cycle) in a forked
-child**, the way the codegen step already forks. The long-lived parent then
-never executes JIT code, never GC-allocates objects with JIT-resident metadata,
-and never outlives a disposed LLJIT; the child runs the unittest, reports
-pass/fail + message over a pipe, and `_exit`s, taking all JIT-tainted heap and
-eh_frame state with it. This is the only approach robust against every
-dangling-metadata class at once (vtables, `ClassInfo`, `TypeInfo`, Throwable
-chains). Cost: one extra `fork`+IPC per test — cheap next to the codegen child
-the fixture already spawns, and still far below the `dmd -shared` link spawn
-this backend exists to kill. The `"child died signal N"` reporting path already
-exists in the codegen fixture and can be reused.
+**Root cause** (gdb on the built binary + `readelf`/`objdump` of the emitted
+objects): under accumulated process-global DMD state, dmd emits the rod object
+with a **duplicate undefined symbol** — e.g. `gc_expandArrayUsed` appears
+*twice* as `UND GLOBAL` in one `.o` (the alone, passing case has it once). When
+the JIT'd array-append worker (`_d_arrayappendcTX_`) calls `gc_expandArrayUsed`
+via the PLT/GOT, **JITLink resolves the extra symbol's GOT slot to `0`** and the
+JIT'd code calls a null pointer (`rip = 0x0`, faulting `call` goes through a GOT
+slot holding 0, while the symbol *does* otherwise resolve via `LLVMOrcLLJITLookup`).
+GNU ld (SystemLinker's `dmd -shared`) coalesces duplicate undefined symbols by
+name and never hits this — same shared codegen, identical object bytes, only the
+loader differs.
 
-Rejected alternatives: (a) manual `__deregister_frame` — deregistration already
-happens and is balanced; does not touch the live GC survivors. (b) never dispose
-the LLJIT (retain for process lifetime) — removes the dangling pointers but
-leaks unbounded memory across the suite and still risks a mid-run collect if any
-JIT is ever disposed; fragile.
+This is **codegen-deterministic, not GC-timing-dependent**, so unlike the
+original crash it does **not** scatter under `--random`: across 6 full-suite
+orderings (3 random + 2 fixed seeds + the no-seed default) exactly the same
+single fixture (`jaggedRows...`) surfaced beyond the four found in the
+`@LLVMJit`-only run. The full suite is maximum accumulation, so the excluded set
+is stable.
+
+Levers ruled out (none fix it; documented so a future attempt does not repeat
+them): deduplicating the names fed to `LLVMOrcAbsoluteSymbols` in
+`defineHostSymbols` (the duplicate is in the *object's* symtab, not our map);
+defining the host interposition as a strong rather than weak absolute (breaks
+the legitimate cross-object duplicate-weak dedup with "duplicate definition"
+errors). A robust fix needs either ELF symtab/relocation surgery on the object
+buffer before `LLVMOrcLLJITAddObjectFile` (coalesce duplicate undefined globals)
+or a dmd codegen change (which touches the SystemLinker-shared path) — both out
+of scope here; the affected fixtures stay on `SystemLinker` only.
 
 ### Reproduction
 
 ```sh
-# each promoted test passes alone:
-bin/ut 'ut.backends.runner.ct.arrays.dynamicArray.lengthAssignmentResizesArray.LLVMJit'
-# but in bulk they crash (exit 139):
-bin/ut @LLVMJit ut.backends.runner.ct.arrays        # mode 1, ~25th test
-bin/ut @LLVMJit ut.backends.runner.ct.exceptions    # mode 2
-bin/ut                                                # full suite: crashes at control_flow
+bin/ut @LLVMJit                 # 395/0 — promoted matrix is green in isolation
+bin/ut                          # 2021/0 — full suite green, stable under --random
+bin/ut --random --seed 2828407573
+bin/ut --random --seed 3516581215
 ```
 
 ## Build wiring

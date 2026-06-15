@@ -4,7 +4,7 @@ module ut.backends.runner.ct.cerealed;
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.dynamicArrayAppenderPreservesRuntimeByte." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -32,7 +32,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.refCursorReadAdvancesPosition." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -58,7 +58,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.postIncrementCursorReadAdvancesPosition." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -83,7 +83,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.templateLengthPrefixUsesRequestedWidth." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -111,7 +111,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.decodeBoolReadsSequentialBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -139,7 +139,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.encodeIntWritesBigEndianBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -170,7 +170,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.roundTripBoolBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.roundTripEnumBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -267,7 +267,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.exampleFooRoundTripBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -307,7 +307,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.multidimensionalArrayWritesNestedLengths." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -363,7 +363,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.nestedStructWritesAssociativeArrayChild." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -419,7 +419,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.pointerToIntWritesPointeeBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -447,7 +447,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.ubyteArrayRoundTripUsesUbyteLength." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -488,6 +488,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
+// LLVMJit excluded: under accumulated state dmd emits the rod with a duplicate
+// undefined symbol (gc_expandArrayUsed) that JITLink resolves to 0 where GNU ld
+// coalesces it; the JIT'd append then calls null (ai/plans/llvm-jit.md Step 4).
 static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @("projects.cerealed.protocolUnitLengthFieldRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -584,7 +587,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.bitPackedStructHeaderRoundTrip." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -635,7 +638,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.inputRangeWritesLengthAndValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -690,7 +693,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.resetReaderRestoresOriginalOrNewBytes." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -757,7 +760,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.staticArrayRoundTripOmitsLengthPrefix." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -877,7 +880,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled bounds checks raise druntime's ArrayIndexError text; the
 // backtick-range wording in the Ctfe block above is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("projects.cerealed.roundTripEnumExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -976,7 +979,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("projects.cerealed.roundTripBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1046,7 +1049,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled bounds checks raise druntime's ArrayIndexError text (see above).
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("projects.cerealed.decodeBoolExhaustionReportsBoundsDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1080,7 +1083,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 /++
     Known project-shaped gaps.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @("projects.cerealed.encodeFloatReinterpretsBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1155,7 +1158,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code reads the static child-class registry fine; the Ctfe
 // @ShouldFail limitation above is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("projects.cerealed.classSerialisationReadsStaticChildRegistry." ~
         backend.stringof)
     @Tags(backend.stringof)
