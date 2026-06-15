@@ -5,28 +5,22 @@ private:
 
 
 public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
-    import quickbite.backends.runner: ExecutionMode, TestResult;
+    import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
 
     private const SystemLinkerInputs _inputs;
 
-    // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends.
     public this(
-        in ExecutionMode mode = ExecutionMode.runtime,
         in SystemLinkerInputs inputs = SystemLinkerInputs.init,
     ) @safe @nogc nothrow pure {
-        assert(mode == ExecutionMode.runtime);
         _inputs = inputs;
     }
 
     public this(
-        in ExecutionMode mode,
         const string[] linkFiles,
         const string[] archiveImportPaths,
     ) @safe @nogc nothrow pure {
         this(
-            mode,
             SystemLinkerInputs(linkFiles, archiveImportPaths),
         );
     }
@@ -37,13 +31,11 @@ public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
     // std.path/std.algorithm, so this constructor cannot be @nogc nothrow pure
     // like its siblings.
     public this(
-        in ExecutionMode mode,
         const string[] linkFiles,
         const string[] importPaths,
         in string packageRoot,
     ) @safe {
         this(
-            mode,
             SystemLinkerInputs(
                 linkFiles,
                 archiveImportPathsUnder(importPaths, packageRoot),

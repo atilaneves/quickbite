@@ -86,10 +86,11 @@ probes catch (see "Test strategy").
    `typeof`/`it.typeof` (`ai/plans/repl.md`) — since display no longer
    encodes type for no-literal types (decision 2); `:t` stays
    frontend-answered for latency, not routed through a backend.
-6. The native backend is the behaviour oracle in the absence of a formal,
-   machine-verifiable language specification (it remains one option among
-   many for benchmarking). CTFE keeps its oracle role for pure code per
-   `ai/plans/repl.md`.
+6. The native backend (`SystemLinker`) is the single behaviour oracle in the
+   absence of a formal, machine-verifiable language specification (it remains
+   one option among many for benchmarking). CTFE is not an oracle; where it
+   diverges, its behaviour is characterized, not treated as truth
+   (`ai/plans/single-oracle.md`).
 
 ## Display format spec (agreed 2026-06-12; principle reversed 2026-06-13)
 

@@ -1,6 +1,6 @@
 module benchmarks.backends;
 
-import quickbite.backends.runner: ExecutionMode, Runner;
+import quickbite.backends.runner: Runner;
 import quickbite.backends.ctfe: Ctfe;
 import quickbite.backends.native: SystemLinker;
 
@@ -24,7 +24,6 @@ private Runner makeCtfe(in BackendEnv env) {
 // the project under test is codegen'd per run.
 private Runner makeSystemLinker(in BackendEnv env) {
     return new SystemLinker(
-        ExecutionMode.runtime,
         env.linkFiles,
         env.importPaths,
         env.packageRoot,
