@@ -146,6 +146,29 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case fabsFloat:
+                import std.math: fabs;
+                const ubyte[float.sizeof] result = floatBytes(
+                    fabs(floatValue!float(stack, base + instruction.b)),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
+            case powFloat:
+                import std.math: pow;
+                // Round through float so the stored result matches a compiled
+                // pow(float, float) byte-for-byte.
+                const ubyte[float.sizeof] result = floatBytes(cast(float) pow(
+                    floatValue!float(stack, base + instruction.b),
+                    floatValue!float(stack, base + instruction.c),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
             case equal1, equal2, equal4, equal8:
                 const operandSize = equalOperandSize(instruction.op);
                 stack[base + instruction.a] =

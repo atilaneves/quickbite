@@ -67,6 +67,8 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subDouble, // a: destination frame offset, b: lhs, c: rhs
     negateFloat, // a: destination frame offset, b: source
     negateDouble, // a: destination frame offset, b: source
+    fabsFloat, // a: destination frame offset, b: source (std.math.fabs)
+    powFloat, // a: destination frame offset, b: base, c: exponent (std.math.pow)
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,

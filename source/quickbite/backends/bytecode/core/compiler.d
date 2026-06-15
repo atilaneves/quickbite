@@ -115,6 +115,11 @@ private struct Compiler {
             return;
         }
 
+        // An import only brings symbols into scope; semantic has already
+        // resolved them, so it emits no code.
+        if (statement.isImportStatement !is null)
+            return;
+
         throw new Exception(text(
             "Unsupported statement in bytecode core: ",
             statement.stmt,
@@ -442,6 +447,10 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+        if (function_ !is null)
+            if (auto builtin = compileBuiltinCall(call, function_))
+                return *builtin;
+
         if (function_ is null || function_.fbody is null)
             throw new Exception(text(
                 "Unsupported call in bytecode core: ",
@@ -470,6 +479,48 @@ private struct Compiler {
             : allocate(returnType);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType);
+    }
+
+    // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
+    // builtin classification and emit a VM intrinsic instead of a call. The
+    // destination is typed by the call's static return type, so a float
+    // argument yields a float result (kept at 4 bytes, displayed with "f").
+    private Operand* compileBuiltinCall(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+
+        const resultType = scalarType(callType(call));
+        with (BUILTIN) switch (isBuiltin(function_)) {
+            case fabs:
+                if (resultType != ScalarType.float_)
+                    break;
+                const argument = compileExpression((*call.arguments)[0]);
+                const offset = allocate(ScalarType.float_);
+                _code ~= Instruction(Op.fabsFloat, offset, argument.offset);
+                return new Operand(offset, ScalarType.float_);
+
+            case pow:
+                if (resultType != ScalarType.float_)
+                    break;
+                const base = compileExpression((*call.arguments)[0]);
+                const exponent = compileExpression((*call.arguments)[1]);
+                const offset = allocate(ScalarType.float_);
+                _code ~= Instruction(
+                    Op.powFloat,
+                    offset,
+                    base.offset,
+                    exponent.offset,
+                );
+                return new Operand(offset, ScalarType.float_);
+
+            default:
+                break;
+        }
+
+        return null;
     }
 
     private size_t emitJump() @safe pure {
@@ -739,6 +790,12 @@ private imported!"dmd.func".FuncDeclaration callFunction(
             return function_;
 
     return null;
+}
+
+private imported!"dmd.mtype".Type callType(
+    imported!"dmd.expression".CallExp call,
+) {
+    return call.type;
 }
 
 private imported!"dmd.expression".Expression initializerExpression(
