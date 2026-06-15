@@ -18,6 +18,8 @@ package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     char_,
     wchar_,
     dchar_,
+    float_,
+    double_,
 }
 
 package(quickbite.backends.bytecode) uint size(in ScalarType type)
@@ -30,11 +32,30 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
             return 1;
         case short_, ushort_, wchar_:
             return 2;
-        case int_, uint_, dchar_:
+        case int_, uint_, dchar_, float_:
             return 4;
-        case long_, ulong_:
+        case long_, ulong_, double_:
             return 8;
     }
+}
+
+// The static type of a function result. Today either a scalar or a string;
+// the array slice is the leading edge of the future array subsystem, so its
+// own tag rather than overloading ScalarType. A string result is a slice
+// descriptor (byte offset and length into Program.data).
+package(quickbite.backends.bytecode) struct ResultType {
+    ScalarType scalar;
+    bool isString;
+}
+
+// Bytes of a string-slice descriptor laid out in the frame: a uint offset
+// into Program.data followed by a uint length.
+package(quickbite.backends.bytecode) enum stringSliceSize = 8;
+
+package(quickbite.backends.bytecode) uint size(in ResultType type)
+    @safe @nogc nothrow pure
+{
+    return type.isString ? stringSliceSize : size(type.scalar);
 }
 
 package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
@@ -44,7 +65,7 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
         case byte_, short_, int_, long_:
             return true;
         case void_, bool_, ubyte_, ushort_, uint_, ulong_,
-            char_, wchar_, dchar_:
+            char_, wchar_, dchar_, float_, double_:
             return false;
     }
 }
@@ -53,11 +74,21 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 // byte offsets, constant pool indices, function indices).
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
+    loadStringSlice, // a: destination frame offset, b: data offset, c: length
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
+    convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
+    addFloat, // a: destination frame offset, b: lhs, c: rhs
+    addDouble, // a: destination frame offset, b: lhs, c: rhs
+    subFloat, // a: destination frame offset, b: lhs, c: rhs
+    subDouble, // a: destination frame offset, b: lhs, c: rhs
+    negateFloat, // a: destination frame offset, b: source
+    negateDouble, // a: destination frame offset, b: source
+    fabsFloat, // a: destination frame offset, b: source (std.math.fabs)
+    powFloat, // a: destination frame offset, b: base, c: exponent (std.math.pow)
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,
@@ -80,7 +111,7 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
     uint parameterBytes;
-    ScalarType returnType;
+    ResultType returnType;
 }
 
 // How to render a failed assertion: read both operands from the frame and
@@ -95,5 +126,6 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
+    ubyte[] data; // read-only segment holding string-literal bytes
     AssertDiagnostic[] assertDiagnostics;
 }

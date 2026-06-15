@@ -27,10 +27,11 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        ScalarType, isSigned, size;
+        ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AssertExp, BinExp, CallExp, CastExp, Expression, StringExp;
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
+        NegExp, RealExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -78,7 +79,7 @@ private struct Compiler {
             null,
             0,
             parameterLayout(function_).blockSize,
-            scalarType(returnType(function_)),
+            resultType(returnType(function_)),
         );
         return cast(ushort) index;
     }
@@ -113,6 +114,11 @@ private struct Compiler {
             compileIfStatement(if_);
             return;
         }
+
+        // An import only brings symbols into scope; semantic has already
+        // resolved them, so it emits no code.
+        if (statement.isImportStatement !is null)
+            return;
 
         throw new Exception(text(
             "Unsupported statement in bytecode core: ",
@@ -149,6 +155,27 @@ private struct Compiler {
             return Operand(offset, type);
         }
 
+        if (auto real_ = expression.isRealExp) {
+            const type = scalarType(real_.type);
+            const offset = allocate(type);
+            _code ~= Instruction(
+                Op.loadConstant,
+                offset,
+                constantIndex(floatBits(real_, type)),
+                cast(ushort) size(type),
+            );
+            return Operand(offset, type);
+        }
+
+        if (auto string_ = expression.isStringExp)
+            return compileStringLiteral(string_);
+
+        if (auto negate = expression.isNegExp)
+            return compileNegateExpression(negate);
+
+        if (auto subtract = expression.isMinExp)
+            return compileSubtractExpression(subtract);
+
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals)
@@ -183,6 +210,9 @@ private struct Compiler {
         if (auto add = expression.isAddExp)
             return compileAddExpression(add);
 
+        if (auto addAssign = expression.isAddAssignExp)
+            return compileAddAssignExpression(addAssign);
+
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
 
@@ -198,6 +228,32 @@ private struct Compiler {
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // A string literal lives in the read-only data segment; the frame slot
+    // holds a slice descriptor (data offset and length). reify rebuilds the
+    // string from that descriptor plus the segment at the boundary.
+    private Operand compileStringLiteral(StringExp string_) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(
+            Op.loadStringSlice,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) bytes.length,
+        );
+        return Operand(offset, ScalarType.void_, true);
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -231,6 +287,20 @@ private struct Compiler {
         const source = compileExpression(cast_.e1);
         const target = scalarType(cast_.to);
 
+        // Crossing the int/float boundary needs a numeric conversion, not a
+        // byte copy or integer extension. Only double -> int is needed today.
+        if (source.type == ScalarType.double_ && target == ScalarType.int_) {
+            const offset = allocate(target);
+            _code ~= Instruction(Op.convertDoubleToInt, offset, source.offset);
+            return Operand(offset, target);
+        }
+
+        if (isFloating(source.type) != isFloating(target))
+            throw new Exception(text(
+                "Unsupported numeric cast in bytecode core: ",
+                expressionChars(cast_),
+            ));
+
         if (size(target) <= size(source.type)) {
             const offset = allocate(target);
             _code ~= Instruction(
@@ -248,12 +318,100 @@ private struct Compiler {
     private Operand compileAddExpression(Expression expression) {
         auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(add !is null);
-        return compileIntBinaryExpression(
+
+        const lhs = compileExpression(add.e1);
+        const rhs = compileExpression(add.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.addFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.addDouble, lhs, rhs, ScalarType.double_);
+
+        return compileIntBinaryResult(
             add,
+            lhs,
+            rhs,
             Op.addInt4,
             ScalarType.int_,
             "Unsupported addition in bytecode core: ",
         );
+    }
+
+    private Operand compileSubtractExpression(BinExp subtract) {
+        import std.conv: text;
+
+        const lhs = compileExpression(subtract.e1);
+        const rhs = compileExpression(subtract.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.subFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
+
+        throw new Exception(text(
+            "Unsupported subtraction in bytecode core: ",
+            expressionChars(subtract),
+        ));
+    }
+
+    private Operand compileNegateExpression(NegExp negate) {
+        import std.conv: text;
+
+        const source = compileExpression(negate.e1);
+        if (source.type == ScalarType.float_) {
+            const offset = allocate(ScalarType.float_);
+            _code ~= Instruction(Op.negateFloat, offset, source.offset);
+            return Operand(offset, ScalarType.float_);
+        }
+        if (source.type == ScalarType.double_) {
+            const offset = allocate(ScalarType.double_);
+            _code ~= Instruction(Op.negateDouble, offset, source.offset);
+            return Operand(offset, ScalarType.double_);
+        }
+
+        throw new Exception(text(
+            "Unsupported negation in bytecode core: ",
+            expressionChars(negate),
+        ));
+    }
+
+    private Operand emitBinary(
+        in Op op,
+        in Operand lhs,
+        in Operand rhs,
+        in ScalarType resultType,
+    ) @safe pure {
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, resultType);
+    }
+
+    // DMD lowers `++x` to the compound add-assign `x += 1`. Lower it through
+    // the existing add: add the local and the rhs into the local's own frame
+    // slot, and yield the local (the new value) as the expression result. No
+    // dedicated increment opcode (see PR-123): this is plain `addInt4` with the
+    // destination being the lvalue's slot. Scoped to integer local-variable
+    // lvalues; anything else is unsupported.
+    private Operand compileAddAssignExpression(AddAssignExp addAssign) {
+        import std.conv: text;
+
+        auto variable = addAssign.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const lhs = slot is null
+            ? Operand.init
+            : Operand(*slot, scalarType(declaration.type));
+        const rhs = compileExpression(addAssign.e2);
+        if (slot is null ||
+            lhs.type != ScalarType.int_ ||
+            rhs.type != ScalarType.int_ ||
+            scalarType(addAssign.type) != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(addAssign),
+            ));
+
+        _code ~= Instruction(Op.addInt4, lhs.offset, lhs.offset, rhs.offset);
+        return lhs;
     }
 
     private Operand compileEqualExpression(Expression expression) {
@@ -273,10 +431,23 @@ private struct Compiler {
         in ScalarType resultType,
         in string unsupportedMessage,
     ) {
-        import std.conv: text;
-
         const lhs = compileExpression(expression.e1);
         const rhs = compileExpression(expression.e2);
+        return compileIntBinaryResult(
+            expression, lhs, rhs, op, resultType, unsupportedMessage,
+        );
+    }
+
+    private Operand compileIntBinaryResult(
+        BinExp expression,
+        in Operand lhs,
+        in Operand rhs,
+        in Op op,
+        in ScalarType resultType,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
         if (lhs.type != ScalarType.int_ ||
             rhs.type != ScalarType.int_ ||
             (resultType == ScalarType.int_ &&
@@ -305,6 +476,10 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+        if (function_ !is null)
+            if (auto builtin = compileBuiltinCall(call, function_))
+                return *builtin;
+
         if (function_ is null || function_.fbody is null)
             throw new Exception(text(
                 "Unsupported call in bytecode core: ",
@@ -328,11 +503,54 @@ private struct Compiler {
             }
 
         const returnType = _program.functions[index].returnType;
-        const destination = returnType == ScalarType.void_
-            ? cast(ushort) 0
-            : allocate(returnType);
+        const destination =
+            (!returnType.isString && returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
-        return Operand(destination, returnType);
+        return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
+    // builtin classification and emit a VM intrinsic instead of a call. The
+    // destination is typed by the call's static return type, so a float
+    // argument yields a float result (kept at 4 bytes, displayed with "f").
+    private Operand* compileBuiltinCall(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
+
+        const resultType = scalarType(callType(call));
+        with (BUILTIN) switch (isBuiltin(function_)) {
+            case fabs:
+                if (resultType != ScalarType.float_)
+                    break;
+                const argument = compileExpression((*call.arguments)[0]);
+                const offset = allocate(ScalarType.float_);
+                _code ~= Instruction(Op.fabsFloat, offset, argument.offset);
+                return new Operand(offset, ScalarType.float_);
+
+            case pow:
+                if (resultType != ScalarType.float_)
+                    break;
+                const base = compileExpression((*call.arguments)[0]);
+                const exponent = compileExpression((*call.arguments)[1]);
+                const offset = allocate(ScalarType.float_);
+                _code ~= Instruction(
+                    Op.powFloat,
+                    offset,
+                    base.offset,
+                    exponent.offset,
+                );
+                return new Operand(offset, ScalarType.float_);
+
+            default:
+                break;
+        }
+
+        return null;
     }
 
     private size_t emitJump() @safe pure {
@@ -460,6 +678,16 @@ private struct Compiler {
         return layout;
     }
 
+    // A function result is either a scalar or a string slice. Only the string
+    // case is non-scalar today (the leading edge of arrays); everything else
+    // routes through the scalar path.
+    private ResultType resultType(Type type) {
+        if (isStringType(type))
+            return ResultType(ScalarType.void_, true);
+
+        return ResultType(scalarType(type), false);
+    }
+
     private ScalarType scalarType(Type type) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -491,6 +719,10 @@ private struct Compiler {
                 return ScalarType.wchar_;
             case Tdchar:
                 return ScalarType.dchar_;
+            case Tfloat32:
+                return ScalarType.float_;
+            case Tfloat64:
+                return ScalarType.double_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
@@ -508,6 +740,7 @@ private struct ParameterLayout {
 private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
+    bool isString; // when set, `offset` holds a string-slice descriptor
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
@@ -547,6 +780,67 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
     }
 }
 
+// A `string`/`wstring`/`dstring` (immutable char-element array): the only
+// non-scalar result the core lowers today.
+private bool isStringType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    auto base = type.toBasetype;
+    if (base.ty != TY.Tarray)
+        return false;
+
+    auto element = base.nextOf; // const fails: nextOf is a mutable method.
+    if (element is null)
+        return false;
+
+    switch (element.toBasetype.ty) with (TY) {
+        case Tchar, Twchar, Tdchar:
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isFloating(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.float_ || type == ScalarType.double_;
+}
+
+// Lower a float/double literal to the raw bits loadConstant copies: the
+// IEEE-754 pattern of the value at the target width sits in the low bytes.
+private ulong floatBits(
+    imported!"dmd.expression".RealExp real_,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+    import std.bitmanip: nativeToLittleEndian;
+
+    if (type == ScalarType.float_) {
+        const ubyte[float.sizeof] bytes =
+            nativeToLittleEndian(cast(float) realValue(real_));
+        ulong bits;
+        foreach (i; 0 .. float.sizeof)
+            bits |= cast(ulong) bytes[i] << (8 * i);
+        return bits;
+    }
+
+    const ubyte[double.sizeof] bytes =
+        nativeToLittleEndian(cast(double) realValue(real_));
+    ulong bits;
+    foreach (i; 0 .. double.sizeof)
+        bits |= cast(ulong) bytes[i] << (8 * i);
+    return bits;
+}
+
+private real realValue(imported!"dmd.expression".RealExp real_) @trusted {
+    // RealExp.value is a dmd longdouble (real_t); reading it is pure data
+    // access with no aliasing, but the dmd field accessor is not @safe.
+    return cast(real) real_.value;
+}
+
 private imported!"dmd.func".FuncDeclaration callFunction(
     imported!"dmd.expression".CallExp call,
 ) {
@@ -558,6 +852,12 @@ private imported!"dmd.func".FuncDeclaration callFunction(
             return function_;
 
     return null;
+}
+
+private imported!"dmd.mtype".Type callType(
+    imported!"dmd.expression".CallExp call,
+) {
+    return call.type;
 }
 
 private imported!"dmd.expression".Expression initializerExpression(

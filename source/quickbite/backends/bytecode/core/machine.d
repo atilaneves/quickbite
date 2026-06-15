@@ -33,6 +33,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case loadStringSlice:
+                // Write the slice descriptor: data offset then length, each a
+                // little-endian uint. reify reads it back at the boundary.
+                stack[base + instruction.a .. base + instruction.a + uint.sizeof]
+                    = scalarBytes(cast(uint) instruction.b);
+                stack[
+                    base + instruction.a + uint.sizeof
+                    .. base + instruction.a + 2 * uint.sizeof
+                ] = scalarBytes(cast(uint) instruction.c);
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -69,6 +81,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case convertDoubleToInt:
+                const ubyte[int.sizeof] converted = scalarBytes(
+                    cast(int) floatValue!double(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = converted;
+                ++ip;
+                break;
+
             case addInt4:
                 const ubyte[int.sizeof] sum = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) +
@@ -76,6 +97,87 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = sum;
+                ++ip;
+                break;
+
+            case addFloat:
+                const ubyte[float.sizeof] sum = floatBytes(
+                    floatValue!float(stack, base + instruction.b) +
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = sum;
+                ++ip;
+                break;
+
+            case addDouble:
+                const ubyte[double.sizeof] sum = floatBytes(
+                    floatValue!double(stack, base + instruction.b) +
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = sum;
+                ++ip;
+                break;
+
+            case subFloat:
+                const ubyte[float.sizeof] difference = floatBytes(
+                    floatValue!float(stack, base + instruction.b) -
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = difference;
+                ++ip;
+                break;
+
+            case subDouble:
+                const ubyte[double.sizeof] difference = floatBytes(
+                    floatValue!double(stack, base + instruction.b) -
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = difference;
+                ++ip;
+                break;
+
+            case negateFloat:
+                const ubyte[float.sizeof] negated = floatBytes(
+                    -floatValue!float(stack, base + instruction.b),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = negated;
+                ++ip;
+                break;
+
+            case negateDouble:
+                const ubyte[double.sizeof] negated = floatBytes(
+                    -floatValue!double(stack, base + instruction.b),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = negated;
+                ++ip;
+                break;
+
+            case fabsFloat:
+                import std.math: fabs;
+                const ubyte[float.sizeof] result = floatBytes(
+                    fabs(floatValue!float(stack, base + instruction.b)),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
+            case powFloat:
+                import std.math: pow;
+                // Round through float so the stored result matches a compiled
+                // pow(float, float) byte-for-byte.
+                const ubyte[float.sizeof] result = floatBytes(cast(float) pow(
+                    floatValue!float(stack, base + instruction.b),
+                    floatValue!float(stack, base + instruction.c),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = result;
                 ++ip;
                 break;
 
@@ -212,6 +314,10 @@ private string operandText(
             return raw == 0 ? "false" : "true";
         case char_:
             return text("'", cast(char) raw, "'");
+        case float_:
+            return text(floatValue!float(frame, offset));
+        case double_:
+            return text(floatValue!double(frame, offset));
         case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
             wchar_, dchar_:
             break;
@@ -245,4 +351,24 @@ private T scalarValue(T)(
         raw |= cast(ulong) stack[offset + i] << (8 * i);
 
     return cast(T) raw;
+}
+
+// Floating values are reinterpreted, not numerically converted: their bytes
+// are the IEEE-754 bit pattern, so read and write them as raw bits.
+private T floatValue(T)(
+    in ubyte[] stack,
+    in size_t offset,
+) @safe @nogc nothrow pure
+if (is(T == float) || is(T == double)) {
+    import std.bitmanip: littleEndianToNative;
+
+    ubyte[T.sizeof] raw = stack[offset .. offset + T.sizeof];
+    return littleEndianToNative!T(raw);
+}
+
+private ubyte[T.sizeof] floatBytes(T)(in T value) @safe @nogc nothrow pure
+if (is(T == float) || is(T == double)) {
+    import std.bitmanip: nativeToLittleEndian;
+
+    return nativeToLittleEndian(value);
 }
