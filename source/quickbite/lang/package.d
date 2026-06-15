@@ -38,6 +38,7 @@ public struct Value {
 
         Array,
         AssocArray,
+        ClassObject,
         LocalPointer,
         Pointer,
         Struct,
@@ -62,6 +63,15 @@ public struct Value {
         in Value[] fields,
     ) @safe pure {
         return Value(Struct(typeName, fields));
+    }
+
+    public static Value classValue(
+        in string typeName,
+        in string[] typeNames,
+        in string[] fieldNames,
+        in Value[] fields,
+    ) @safe pure {
+        return Value(ClassObject(typeName, typeNames, fieldNames, fields));
     }
 
     public static Value arrayValue(in Value[] elements) @safe pure {
@@ -144,6 +154,10 @@ public struct Value {
     }
 
     private this(Struct value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(ClassObject value) @safe pure {
         data = Data(value);
     }
 
@@ -321,6 +335,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
                     return value.toString;
+                } else static if (is(T == const(ClassObject)) || is(T == ClassObject)) {
+                    return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
@@ -373,6 +389,8 @@ public struct Value {
                 } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
+                    return value.toString;
+                } else static if (is(T == const(ClassObject)) || is(T == ClassObject)) {
                     return value.toString;
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
@@ -678,6 +696,29 @@ public struct Value {
         );
     }
 
+    public bool isClassObject() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => true,
+            (_) => false,
+        );
+    }
+
+    public bool classHasType(in string typeName) const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                foreach (candidate; object.typeNames)
+                    if (candidate == typeName)
+                        return true;
+                return false;
+            },
+            (_) => false,
+        );
+    }
+
     public bool isArray() const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -903,6 +944,52 @@ public struct Value {
         );
     }
 
+    public Value classFieldAt(in size_t index) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => object.fields[index].value,
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value classFieldNamed(in string name) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                foreach (index, field; object.fields)
+                    if (field.name == name)
+                        return field.value;
+
+                throw new Exception("Expected class field.");
+                return Value.void_;
+            },
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public bool hasClassFieldNamed(in string name) const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                foreach (field; object.fields)
+                    if (field.name == name)
+                        return true;
+
+                return false;
+            },
+            (_) => false,
+        );
+    }
+
     // not @safe: the sumtype match copies array-bearing alternatives,
     // which `match` infers as @system, same as withArrayElement below
     public Value withStructField(
@@ -921,6 +1008,68 @@ public struct Value {
             },
             (_) {
                 throw new Exception("Expected struct.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withClassField(
+        in size_t index,
+        in Value value,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                Value[] values;
+                foreach (field; object.fields)
+                    values ~= field.value;
+                values[index] = value;
+                return Value.classValue(
+                    object.typeName,
+                    object.typeNames,
+                    object.fieldNames,
+                    values,
+                );
+            },
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withClassFieldNamed(
+        in string name,
+        in Value value,
+    ) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                Value[] values;
+                size_t target;
+                bool found;
+                foreach (index, field; object.fields) {
+                    values ~= field.value;
+                    if (field.name == name) {
+                        target = index;
+                        found = true;
+                    }
+                }
+                if (!found)
+                    throw new Exception("Expected class field.");
+
+                values[target] = value;
+                return Value.classValue(
+                    object.typeName,
+                    object.typeNames,
+                    object.fieldNames,
+                    values,
+                );
+            },
+            (_) {
+                throw new Exception("Expected class object.");
                 return Value.void_;
             },
         );
@@ -1362,6 +1511,42 @@ private struct Struct {
 
         static foreach (member; __traits(allMembers, T)) {
             fields ~= Field(member, Value(__traits(getMember, value, member)));
+        }
+    }
+
+    public string toString() const @safe pure {
+        string ret = typeName ~ "(";
+
+        foreach (i, field; fields) {
+            if (i != 0)
+                ret ~= ", ";
+            ret ~= field.toString;
+        }
+
+        return ret ~ ")";
+    }
+}
+
+
+private struct ClassObject {
+    public string typeName;
+    public string[] typeNames;
+    public Field[] fields;
+    public string[] fieldNames;
+
+    public this(
+        in string typeName,
+        in string[] typeNames,
+        in string[] fieldNames,
+        in Value[] fields,
+    ) @safe pure {
+        this.typeName = typeName;
+        this.typeNames = typeNames.dup;
+        this.fieldNames = fieldNames.dup;
+
+        foreach (index, field; fields) {
+            const name = index < fieldNames.length ? fieldNames[index] : "";
+            this.fields ~= Field(name, field);
         }
     }
 

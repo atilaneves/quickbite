@@ -25,7 +25,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled code (dmd -unittest -checkaction=context) reports the exception's
 // own message; the "uncaught CTFE exception" wrapper is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -52,7 +52,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 // Compiled code reports the exception's own message (see above).
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -83,7 +83,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -98,7 +98,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchExceptionCatchesThrownException." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -118,7 +118,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchExceptionBindsCaughtObject." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -138,7 +138,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchSkipsNonMatchingSiblingException." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -172,9 +172,8 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-// Interpreter, Bytecode, and IR all report TryCatch as an unsupported
-// statement.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode and IR both report TryCatch as an unsupported statement.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchByBaseReadsDerivedField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -204,7 +203,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.throwExpressionInConditionalIsCaught." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -239,7 +238,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchExceptionCatchesThrownExceptionFromCalledFunction." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -268,7 +267,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Throws from callees after side effects.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchThrowAfterCalleeSideEffect." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -298,7 +297,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchNestedBranchThrowFromCalledFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -341,7 +340,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.catchRuntimeBranchThrowFromCalledFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -377,7 +376,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.throwAfterRuntimeBranchPreservesRefSideEffect." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -414,7 +413,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Finally.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.runsFinalbody." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -435,7 +434,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.runsFinalbodyBeforeCatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -463,7 +462,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.runsAfterReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -486,7 +485,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.returnCapturesValueBeforeFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -509,7 +508,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.branchReturnsCaptureValueBeforeFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -540,7 +539,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.throwChainsBodyException." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -573,7 +572,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Goto through try/finally and catch handlers.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.gotoWithinBodyRunsFinallyOnce." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -602,7 +601,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("finally.gotoOutOfBodyRunsFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -631,7 +630,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("catch.gotoResumesInsideHandler." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -660,7 +659,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("catch.gotoLeavesHandler." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -689,9 +688,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
-// unsupported statement.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode, BytecodeNewCore, and IR all report TryCatch as an unsupported
+// statement.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.rethrowPropagatesToOuterHandler." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -717,9 +716,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
-// unsupported statement.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode, BytecodeNewCore, and IR all report TryCatch as an unsupported
+// statement.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.multipleCatchClausesSelectByDynamicType." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -747,9 +746,9 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-// Interpreter, Bytecode, BytecodeNewCore, and IR all report TryCatch as an
-// unsupported statement.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode, BytecodeNewCore, and IR all report TryCatch as an unsupported
+// statement.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("exception.errorIsNotCaughtByExceptionHandler." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
