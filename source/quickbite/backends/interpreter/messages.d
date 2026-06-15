@@ -65,32 +65,6 @@ public bool isTruthy(in imported!"quickbite.lang".Value value) {
     return value.castTo!bool == Value(true);
 }
 
-public T[] stringCodeUnits(T)(imported!"dmd.expression".StringExp string_) {
-    T[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(T) string_.getIndex(index);
-
-    return values;
-}
-
-public char[] stringChars(imported!"dmd.expression".StringExp string_) {
-    import std.utf: encode;
-
-    char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits) {
-        const codeUnit = string_.getIndex(index);
-        if (string_.sz == 1) {
-            values ~= cast(char) codeUnit;
-        } else {
-            char[4] encoded;
-            const length = encode(encoded, cast(dchar) codeUnit);
-            values ~= encoded[0 .. length];
-        }
-    }
-
-    return values;
-}
-
 public string thrownExceptionMessage(
     imported!"dmd.expression".Expression expression,
 ) {
@@ -101,6 +75,8 @@ public string thrownExceptionMessage(
     auto message = (*new_.arguments)[0].isStringExp;
     if (message is null)
         return "Unittest assertion failed.";
+
+    import quickbite.frontend.dmd.string_literals: stringChars;
 
     return stringChars(message).idup;
 }

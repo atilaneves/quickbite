@@ -135,6 +135,16 @@ public struct EvalResult {
     }
 }
 
+public EvalResult displayEvalResult(
+    scope imported!"quickbite.lang".Value delegate() value,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    try
+        return EvalResult(displayString(value(), function_));
+    catch (Exception exception)
+        return EvalResult(EvalResult.Diagnostic(exception.msg));
+}
+
 // Renders a backend-reified `Value` to its display string at the
 // `eval(FuncDeclaration)` boundary. This is the single shared renderer (decision
 // 4 of ai/plans/value.md) so every backend and the `eval(Cell)`/`eval(string)`

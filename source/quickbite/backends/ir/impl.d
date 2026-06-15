@@ -4,7 +4,7 @@ private:
 
 public class IR: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
@@ -14,11 +14,9 @@ public class IR: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.ir.compiler: compileFunction;
         import quickbite.backends.ir.vm: eval;
 
-        try
-            return EvalResult(
-                displayString(eval(compileFunction(function_)), function_),
-            );
-        catch (Exception exception)
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        return displayEvalResult(
+            () => eval(compileFunction(function_)),
+            function_,
+        );
     }
 }

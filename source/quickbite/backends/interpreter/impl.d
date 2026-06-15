@@ -6,19 +6,18 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     public alias eval = Evaluator.eval;
 
     public override EvalResult eval(FuncDeclaration function_) {
-        Walker walker;
-        try
+        return displayEvalResult(() {
+            Walker walker;
             walker.runStatement(function_.fbody);
-        catch (Exception exception)
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
-        return EvalResult(displayString(walker.result, function_));
+            return walker.result;
+        }, function_);
     }
 }
 
@@ -260,8 +259,11 @@ private struct Walker {
         if (expression.isNullExp !is null)
             return Value.null_;
 
-        if (auto string_ = expression.isStringExp)
+        if (auto string_ = expression.isStringExp) {
+            import quickbite.frontend.dmd.string_literals: stringValue;
+
             return stringValue(string_);
+        }
 
         if (auto array = expression.isArrayLiteralExp)
             return arrayValue(array);
@@ -1751,17 +1753,6 @@ private struct Walker {
             return value;
 
         throw new Exception(text("Unsupported eval expression: ", cast_.op));
-    }
-
-    private Value stringValue(imported!"dmd.expression".StringExp string_) {
-        import quickbite.backends.interpreter.messages: stringChars,
-            stringCodeUnits;
-
-        switch (string_.sz) {
-            case 2: return Value.stringValue(stringCodeUnits!wchar(string_));
-            case 4: return Value.stringValue(stringCodeUnits!dchar(string_));
-            default: return Value.stringValue(stringChars(string_));
-        }
     }
 
     private Value arrayValue(

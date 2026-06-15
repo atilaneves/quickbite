@@ -88,8 +88,11 @@ private imported!"quickbite.lang".Value ctfeValue(
     if (auto real_ = expression.isRealExp)
         return realValue(real_);
 
-    if (auto string_ = expression.isStringExp)
+    if (auto string_ = expression.isStringExp) {
+        import quickbite.frontend.dmd.string_literals: stringValue;
+
         return stringValue(string_);
+    }
 
     if (auto null_ = expression.isNullExp)
         return Value.null_();
@@ -137,48 +140,6 @@ private imported!"quickbite.lang".Value realValue(
     import quickbite.frontend.dmd.values: frontendRealValue = realValue;
 
     return frontendRealValue(real_);
-}
-
-private imported!"quickbite.lang".Value stringValue(
-    imported!"dmd.expression".StringExp string_,
-) {
-    import quickbite.lang: Value;
-
-    switch (string_.sz) {
-        case 2: return Value.stringValue(stringCodeUnits!wchar(string_));
-        case 4: return Value.stringValue(stringCodeUnits!dchar(string_));
-        default: return Value.stringValue(stringChars(string_));
-    }
-}
-
-private T[] stringCodeUnits(T)(
-    imported!"dmd.expression".StringExp string_,
-) {
-    T[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(T) string_.getIndex(index);
-
-    return values;
-}
-
-private char[] stringChars(
-    imported!"dmd.expression".StringExp string_,
-) {
-    import std.utf: encode;
-
-    char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits) {
-        const codeUnit = string_.getIndex(index);
-        if (string_.sz == 1) {
-            values ~= cast(char) codeUnit;
-        } else {
-            char[4] encoded;
-            const length = encode(encoded, cast(dchar) codeUnit);
-            values ~= encoded[0 .. length];
-        }
-    }
-
-    return values;
 }
 
 private imported!"quickbite.lang".Value arrayValue(

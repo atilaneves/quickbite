@@ -271,6 +271,8 @@ private struct Compiler {
         }
 
         if (auto string_ = expression.isStringExp) {
+            import quickbite.frontend.dmd.string_literals: stringValue;
+
             program.instructions ~= Instruction(
                 Op.literal,
                 stringValue(string_),
@@ -995,6 +997,8 @@ private struct Compiler {
         if (operator is null)
             return false;
 
+        import quickbite.frontend.dmd.string_literals: stringChars;
+
         const operatorText = stringChars(operator);
         if (operatorText != "==" && operatorText != "!=")
             return false;
@@ -1026,8 +1030,11 @@ private struct Compiler {
 
         if (assert_.msg !is null) {
             auto string_ = assert_.msg.isStringExp;
-            if (string_ !is null)
+            if (string_ !is null) {
+                import quickbite.frontend.dmd.string_literals: stringValue;
+
                 return stringValue(string_);
+            }
         }
 
         const message = "`assert(" ~
@@ -1157,44 +1164,4 @@ private struct Compiler {
 
         return expression;
     }
-}
-
-private imported!"quickbite.lang".Value stringValue(
-    imported!"dmd.expression".StringExp string_,
-) {
-    import quickbite.lang: Value;
-
-    switch (string_.sz) {
-        case 2: return Value.stringValue(stringCodeUnits!wchar(string_));
-        case 4: return Value.stringValue(stringCodeUnits!dchar(string_));
-        default: return Value.stringValue(stringChars(string_));
-    }
-}
-
-private T[] stringCodeUnits(T)(
-    imported!"dmd.expression".StringExp string_,
-) {
-    T[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(T) string_.getIndex(index);
-
-    return values;
-}
-
-private char[] stringChars(imported!"dmd.expression".StringExp string_) {
-    import std.utf: encode;
-
-    char[] values;
-    foreach (index; 0 .. string_.numberOfCodeUnits) {
-        const codeUnit = string_.getIndex(index);
-        if (string_.sz == 1) {
-            values ~= cast(char) codeUnit;
-        } else {
-            char[4] encoded;
-            const length = encode(encoded, cast(dchar) codeUnit);
-            values ~= encoded[0 .. length];
-        }
-    }
-
-    return values;
 }
