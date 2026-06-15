@@ -885,6 +885,87 @@ With this, the previous probe's fix plan is fully discharged: items 1-6 are
 all done. No CTFE-only backend-matrix blocks remain in
 `tests/ut/bin/repl.d`.
 
+Expressions promotion probe:
+All current SystemLinker-oracle backend-matrix tests in
+`tests/ut/backends/runner/ct/expressions.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-expressions`. CTFE-only
+characterization blocks stayed CTFE-only; the split compiled-behavior blocks
+now include `Interpreter`, keeping `SystemLinker` as the oracle.
+
+Running only the expressions Interpreter tests with
+`bin/ut $(bin/ut -l | rg
+'^ut\.backends\.runner\.ct\.expressions\..*Interpreter$')` ran 49 cases: 30
+passed and 19 failed. Passing promoted surface includes relational assertion
+diagnostics, ordinary arithmetic and bitwise basics already supported by the
+walker, signed modulo behavior, several integer width/cast/comparison cases,
+basic floating `pow`/numeric casts, comma expressions, conditional
+non-null-pointer truthiness, and many existing class/pointer-adjacent cases.
+
+Failure causes from the first focused run:
+
+- Pointer and pointer-cast values are still too narrow. Failures include
+  `cast.sliceToPointerDereferencesFirstElement`,
+  `cast.arrayPointerRoundTripsThroughVoidPointer`,
+  `cast.arrayElementAddressToStaticArrayPointer`,
+  `cast.expTypePaintedSliceFromVoidPointer`,
+  `cast.pointerToBoolReflectsNullness`,
+  `new.scalarPointerDereferencesRuntimeValue`,
+  `pointer.runtimeOffsetReadsElement`, and
+  `pointer.runtimeDifferenceReadsElement`. The common gaps are preserving
+  pointers to array elements/slices through `void*` casts, static-array pointer
+  views, pointer arithmetic/dereference, pointer-to-bool casts, and scalar
+  `new int(seed)` allocation/deref/write. The desired slice is interpreter
+  memory-value semantics, not host memory.
+- Class and interface dispatch are incomplete for expression-module shapes.
+  `class.virtualCallUsesDynamicClass` escapes as an array bounds error while
+  writing a derived class field through the class object, and
+  `interface.virtualCallUsesRuntimeDispatch` needs the same dynamic-dispatch
+  machinery through an interface reference. The likely fix is class field
+  layout/indexing across inheritance plus virtual/interface call resolution,
+  not a fixture-name special case.
+- Delegate values are not modeled broadly enough for `.ptr`, `.funcptr`,
+  captured nested calls, and struct-member delegate receivers. Failures include
+  `delegate.ptrPropertyReturnsClosureContext`,
+  `delegate.funcptrPropertyReturnsFunctionPointer`,
+  `delegate.nestedCallUsesCapturedValue`, and
+  `delegate.structMemberCallUsesReceiver`. The interpreter needs real delegate
+  value construction with context, function pointer identity, and call dispatch.
+- Remaining scalar expression gaps include compound assignment and wrapping
+  stores (`int.assignmentOperators`, `integer.ubyteAddAssignWrapsOnStore`),
+  unary bit complement/logical/negative variants (`int.unaryOperators`),
+  unsigned right shift (`int.unsignedRightShiftZeroFills`), integer power
+  lowering (`int.powerOperatorRaisesRuntimeIntegers`), `ulong` to `real`
+  precision (`floating.ulongToRealCastPreservesRealPrecision`), and complex
+  values with runtime parts (`complex.literalWithRuntimeParts`).
+- Type and vector expression handling is still partial.
+  `typeid.classReferenceUsesDynamicClass` reports unsupported typeid for class
+  references, `typeid.typeNameReturnsIdentifier` returns a name that does not
+  contain the expected identifier, and
+  `vector.scalarCastSplatsToStaticArray` reaches DMD's `vector` expression
+  without an interpreter value for the SSE2 splat/static-array `.array` view.
+
+Expressions module resolution:
+Five serial worker slices fixed the failure groups above. Pointer work added
+interpreter memory-value semantics for pointers to array elements/slices,
+`void*` round trips, pointer arithmetic/dereference, pointer-to-bool casts,
+static-array pointer views, and scalar `new int(seed)` allocation. Class work
+made class field reads/writes use runtime class layout, represented interface
+membership on class values, and resolved member calls through the runtime
+class implementation. Delegate work added delegate values with context,
+function-pointer ids, `.ptr`, `.funcptr`, and delegate-call dispatch for
+captured nested calls and struct-member receivers. Scalar work added compound
+assignment, wrapping stores, unary complement, unsigned right shift, integer
+power, `ulong` to `real`, and imaginary/complex scalar values. Type/vector
+work added dynamic class `typeid`, `typeid(...).name`, qualified type names,
+and the SSE2 vector splat/static-array `.array` view.
+
+The `floating.ulongToRealCastPreservesRealPrecision` matrix is split so the
+existing CTFE `@ShouldFail` remains a CTFE characterization, while
+`Interpreter` joins `SystemLinker` in the compiled-oracle passing block. The
+fixture body is unchanged.
+
+The focused expressions Interpreter run now passes: 49 run, 0 failed.
+
 ### Math Slice Lessons
 
 Math progress: `evaluatesRuntimePowDoubleInputsFailureMessage.0` and

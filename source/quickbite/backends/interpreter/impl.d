@@ -63,6 +63,7 @@ private struct Walker {
     private FuncDeclaration[size_t] functionPointers;
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
+    private RuntimeDelegate[size_t] delegates;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
@@ -843,8 +844,17 @@ private struct Walker {
         if (auto rightShift = expression.isShrExp)
             return runIntegerBinaryExpression(rightShift, ">>");
 
+        if (auto unsignedRightShift = expression.isUshrExp)
+            return runIntegerBinaryExpression(unsignedRightShift, ">>>");
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
+
+        if (auto complement = expression.isComExp)
+            return runIntegerComplementExpression(complement);
+
+        if (auto pow = expression.isPowExp)
+            return runPowExpression(pow);
 
         if (auto cat = expression.isCatExp)
             return runConcatenateExpression(cat);
@@ -869,6 +879,14 @@ private struct Walker {
             return runArrayAppendAssignExpression(assign);
         }
 
+        if (isScalarCompoundAssignExpression(expression)) {
+            auto assign = cast(imported!"dmd.expression".BinExp) expression;
+            if (assign is null)
+                assert(0);
+
+            return runCompoundAssignExpression(assign);
+        }
+
         if (auto bitOr = expression.isOrExp)
             return runIntegerBinaryExpression(bitOr, "|");
 
@@ -888,6 +906,9 @@ private struct Walker {
 
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
+
+        if (auto delegate_ = expression.isDelegateExp)
+            return runDelegateExpression(delegate_);
 
         if (expression.isFuncExp)
             return Value.undisplayable;
@@ -917,8 +938,23 @@ private struct Walker {
         if (auto address = expression.isAddrExp)
             return runAddressExpression(address);
 
+        if (auto delegatePointer = expression.isDelegatePtrExp)
+            return runDelegatePointerExpression(delegatePointer);
+
+        if (auto delegateFunctionPointer = expression.isDelegateFuncptrExp)
+            return runDelegateFunctionPointerExpression(delegateFunctionPointer);
+
+        if (auto dotIdentifier = expression.isDotIdExp)
+            return runDotIdentifierExpression(dotIdentifier);
+
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
+
+        if (auto vector = expression.isVectorExp)
+            return runVectorExpression(vector);
+
+        if (auto vectorArray = expression.isVectorArrayExp)
+            return runExpression(vectorArray.e1);
 
         if (expression.isThisExp !is null) {
             if (!hasThis)
@@ -1159,6 +1195,9 @@ private struct Walker {
                 return functionPointerValue(function_);
         }
 
+        if (auto delegate_ = address.e1.isDelegateExp)
+            return runDelegateExpression(delegate_);
+
         auto index = address.e1.isIndexExp;
         if (index is null)
             throw new Exception(
@@ -1215,12 +1254,60 @@ private struct Walker {
         return Value.functionPointerValue(id);
     }
 
+    private Value newFunctionPointerValue(FuncDeclaration function_) {
+        const id = ++nextFunctionPointerId;
+        functionPointers[id] = function_;
+        return Value.functionPointerValue(id);
+    }
+
+    private Value runDelegateExpression(
+        imported!"dmd.expression".DelegateExp delegate_,
+    ) {
+        if (delegate_.func is null)
+            throw new Exception("Unsupported eval expression: delegate_");
+
+        const functionPointer = newFunctionPointerValue(delegate_.func);
+        const contextPointer = delegateContextPointer(delegate_);
+
+        RuntimeDelegate runtime;
+        runtime.function_ = delegate_.func;
+        runtime.functionPointerId = functionPointer.functionPointerId;
+        runtime.contextPointer = contextPointer;
+        if (isMemberFunction(delegate_.func)) {
+            if (delegate_.e1 is null)
+                throw new Exception("Unsupported eval expression: delegate_");
+
+            runtime.receiver = runExpression(delegate_.e1);
+            runtime.hasReceiver = true;
+        }
+
+        delegates[functionPointer.functionPointerId] = runtime;
+        return functionPointer;
+    }
+
+    private Value delegateContextPointer(
+        imported!"dmd.expression".DelegateExp delegate_,
+    ) {
+        if (delegate_.e1 !is null) {
+            if (auto var = delegate_.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration)
+                    return localPointerValue(variable);
+        }
+
+        return Value.pointerValue(Value.void_);
+    }
+
     private Value runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
         const value = runExpression(pointer.e1);
         if (value.isFunctionPointer)
             return value;
+
+        if (isStaticArrayType(pointer.type))
+            return staticArrayPointerView(value, pointer.type);
 
         if (!value.isLocalPointer)
             return value.pointerTarget;
@@ -1233,6 +1320,23 @@ private struct Walker {
             return *current;
 
         return defaultValue(*variable);
+    }
+
+    private Value staticArrayPointerView(
+        in Value pointer,
+        imported!"dmd.mtype".Type staticArrayType,
+    ) {
+        auto staticArray = staticArrayType.toBasetype.isTypeSArray;
+        const length = cast(size_t) staticArray.dim.toInteger;
+        const target = pointerTargetValue(pointer);
+        if (target.isArray)
+            return target;
+
+        Value[] elements;
+        foreach (index; 0 .. length)
+            elements ~= pointer.pointerIndex(index);
+
+        return Value.arrayValue(elements);
     }
 
     private Value[] arrayElements(in Value value) {
@@ -1388,10 +1492,11 @@ private struct Walker {
                 )
                     return runThisConstructorCall(call.f, arguments);
 
-                if (hasNoAvailableSource(call.f))
-                    throw new Exception(noAvailableSourceMessage(call.f));
+                auto function_ = resolveMemberFunction(call.f, receiver);
+                if (hasNoAvailableSource(function_))
+                    throw new Exception(noAvailableSourceMessage(function_));
                 return runMemberFunction(
-                    call.f,
+                    function_,
                     dot.e1,
                     receiver,
                     arguments,
@@ -1424,6 +1529,9 @@ private struct Walker {
         }
 
         const callee = runExpression(call.e1);
+        if (callee.isFunctionPointer && callee.functionPointerId in delegates)
+            return runDelegateCall(callee, arguments, argumentExpressions);
+
         if (callee.isFunctionPointer) {
             auto function_ = callee.functionPointerId in functionPointers;
             if (function_ is null)
@@ -1432,6 +1540,46 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private Value runDelegateCall(
+        in Value callee,
+        in Value[] arguments,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        auto runtime = callee.functionPointerId in delegates;
+        if (runtime is null)
+            throw new Exception("Unsupported eval call.");
+
+        if (runtime.hasReceiver)
+            return runMemberFunction(
+                runtime.function_,
+                null,
+                delegateReceiver(*runtime),
+                arguments,
+                argumentExpressions,
+            );
+
+        return runFunction(runtime.function_, arguments, argumentExpressions);
+    }
+
+    private Value delegateReceiver(in RuntimeDelegate runtime) {
+        if (runtime.contextPointer.isLocalPointer)
+            return localPointerTarget(runtime.contextPointer);
+
+        return runtime.receiver;
+    }
+
+    private Value runDelegatePointerExpression(
+        imported!"dmd.expression".DelegatePtrExp expression,
+    ) {
+        return delegateProperty(runExpression(expression.e1), "ptr");
+    }
+
+    private Value runDelegateFunctionPointerExpression(
+        imported!"dmd.expression".DelegateFuncptrExp expression,
+    ) {
+        return delegateProperty(runExpression(expression.e1), "funcptr");
     }
 
     private bool isStringForeachApplyCall(FuncDeclaration function_) const {
@@ -1548,6 +1696,49 @@ private struct Walker {
         return values;
     }
 
+    private FuncDeclaration resolveMemberFunction(
+        FuncDeclaration function_,
+        in Value receiver,
+    ) {
+        if (!receiver.isClassObject)
+            return function_;
+
+        auto class_ = dynamicClass(receiver);
+        if (class_ is null)
+            return function_;
+
+        if (auto override_ = overridingFunction(class_, function_))
+            return override_;
+
+        if (auto vtbl = vtblFunction(class_, function_))
+            return vtbl;
+
+        if (auto candidate = matchingMemberFunction(class_, function_))
+            return candidate;
+
+        return function_;
+    }
+
+    private imported!"dmd.dclass".ClassDeclaration dynamicClass(in Value value) {
+        return dynamicClassDeclarationByName(value.classTypeName);
+    }
+
+    private imported!"dmd.dclass".ClassDeclaration dynamicClassDeclarationByName(
+        in string name,
+    ) {
+        auto scope_ = currentFunction is null
+            ? null
+            : currentFunction.toParent.isScopeDsymbol;
+        while (scope_ !is null) {
+            if (auto class_ = classDeclarationByNameInScope(scope_, name))
+                return class_;
+            auto parent = scope_.toParent;
+            scope_ = parent is null ? null : parent.isScopeDsymbol;
+        }
+
+        return null;
+    }
+
     private bool isZeroFormalCall(FuncDeclaration function_) const {
         return function_.parameters is null || function_.parameters.length == 0;
     }
@@ -1557,6 +1748,9 @@ private struct Walker {
     ) {
         if (auto function_ = expression.isFuncExp)
             return function_.fd;
+
+        if (auto delegate_ = expression.isDelegateExp)
+            return delegate_.func;
 
         if (auto address = expression.isAddrExp)
             return functionPointerExpressionFunction(address.e1);
@@ -1814,6 +2008,7 @@ private struct Walker {
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
@@ -1851,6 +2046,7 @@ private struct Walker {
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
@@ -1858,14 +2054,15 @@ private struct Walker {
         child.lastStaticArrayCopySource = lastStaticArrayCopySource;
         child.lastStaticArrayCopySourceValues = lastStaticArrayCopySourceValues.dup;
         child.lastStaticArrayCopyDestructor = lastStaticArrayCopyDestructor;
-        if (auto var = receiverExpression.isVarExp)
-            if (auto variable = var.var.isVarDeclaration)
-                if (auto aliases = variable in structArrayFieldAliases) {
-                    child.thisStructArrayFieldAliases = *aliases;
-                    foreach (_, sourceVariable; aliases.sources)
-                        if (auto value = sourceVariable in locals)
-                            child.locals[sourceVariable] = *value;
-                }
+        if (receiverExpression !is null)
+            if (auto var = receiverExpression.isVarExp)
+                if (auto variable = var.var.isVarDeclaration)
+                    if (auto aliases = variable in structArrayFieldAliases) {
+                        child.thisStructArrayFieldAliases = *aliases;
+                        foreach (_, sourceVariable; aliases.sources)
+                            if (auto value = sourceVariable in locals)
+                                child.locals[sourceVariable] = *value;
+                    }
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -1921,6 +2118,7 @@ private struct Walker {
         nextFunctionPointerId = child.nextFunctionPointerId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
+        delegates = child.delegates;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
@@ -1945,6 +2143,7 @@ private struct Walker {
         nextFunctionPointerId = child.nextFunctionPointerId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
+        delegates = child.delegates;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
@@ -2053,6 +2252,9 @@ private struct Walker {
     private bool isWritableLocation(
         imported!"dmd.expression".Expression expression,
     ) {
+        if (expression is null)
+            return false;
+
         return
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
@@ -2170,21 +2372,162 @@ private struct Walker {
 
         const left = runExpression(equal.e1);
         const right = runExpression(equal.e2);
+        if (left.isNumericScalar && right.isNumericScalar) {
+            if (equal.op == EXP.notEqual)
+                return Value(left.asReal != right.asReal);
+            return Value(left.asReal == right.asReal);
+        }
+
         if (equal.op == EXP.notEqual)
             return Value(left != right);
         return Value(left == right);
+    }
+
+    private bool isScalarCompoundAssignExpression(
+        imported!"dmd.expression".Expression expression,
+    ) const {
+        import dmd.tokens: EXP;
+
+        switch (expression.op) with (EXP) {
+            case minAssign:
+            case mulAssign:
+            case divAssign:
+            case modAssign:
+            case leftShiftAssign:
+            case rightShiftAssign:
+            case unsignedRightShiftAssign:
+            case andAssign:
+            case orAssign:
+            case xorAssign:
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private Value runCompoundAssignExpression(
+        imported!"dmd.expression".BinExp assign,
+    ) {
+        const left = runExpression(assign.e1);
+        const right = runExpression(assign.e2);
+        const value = compoundAssignedValue(assign, left, right);
+        writeLocation(assign.e1, value);
+        return runExpression(assign.e1);
+    }
+
+    private Value compoundAssignedValue(
+        imported!"dmd.expression".BinExp assignment,
+        in Value left,
+        in Value right,
+    ) {
+        import dmd.tokens: EXP;
+
+        switch (assignment.op) {
+            case EXP.addAssign:
+                if (left.isPointer)
+                    return left.pointerOffsetBy(
+                        pointerElementOffset(assignment.e1.type, right.asLong),
+                    );
+                return left + right;
+
+            case EXP.minAssign:
+                return left - right;
+
+            case EXP.mulAssign:
+                return left * right;
+
+            case EXP.divAssign:
+                rejectIntMinMinusOneOverflow(left, right, "/");
+                return left / right;
+
+            case EXP.modAssign:
+                rejectIntMinMinusOneOverflow(left, right, "%");
+                return left % right;
+
+            case EXP.leftShiftAssign:
+                return runIntegerBinaryValue(assignment, left, right, "<<");
+
+            case EXP.rightShiftAssign:
+                return runIntegerBinaryValue(assignment, left, right, ">>");
+
+            case EXP.unsignedRightShiftAssign:
+                return runIntegerBinaryValue(assignment, left, right, ">>>");
+
+            case EXP.andAssign:
+                return runIntegerBinaryValue(assignment, left, right, "&");
+
+            case EXP.orAssign:
+                return runIntegerBinaryValue(assignment, left, right, "|");
+
+            case EXP.xorAssign:
+                return runIntegerBinaryValue(assignment, left, right, "^");
+
+            default:
+                throw new Exception("Unsupported eval compound assignment.");
+        }
+    }
+
+    private Value runPowExpression(imported!"dmd.expression".PowExp pow) {
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
+
+        const base = runExpression(pow.e1);
+        auto exponent = runExpression(pow.e2).asLong;
+        if (exponent < 0)
+            throw new Exception("Unsupported negative integer exponent.");
+
+        Value result = backendCastValue(Value(1), backendCastTarget(pow.type));
+        Value factor = backendCastValue(base, backendCastTarget(pow.type));
+        while (exponent != 0) {
+            if ((exponent & 1) != 0)
+                result = result * factor;
+            exponent >>= 1;
+            if (exponent != 0)
+                factor = factor * factor;
+        }
+
+        return backendCastValue(result, backendCastTarget(pow.type));
+    }
+
+    private Value runIntegerComplementExpression(
+        imported!"dmd.expression".ComExp complement,
+    ) {
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
+
+        return backendCastValue(
+            Value(~runExpression(complement.e1).asLong),
+            backendCastTarget(complement.type),
+        );
     }
 
     private Value runIntegerBinaryExpression(
         imported!"dmd.expression".BinExp expression,
         in string operator,
     ) {
+        return runIntegerBinaryValue(
+            expression,
+            runExpression(expression.e1),
+            runExpression(expression.e2),
+            operator,
+        );
+    }
+
+    private Value runIntegerBinaryValue(
+        imported!"dmd.expression".BinExp expression,
+        in Value leftValue,
+        in Value rightValue,
+        in string operator,
+    ) {
         import quickbite.backends.casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
 
-        const left = runExpression(expression.e1).asLong;
-        const right = runExpression(expression.e2).asLong;
+        const left = leftValue.asLong;
+        const right = rightValue.asLong;
         long result;
         switch (operator) {
             case "<<":
@@ -2194,6 +2537,12 @@ private struct Walker {
             case ">>":
                 result = left >> right;
                 break;
+
+            case ">>>":
+                return backendCastValue(
+                    Value(unsignedShiftRight(leftValue, expression.e1.type, right)),
+                    backendCastTarget(expression.type),
+                );
 
             case "&":
                 result = left & right;
@@ -2214,6 +2563,42 @@ private struct Walker {
         return backendCastValue(Value(result), backendCastTarget(expression.type));
     }
 
+    private ulong unsignedShiftRight(
+        in Value value,
+        imported!"dmd.mtype".Type type,
+        in long shift,
+    ) {
+        import dmd.astenums: TY;
+
+        auto basetype = type is null ? null : type.toBasetype;
+        if (basetype is null)
+            return cast(ulong) value.asLong >> shift;
+
+        switch (basetype.ty) with (TY) {
+            case Tint8:
+            case Tuns8:
+            case Tchar:
+                return cast(ubyte) value.asLong >> shift;
+
+            case Tint16:
+            case Tuns16:
+            case Twchar:
+                return cast(ushort) value.asLong >> shift;
+
+            case Tint32:
+            case Tuns32:
+            case Tdchar:
+                return cast(uint) value.asLong >> shift;
+
+            case Tint64:
+            case Tuns64:
+                return cast(ulong) value.asLong >> shift;
+
+            default:
+                throw new Exception("Unsupported unsigned right shift operand.");
+        }
+    }
+
     private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
@@ -2226,14 +2611,47 @@ private struct Walker {
                 "` is `null` and cannot be dereferenced",
             ));
 
+        if (receiver.isFunctionPointer && receiver.functionPointerId in delegates)
+            return delegateProperty(receiver, declarationName(dot.var));
+
+        if (receiver.isTypeName && declarationName(dot.var) == "name")
+            return Value(receiver.asTypeNameString);
+
         if (dot.var.isVarDeclaration !is null) {
             const target = receiver.isLocalPointer
                 ? localPointerTarget(receiver)
                 : receiver;
             if (target.isClassObject)
-                return target.classFieldAt(classFieldIndex(dot));
+                return target.classFieldAt(classFieldIndex(dot, target));
             return target.structFieldAt(structFieldIndex(dot));
         }
+
+        throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private Value runDotIdentifierExpression(
+        imported!"dmd.expression".DotIdExp dot,
+    ) {
+        const receiver = runExpression(dot.e1);
+        const name = dot.ident is null ? "" : dot.ident.toString;
+        if (name == "re")
+            return receiver.complexRealPart;
+        if (name == "im")
+            return receiver.complexImaginaryPart;
+
+        throw new Exception("Unsupported interpreter property read.");
+    }
+
+    private Value delegateProperty(in Value receiver, in string name) {
+        auto runtime = receiver.functionPointerId in delegates;
+        if (runtime is null)
+            throw new Exception("Unsupported interpreter field read.");
+
+        if (name == "ptr")
+            return runtime.contextPointer;
+
+        if (name == "funcptr")
+            return Value.functionPointerValue(runtime.functionPointerId);
 
         throw new Exception("Unsupported interpreter field read.");
     }
@@ -2242,12 +2660,18 @@ private struct Walker {
         imported!"dmd.expression".TypeidExp typeid_,
     ) {
         import dmd.dtemplate: isExpression;
+        import dmd.mtype: Type;
         import quickbite.backends.interpreter.messages: isClassExpression, receiverName;
         import std.conv: text;
 
         auto expression = isExpression(typeid_.obj);
-        if (expression is null)
-            throw new Exception("Unsupported interpreter typeid expression.");
+        if (expression is null) {
+            auto type = cast(Type) typeid_.obj;
+            if (type is null)
+                throw new Exception("Unsupported interpreter typeid expression.");
+
+            return typeidValue(typeid_, typeInfoName(type));
+        }
 
         const value = runExpression(expression);
         if (value == Value.null_ || (isClassExpression(expression) &&
@@ -2258,7 +2682,38 @@ private struct Walker {
                 "` is `null`",
             ));
 
-        throw new Exception("Unsupported interpreter typeid expression.");
+        if (value.isClassObject)
+            return typeidValue(typeid_, value.classTypeName);
+
+        return typeidValue(typeid_, typeInfoName(expression.type));
+    }
+
+    private Value typeidValue(
+        imported!"dmd.expression".TypeidExp typeid_,
+        in string name,
+    ) {
+        import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+        return isCharacterArrayType(typeid_.type)
+            ? Value(name)
+            : Value.typeName(name);
+    }
+
+    private Value runVectorExpression(
+        imported!"dmd.expression".VectorExp vector,
+    ) {
+        auto staticArray = vector.to.basetype.toBasetype.isTypeSArray;
+        if (staticArray is null)
+            throw new Exception("Unsupported interpreter vector expression.");
+
+        const value = runExpression(vector.e1);
+        const length = cast(size_t) staticArray.dim.toInteger;
+
+        Value[] elements;
+        foreach (_; 0 .. length)
+            elements ~= value;
+
+        return Value.arrayValue(elements);
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
@@ -2280,12 +2735,17 @@ private struct Walker {
         imported!"dmd.expression".Expression target,
         in Value value,
     ) {
+        if (auto cast_ = target.isCastExp) {
+            writeLocation(cast_.e1, value);
+            return;
+        }
+
         if (auto var = target.isVarExp) {
             auto variable = var.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
-            locals[variable] = value;
+            locals[variable] = storageValue(variable.type, value);
             uninitializedLocals.remove(variable);
             sliceAliases.remove(variable);
             structArrayFieldAliases.remove(variable);
@@ -2307,13 +2767,13 @@ private struct Walker {
             if (receiver.isLocalPointer) {
                 const targetValue = localPointerTarget(receiver);
                 writeLocation(dot.e1, targetValue.isClassObject
-                    ? targetValue.withClassField(classFieldIndex(dot), value)
+                    ? targetValue.withClassField(classFieldIndex(dot, targetValue), value)
                     : targetValue.withStructField(structFieldIndex(dot), value));
                 return;
             }
 
             writeLocation(dot.e1, receiver.isClassObject
-                ? receiver.withClassField(classFieldIndex(dot), value)
+                ? receiver.withClassField(classFieldIndex(dot, receiver), value)
                 : receiver.withStructField(structFieldIndex(dot), value));
             return;
         }
@@ -2344,6 +2804,29 @@ private struct Walker {
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    private Value storageValue(
+        imported!"dmd.mtype".Type type,
+        in Value value,
+    ) {
+        import quickbite.backends.casts:
+            backendCastValue = castValue,
+            CastTarget,
+            tryCastTarget;
+        import quickbite.frontend.dmd.types: isCharacterArrayType;
+
+        if (type is null)
+            return value;
+
+        if (value.isTypeName && isCharacterArrayType(type))
+            return Value(value.asTypeNameString);
+
+        CastTarget target;
+        if (!tryCastTarget(type, target))
+            return value;
+
+        return backendCastValue(value, target);
     }
 
     private void writeIndexLocation(
@@ -2397,15 +2880,28 @@ private struct Walker {
     }
 
     private size_t classFieldIndex(imported!"dmd.expression".DotVarExp dot) {
+        return classFieldIndex(dot, Value.void_);
+    }
+
+    private size_t classFieldIndex(
+        imported!"dmd.expression".DotVarExp dot,
+        in Value receiver,
+    ) {
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             throw new Exception("Unsupported interpreter field access.");
 
-        auto classType = receiverClassType(dot.e1);
-        if (classType is null || classType.sym is null)
+        auto class_ = receiver.isClassObject
+            ? dynamicClass(receiver)
+            : null;
+        if (class_ is null) {
+            auto classType = receiverClassType(dot.e1);
+            class_ = classType is null ? null : classType.sym;
+        }
+        if (class_ is null)
             throw new Exception("Unsupported interpreter field access.");
 
-        foreach (index, candidate; classFields(classType.sym))
+        foreach (index, candidate; classFields(class_))
             if (candidate is field)
                 return index;
 
@@ -2747,10 +3243,27 @@ private struct Walker {
         if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
 
+        if (type.ty == TY.Tbool)
+            return boolCastValue(cast_);
+
         if (isPointerType(type))
             return pointerCastValue(cast_);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
+
+        const value = runExpression(cast_.e1);
+        if (value.isPointer)
+            return Value(true);
+        if (value == Value.null_)
+            return Value(false);
+
+        return backendCastValue(value, backendCastTarget(cast_.to));
     }
 
     private Value classCastValue(imported!"dmd.expression".CastExp cast_) {
@@ -2979,7 +3492,7 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported interpreter pointer target.");
 
-            locals[*variable] = value;
+            locals[*variable] = storageValue((*variable).type, value);
             uninitializedLocals.remove(*variable);
             return;
         }
@@ -3198,6 +3711,9 @@ private struct Walker {
         )
             return runNewStructPointerExpression(new_);
 
+        if (isPointerType(new_.type))
+            return runNewScalarPointerExpression(new_);
+
         if (
             !isDynamicArrayType(new_.type) ||
             new_.member !is null ||
@@ -3211,6 +3727,26 @@ private struct Walker {
             lengths ~= cast(size_t) runExpression(argument).asLong;
 
         return newArrayValue(new_.type, lengths);
+    }
+
+    private Value runNewScalarPointerExpression(
+        imported!"dmd.expression".NewExp new_,
+    ) {
+        import std.conv: text;
+
+        if (new_.member !is null)
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        auto targetType = new_.type.toBasetype.nextOf;
+        Value value = defaultValue(targetType);
+        if (new_.arguments !is null) {
+            if (new_.arguments.length != 1)
+                throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+            value = runExpression((*new_.arguments)[0]);
+        }
+
+        return Value.arrayPointerValue([value], ++allocationCount, 0);
     }
 
     // Handles `new T(args)` where T is a struct type, returning a `T*` value.
@@ -3265,7 +3801,8 @@ private struct Walker {
     ) {
         import std.conv: text;
 
-        auto classType = new_.type.toBasetype.isTypeClass;
+        auto allocationType = new_.newtype is null ? new_.type : new_.newtype;
+        auto classType = allocationType.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             throw new Exception(text("Unsupported eval expression: ", new_.op));
 
@@ -3292,6 +3829,7 @@ private struct Walker {
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
+        child.delegates = delegates.dup;
         child.thisValue = object;
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
@@ -3300,6 +3838,7 @@ private struct Walker {
         nextFunctionPointerId = child.nextFunctionPointerId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
+        delegates = child.delegates;
         return child.thisValue;
     }
 
@@ -3485,7 +4024,7 @@ private struct Walker {
             return value;
         }
 
-        auto value = runExpression(initializer);
+        auto value = storageValue(variable.type, runExpression(initializer));
         locals[variable] = value;
         uninitializedLocals.remove(variable);
         sliceAliases.remove(variable);
@@ -3592,7 +4131,7 @@ private struct Walker {
 
             auto current = variable in locals;
             const oldValue = current is null ? defaultValue(variable) : *current;
-            locals[variable] = oldValue + delta;
+            writeLocation(post.e1, oldValue + delta);
             return oldValue;
         }
 
@@ -3615,6 +4154,9 @@ private struct Walker {
     private Value runAddAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
+        if (!runExpression(assign.e1).isLocalPointer)
+            return runCompoundAssignExpression(assign);
+
         const left = runExpression(assign.e1);
         const right = runExpression(assign.e2);
         if (left.isLocalPointer) {
@@ -3666,7 +4208,7 @@ private imported!"quickbite.lang".Value classDefaultValue(
     }
 
     return Value.classValue(
-        className(class_),
+        classInfoName(class_),
         classTypeNames(class_),
         fieldNames,
         fields,
@@ -3690,17 +4232,185 @@ private imported!"dmd.declaration".VarDeclaration[] classFields(
 }
 
 
+private imported!"dmd.func".FuncDeclaration overridingFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (current; classHierarchy(class_))
+        if (current.members !is null)
+            foreach (member; *current.members)
+                if (auto function_ = member.isFuncDeclaration)
+                    if (overridesFunction(function_, base))
+                        return function_;
+
+    return null;
+}
+
+
+private bool overridesFunction(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (override_; function_.foverrides) {
+        if (override_ is base)
+            return true;
+        if (overridesFunction(override_, base))
+            return true;
+    }
+
+    return false;
+}
+
+
+private imported!"dmd.func".FuncDeclaration vtblFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    if (base.vtblIndex < 0)
+        return null;
+
+    const index = cast(size_t) base.vtblIndex;
+    if (index >= class_.vtbl.length)
+        return null;
+
+    return class_.vtbl[index].isFuncDeclaration;
+}
+
+
+private imported!"dmd.func".FuncDeclaration matchingMemberFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (current; classHierarchy(class_))
+        if (current.members !is null)
+            foreach (member; *current.members)
+                if (auto function_ = member.isFuncDeclaration)
+                    if (sameFunctionSignature(function_, base))
+                        return function_;
+
+    return null;
+}
+
+
+private bool sameFunctionSignature(
+    imported!"dmd.func".FuncDeclaration candidate,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    if (functionName(candidate) != functionName(base))
+        return false;
+
+    if (
+        candidate.type !is null &&
+        base.type !is null &&
+        candidate.type.equals(base.type)
+    )
+        return true;
+
+    if (candidate.parameters is null || base.parameters is null)
+        return candidate.parameters is base.parameters;
+
+    if (candidate.parameters.length != base.parameters.length)
+        return false;
+
+    foreach (index, parameter; *candidate.parameters) {
+        auto baseParameter = (*base.parameters)[index];
+        if (parameter.type is null || baseParameter.type is null)
+            return false;
+        if (!parameter.type.equals(baseParameter.type))
+            return false;
+    }
+
+    return true;
+}
+
+
+private imported!"dmd.dclass".ClassDeclaration[] classHierarchy(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    imported!"dmd.dclass".ClassDeclaration[] classes;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        classes ~= current;
+    return classes;
+}
+
+
+private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInScope(
+    imported!"dmd.dsymbol".ScopeDsymbol scope_,
+    in string name,
+) {
+    import dmd.dsymbol: foreachDsymbol;
+
+    imported!"dmd.dclass".ClassDeclaration found;
+    foreachDsymbol(scope_.members, (symbol) {
+        if (auto class_ = symbol.isClassDeclaration) {
+            if (className(class_) == name || classInfoName(class_) == name) {
+                found = class_;
+                return 1;
+            }
+        }
+
+        if (auto nested = symbol.isScopeDsymbol)
+            if (auto class_ = classDeclarationByNameInScope(nested, name)) {
+                found = class_;
+                return 1;
+            }
+
+        return 0;
+    });
+
+    return found;
+}
+
+
 private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
     string[] names;
-    for (auto current = class_; current !is null; current = current.baseClass)
+    foreach (current; classHierarchy(class_)) {
         names ~= className(current);
+        foreach (interface_; current.interfaces)
+            appendInterfaceTypeNames(names, interface_.sym);
+    }
 
     return names;
 }
 
 
+private void appendInterfaceTypeNames(
+    ref string[] names,
+    imported!"dmd.dclass".ClassDeclaration interface_,
+) {
+    if (interface_ is null)
+        return;
+
+    names ~= className(interface_);
+    foreach (base; interface_.interfaces)
+        appendInterfaceTypeNames(names, base.sym);
+}
+
+
 private string className(imported!"dmd.dclass".ClassDeclaration class_) @safe {
     return class_.ident is null ? "" : class_.ident.toString.idup;
+}
+
+
+private string typeInfoName(imported!"dmd.mtype".Type type) {
+    if (type is null)
+        return "";
+
+    auto classType = type.toBasetype.isTypeClass;
+    if (classType !is null && classType.sym !is null)
+        return classInfoName(classType.sym);
+
+    return typeChars(type);
+}
+
+
+// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
+// string owned by the AST node, which we copy with `idup` before returning,
+// so no unsafe pointer escapes.
+private string classInfoName(imported!"dmd.dclass".ClassDeclaration class_) @trusted {
+    import std.string: fromStringz;
+
+    return class_.toPrettyChars.fromStringz.idup;
 }
 
 
@@ -3770,6 +4480,32 @@ private struct StructArrayFieldAliases {
 private struct AssocArraySlotAlias {
     public imported!"dmd.declaration".VarDeclaration source;
     public imported!"quickbite.lang".Value key;
+}
+
+
+private struct RuntimeDelegate {
+    public imported!"dmd.func".FuncDeclaration function_;
+    public size_t functionPointerId;
+    public imported!"quickbite.lang".Value contextPointer;
+    public imported!"quickbite.lang".Value receiver;
+    public bool hasReceiver;
+}
+
+
+private bool isMemberFunction(imported!"dmd.func".FuncDeclaration function_) {
+    if (function_ is null || function_.parent is null)
+        return false;
+
+    return
+        function_.parent.isStructDeclaration !is null ||
+        function_.parent.isClassDeclaration !is null;
+}
+
+
+private string declarationName(
+    imported!"dmd.declaration".Declaration declaration,
+) @safe {
+    return declaration.ident is null ? "" : declaration.ident.toString.idup;
 }
 
 

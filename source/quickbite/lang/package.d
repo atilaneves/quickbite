@@ -35,6 +35,8 @@ public struct Value {
         float,
         double,
         real,
+        ImaginaryScalar,
+        ComplexScalar,
 
         Array,
         AssocArray,
@@ -141,6 +143,14 @@ public struct Value {
         return Value(EnumValue(name));
     }
 
+    public static Value complexValue(in real realPart, in real imaginaryPart) @safe pure {
+        return Value(ComplexScalar(realPart, imaginaryPart));
+    }
+
+    public static Value imaginaryValue(in real value) @safe pure {
+        return Value(ImaginaryScalar(value));
+    }
+
     public static Value undisplayable() @safe pure {
         return Value(Undisplayable.init);
     }
@@ -189,6 +199,14 @@ public struct Value {
         data = Data(value);
     }
 
+    private this(in ComplexScalar value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(in ImaginaryScalar value) @safe pure {
+        data = Data(value);
+    }
+
     private this(in Undisplayable value) @safe pure {
         data = Data(value);
     }
@@ -200,7 +218,9 @@ public struct Value {
         !is(T == struct)
     )
     {
-        data = Data(value);
+        import std.traits: Unqual;
+
+        data = Data(cast(Unqual!T) value);
     }
 
     public this(T)(in T value) @safe pure
@@ -229,6 +249,10 @@ public struct Value {
         return data == other.data;
     }
 
+    public size_t toHash() const @safe pure nothrow {
+        return 0;
+    }
+
     public string asCharArrayString() const @safe pure {
         import std.sumtype: match;
 
@@ -252,6 +276,24 @@ public struct Value {
         return data.match!(
             (const(Array) array) => array.typeAnnotation,
             (_) => "",
+        );
+    }
+
+    public bool isStringDisplayArray() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) {
+                final switch (array.display) with (ArrayDisplay) {
+                    case normal:
+                        return false;
+                    case string:
+                    case wstring:
+                    case dstring:
+                        return true;
+                }
+            },
+            (_) => false,
         );
     }
 
@@ -384,6 +426,14 @@ public struct Value {
                     return decimalText(value);
                 } else static if (is(T == const(real))) {
                     return text(decimalText(value), "L");
+                } else static if (is(T == const(ImaginaryScalar)) ||
+                    is(T == ImaginaryScalar))
+                {
+                    return value.toString;
+                } else static if (is(T == const(ComplexScalar)) ||
+                    is(T == ComplexScalar))
+                {
+                    return value.toString;
                 } else static if (isSomeChar!T) {
                     return text("'", asUtf8Character, "'");
                 } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
@@ -434,8 +484,66 @@ public struct Value {
                     isFloatingPoint!U
                 ) {
                     return Value(cast(T) value);
+                } else static if (is(U == ImaginaryScalar)) {
+                    return Value(cast(T) value.value);
+                } else static if (is(U == ComplexScalar)) {
+                    return Value(cast(T) value.realPart);
                 } else {
                     throw new Exception("Unsupported cast.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
+    public Value castToComplex() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
+
+        return data.match!(
+            (value) {
+                alias U = Unqual!(typeof(value));
+
+                static if (
+                    is(U == bool) ||
+                    isSomeChar!U ||
+                    isIntegral!U ||
+                    isFloatingPoint!U
+                ) {
+                    return Value.complexValue(cast(real) value, 0.0L);
+                } else static if (is(U == ImaginaryScalar)) {
+                    return Value.complexValue(0.0L, value.value);
+                } else static if (is(U == ComplexScalar)) {
+                    return Value(value);
+                } else {
+                    throw new Exception("Unsupported complex cast.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
+    public Value castToImaginary() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
+
+        return data.match!(
+            (value) {
+                alias U = Unqual!(typeof(value));
+
+                static if (
+                    is(U == bool) ||
+                    isSomeChar!U ||
+                    isIntegral!U ||
+                    isFloatingPoint!U
+                ) {
+                    return Value.imaginaryValue(cast(real) value);
+                } else static if (is(U == ImaginaryScalar)) {
+                    return Value(value);
+                } else static if (is(U == ComplexScalar)) {
+                    return Value.imaginaryValue(value.imaginaryPart);
+                } else {
+                    throw new Exception("Unsupported imaginary cast.");
                     return Value.void_;
                 }
             },
@@ -705,6 +813,27 @@ public struct Value {
         );
     }
 
+    public bool isTypeName() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(TypeName) typeName) => true,
+            (_) => false,
+        );
+    }
+
+    public string asTypeNameString() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(TypeName) typeName) => typeName.name,
+            (_) {
+                throw new Exception("Expected type name.");
+                return "";
+            },
+        );
+    }
+
     public bool classHasType(in string typeName) const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -716,6 +845,18 @@ public struct Value {
                 return false;
             },
             (_) => false,
+        );
+    }
+
+    public string classTypeName() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) => object.typeName,
+            (_) {
+                throw new Exception("Expected class object.");
+                return "";
+            },
         );
     }
 
@@ -1099,11 +1240,76 @@ public struct Value {
             (value) {
                 alias T = Unqual!(typeof(value));
 
-                static if (isIntegral!T || is(T == bool) || isFloatingPoint!T) {
+                static if (
+                    isIntegral!T ||
+                    is(T == bool) ||
+                    isFloatingPoint!T
+                ) {
                     return cast(real) value;
+                } else static if (is(T == ImaginaryScalar)) {
+                    return value.value;
+                } else static if (is(T == ComplexScalar)) {
+                    return value.realPart;
                 } else {
                     throw new Exception("Expected numeric scalar.");
                     return real.nan;
+                }
+            },
+        );
+    }
+
+    public bool isNumericScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (
+                    isIntegral!T ||
+                    is(T == bool) ||
+                    isFloatingPoint!T ||
+                    is(T == ImaginaryScalar) ||
+                    is(T == ComplexScalar)
+                ) {
+                    return true;
+                } else {
+                    return false;
+                }
+            },
+        );
+    }
+
+    public Value complexRealPart() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+
+                static if (is(T == const(ComplexScalar))) {
+                    return Value(value.realPart);
+                } else {
+                    throw new Exception("Expected complex scalar.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+
+    public Value complexImaginaryPart() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) {
+                alias T = typeof(value);
+
+                static if (is(T == const(ComplexScalar))) {
+                    return Value(value.imaginaryPart);
+                } else {
+                    throw new Exception("Expected complex scalar.");
+                    return Value.void_;
                 }
             },
         );
@@ -1123,6 +1329,8 @@ public struct Value {
                     return rhs.binaryInteger!op(lhs);
                 } else static if (isFloatingPoint!L) {
                     return rhs.binaryFloatingPoint!op(lhs);
+                } else static if (is(L == ImaginaryScalar) || is(L == ComplexScalar)) {
+                    return rhs.binaryComplex!op(lhs);
                 } else {
                     throw new Exception("Unsupported binary lhs type.");
                     return Value.void_;
@@ -1255,6 +1463,114 @@ public struct Value {
                 }
             },
         );
+    }
+
+    private Value binaryComplex(string op, L)(const L lhs) const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint, isIntegral;
+
+        return data.match!(
+            (rhs) {
+                alias R = Unqual!(typeof(rhs));
+
+                static if (
+                    isIntegral!R ||
+                    isFloatingPoint!R ||
+                    is(R == ImaginaryScalar) ||
+                    is(R == ComplexScalar)
+                ) {
+                    const left = complexScalar(lhs);
+                    const right = complexScalar(rhs);
+                    static if (op == "+")
+                        return Value(left + right);
+                    else static if (op == "-")
+                        return Value(left - right);
+                    else static if (op == "*")
+                        return Value(left * right);
+                    else static if (op == "/")
+                        return Value(left / right);
+                    else {
+                        throw new Exception("Unsupported complex binary operator.");
+                        return Value.void_;
+                    }
+                } else {
+                    throw new Exception("Unsupported binary rhs type.");
+                    return Value.void_;
+                }
+            },
+        );
+    }
+}
+
+
+private ComplexScalar complexScalar(T)(in T value) @safe pure {
+    import std.traits: Unqual;
+
+    alias U = Unqual!T;
+    static if (is(U == ComplexScalar))
+        return value;
+    else static if (is(U == ImaginaryScalar))
+        return ComplexScalar(0.0L, value.value);
+    else
+        return ComplexScalar(cast(real) value, 0.0L);
+}
+
+
+private struct ImaginaryScalar {
+    public real value;
+
+    public this(in real value) @safe pure {
+        this.value = value;
+    }
+
+    public string toString() const @safe pure {
+        import std.conv: text;
+
+        return text(value, "i");
+    }
+}
+
+
+private struct ComplexScalar {
+    public real realPart;
+    public real imaginaryPart;
+
+    public this(in real realPart, in real imaginaryPart) @safe pure {
+        this.realPart = realPart;
+        this.imaginaryPart = imaginaryPart;
+    }
+
+    public ComplexScalar opBinary(string op)(in ComplexScalar rhs) const @safe pure
+        if (op == "+" || op == "-" || op == "*" || op == "/")
+    {
+        static if (op == "+")
+            return ComplexScalar(
+                realPart + rhs.realPart,
+                imaginaryPart + rhs.imaginaryPart,
+            );
+        else static if (op == "-")
+            return ComplexScalar(
+                realPart - rhs.realPart,
+                imaginaryPart - rhs.imaginaryPart,
+            );
+        else static if (op == "*")
+            return ComplexScalar(
+                realPart * rhs.realPart - imaginaryPart * rhs.imaginaryPart,
+                realPart * rhs.imaginaryPart + imaginaryPart * rhs.realPart,
+            );
+        else
+            return ComplexScalar(
+                (realPart * rhs.realPart + imaginaryPart * rhs.imaginaryPart) /
+                    (rhs.realPart * rhs.realPart + rhs.imaginaryPart * rhs.imaginaryPart),
+                (imaginaryPart * rhs.realPart - realPart * rhs.imaginaryPart) /
+                    (rhs.realPart * rhs.realPart + rhs.imaginaryPart * rhs.imaginaryPart),
+            );
+    }
+
+    public string toString() const @safe pure {
+        import std.conv: text;
+
+        return text(realPart, "+", imaginaryPart, "i");
     }
 }
 
