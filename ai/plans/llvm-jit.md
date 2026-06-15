@@ -248,30 +248,66 @@ green solo (12 tests, 0 failed), `./bin/ut @SystemLinker` still green, and
 `./bin/ut --random` plus both historical seeds (`2828407573`, `3516581215`)
 all green.
 
-### Step 3 — measure (GC registration already resolved in Step 1)
+### Step 3 — measure (GC registration already resolved in Step 1) ✅ DONE
 
-Time `LLVMJit` vs `SystemLinker` on the same fixtures (reuse the bench
-harness / `ci.sh` bench row). Report median per-test latency; the POC is
-justified only if it beats SystemLinker.
+**POC success criterion MET: `LLVMJit` per-test latency is ~5–7× below
+`SystemLinker`'s.** Killing the ~30 ms `dmd -shared` link spawn is exactly
+the win the plan predicted.
 
-The GC-registration question this step originally deferred is settled in
-Step 1: allocation from JIT'd code works once weak-symbol interposition is
-replicated, and `_d_dso_registry`-style registration is neither needed (the
-host GC is functional and the fixtures root nothing in JIT data) nor
-feasible via the LLVM 22 C API. The only remaining GC work is a confirmatory
-**GC-stress probe** as a promoted matrix test (allocate, collect, read back),
-beyond the throwaway probe already run by hand in Step 1. Adopt it on
-evidence if a future allocating fixture in the matrix misbehaves; otherwise
-no further registration mechanism is warranted.
+**Method.** A throwaway probe (`tests/ut/zzz_bench_probe.d`, not committed)
+drove the real benchmark harness (`benchmarks.harness.measure`: 2 warmup +
+21 timed iterations, GC disabled during the timed loop, single-sample
+median) over the four single-unittest fixtures below, calling each backend's
+`runTests` on the *same* parsed `Module` so only the post-parse load path is
+timed. One fixture per measurement ⇒ median per-fixture == median per-test.
+Each backend confirmed PASS before timing. Two full repeats; numbers stable.
+
+Fixtures: (0) passing `twice()` int assert (the Step 1 passing fixture);
+(1) `cast(float)` precision (`rt/expressions.d`); (2) delegate `funcptr`
+(`rt/expressions.d`); (3) a GC-allocating fixture (`int[] ~= …` 1000×, read
+back) — the deferred GC probe.
+
+Median per-test latency (two runs; governor `powersave`, LLVM 22):
+
+| fixture | SystemLinker median | LLVMJit median | speedup |
+|---------|---------------------|----------------|---------|
+| 0 twice() assert     | 35.1 / 34.9 ms | 5.0 / 4.8 ms | ~7.0× |
+| 1 float cast         | 35.6 / 34.0 ms | 5.8 / 6.2 ms | ~5.8× |
+| 2 delegate funcptr   | 33.5 / 50.7 ms | 7.0 / 7.2 ms | ~5–7× |
+| 3 GC-allocating      | 38.2 / 45.5 ms | 7.5 / 8.6 ms | ~5.1× |
+
+SystemLinker sits at ~33–51 ms/test (the documented ~30 ms link spawn plus
+codegen); LLVMJit at ~5–9 ms/test. The win holds across all four fixtures.
+
+**GC-stress probe: no misbehavior observed.** The GC-allocating fixture (3)
+passed on *both* backends and was timed cleanly — no GC-range/DSO-registration
+defect surfaced, consistent with Step 1's finding that allocation from JIT'd
+code works once weak-symbol interposition is replicated. Per the
+adopt-on-evidence rule, **no speculative GC-stress matrix test was added.**
+
+**`ci.sh` result.** Green except for one pre-existing, unrelated REPL test
+failure: `tests/run_repl.py::test_interactive_error_label_is_red` expects the
+old `<repl>(1)` label, but the REPL now emits `<repl cell 1>(1)`. Master fixed
+the expectation in commit `c9f5b9f3` ("Update REPL CLI diagnostic
+expectation"), which is **not on this branch** (it post-dates the merge-base
+`45f0ee48`). It is a stale test expectation, not a Step 3 regression; left
+unchanged because fixing it is out of scope and changing a test needs
+approval. All other ci.sh steps pass: `bin/ut` (1597 tests, 0 failed, 4/4
+expected failures), `tests/example.d`, `bin/bench`, `bin/qb`, and the other
+14 REPL tests.
 
 ## Build wiring
 
-Add to the `unittest` config in `dub.sdl` (and `qb` only if the REPL ever
-selects this backend): `libs "LLVM"`. If the bare `libLLVM.so` symlink is
-absent (only the versioned runtime is installed), link the soname
-explicitly (`lflags "-L-l:libLLVM.so.22.1"` or a full path) — resolve at
-implementation. Regenerate with `dub run reggae --compiler=ldc -- -b
-ninja`.
+Add `libs "LLVM"` to the `unittest` config in `dub.sdl`. Step 3 found it is
+also required for the `benchmark` and `qb` configs: both link the `native`
+package via `source/`, and that package re-exports `LLVMJit` unconditionally,
+so the ORC symbols are referenced even though the bench and REPL never select
+the backend. Without it, `ci.sh`'s `bin/bench.sh` and `ninja bin/qb` steps
+fail to link (undefined `LLVMOrc*` symbols). The bare `libLLVM.so` symlink is
+present (→ `libLLVM.so.22.1`), so plain `-lLLVM` resolves it; if only the
+versioned runtime were installed, link the soname explicitly
+(`lflags "-L-l:libLLVM.so.22.1"` or a full path). Regenerate with `dub run
+reggae --compiler=ldc -- -b ninja`.
 
 ## Verification
 
