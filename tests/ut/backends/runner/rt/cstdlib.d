@@ -18,7 +18,7 @@ private void shouldFailNoSource
 
 
 // CTFE should stay pure: no host libc calls.
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("malloc.noSource." ~ backend.stringof)
     unittest {
         enum source = q{

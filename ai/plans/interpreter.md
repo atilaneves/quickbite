@@ -270,6 +270,34 @@ covered by the same unsupported external-source diagnostic as CTFE; the
 interpreter intentionally does not execute `malloc` or model C heap memory for
 this slice.
 
+Runtime cstdlib promotion probe:
+All remaining CTFE-only no-source diagnostics in
+`tests/ut/backends/runner/rt/cstdlib.d` were promoted to also run on
+`Interpreter` in branch `interpreter-rt-cstdlib-module`.
+
+Running only the cstdlib Interpreter tests left exactly one failing promoted
+test:
+
+- `strtol.noSource.Interpreter`: the interpreter reports
+  `Unsupported eval expression: symbolOffset` instead of
+  `` `strtol` cannot be interpreted at compile time, because it has no
+  available source code``.
+
+Failure cause: the fixture evaluates `"123xyz".ptr` and `&endptr` as
+arguments before the external `strtol` call. Unlike `malloc`, `free`,
+`atoi`, and `div`, this reaches DMD's `symbolOffset` expression shape while
+building the call arguments, so the interpreter fails on unsupported pointer
+argument construction before it can report the no-available-source diagnostic
+for the extern(C) callee. The desired slice is not host libc or pointer
+execution; it is only to preserve the existing unsupported-external-call
+diagnostic precedence for this promoted runtime fixture.
+
+Resolution: direct non-member calls whose callee has no available source now
+report that diagnostic before evaluating generic call arguments, after the
+interpreter's builtin and runtime hook dispatch has had a chance to handle
+known supported calls. The focused cstdlib Interpreter-only module run now
+passes: 12 run, 0 failed.
+
 Integrals progress:
 All remaining CTFE-only backend-matrix tests in
 `tests/ut/backends/runner/ct/integrals.d` were promoted to also run on
