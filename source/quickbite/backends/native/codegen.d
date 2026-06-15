@@ -491,14 +491,13 @@ private bool typeIsForeign(
 // unrelated in-process code (std.array.Appender!(int[]) via a repl test)
 // lands in no members array, so its synthesized members
 // (__xtoHash/__xopEquals/__init) and TypeInfos have no definition in any
-// link. needsCodegen finalizes instance state (tnext/minst); safe here
-// because this only runs in the fork child.
+// link — that case is caught by the memberInstances check below. This only
+// runs in the fork child, so nothing needs restoring.
 private bool symbolIsForeign(
     imported!"dmd.dsymbol".Dsymbol symbol,
     in LinkContext context,
 ) {
     import dmd.dsymbol: Dsymbol;
-    import dmd.templatesem: needsCodegen;
 
     for (Dsymbol parent = symbol; parent !is null; parent = parent.parent)
         if (auto instance = parent.isTemplateInstance) {
@@ -506,8 +505,15 @@ private bool symbolIsForeign(
                 return true;
             if (instance.inst is null)
                 return true; // dummy/errored: never emitted
-            return instance.inst !in context.memberInstances
-                || !needsCodegen(instance.inst);
+            // A member instance of a codegen'd module is emitted from that
+            // members array even when needsCodegen is false: a sibling
+            // instance that references it (e.g. std.random.uniform!(...)
+            // referencing the MersenneTwisterEngine!(...) it is parameterized
+            // on) pulls its symbols into the same object. So membership in a
+            // codegen'd module, not needsCodegen, settles foreignness — using
+            // needsCodegen here drops e.g. _d_newitemT!(MersenneTwisterEngine!
+            // (...)) whose argument is emitted but reports needsCodegen=false.
+            return (instance.inst in context.memberInstances) is null;
         }
 
     return moduleIsForeign(symbol.getModule, context);

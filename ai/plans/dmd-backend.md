@@ -450,13 +450,25 @@ simple arg walk missed, each found by a real link failure:
   evaluation) lands in **no members array**, so nothing ever emits its
   synthesized members — yet TypeInfos and instances referencing it sit
   on the rod and would inject dangling references into every later
-  link. A referenced instance is keepable only if it is a member of an
-  in-link module (collect the member-instance set pre-prune) **and**
-  `needsCodegen()` (templatesem.d:2778, importable; finalizes
-  tnext/minst — fine, child-only) is true. This surfaced only under
+  link. A referenced instance is keepable iff it is a member of an
+  in-link module (collect the member-instance set pre-prune): the
+  speculative `Appender!(int[])` lands in **no** members array, so this
+  single membership test already excludes it. This surfaced only under
   full-suite `--random` (~200-320 failures, all one cause), never in
   the SystemLinker-only matrix: the polluting instantiations come from
   *other* tests sharing the process.
+  **Correction (2026-06-15):** this check originally also required
+  `needsCodegen(inst)` to be true, but that over-prunes. A member
+  instance is emitted from its members array even when `needsCodegen` is
+  false — e.g. `core.lifetime._d_newitemT!(MersenneTwisterEngine!(...))`,
+  whose engine-struct argument is reference-pulled into the object by the
+  sibling `uniform!(...)` instances that use it, so it is defined though
+  `needsCodegen` on it is false. The old `needsCodegen` clause marked
+  such an argument foreign and pruned the `_d_newitemT` instance, failing
+  `--dub cerealed -b system-linker` at load. Membership alone is the
+  criterion; full `--random` stays green without `needsCodegen` (the
+  membership test, not `needsCodegen`, is what excluded the speculative
+  case all along).
 
 User-import modules must be **promoted to root** (`importedFrom = the
 module itself`, like dmd -i's checkCompiledImport) or codegen silently
@@ -527,6 +539,39 @@ TypeInfos and druntime vtables. Gates, each one earned:
 This is lesson 10's third candidate source surviving fork; the spike
 missed it because its fixtures used distinct types, so every TypeInfo
 was created (and owned) by the snippet that used it.
+
+### 16. Cross-fixture instance homing: per-fixture dub links are incomplete (2026-06-15)
+
+A template instance is homed on the members of the **first root module**
+that instantiates it (its `minst`); a root module's `importedFrom` is
+itself, so the instance does **not** funnel to the rod (contrast lesson
+8: that funneling is what catches instances from *non-root* imports).
+The bench parses every fixture up front and shares one process, so an
+instance like `cerealed.decerealiser.Decerealiser.value!int` (a
+method-template instance nested in the `Decerealiser` struct) is claimed
+by whichever fixture used it first. A *later* fixture compiled as its own
+link references the same cached instance, finds it homed on a module not
+in that link, and emits nothing — undefined symbol under `-z defs`.
+
+This does **not** affect `--dub <pkg> -b system-linker`: a dub package is
+timed as one **grouped** compile (all fixture modules in one link, every
+instance in-link), and the single-backend path sets `skipCheck`. It
+**does** affect the per-fixture correctness path (`checkRunnerResults`,
+used by any multi-backend cross-check), where each fixture is its own
+link.
+
+Not yet fixed. A broad static fix (re-home every foreign-module instance
+onto the rod in the child, like `adoptTypeInfos`) over-prunes the wrong
+way: it adopts instances claimed by *unrelated* fixtures, and the
+arg-based foreignness check (lesson 13) cannot see that an
+innocent-argument instance's **body** references another fixture's type
+(`tests.structs.CustomStruct`, `tests.range.MyInputRange.empty`) — those
+go undefined. The robust shape is reference-driven: adopt only the
+instances the link actually references, which the linker already computes
+(emit, link, parse undefined symbols, adopt the matching foreign
+instances, relink to fixpoint — lesson 10's discovery mechanism, applied
+to instance homing rather than ELF-symbol ownership). See
+`ai/plans/dub-deps.md` "Open: per-fixture completeness".
 
 ## Parallel sessions
 
