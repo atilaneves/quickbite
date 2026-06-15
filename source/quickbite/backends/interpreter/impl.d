@@ -27,6 +27,22 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return isArrayType(type);
 }
 
+private enum LoopControl {
+    none,
+    break_,
+    continue_,
+}
+
+private class InterpretedException: Exception {
+    public this(string message) {
+        super(message);
+    }
+}
+
+private string statementLabel(imported!"dmd.identifier".Identifier identifier) {
+    return identifier is null ? null : identifier.toString.idup;
+}
+
 private struct Walker {
     import dmd.declaration: VarDeclaration;
     import dmd.expression: DivExp, ModExp;
@@ -39,6 +55,9 @@ private struct Walker {
     private VarDeclaration[size_t] localPointers;
     private size_t[VarDeclaration] localPointerIds;
     private size_t nextLocalPointerId;
+    private FuncDeclaration[size_t] functionPointers;
+    private size_t[FuncDeclaration] functionPointerIds;
+    private size_t nextFunctionPointerId;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
@@ -58,17 +77,30 @@ private struct Walker {
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
     private Statement pendingGotoTarget;
+    private Statement pendingSwitchTarget;
+    private LoopControl loopControl;
+    private string loopControlLabel;
 
     private void runStatement(imported!"dmd.statement".Statement statement) {
-        if (statement is null || returned)
+        if (statement is null)
             return;
+
+        if (returned || loopControl != LoopControl.none)
+            return;
+
+        if (statement is pendingSwitchTarget)
+            pendingSwitchTarget = null;
 
         if (auto compound = statement.isCompoundDeclarationStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements) {
+                    if (skipUntilSwitchTarget(child))
+                        continue;
                     if (skipUntilGotoTarget(child))
                         continue;
                     runStatement(child);
+                    if (returned || loopControl != LoopControl.none)
+                        break;
                 }
             return;
         }
@@ -76,9 +108,13 @@ private struct Walker {
         if (auto compound = statement.isCompoundStatement) {
             if (compound.statements !is null)
                 foreach (child; *compound.statements) {
+                    if (skipUntilSwitchTarget(child))
+                        continue;
                     if (skipUntilGotoTarget(child))
                         continue;
                     runStatement(child);
+                    if (returned || loopControl != LoopControl.none)
+                        break;
                 }
             return;
         }
@@ -90,21 +126,33 @@ private struct Walker {
 
         if (auto tryFinally = statement.isTryFinallyStatement) {
             runStatement(tryFinally._body);
+            const savedLoopControl = loopControl;
+            const savedLoopControlLabel = loopControlLabel;
+            loopControl = LoopControl.none;
+            loopControlLabel = null;
             runStatement(tryFinally.finalbody);
+            if (loopControl == LoopControl.none) {
+                loopControl = savedLoopControl;
+                loopControlLabel = savedLoopControlLabel;
+            }
             return;
         }
 
         if (auto tryCatch = statement.isTryCatchStatement) {
-            runStatement(tryCatch._body);
+            runTryCatchStatement(tryCatch);
             return;
         }
 
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             if (unrolled.statements !is null)
                 foreach (child; *unrolled.statements) {
+                    if (skipUntilSwitchTarget(child))
+                        continue;
                     if (skipUntilGotoTarget(child))
                         continue;
                     runStatement(child);
+                    if (returned || loopControl != LoopControl.none)
+                        break;
                 }
             return;
         }
@@ -121,7 +169,7 @@ private struct Walker {
         }
 
         if (auto label = statement.isLabelStatement) {
-            runStatement(label.statement);
+            runLabeledStatement(label);
             return;
         }
 
@@ -129,6 +177,8 @@ private struct Walker {
             return;
 
         if (auto expression = statement.isExpStatement) {
+            if (expression.exp is null)
+                return;
             result = runExpression(expression.exp);
             return;
         }
@@ -147,30 +197,52 @@ private struct Walker {
         }
 
         if (auto for_ = statement.isForStatement) {
-            import quickbite.backends.interpreter.messages: isTruthy;
-
-            runStatement(for_._init);
-            while (
-                !returned &&
-                (for_.condition is null || isTruthy(runExpression(for_.condition)))
-            ) {
-                runStatement(for_._body);
-                if (returned)
-                    break;
-                if (for_.increment !is null)
-                    runExpression(for_.increment);
-            }
+            runForStatement(for_);
             return;
         }
 
         if (auto do_ = statement.isDoStatement) {
-            import quickbite.backends.interpreter.messages: isTruthy;
+            runDoStatement(do_);
+            return;
+        }
 
-            do {
-                runStatement(do_._body);
-                if (returned)
-                    break;
-            } while (isTruthy(runExpression(do_.condition)));
+        if (auto switch_ = statement.isSwitchStatement) {
+            runSwitchStatement(switch_);
+            return;
+        }
+
+        if (auto case_ = statement.isCaseStatement) {
+            if (case_.statement is statement)
+                throw new Exception("Unsupported eval statement: Case");
+            runStatement(case_.statement);
+            return;
+        }
+
+        if (auto default_ = statement.isDefaultStatement) {
+            if (default_.statement is statement)
+                throw new Exception("Unsupported eval statement: Default");
+            runStatement(default_.statement);
+            return;
+        }
+
+        if (auto caseRange = statement.isCaseRangeStatement) {
+            if (caseRange.statement is statement)
+                throw new Exception("Unsupported eval statement: CaseRange");
+            runStatement(caseRange.statement);
+            return;
+        }
+
+        if (auto gotoCase = statement.isGotoCaseStatement) {
+            if (gotoCase.cs is null)
+                throw new Exception("Unsupported eval statement: GotoCase");
+            pendingSwitchTarget = gotoCase.cs;
+            return;
+        }
+
+        if (auto gotoDefault = statement.isGotoDefaultStatement) {
+            if (gotoDefault.sw is null || gotoDefault.sw.sdefault is null)
+                throw new Exception("Unsupported eval statement: GotoDefault");
+            pendingSwitchTarget = gotoDefault.sw.sdefault;
             return;
         }
 
@@ -184,8 +256,15 @@ private struct Walker {
             return;
         }
 
-        if (auto for_ = statement.isForStatement) {
-            runForStatement(for_);
+        if (auto break_ = statement.isBreakStatement) {
+            loopControl = LoopControl.break_;
+            loopControlLabel = statementLabel(break_.ident);
+            return;
+        }
+
+        if (auto continue_ = statement.isContinueStatement) {
+            loopControl = LoopControl.continue_;
+            loopControlLabel = statementLabel(continue_.ident);
             return;
         }
 
@@ -197,11 +276,119 @@ private struct Walker {
         if (auto throw_ = statement.isThrowStatement) {
             import quickbite.backends.interpreter.messages: thrownExceptionMessage;
 
-            throw new Exception(thrownExceptionMessage(throw_.exp));
+            throw new InterpretedException(thrownExceptionMessage(throw_.exp));
         }
 
         import std.conv: text;
         throw new Exception(text("Unsupported eval statement: ", statement.stmt));
+    }
+
+    pragma(inline, false)
+    private void runTryCatchStatement(
+        imported!"dmd.statement".TryCatchStatement tryCatch,
+    ) {
+        try {
+            runStatement(tryCatch._body);
+        } catch (Exception exception) {
+            if (!isCatchableInterpretedException(exception))
+                throw exception;
+
+            auto catch_ = firstCatch(tryCatch);
+            if (catch_ is null)
+                throw exception;
+
+            runStatement(catch_.handler);
+        }
+    }
+
+    private imported!"dmd.statement".Catch firstCatch(
+        imported!"dmd.statement".TryCatchStatement tryCatch,
+    ) {
+        if (tryCatch.catches is null || tryCatch.catches.length == 0)
+            return null;
+
+        return (*tryCatch.catches)[0];
+    }
+
+    private bool isCatchableInterpretedException(Exception exception) const {
+        import std.algorithm: startsWith;
+
+        if (cast(InterpretedException) exception !is null)
+            return true;
+
+        return
+            exception.msg != "unittest failure" &&
+            exception.msg != "Unittest assertion failed." &&
+            !exception.msg.startsWith("`assert(") &&
+            !exception.msg.startsWith("Unsupported ") &&
+            !exception.msg.startsWith("No function body to execute: ") &&
+            !exception.msg.startsWith("cannot read uninitialized variable ") &&
+            !exception.msg.startsWith("array index ") &&
+            !exception.msg.startsWith("index ");
+    }
+
+    private bool skipUntilSwitchTarget(Statement statement) {
+        if (pendingSwitchTarget is null)
+            return false;
+
+        if (statement is pendingSwitchTarget) {
+            pendingSwitchTarget = null;
+            return false;
+        }
+
+        if (statementContainsSwitchTarget(statement))
+            return false;
+
+        return true;
+    }
+
+    private bool statementContainsSwitchTarget(Statement statement) {
+        if (pendingSwitchTarget is null || statement is null)
+            return false;
+
+        if (statement is pendingSwitchTarget)
+            return true;
+
+        if (auto scope_ = statement.isScopeStatement)
+            return statementContainsSwitchTarget(scope_.statement);
+
+        if (auto label = statement.isLabelStatement)
+            return statementContainsSwitchTarget(label.statement);
+
+        if (auto case_ = statement.isCaseStatement)
+            return statementContainsSwitchTarget(case_.statement);
+
+        if (auto default_ = statement.isDefaultStatement)
+            return statementContainsSwitchTarget(default_.statement);
+
+        if (auto caseRange = statement.isCaseRangeStatement)
+            return statementContainsSwitchTarget(caseRange.statement);
+
+        if (auto compound = statement.isCompoundDeclarationStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    if (statementContainsSwitchTarget(child))
+                        return true;
+            return false;
+        }
+
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements !is null)
+                foreach (child; *compound.statements)
+                    if (statementContainsSwitchTarget(child))
+                        return true;
+            return false;
+        }
+
+        if (auto unrolled = statement.isUnrolledLoopStatement) {
+            if (unrolled.statements !is null)
+                foreach (child; *unrolled.statements)
+                    if (statementContainsSwitchTarget(child))
+                        return true;
+            return false;
+        }
+
+        return false;
     }
 
     private bool skipUntilGotoTarget(Statement statement) {
@@ -224,6 +411,24 @@ private struct Walker {
         }
 
         return true;
+    }
+
+    private void runLabeledStatement(imported!"dmd.statement".LabelStatement label) {
+        const name = statementLabel(label.ident);
+
+        if (auto for_ = label.statement.isForStatement)
+            runForStatement(for_, name);
+        else if (auto do_ = label.statement.isDoStatement)
+            runDoStatement(do_, name);
+        else
+            runStatement(label.statement);
+
+        if (
+            loopControl == LoopControl.break_ &&
+            loopControlLabel !is null &&
+            loopControlLabel == name
+        )
+            clearLoopControl;
     }
 
     // For `with(expr)` where expr is a struct lvalue, DMD semantic creates a
@@ -253,18 +458,125 @@ private struct Walker {
         }
     }
 
-    // DMD lowers `foreach` over arrays to a `for` loop; `break` and
-    // `continue` are not supported
-    private void runForStatement(imported!"dmd.statement".ForStatement for_) {
+    private void runSwitchStatement(
+        imported!"dmd.statement".SwitchStatement switch_,
+    ) {
+        auto target = switchTarget(switch_);
+        if (target is null)
+            return;
+
+        auto savedPendingSwitchTarget = pendingSwitchTarget;
+        pendingSwitchTarget = target;
+
+        while (
+            !returned &&
+            loopControl == LoopControl.none &&
+            pendingSwitchTarget !is null
+        ) {
+            auto targetBeforeRun = pendingSwitchTarget;
+            runStatement(switch_._body);
+            if (pendingSwitchTarget is targetBeforeRun)
+                throw new Exception("Unsupported eval statement: Switch");
+        }
+
+        if (loopControl == LoopControl.break_ && loopControlLabel is null)
+            clearLoopControl;
+
+        pendingSwitchTarget = savedPendingSwitchTarget;
+    }
+
+    private Statement switchTarget(
+        imported!"dmd.statement".SwitchStatement switch_,
+    ) {
+        if (switch_.cases !is null) {
+            const condition = runExpression(switch_.condition);
+            foreach (case_; *switch_.cases) {
+                if (case_ is null)
+                    continue;
+                if (caseMatches(case_, condition))
+                    return case_;
+            }
+        }
+
+        return switch_.sdefault;
+    }
+
+    private bool caseMatches(
+        imported!"dmd.statement".CaseStatement case_,
+        in Value condition,
+    ) {
+        if (case_.exp !is null && runExpression(case_.exp) == condition)
+            return true;
+
+        auto range = case_.statement is null
+            ? null
+            : case_.statement.isCaseRangeStatement;
+        if (range is null)
+            return false;
+
+        const value = condition.asLong;
+        return
+            value >= runExpression(range.first).asLong &&
+            value <= runExpression(range.last).asLong;
+    }
+
+    private void runForStatement(
+        imported!"dmd.statement".ForStatement for_,
+        in string label = null,
+    ) {
         import quickbite.backends.interpreter.messages: isTruthy;
 
         runStatement(for_._init);
 
-        while (for_.condition is null || isTruthy(runExpression(for_.condition))) {
+        while (
+            !returned &&
+            loopControl == LoopControl.none &&
+            (for_.condition is null || isTruthy(runExpression(for_.condition)))
+        ) {
             runStatement(for_._body);
+            if (returned)
+                break;
+            if (loopControl == LoopControl.break_) {
+                if (loopControlLabel is null || loopControlLabel == label)
+                    clearLoopControl;
+                break;
+            }
+            if (loopControl == LoopControl.continue_) {
+                if (loopControlLabel !is null && loopControlLabel != label)
+                    break;
+                clearLoopControl;
+            }
             if (for_.increment !is null)
                 runExpression(for_.increment);
         }
+    }
+
+    private void runDoStatement(
+        imported!"dmd.statement".DoStatement do_,
+        in string label = null,
+    ) {
+        import quickbite.backends.interpreter.messages: isTruthy;
+
+        do {
+            runStatement(do_._body);
+            if (returned)
+                break;
+            if (loopControl == LoopControl.break_) {
+                if (loopControlLabel is null || loopControlLabel == label)
+                    clearLoopControl;
+                break;
+            }
+            if (loopControl == LoopControl.continue_) {
+                if (loopControlLabel !is null && loopControlLabel != label)
+                    break;
+                clearLoopControl;
+            }
+        } while (isTruthy(runExpression(do_.condition)));
+    }
+
+    private void clearLoopControl() {
+        loopControl = LoopControl.none;
+        loopControlLabel = null;
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
@@ -372,6 +684,12 @@ private struct Walker {
         if (auto mod = expression.isModExp)
             return runModExpression(mod);
 
+        if (auto leftShift = expression.isShlExp)
+            return runIntegerBinaryExpression(leftShift, "<<");
+
+        if (auto rightShift = expression.isShrExp)
+            return runIntegerBinaryExpression(rightShift, ">>");
+
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
@@ -399,7 +717,13 @@ private struct Walker {
         }
 
         if (auto bitOr = expression.isOrExp)
-            return runBitwiseOrExpression(bitOr);
+            return runIntegerBinaryExpression(bitOr, "|");
+
+        if (auto bitAnd = expression.isAndExp)
+            return runIntegerBinaryExpression(bitAnd, "&");
+
+        if (auto bitXor = expression.isXorExp)
+            return runIntegerBinaryExpression(bitXor, "^");
 
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1);
@@ -430,6 +754,8 @@ private struct Walker {
         if (auto symbol = expression.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
                 return localPointerValue(variable);
+            if (auto function_ = symbol.var.isFuncDeclaration)
+                return functionPointerValue(function_);
         }
 
         if (auto pointer = expression.isPtrExp)
@@ -652,6 +978,8 @@ private struct Walker {
         if (auto symbol = address.e1.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
                 return localPointerValue(variable);
+            if (auto function_ = symbol.var.isFuncDeclaration)
+                return functionPointerValue(function_);
         }
 
         auto index = address.e1.isIndexExp;
@@ -700,10 +1028,23 @@ private struct Walker {
         return Value.localPointerValue(id);
     }
 
+    private Value functionPointerValue(FuncDeclaration function_) {
+        if (auto id = function_ in functionPointerIds)
+            return Value.functionPointerValue(*id);
+
+        const id = ++nextFunctionPointerId;
+        functionPointerIds[function_] = id;
+        functionPointers[id] = function_;
+        return Value.functionPointerValue(id);
+    }
+
     private Value runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
         const value = runExpression(pointer.e1);
+        if (value.isFunctionPointer)
+            return value;
+
         if (!value.isLocalPointer)
             return value.pointerTarget;
 
@@ -835,6 +1176,15 @@ private struct Walker {
                 throw new Exception(noAvailableSourceMessage(call.f));
         }
 
+        auto stringForeachApply = call.f is null
+            ? callExpressionFunction(call.e1)
+            : call.f;
+        if (
+            stringForeachApply !is null &&
+            isStringForeachApplyCall(stringForeachApply)
+        )
+            return runStringForeachApplyCall(call, stringForeachApply);
+
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
@@ -890,7 +1240,129 @@ private struct Walker {
             return runFunction(function_, arguments, argumentExpressions);
         }
 
+        const callee = runExpression(call.e1);
+        if (callee.isFunctionPointer) {
+            auto function_ = callee.functionPointerId in functionPointers;
+            if (function_ is null)
+                throw new Exception("Unsupported eval call.");
+            return runFunction(*function_, arguments, argumentExpressions);
+        }
+
         throw new Exception("Unsupported eval call.");
+    }
+
+    private bool isStringForeachApplyCall(FuncDeclaration function_) const {
+        import std.algorithm: canFind;
+
+        const name = functionName(function_);
+        return
+            name.canFind("_aApplycd1") ||
+            name.canFind("_aApplywd1") ||
+            name.canFind("_aApplydc1") ||
+            name.canFind("_aApplyRwd1");
+    }
+
+    private FuncDeclaration callExpressionFunction(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto var = expression.isVarExp)
+            return var.var.isFuncDeclaration;
+
+        return functionPointerExpressionFunction(expression);
+    }
+
+    private Value runStringForeachApplyCall(
+        imported!"dmd.expression".CallExp call,
+        FuncDeclaration function_,
+    ) {
+        if (call.arguments is null || call.arguments.length != 2)
+            throw new Exception("Unsupported eval call.");
+
+        auto body = functionPointerExpressionFunction((*call.arguments)[1]);
+        if (body is null)
+            throw new Exception("Unsupported eval call.");
+
+        foreach (value; stringForeachApplyElements(
+            functionName(function_),
+            runExpression((*call.arguments)[0]),
+        )) {
+            const result = runFunction(body, [value], [null]);
+            if (result != Value.void_ && result.asLong != 0)
+                return result;
+        }
+
+        return Value(0);
+    }
+
+    private Value[] stringForeachApplyElements(
+        in string helper,
+        in Value source,
+    ) {
+        import std.algorithm: canFind, reverse;
+
+        if (helper.canFind("_aApplycd1"))
+            return decodedUtf8Dchars(source);
+
+        if (helper.canFind("_aApplywd1"))
+            return decodedUtf16Dchars(source);
+
+        if (helper.canFind("_aApplydc1"))
+            return utf8EncodedDstringChars(source);
+
+        if (helper.canFind("_aApplyRwd1")) {
+            auto values = decodedUtf16Dchars(source);
+            values.reverse;
+            return values;
+        }
+
+        throw new Exception("Unsupported eval call.");
+    }
+
+    private Value[] decodedUtf8Dchars(in Value source) {
+        import std.utf: decode;
+
+        string encoded;
+        foreach (index; 0 .. source.length)
+            encoded ~= cast(char) source[index].castTo!long.asLong;
+
+        Value[] values;
+        size_t index;
+        while (index < encoded.length)
+            values ~= Value(decode(encoded, index));
+
+        return values;
+    }
+
+    private Value[] decodedUtf16Dchars(in Value source) {
+        import std.utf: decode;
+
+        wstring encoded;
+        foreach (index; 0 .. source.length)
+            encoded ~= cast(wchar) source[index].castTo!long.asLong;
+
+        Value[] values;
+        size_t index;
+        while (index < encoded.length)
+            values ~= Value(decode(encoded, index));
+
+        return values;
+    }
+
+    private Value[] utf8EncodedDstringChars(in Value source) {
+        import std.utf: encode;
+
+        Value[] values;
+        foreach (index; 0 .. source.length) {
+            char[4] encoded;
+            const length = encode(
+                encoded,
+                cast(dchar) source[index].castTo!long.asLong,
+            );
+            foreach (unit; encoded[0 .. length])
+                values ~= Value(unit);
+        }
+
+        return values;
     }
 
     private bool isZeroFormalCall(FuncDeclaration function_) const {
@@ -1156,6 +1628,9 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
@@ -1167,6 +1642,9 @@ private struct Walker {
 
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
+        nextFunctionPointerId = child.nextFunctionPointerId;
+        functionPointers = child.functionPointers;
+        functionPointerIds = child.functionPointerIds;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
@@ -1174,6 +1652,7 @@ private struct Walker {
         lastStaticArrayCopySource = child.lastStaticArrayCopySource;
         lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
         lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
+        writeBackNestedLocals(function_, child);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
@@ -1196,6 +1675,9 @@ private struct Walker {
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
         child.arrayAllocations = arrayAllocations.dup;
         child.arrayAllocationVariables = arrayAllocationVariables.dup;
         child.allocationCount = allocationCount;
@@ -1235,6 +1717,9 @@ private struct Walker {
 
         child.runStatement(function_.fbody);
         nextLocalPointerId = child.nextLocalPointerId;
+        nextFunctionPointerId = child.nextFunctionPointerId;
+        functionPointers = child.functionPointers;
+        functionPointerIds = child.functionPointerIds;
         allocationCount = child.allocationCount;
         arrayAllocations = child.arrayAllocations;
         arrayAllocationVariables = child.arrayAllocationVariables;
@@ -1246,12 +1731,25 @@ private struct Walker {
         writeBackLocalPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
+        child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
 
         if (function_.isCtorDeclaration !is null)
             return child.thisValue;
 
         return child.result;
+    }
+
+    private void writeBackNestedLocals(
+        imported!"dmd.func".FuncDeclaration function_,
+        ref Walker child,
+    ) {
+        if (!function_.isNested)
+            return;
+
+        foreach (variable, value; child.locals)
+            if (variable in locals)
+                locals[variable] = value;
     }
 
     private void writeBackGlobals(ref Walker child) {
@@ -1457,10 +1955,43 @@ private struct Walker {
         return Value(left == right);
     }
 
-    private Value runBitwiseOrExpression(imported!"dmd.expression".OrExp bitOr) {
-        const left = runExpression(bitOr.e1).asLong;
-        const right = runExpression(bitOr.e2).asLong;
-        return Value(cast(int) (left | right));
+    private Value runIntegerBinaryExpression(
+        imported!"dmd.expression".BinExp expression,
+        in string operator,
+    ) {
+        import quickbite.backends.casts:
+            backendCastTarget = castTarget,
+            backendCastValue = castValue;
+
+        const left = runExpression(expression.e1).asLong;
+        const right = runExpression(expression.e2).asLong;
+        long result;
+        switch (operator) {
+            case "<<":
+                result = left << right;
+                break;
+
+            case ">>":
+                result = left >> right;
+                break;
+
+            case "&":
+                result = left & right;
+                break;
+
+            case "|":
+                result = left | right;
+                break;
+
+            case "^":
+                result = left ^ right;
+                break;
+
+            default:
+                assert(0);
+        }
+
+        return backendCastValue(Value(result), backendCastTarget(expression.type));
     }
 
     private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
@@ -1952,10 +2483,16 @@ private struct Walker {
             backendCastTarget = castTarget,
             backendCastValue = castValue;
         import quickbite.frontend.dmd.types: isPointerType;
+        import dmd.astenums: TY;
 
         auto type = cast_.to.toBasetype;
         if (type is null)
             return runExpression(cast_.e1);
+
+        if (type.ty == TY.Tvoid) {
+            runExpression(cast_.e1);
+            return Value.void_;
+        }
 
         if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
