@@ -30,7 +30,8 @@ private struct Compiler {
         ScalarType, isSigned, size;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AssertExp, BinExp, CallExp, CastExp, Expression, StringExp;
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
+        StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -183,6 +184,9 @@ private struct Compiler {
         if (auto add = expression.isAddExp)
             return compileAddExpression(add);
 
+        if (auto addAssign = expression.isAddAssignExp)
+            return compileAddAssignExpression(addAssign);
+
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
 
@@ -254,6 +258,36 @@ private struct Compiler {
             ScalarType.int_,
             "Unsupported addition in bytecode core: ",
         );
+    }
+
+    // DMD lowers `++x` to the compound add-assign `x += 1`. Lower it through
+    // the existing add: add the local and the rhs into the local's own frame
+    // slot, and yield the local (the new value) as the expression result. No
+    // dedicated increment opcode (see PR-123): this is plain `addInt4` with the
+    // destination being the lvalue's slot. Scoped to integer local-variable
+    // lvalues; anything else is unsupported.
+    private Operand compileAddAssignExpression(AddAssignExp addAssign) {
+        import std.conv: text;
+
+        auto variable = addAssign.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const lhs = slot is null
+            ? Operand.init
+            : Operand(*slot, scalarType(declaration.type));
+        const rhs = compileExpression(addAssign.e2);
+        if (slot is null ||
+            lhs.type != ScalarType.int_ ||
+            rhs.type != ScalarType.int_ ||
+            scalarType(addAssign.type) != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(addAssign),
+            ));
+
+        _code ~= Instruction(Op.addInt4, lhs.offset, lhs.offset, rhs.offset);
+        return lhs;
     }
 
     private Operand compileEqualExpression(Expression expression) {
