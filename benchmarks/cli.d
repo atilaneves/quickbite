@@ -75,7 +75,7 @@ public void run(string[] args) {
     auto runners = makeRunners(env);
 
     if (backendNames.length == 0)
-        backendNames = ["ctfe", "system-linker"];
+        backendNames = ["ctfe", "system-linker", "llvmjit"];
 
     foreach (name; backendNames)
         if (name !in runners)
