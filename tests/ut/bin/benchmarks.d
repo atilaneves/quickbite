@@ -126,6 +126,30 @@ unittest {
     }
 }
 
+@("discoverFixturesKeepsInPackageTestModules")
+unittest {
+    import std.path: buildPath;
+
+    // dub describe --data=source-files returns: the package's own library and
+    // test modules (under pkgDir), a generated runner under the dub cache, a
+    // dependency source outside pkgDir, plus package.d and a *_main.d. Only the
+    // in-package non-runner modules are fixtures, sorted.
+    const pkgDir = "/cache/pkgs/acme/1.0.0/acme";
+    const sourceFiles = [
+        "/cache/build/acme-test/dub_test_root.d",
+        buildPath(pkgDir, "source/acme/widget.d"),
+        buildPath(pkgDir, "source/acme/package.d"),
+        buildPath(pkgDir, "tests/roundtrip.d"),
+        buildPath(pkgDir, "tests/app_main.d"),
+        "/cache/pkgs/dep/2.0.0/dep/source/dep/thing.d",
+    ];
+
+    discoverFixtures(pkgDir, sourceFiles).should == [
+        buildPath(pkgDir, "source/acme/widget.d"),
+        buildPath(pkgDir, "tests/roundtrip.d"),
+    ];
+}
+
 @("testResultsMismatch")
 unittest {
     const passing = [TestResult(true, "t0", "loc", null)];

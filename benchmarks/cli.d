@@ -297,9 +297,6 @@ public struct BenchmarkRow {
 DubInfo resolveDubPkg(in string name) {
     import std.algorithm.iteration: filter, map;
     import std.array: array;
-    import std.algorithm.sorting: sort;
-    import std.file: dirEntries, exists, SpanMode;
-    import std.path: buildPath;
     import std.process: Config, execute;
     import std.string: splitLines, strip;
 
@@ -364,18 +361,55 @@ DubInfo resolveDubPkg(in string name) {
         .filter!(l => l.length > 0)
         .array;
 
-    const testsDir = buildPath(pkgDir, "tests");
-    if (!testsDir.exists)
-        throw new Exception("no tests/ directory found in " ~ pkgDir);
+    // The fixtures are the modules dub compiles for the unittest config, not a
+    // hardcoded tests/ glob: that lets packages keep their tests in source/
+    // (no tests/ dir at all) and excludes intentionally-failing example
+    // modules dub leaves out of the unittest build.
+    auto sourceFileResult = execute(
+        ["dub", "describe", "--config=unittest", "--data=source-files", "--data-list"],
+        null, Config.none, size_t.max,
+        pkgDir,
+    );
+    if (sourceFileResult.status != 0)
+        sourceFileResult = execute(
+            ["dub", "describe", "--data=source-files", "--data-list"],
+            null, Config.none, size_t.max,
+            pkgDir,
+        );
+    if (sourceFileResult.status != 0)
+        throw new Exception("dub describe failed for " ~ name ~ ": " ~ sourceFileResult.output);
 
-    import std.path: baseName;
-    auto fixtures = dirEntries(testsDir, "*.d", SpanMode.depth)
-        .filter!(e => e.isFile && !e.name.baseName.isTestRunnerFile)
-        .map!(e => e.name)
+    const sourceFiles = sourceFileResult.output
+        .splitLines
+        .map!(l => l.strip)
+        .filter!(l => l.length > 0)
         .array;
-    fixtures.sort;
+
+    auto fixtures = discoverFixtures(pkgDir, sourceFiles);  // auto: DubInfo needs mutable string[]
+    if (fixtures.length == 0)
+        throw new Exception("no test fixtures found for " ~ name ~ " in " ~ pkgDir);
 
     return DubInfo(importPaths, linkFiles, pkgDir, fixtures);
+}
+
+// Keep only the package's own modules (under pkgDir, so the generated test
+// runner in the dub cache and dependency sources drop out) that are not
+// non-standalone runner/package files.
+public string[] discoverFixtures(in string pkgDir, in string[] sourceFiles) {
+    import std.algorithm.iteration: filter, map;
+    import std.algorithm.sorting: sort;
+    import std.array: array;
+    import std.path: baseName, dirSeparator;
+    import std.string: startsWith;
+
+    const prefix = pkgDir ~ dirSeparator;
+    auto fixtures = sourceFiles
+        .filter!(f => f.startsWith(prefix))
+        .filter!(f => !f.baseName.isTestRunnerFile)
+        .map!(f => f.idup)
+        .array;
+    fixtures.sort;
+    return fixtures;
 }
 
 bool isTestRunnerFile(in string basename) {
