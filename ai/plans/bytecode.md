@@ -831,6 +831,24 @@ switch; `Bytecode` still defaults to the old core):
   promotions at emit time (sign/zero-extension opcodes shared with the cast
   path) and failed equality asserts render both operands from frame bytes
   at the comparison width.
+- All remaining `tests/ut/backends/evaluator/eval.d` blocks, completing
+  `eval.d` (module order 1) on the new core. Earned in four slices:
+  (a) compound assignment — `++x` lowers to `x += 1` through the existing
+  `addInt4` writing back into the lvalue's own slot, no increment opcode
+  (`multiCell`); (b) floating-point scalars — `float_`/`double_` `ScalarType`s,
+  `RealExp` literals into the constant pool, type-tagged float/double add,
+  subtract, and negate opcodes, double->int numeric-truncation cast, and
+  float/double reification (`add.float`, `castsFloatingValueNumerically`,
+  `floatingSubtractionUsesNumericValues`, `floatingUnaryMinusUsesNumericValue`,
+  and the `1.25` case in `preservesScalarValueTypes`); (c) `std.math` float
+  builtins — `fabs`/`pow` recognised via DMD's `isBuiltin` classification and
+  executed as VM intrinsics typed by the call's static return type, preserving
+  the `float` result (`fabsFloatPreservesReturnType`,
+  `powFloatDoesNotReturnDoubleValue`); (d) string literals — a `StringExp`
+  result lowers to a slice descriptor into a read-only `Program.data` segment,
+  reified at the boundary, with a `ResultType` distinguishing the non-scalar
+  string from the scalar path (`stringLiteralIsArray`). The string slice is
+  the leading edge of the later arrays slice; only literals are supported.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -839,10 +857,12 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-Continue rewrite slice 1 on the new core: re-earn the remaining `eval.d`
-scalar blocks, then `logic.d`, `math.d`, and `diagnostics.d` per the slice
-roadmap, promoting one named behaviour (or one tight failure-message
-family) at a time by adding `BytecodeNewCore` to the block's `AliasSeq`.
+`eval.d` (module order 1) is now complete on the new core (see Rewrite
+Coverage State). Continue rewrite slice 1 with `logic.d`, then `math.d` and
+`diagnostics.d` per the slice roadmap, promoting one named behaviour (or one
+tight failure-message family) at a time by adding `BytecodeNewCore` to the
+block's `AliasSeq`. The float/builtin/string-slice machinery earned for
+`eval.d` is now available to those modules.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
