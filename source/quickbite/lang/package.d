@@ -323,6 +323,7 @@ public struct Value {
     public string toString() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
+        import std.traits: isSomeChar;
 
         return data.match!(
             (value) {
@@ -347,11 +348,7 @@ public struct Value {
                     return decimalText(value);
                 } else static if (is(T == const(real))) {
                     return text(decimalText(value), "L");
-                } else static if (is(T == const(char))) {
-                    return text("'", asUtf8Character, "'");
-                } else static if (is(T == const(wchar))) {
-                    return text("'", asUtf8Character, "'");
-                } else static if (is(T == const(dchar))) {
+                } else static if (isSomeChar!T) {
                     return text("'", asUtf8Character, "'");
                 } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
@@ -448,11 +445,7 @@ public struct Value {
             (value) {
                 alias T = Unqual!(typeof(value));
 
-                static if (isFloatingPoint!T) {
-                    return true;
-                } else {
-                    return false;
-                }
+                return isFloatingPoint!T;
             },
         );
     }

@@ -136,11 +136,11 @@ public struct EvalResult {
 }
 
 public EvalResult displayEvalResult(
-    scope imported!"quickbite.lang".Value delegate() value,
+    scope imported!"quickbite.lang".Value delegate() produceValue,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     try
-        return EvalResult(displayString(value(), function_));
+        return EvalResult(displayString(produceValue(), function_));
     catch (Exception exception)
         return EvalResult(EvalResult.Diagnostic(exception.msg));
 }
