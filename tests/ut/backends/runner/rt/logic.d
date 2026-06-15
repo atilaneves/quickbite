@@ -6,7 +6,7 @@ import ut.backends;
 
 // Compiled `assert(0)` in a non-unittest function raises the plain _d_assert
 // message "Assertion failure"; "`assert(0)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -231,11 +231,22 @@ correct sum — allocation and a mid-test collection both behave.
 
 ### Step 2 — promote into the matrix
 
-Add `LLVMJit` to `tests/ut/backends/package.d` exports and to the
-`AliasSeq` of one or a few `rt/` blocks whose oracle is SystemLinker
-(pre-approved per `AGENTS.md`). Tag `@Tags("LLVMJit")` so it is
-opt-out-able like SystemLinker. Gate: those blocks green solo, then under
-repeated `--random`, then both historical seeds.
+✅ DONE. `LLVMJit` is re-exported through `native/package.d` (reachable from
+test modules via `import ut.backends;`, no change needed in
+`tests/ut/backends/package.d`). It was added to the `AliasSeq` alongside
+`SystemLinker` in four SystemLinker-oracle `rt/` blocks — pre-approved per
+`AGENTS.md` — each already carrying `@Tags(backend.stringof)` so `LLVMJit` is
+opt-out-able exactly like `SystemLinker`:
+
+- `tests/ut/backends/runner/rt/control_flow.d`
+- `tests/ut/backends/runner/rt/exceptions.d`
+- `tests/ut/backends/runner/rt/expressions.d`
+- `tests/ut/backends/runner/rt/logic.d`
+
+Gate met: `./bin/ut -l` shows the new `LLVMJit` instances; `./bin/ut @LLVMJit`
+green solo (12 tests, 0 failed), `./bin/ut @SystemLinker` still green, and
+`./bin/ut --random` plus both historical seeds (`2828407573`, `3516581215`)
+all green.
 
 ### Step 3 — measure (GC registration already resolved in Step 1)
 

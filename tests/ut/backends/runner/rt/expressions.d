@@ -8,7 +8,7 @@ import std.exception: collectExceptionMsg;
 
 // The ct/ counterpart is @ShouldFail due to a CTFE-formatter limitation;
 // compiled code genuinely passes.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -27,7 +27,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 // Compiled typeid(T).name is the fully qualified name (snippet_N.Widget);
 // only CTFE returns the bare identifier. The snippet module name varies per
 // run, so match the stable suffix of the failure message.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -52,7 +52,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 // Compiled dg.ptr is the (non-null) closure context pointer, so the
 // `context is null` assertion fails; the ct/ rejection is CTFE-only. The
 // pointer value varies per run, so match the stable suffix of the message.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("delegate.ptrPropertyReturnsClosureContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -88,7 +88,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 
 // Compiled dg.funcptr is a plain (non-null) function pointer, so the fixture
 // passes; the ct/ rejection is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("delegate.funcptrPropertyReturnsFunctionPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

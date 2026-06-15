@@ -6,7 +6,7 @@ import ut.backends;
 
 // Compiled code (dmd -unittest -checkaction=context) reports the exception's
 // own message; the "uncaught CTFE exception" wrapper is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -19,7 +19,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 }
 
 // Compiled code reports the exception's own message (see above).
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -33,7 +33,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
