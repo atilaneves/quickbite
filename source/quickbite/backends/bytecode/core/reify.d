@@ -3,8 +3,26 @@ module quickbite.backends.bytecode.core.reify;
 private:
 
 // Reifies raw result bytes into a Value using the static result type — the
-// only place the new core constructs a Value.
+// only place the new core constructs a Value. A string result is a slice
+// descriptor (data offset and length) into the program's read-only data
+// segment, reconstructed here just as a debugger renders memory by type.
 package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
+    in ubyte[] bytes,
+    in imported!"quickbite.backends.bytecode.core.program".ResultType type,
+    in ubyte[] data,
+) @safe pure {
+    import quickbite.lang: Value;
+
+    if (type.isString) {
+        const offset = scalar!uint(bytes);
+        const length = scalar!uint(bytes[uint.sizeof .. $]);
+        return Value.stringValue(cast(const(char)[]) data[offset .. offset + length]);
+    }
+
+    return reifyScalar(bytes, type.scalar);
+}
+
+private imported!"quickbite.lang".Value reifyScalar(
     in ubyte[] bytes,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
 ) @safe pure {

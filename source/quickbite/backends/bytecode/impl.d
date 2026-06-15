@@ -51,6 +51,7 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
             return reify(
                 bytes,
                 compilation.program.functions[0].returnType,
+                compilation.program.data,
             );
         }, function_);
     }

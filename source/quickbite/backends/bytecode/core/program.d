@@ -39,6 +39,25 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     }
 }
 
+// The static type of a function result. Today either a scalar or a string;
+// the array slice is the leading edge of the future array subsystem, so its
+// own tag rather than overloading ScalarType. A string result is a slice
+// descriptor (byte offset and length into Program.data).
+package(quickbite.backends.bytecode) struct ResultType {
+    ScalarType scalar;
+    bool isString;
+}
+
+// Bytes of a string-slice descriptor laid out in the frame: a uint offset
+// into Program.data followed by a uint length.
+package(quickbite.backends.bytecode) enum stringSliceSize = 8;
+
+package(quickbite.backends.bytecode) uint size(in ResultType type)
+    @safe @nogc nothrow pure
+{
+    return type.isString ? stringSliceSize : size(type.scalar);
+}
+
 package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
     @safe @nogc nothrow pure
 {
@@ -55,6 +74,7 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 // byte offsets, constant pool indices, function indices).
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
+    loadStringSlice, // a: destination frame offset, b: data offset, c: length
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
@@ -91,7 +111,7 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
     uint parameterBytes;
-    ScalarType returnType;
+    ResultType returnType;
 }
 
 // How to render a failed assertion: read both operands from the frame and
@@ -106,5 +126,6 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
+    ubyte[] data; // read-only segment holding string-literal bytes
     AssertDiagnostic[] assertDiagnostics;
 }

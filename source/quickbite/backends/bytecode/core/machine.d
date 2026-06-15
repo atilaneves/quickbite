@@ -33,6 +33,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case loadStringSlice:
+                // Write the slice descriptor: data offset then length, each a
+                // little-endian uint. reify reads it back at the boundary.
+                stack[base + instruction.a .. base + instruction.a + uint.sizeof]
+                    = scalarBytes(cast(uint) instruction.b);
+                stack[
+                    base + instruction.a + uint.sizeof
+                    .. base + instruction.a + 2 * uint.sizeof
+                ] = scalarBytes(cast(uint) instruction.c);
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c

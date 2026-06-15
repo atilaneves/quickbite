@@ -27,7 +27,7 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        ScalarType, isSigned, size;
+        ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
@@ -79,7 +79,7 @@ private struct Compiler {
             null,
             0,
             parameterLayout(function_).blockSize,
-            scalarType(returnType(function_)),
+            resultType(returnType(function_)),
         );
         return cast(ushort) index;
     }
@@ -167,6 +167,9 @@ private struct Compiler {
             return Operand(offset, type);
         }
 
+        if (auto string_ = expression.isStringExp)
+            return compileStringLiteral(string_);
+
         if (auto negate = expression.isNegExp)
             return compileNegateExpression(negate);
 
@@ -225,6 +228,32 @@ private struct Compiler {
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // A string literal lives in the read-only data segment; the frame slot
+    // holds a slice descriptor (data offset and length). reify rebuilds the
+    // string from that descriptor plus the segment at the boundary.
+    private Operand compileStringLiteral(StringExp string_) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(
+            Op.loadStringSlice,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) bytes.length,
+        );
+        return Operand(offset, ScalarType.void_, true);
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
@@ -474,11 +503,12 @@ private struct Compiler {
             }
 
         const returnType = _program.functions[index].returnType;
-        const destination = returnType == ScalarType.void_
-            ? cast(ushort) 0
-            : allocate(returnType);
+        const destination =
+            (!returnType.isString && returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
-        return Operand(destination, returnType);
+        return Operand(destination, returnType.scalar, returnType.isString);
     }
 
     // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
@@ -648,6 +678,16 @@ private struct Compiler {
         return layout;
     }
 
+    // A function result is either a scalar or a string slice. Only the string
+    // case is non-scalar today (the leading edge of arrays); everything else
+    // routes through the scalar path.
+    private ResultType resultType(Type type) {
+        if (isStringType(type))
+            return ResultType(ScalarType.void_, true);
+
+        return ResultType(scalarType(type), false);
+    }
+
     private ScalarType scalarType(Type type) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -700,6 +740,7 @@ private struct ParameterLayout {
 private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
+    bool isString; // when set, `offset` holds a string-slice descriptor
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
@@ -736,6 +777,27 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
         case 4: return Op.equal4;
         case 8: return Op.equal8;
         default: assert(0, "No equality opcode for the operand size.");
+    }
+}
+
+// A `string`/`wstring`/`dstring` (immutable char-element array): the only
+// non-scalar result the core lowers today.
+private bool isStringType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    auto base = type.toBasetype;
+    if (base.ty != TY.Tarray)
+        return false;
+
+    auto element = base.nextOf; // const fails: nextOf is a mutable method.
+    if (element is null)
+        return false;
+
+    switch (element.toBasetype.ty) with (TY) {
+        case Tchar, Twchar, Tdchar:
+            return true;
+        default:
+            return false;
     }
 }
 
