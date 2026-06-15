@@ -502,7 +502,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @ShouldFail(
         "DMD CTFE returns <float not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -523,7 +523,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // The Ctfe counterpart above is @ShouldFail due to a CTFE-formatter
 // limitation; compiled code genuinely passes.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter)) {
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +539,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -559,7 +559,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter)) {
     @("floating.ulongToRealCastPreservesRealPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

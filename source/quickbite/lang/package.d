@@ -139,8 +139,8 @@ public struct Value {
         return Value(TypeName(name));
     }
 
-    public static Value enumValue(in string name) @safe pure {
-        return Value(EnumValue(name));
+    public static Value enumValue(in string name, in long value = 0) @safe pure {
+        return Value(EnumValue(name, value));
     }
 
     public static Value complexValue(in real realPart, in real imaginaryPart) @safe pure {
@@ -488,6 +488,8 @@ public struct Value {
                     return Value(cast(T) value.value);
                 } else static if (is(U == ComplexScalar)) {
                     return Value(cast(T) value.realPart);
+                } else static if (is(U == EnumValue)) {
+                    return Value(cast(T) value.value);
                 } else {
                     throw new Exception("Unsupported cast.");
                     return Value.void_;
@@ -1590,9 +1592,11 @@ private struct TypeName {
 
 private struct EnumValue {
     public string name;
+    public long value;
 
-    public this(in string name) @safe pure {
+    public this(in string name, in long value) @safe pure {
         this.name = name;
+        this.value = value;
     }
 
     public string toString() const @safe pure {

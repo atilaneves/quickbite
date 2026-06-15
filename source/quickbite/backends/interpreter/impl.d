@@ -735,7 +735,10 @@ private struct Walker {
 
         if (auto integer = expression.isIntegerExp) {
             if (integer.type !is null && integer.type.ty == TY.Tenum)
-                return Value.enumValue(expressionChars(integer));
+                return Value.enumValue(
+                    expressionChars(integer),
+                    cast(long) integer.getInteger,
+                );
             return integerValue(integer);
         }
 
@@ -3248,6 +3251,13 @@ private struct Walker {
 
         if (isPointerType(type))
             return pointerCastValue(cast_);
+
+        if (auto integer = cast_.e1.isIntegerExp)
+            if (integer.type !is null && integer.type.ty == TY.Tenum) {
+                import quickbite.frontend.dmd.values: castIntegerValue;
+
+                return castIntegerValue(integer, type.ty);
+            }
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
     }

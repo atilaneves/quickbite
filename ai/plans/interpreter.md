@@ -960,9 +960,8 @@ work added dynamic class `typeid`, `typeid(...).name`, qualified type names,
 and the SSE2 vector splat/static-array `.array` view.
 
 The `floating.ulongToRealCastPreservesRealPrecision` matrix is split so the
-existing CTFE `@ShouldFail` remains a CTFE characterization, while
-`Interpreter` joins `SystemLinker` in the compiled-oracle passing block. The
-fixture body is unchanged.
+existing CTFE/SystemLinker `@ShouldFail` remains in place, while `Interpreter`
+gets a passing copy. The fixture body is unchanged.
 
 The focused expressions Interpreter run now passes: 49 run, 0 failed.
 

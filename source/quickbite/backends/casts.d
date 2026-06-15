@@ -40,7 +40,10 @@ public bool tryCastTarget(
 ) {
     import dmd.astenums: TY;
 
-    const basetype = type.toBasetype;
+    auto basetype = type.toBasetype;
+    if (auto enumType = basetype.isTypeEnum)
+        basetype = enumType.toBasetype2;
+
     switch (basetype.ty) with (TY) {
         case Tbool:
             target = CastTarget.bool_;
