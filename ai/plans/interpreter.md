@@ -501,6 +501,14 @@ expressions, follows the generated helper variable back to its initializer, and
 formats failed class-null identity with the original `is`/`!is` polarity. The
 full focused `diagnostics.d` Interpreter-only run now passes: 31 run, 0 failed.
 
+Math promotion probe:
+In branch `interpreter-ct-math-module`, the current
+`tests/ut/backends/runner/ct/math.d` matrix already had every current math test
+covered by `Interpreter`; there were no CTFE-backed math tests left to promote.
+The focused Interpreter-only math module run passed: 57 run, 0 failed. No
+production failure causes were found, so no subagent fix slices were needed for
+this module.
+
 REPL promotion probe:
 All remaining CTFE-backed backend-matrix tests in
 `tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
