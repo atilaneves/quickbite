@@ -136,6 +136,10 @@ public imported!"quickbite.lang".Value realValue(
             return Value(cast(double) real_.toReal);
         case Tfloat80:
             return Value(cast(real) real_.toReal);
+        case Timaginary32:
+        case Timaginary64:
+        case Timaginary80:
+            return Value.imaginaryValue(cast(real) real_.toImaginary);
         default:
             assert(0);
     }

@@ -289,6 +289,9 @@ public string equalityOperandMessage(
     if (value.isFloatingScalar)
         return value.dText;
 
+    if (value.isStringDisplayArray)
+        return value.dText;
+
     return text(value);
 }
 

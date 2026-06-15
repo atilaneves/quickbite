@@ -18,45 +18,98 @@ public enum CastTarget: size_t {
     float_,
     double_,
     real_,
+    ifloat_,
+    idouble_,
+    ireal_,
+    cfloat_,
+    cdouble_,
+    creal_,
 }
 public CastTarget castTarget(imported!"dmd.mtype".Type type) {
+    CastTarget target;
+    if (tryCastTarget(type, target))
+        return target;
+
+    import std.conv: text;
+    throw new Exception(text("Unsupported cast target: ", type.toBasetype.ty));
+}
+
+public bool tryCastTarget(
+    imported!"dmd.mtype".Type type,
+    out CastTarget target,
+) {
     import dmd.astenums: TY;
 
-    const basetype = type.toBasetype;
+    auto basetype = type.toBasetype;
+    if (auto enumType = basetype.isTypeEnum)
+        basetype = enumType.toBasetype2;
+
     switch (basetype.ty) with (TY) {
         case Tbool:
-            return CastTarget.bool_;
+            target = CastTarget.bool_;
+            return true;
         case Tint8:
-            return CastTarget.byte_;
+            target = CastTarget.byte_;
+            return true;
         case Tuns8:
-            return CastTarget.ubyte_;
+            target = CastTarget.ubyte_;
+            return true;
         case Tchar:
-            return CastTarget.char_;
+            target = CastTarget.char_;
+            return true;
         case Tint16:
-            return CastTarget.short_;
+            target = CastTarget.short_;
+            return true;
         case Tuns16:
-            return CastTarget.ushort_;
+            target = CastTarget.ushort_;
+            return true;
         case Twchar:
-            return CastTarget.wchar_;
+            target = CastTarget.wchar_;
+            return true;
         case Tint32:
-            return CastTarget.int_;
+            target = CastTarget.int_;
+            return true;
         case Tuns32:
-            return CastTarget.uint_;
+            target = CastTarget.uint_;
+            return true;
         case Tdchar:
-            return CastTarget.dchar_;
+            target = CastTarget.dchar_;
+            return true;
         case Tint64:
-            return CastTarget.long_;
+            target = CastTarget.long_;
+            return true;
         case Tuns64:
-            return CastTarget.ulong_;
+            target = CastTarget.ulong_;
+            return true;
         case Tfloat32:
-            return CastTarget.float_;
+            target = CastTarget.float_;
+            return true;
         case Tfloat64:
-            return CastTarget.double_;
+            target = CastTarget.double_;
+            return true;
         case Tfloat80:
-            return CastTarget.real_;
+            target = CastTarget.real_;
+            return true;
+        case Timaginary32:
+            target = CastTarget.ifloat_;
+            return true;
+        case Timaginary64:
+            target = CastTarget.idouble_;
+            return true;
+        case Timaginary80:
+            target = CastTarget.ireal_;
+            return true;
+        case Tcomplex32:
+            target = CastTarget.cfloat_;
+            return true;
+        case Tcomplex64:
+            target = CastTarget.cdouble_;
+            return true;
+        case Tcomplex80:
+            target = CastTarget.creal_;
+            return true;
         default:
-            import std.conv: text;
-            throw new Exception(text("Unsupported cast target: ", basetype.ty));
+            return false;
     }
 }
 
@@ -95,5 +148,13 @@ public imported!"quickbite.lang".Value castValue(
             return value.castTo!double;
         case real_:
             return value.castTo!real;
+        case ifloat_:
+        case idouble_:
+        case ireal_:
+            return value.castToImaginary;
+        case cfloat_:
+        case cdouble_:
+        case creal_:
+            return value.castToComplex;
     }
 }
