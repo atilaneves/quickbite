@@ -23,7 +23,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
     operators are worth keeping here because the failure messages encode the
     negated operator.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.lessThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -39,7 +39,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.lessOrEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -55,7 +55,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.greaterThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -71,7 +71,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.greaterOrEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -87,7 +87,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("assertDiagnostic.notEqual." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -107,7 +107,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Integer arithmetic and bitwise operators.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.arithmeticOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -139,7 +139,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 
 // Bytecode ("Unsupported expression `a % b`") and IR ("Unsupported IR
 // expression `a % b`") do not implement %.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.moduloSignFollowsDividend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -165,7 +165,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.shiftOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -188,7 +188,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 
 // Bytecode and IR ("Unsupported ... expression `v >> 28`") do not implement
 // shifts.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.unsignedRightShiftZeroFills." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -208,7 +208,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.bitwiseOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -234,7 +234,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.relationalOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -254,7 +254,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.unaryOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -273,7 +273,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.assignmentOperators." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -296,7 +296,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.commaExpressionSequencesOperands." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -318,7 +318,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.postIncrementUsesRuntimeSeed." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -342,7 +342,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Integer widths, wrapping, casts, and mixed numeric comparisons.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.ubyteCastTruncatesRuntimeValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -356,7 +356,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.ubyteLocalTruncatesOnStore." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -371,7 +371,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.ubyteAddAssignWrapsOnStore." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -387,7 +387,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.longLiteral." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -403,7 +403,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.ulongHighBitComparisonsUseUnsignedValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -420,7 +420,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.ulongDoubleComparisonUsesNumericUnsignedValue." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -440,7 +440,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("integer.floatEqualityIsNumeric." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -459,7 +459,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Floating-point, real, complex, and std.math expressions.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("floating.distinguishesFloatingPointValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -474,7 +474,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -488,7 +488,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("floating.castsFloatingValueNumerically." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -523,7 +523,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // The Ctfe counterpart above is @ShouldFail due to a CTFE-formatter
 // limitation; compiled code genuinely passes.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +539,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
     @ShouldFail(
         "DMD CTFE returns <real not supported> because druntime's " ~
         "assert formatter uses sprintf",
@@ -575,7 +575,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("floating.realComparisonPreservesRealPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -590,7 +590,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("complex.literalWithRuntimeParts." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -614,7 +614,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Typeid, virtual dispatch, interfaces, and delegates.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("typeid.classReferenceUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -655,7 +655,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // Compiled typeid(T).name is the fully qualified name (snippet_N.Widget);
 // only CTFE returns the bare identifier. The snippet module name varies per
 // run, so match the stable suffix of the failure message.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -677,7 +677,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("class.virtualCallUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -712,7 +712,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("interface.virtualCallUsesRuntimeDispatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -745,7 +745,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("delegate.nestedCallUsesCapturedValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -770,7 +770,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("delegate.structMemberCallUsesReceiver." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -833,7 +833,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // `context is null` assertion fails; the Ctfe rejection above is CTFE-only.
 // The pointer value varies per run, so match the stable suffix of the
 // message.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("delegate.ptrPropertyReturnsClosureContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -901,7 +901,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 // Compiled dg.funcptr is a plain (non-null) function pointer, so the fixture
 // passes; the Ctfe rejection above is CTFE-only.
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("delegate.funcptrPropertyReturnsFunctionPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -936,7 +936,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.hexStringToUshortArrayUsesBigEndianWords." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -952,7 +952,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.sliceToPointerDereferencesFirstElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -974,7 +974,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.arrayPointerRoundTripsThroughVoidPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -997,7 +997,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1019,7 +1019,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.expTypePaintedSliceFromVoidPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1046,7 +1046,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.pointerToBoolReflectsNullness." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1072,7 +1072,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 /++
     Conditional expressions, `new`, pointer arithmetic, and vectors.
 +/
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("conditional.nonNullPointerIsTrue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1091,7 +1091,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("new.scalarPointerDereferencesRuntimeValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1109,7 +1109,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.runtimeOffsetReadsElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1132,7 +1132,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("pointer.runtimeDifferenceReadsElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1156,7 +1156,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("vector.scalarCastSplatsToStaticArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1189,7 +1189,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
 // Bytecode ("Unsupported expression `m & 1`"), BytecodeNewCore
 // ("Unsupported statement in bytecode core: Import"), and IR (unmapped type
 // assert in compileExpression) do not handle the integer ^^ lowering.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("int.powerOperatorRaisesRuntimeIntegers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
