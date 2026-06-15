@@ -7,7 +7,7 @@ import ut.backends;
 /++
     Basic functions, parameters, and returns.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.localIntReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -24,7 +24,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.parameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -40,7 +40,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.parameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -56,7 +56,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.inParameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -72,7 +72,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.refParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -92,7 +92,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.multipleRefParameters." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -112,7 +112,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.refSizeTParameter." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -132,7 +132,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.voidFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -146,7 +146,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.voidFunctionExplicitReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -162,7 +162,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.explicitReturnSkipsFollowingStatements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -182,7 +182,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 // Ctfe diverges from SystemLinker here: CTFE-evaluated `assert(false)` raises
 // the message "`assert(false)` failed", so this block characterizes Ctfe
 // rather than the SystemLinker oracle below.
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
     unittest {
@@ -225,7 +225,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.freeFunctionCallWithReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -243,7 +243,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.freeFunctionCallWithDifferentOperation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -261,7 +261,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("function.freeFunctionCallWithArrayParam." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -341,7 +341,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker)) {
 /++
     If/else and returns.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("if.bodyAssignment." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -361,7 +361,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("if.elseBranches." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -381,7 +381,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("if.elseUntakenBranchDoesNotRun." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -404,7 +404,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("if.earlyReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -424,7 +424,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("if.multipleEarlyReturns." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -452,7 +452,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     While, do-while, for, break, and continue.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("while.neverRuns." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -474,7 +474,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("while.runsOnce." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -498,7 +498,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("while.runsMultipleTimes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -522,7 +522,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("while.codegenShape." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -539,7 +539,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("for.continue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -560,7 +560,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("doWhile.breakAndContinue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -587,7 +587,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("labeledBreak.exitsOuterForLoop." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -615,7 +615,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("labeledContinue.skipsToOuterForIncrement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -649,7 +649,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Switch, switch control transfer, and labeled breaks.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.caseMatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -678,7 +678,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.defaultCase." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -707,7 +707,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.gotoCase." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -736,7 +736,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.gotoDefault." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -765,7 +765,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.gotoCaseUsesRuntimeSelector." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -798,7 +798,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.gotoDefaultUsesRuntimeSelector." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -831,7 +831,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.breaksOuterLoop." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -866,7 +866,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 
 // Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
 // map the string type (compiler.d valueType assert).
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.stringCases." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -898,7 +898,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 
 // Interpreter/Bytecode report Switch as an unsupported statement; IR cannot
 // compile the ternary in pick ("Unsupported IR expression").
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.finalSwitchOnEnumCoversAllMembers." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -936,7 +936,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Interpreter, Bytecode, and IR all report Switch as an unsupported statement.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("switch.caseRangesAndMultiValueCases." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -973,7 +973,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Goto and restart points.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.directLabel." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -998,7 +998,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsExpressionStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1023,7 +1023,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsCompoundStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1050,7 +1050,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsBreakStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1078,7 +1078,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsContinueStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1110,7 +1110,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Goto, catch, and finally.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsBreakStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1141,7 +1141,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsContinueStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1172,7 +1172,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsGotoStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1204,7 +1204,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsGotoCaseStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1244,7 +1244,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("goto.restartsGotoDefaultStatementInTryFinally." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1284,7 +1284,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("catch.gotoRestartsBreakStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1315,7 +1315,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("catch.gotoRestartsContinueStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1346,7 +1346,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("catch.gotoRestartsGotoStatement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1382,7 +1382,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Foreach.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.array." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1420,7 +1420,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.emptyArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1438,7 +1438,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.range." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1455,7 +1455,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.expressionTupleBreakAndContinue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1488,7 +1488,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.utf8StringDecodesDchars." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1513,7 +1513,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.utf16StringDecodesDchars." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1538,7 +1538,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.utf32StringEncodesAsUtf8WhenIteratingChar." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1564,7 +1564,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.reverseUtf16String." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1593,7 +1593,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 // ("Unsupported eval post expression"); Bytecode cannot compile the array
 // slice ("Unsupported expression `arr[]`"); IR reports the array literal as
 // unsupported.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("foreach.reverseIntArrayVisitsBackToFront." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1618,7 +1618,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 /++
     Function pointers.
 +/
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("functionPointer.hashCollisionUsesCorrectCallee." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1641,7 +1641,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("functionPointer.dispatchesToDistinctCallees." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1665,7 +1665,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("functionPointer.callCanEnterFunctionWithCallee." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

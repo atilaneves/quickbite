@@ -43,6 +43,7 @@ public struct Value {
         Struct,
         TypeName,
         EnumValue,
+        FunctionPointer,
         Undisplayable,
     );
 
@@ -118,6 +119,10 @@ public struct Value {
         return Value(LocalPointer(id));
     }
 
+    public static Value functionPointerValue(in size_t id) @safe pure {
+        return Value(FunctionPointer(id));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -151,6 +156,10 @@ public struct Value {
     }
 
     private this(LocalPointer value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(FunctionPointer value) @safe pure {
         data = Data(value);
     }
 
@@ -316,6 +325,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
+                } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
+                    return value.toString;
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
@@ -366,6 +377,8 @@ public struct Value {
                 } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
+                    return value.toString;
+                } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
                     return value.toString;
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
@@ -630,6 +643,27 @@ public struct Value {
             (const(LocalPointer) pointer) => pointer.id,
             (_) {
                 throw new Exception("Expected local pointer.");
+                return size_t.init;
+            },
+        );
+    }
+
+    public bool isFunctionPointer() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(FunctionPointer) pointer) => true,
+            (_) => false,
+        );
+    }
+
+    public size_t functionPointerId() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(FunctionPointer) pointer) => pointer.id,
+            (_) {
+                throw new Exception("Expected function pointer.");
                 return size_t.init;
             },
         );
@@ -1098,6 +1132,21 @@ private struct EnumValue {
 
     public string toString() const @safe pure {
         return name;
+    }
+}
+
+
+private struct FunctionPointer {
+    public size_t id;
+
+    public this(in size_t id) @safe pure {
+        this.id = id;
+    }
+
+    public string toString() const @safe pure {
+        import std.conv: text;
+
+        return text("<function pointer ", id, ">");
     }
 }
 
