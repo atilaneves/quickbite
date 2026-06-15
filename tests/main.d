@@ -22,5 +22,6 @@ int main(string[] args) {
         "ut.backends.runner.ct.pollution",
         "ut.backends.runner.ct.archive",
         "ut.backends.runner.rt.cstdlib",
+        "ut.backends.runner.rt.llvm_jit",
     );
 }

@@ -251,8 +251,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 }
 
 // Compiled code calls the real malloc and the fixture passes; the diagnostic
-// above is interpretation-only.
-static foreach (backend; AliasSeq!(SystemLinker)) {
+// above is interpretation-only. LLVMJit is promoted alongside SystemLinker
+// (its single behaviour oracle) on this surviving rt/ block: a real runtime
+// libc malloc call through the in-process JIT.
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("malloc." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
