@@ -13,6 +13,9 @@ public struct ReplCell {
     public ReplCellKind kind;
     public string source;
     public imported!"quickbite.frontend.cell".Cell evalCell;
+    // For a typeExpression cell, the resolved type name answered by the
+    // frontend (DMD has the type) so the REPL needs no backend round-trip.
+    public string typeName;
 }
 
 public struct ReplSession {
@@ -24,8 +27,14 @@ public struct ReplSession {
 
     public ReplCell submit(in string input) {
         if (evalSession.isTypeExpressionCell(input)) {
+            const typeName = evalSession.typeExpressionName(input);
             auto cell = evalSession.submit(input ~ ".stringof");
-            return ReplCell(ReplCellKind.typeExpression, cell.source, cell);
+            return ReplCell(
+                ReplCellKind.typeExpression,
+                cell.source,
+                cell,
+                typeName,
+            );
         }
 
         auto cell = evalSession.submit(input);

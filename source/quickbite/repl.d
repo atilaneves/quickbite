@@ -19,15 +19,17 @@ public struct Repl {
         this.backendSession = backend.createReplSession;
     }
 
-    public imported!"quickbite.lang".Value submit(in string input) {
-        return submitResult(input).value;
+    public string submit(in string input) {
+        return submitResult(input).toString;
     }
 
     public string submitDisplay(in string input) {
-        import quickbite.lang: Value;
-
         const result = submitResult(input);
-        return result.value == Value.void_ ? null : result.toString;
+        if (result.isTypeName)
+            return result.toString;
+
+        // void renders to the empty string; suppress it.
+        return result.display.length == 0 ? null : result.toString;
     }
 
     public bool shouldQuit(in string input) const @safe pure {
@@ -56,14 +58,13 @@ public struct Repl {
 
     private ReplResult submitResult(in string input) {
         import quickbite.frontend.repl: ReplCellKind;
-        import quickbite.lang: Value;
 
         if (input.isReplCommand) {
             if (pendingInput.length != 0)
                 throw new Exception(commandWhilePendingDiagnostic(input));
 
             if (input.isQuitCommand)
-                return ReplResult(Value.void_);
+                return ReplResult.void_;
 
             try
                 return runLoadedTests;
@@ -79,7 +80,17 @@ public struct Repl {
             auto cell = frontendSession.submit(source);
             if (cell.kind == ReplCellKind.incomplete) {
                 pendingInput = source;
-                return ReplResult(Value.void_);
+                return ReplResult.void_;
+            }
+
+            // A type-expression cell's type is resolved by the frontend (DMD
+            // has the type), so the REPL answers it without a backend
+            // round-trip and displays the name bare.
+            if (cell.kind == ReplCellKind.typeExpression &&
+                cell.typeName !is null) {
+                pendingInput = null;
+                frontendSession.accept(cell);
+                return ReplResult.typeNameResult(cell.typeName);
             }
 
             const result = backendSession.submit(cell);
@@ -89,7 +100,18 @@ public struct Repl {
 
             // Accept only on success — explicit, not via exception unwinding.
             frontendSession.accept(cell);
-            return ReplResult(result.value, replDisplay(cell));
+
+            // A type-expression cell the frontend could not resolve (e.g.
+            // `typeof(local)`) is answered by the backend evaluating
+            // `<expr>.stringof`: always a `string`, so the backend renders it as
+            // a quoted display. The type name is shown bare, so unwrap that
+            // single quoted-string layer.
+            if (cell.kind == ReplCellKind.typeExpression)
+                return ReplResult.typeNameResult(
+                    unquotedStringDisplay(result.display),
+                );
+
+            return ReplResult(result.display);
         } catch (Exception exception) {
             if (pendingInput.length != 0)
                 pendingInput = null;
@@ -100,10 +122,9 @@ public struct Repl {
 
     private ReplResult runLoadedTests() {
         import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
-        import quickbite.lang: Value;
 
         if (frontendSession.loadedModuleSource.length == 0)
-            return ReplResult(Value.void_);
+            return ReplResult.void_;
 
         const result = backend.runTests(
             parseModuleWithCheckActionContext(
@@ -116,38 +137,87 @@ public struct Repl {
         if (failureDiagnostic !is null)
             throw new Exception(failureDiagnostic);
 
-        return ReplResult(Value.void_);
+        return ReplResult.void_;
     }
 }
 
+// Strips the single quoted-string layer the backend wraps a `string` display
+// in. Only used for the type-expression fallback, where the evaluated
+// expression is `<expr>.stringof` and is therefore always a `string` rendered
+// as `"name"` with no width suffix.
+private string unquotedStringDisplay(in string display) @safe pure {
+    const quoted = quotedStringDisplay(display);
+    return quoted.found ? quoted.content : display;
+}
+
+private struct QuotedStringDisplay {
+    public bool found;
+    public string content;
+    public string suffix;
+}
+
+// Splits a string-valued display (`"content"` optionally followed by a width
+// suffix `w`/`d`) into its parts. A top-level display that opens with `"` is
+// unambiguously a string value: numeric, array and struct renderings never do.
+private QuotedStringDisplay quotedStringDisplay(in string display) @safe pure {
+    if (display.length < 2 || display[0] != '"')
+        return QuotedStringDisplay.init;
+
+    size_t closing = display.length - 1;
+    while (closing > 0 && display[closing] != '"')
+        --closing;
+
+    if (closing == 0)
+        return QuotedStringDisplay.init;
+
+    return QuotedStringDisplay(
+        true,
+        display[1 .. closing],
+        display[closing + 1 .. $],
+    );
+}
+
+// Carries the backend's rendered display string (decision 1 of
+// ai/plans/value.md) plus a flag for a frontend-answered type-expression cell,
+// whose bare name scrubs differently (see `toString`).
 private struct ReplResult {
-    public imported!"quickbite.lang".Value value;
-    public ReplDisplay display;
+    public string display;
+    private bool _isTypeName;
+
+    public this(in string display) @safe pure {
+        this.display = display;
+    }
+
+    public static ReplResult void_() @safe pure {
+        return ReplResult("");
+    }
+
+    public static ReplResult typeNameResult(in string typeName) @safe pure {
+        auto result = ReplResult(typeName);
+        result._isTypeName = true;
+        return result;
+    }
+
+    public bool isTypeName() const @safe pure {
+        return _isTypeName;
+    }
 
     public string toString() const @safe pure {
-        final switch (display) with (ReplDisplay) {
-            case value:
-                return this.value.toString.userDiagnostic;
-            case string:
-                return `"` ~ this.value.asCharArrayString.userValueString ~ `"`;
+        // A string-valued result is rendered by the backend as `"content"`
+        // optionally followed by a width suffix; its content is a user string
+        // that may itself be a synthetic repl name, so it scrubs with the
+        // value-string rule (full-name replacement). Everything else (numbers,
+        // arrays, structs, the bare type name) scrubs with the diagnostic rule
+        // (synthetic-name substrings). This keeps the REPL-layer scrubbing
+        // identical to before the display moved into the backend.
+        if (!_isTypeName) {
+            const quoted = quotedStringDisplay(display);
+            if (quoted.found)
+                return `"` ~ quoted.content.userValueString ~ `"` ~ quoted.suffix;
         }
+
+        return display.userDiagnostic;
     }
-}
-
-private enum ReplDisplay {
-    value,
-    string,
-}
-
-private ReplDisplay replDisplay(
-    imported!"quickbite.frontend.repl".ReplCell cell,
-) {
-    import quickbite.frontend.repl: ReplCellKind;
-
-    return cell.kind == ReplCellKind.expression &&
-        functionReturnsString(cell.evalCell.function_) ?
-        ReplDisplay.string :
-        ReplDisplay.value;
 }
 
 private string testFailureDiagnostic(
@@ -170,21 +240,10 @@ private string testFailureDiagnostics(
     return diagnostics.join("\n");
 }
 
-private bool functionReturnsString(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import quickbite.frontend.dmd.types: isCharacterArrayType;
-
-    auto returnType = function_.type is null ? null : function_.type.nextOf;
-    return isCharacterArrayType(returnType);
-}
-
 public string[] runReplLoop(
     imported!"quickbite.backends".Backend backend,
     in string[] inputAtoms,
 ) {
-    import quickbite.lang: Value;
-
     string[] output;
     auto repl = Repl(backend);
     foreach (input; inputAtoms) {
@@ -338,7 +397,8 @@ private SyntheticNameReplacement syntheticNameReplacement(in string input)
 
 private bool isSyntheticEvalFunctionName(in string value)
 @safe pure nothrow {
-    return syntheticEvalFunctionNameReplacement(value).consumed == value.length;
+    return value.length != 0 &&
+        syntheticEvalFunctionNameReplacement(value).consumed == value.length;
 }
 
 private SyntheticNameReplacement syntheticEvalFunctionNameReplacement(

@@ -24,28 +24,56 @@ result. A backend cannot produce a different *type* for an expression,
 only different runtime *bits* — which the value digits and behavioural
 probes catch (see "Test strategy").
 
+Decision 2026-06-13 (implemented): the `EvalResult` contract now carries
+the rendered display `string` (or a `Diagnostic`), completing decision 1.
+`EvalResult._payload` is `SumType!(string, Diagnostic)`; `value()` is
+replaced by `display()`. The `Value -> display-string` rendering moved to
+the per-backend `eval(FuncDeclaration)` boundary via a single shared helper
+`displayString(Value, FuncDeclaration)` in
+`source/quickbite/backends/evaluator.d`, so every backend and the
+`eval(Cell)`/`eval(string)` paths render identically: `void` -> `""`, a
+character-array return -> the quoted string with its width suffix,
+everything else -> `Value.toString`. Per decision 4 this is interim: each
+backend keeps its private reify -> `Value` -> `toString` scaffolding behind
+the string-returning interface, to be deleted per backend as it learns to
+execute the prelude formatter. `Value`, `value.d`, `asCharArrayString`,
+`stringTypeAnnotation` and `dText` are unchanged. The REPL
+(`source/quickbite/repl.d`) keeps the synthetic-name scrubbing
+(`userDiagnostic`/`userValueString`), now applied to the display string
+carried by `EvalResult`; `Repl.submit` returns the display `string`.
+
 ## Audit findings (June 2026)
 
-- The REPL uses `Value`'s structure only for display/control decisions:
-  void suppression (`== Value.void_`), `:t` cells
-  (`Value.typeName(asCharArrayString)`), string quoting, and
+- At audit time the REPL used `Value`'s structure only for
+  display/control decisions: void suppression (`== Value.void_`), `:t`
+  cells (`Value.typeName(asCharArrayString)`), string quoting, and
   success/failure gating (the `Diagnostic` arm of `EvalResult`, not
   `Value`). No `Value` ever feeds a later evaluation — session state is
-  replayed from source.
+  replayed from source. Since implemented away on this branch: void
+  suppression is now an empty-display-string check and `:t` is
+  frontend-answered (see decision 5 Progress and the Status "implemented"
+  paragraph).
 - `repl/main.d` consumes only `submitDisplay` (a string). Benchmarks
   compare `TestResult[]` (strings). `Runner` never touches `Value`.
 - The execution cores already exclude it by design (`ai/plans/bytecode.md`
   "No universal runtime value type"; `ai/plans/ir.md`); the interpreter's
   internal use is first-generation scaffolding.
-- The only remaining customers of the structure are ~110 structural test
-  assertions and the planned native value transport — both addressed
-  below.
+- The remaining customers of the structure (post-implementation): the
+  EvalResult-contract assertions in `eval.d`/`repl.d` have been migrated
+  to display strings, so what is left is
+  `tests/ut/backends/evaluator/value.d` (`Value`'s own equality/rendering)
+  plus the interpreter's internal `Value`-based execution scaffolding —
+  both addressed below.
 
 ## Approved decisions
 
 1. `quickbite.lang.Value` leaves the `Evaluator` contract: `EvalResult`
    carries the rendered display `string` (or a `Diagnostic`). The struct
    is deleted entirely once no backend needs it internally.
+
+   Done 2026-06-13: the contract flip is implemented; see the Status
+   "implemented" paragraph. The struct itself is NOT yet deleted — it
+   survives as private per-backend scaffolding per decision 4.
 2. Display round-trips as valid D: every rendering is a D expression that
    parses and evaluates to a value equal to the original (Python's `repr`
    principle). It is *not* the channel for revealing a value's static
@@ -86,6 +114,16 @@ probes catch (see "Test strategy").
    `typeof`/`it.typeof` (`ai/plans/repl.md`) — since display no longer
    encodes type for no-literal types (decision 2); `:t` stays
    frontend-answered for latency, not routed through a backend.
+
+   Progress 2026-06-13: `:t`/type-expression cells are now actually
+   frontend-answered. `EvalSession.typeExpressionName` resolves the type
+   from the DMD AST (the alias-probe type's `Type.toChars`, which DMD also
+   uses to compute a type's `.stringof`, so the rendering is byte-for-byte
+   identical) and `ReplSession.submit` records it on the `ReplCell`. The
+   REPL short-circuits these cells, displaying the name bare without
+   calling `backend.eval`, `Value.asCharArrayString`, or `Value.typeName`.
+   The old `.stringof`-via-backend path remains only as a fallback for
+   inputs the frontend cannot resolve.
 6. The native backend (`SystemLinker`) is the single behaviour oracle in the
    absence of a formal, machine-verifiable language specification (it remains
    one option among many for benchmarking). CTFE is not an oracle; where it
@@ -179,8 +217,10 @@ Three layers replace structural `Value` assertions:
    consistency as a side effect. Slow (~43 ms per native call, see
    `ai/plans/dmd-backend.md`) — a matrix job, not the inner loop.
 2. Hand-written text expectations for the fast hermetic suite:
-   `tests/ut/backends/evaluator/eval.d` migrates from
-   `.should == Value(3u)` to `.should == "3u"`. One display string now
+   `tests/ut/backends/evaluator/eval.d` has migrated (done 2026-06-13)
+   from `.should == Value(3u)` to `.should == "3u"`;
+   `tests/ut/backends/evaluator/value.d` is still present, to be deleted
+   with the struct. One display string now
    carries two distinct assertions, and the migration must keep them
    straight:
    - The **suffix** witnesses the **static type** — but only where D has a
@@ -218,6 +258,19 @@ backend widens a value at runtime — that is what layer 2's digit
 assertions and layer 3 are for.
 
 All test additions/changes require approval first (AGENTS.md).
+
+## Remaining work
+
+The contract flip (decision 1) and frontend-answered `:t` (decision 5)
+are done; what is still pending, in order:
+
+1. Build the prelude formatter `string __quickbiteFormat(T)(T value)`
+   (decision 3) so backends render by executing D rather than via the
+   interim `displayString`/`Value.toString` scaffolding.
+2. Delete the private reify → `Value` → `toString` scaffolding per
+   backend (decision 4) as each gains the formatter.
+3. Once no backend needs `Value` internally, delete the struct and
+   `tests/ut/backends/evaluator/value.d` together.
 
 ## Out of scope
 

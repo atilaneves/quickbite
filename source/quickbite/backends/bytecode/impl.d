@@ -4,7 +4,7 @@ private:
 
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
@@ -33,10 +33,10 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.bytecode.compiler: compileFunction;
         import quickbite.backends.bytecode.vm: eval;
 
-        try
-            return EvalResult(eval(compileFunction(function_)));
-        catch (Exception exception)
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        return displayEvalResult(
+            () => eval(compileFunction(function_)),
+            function_,
+        );
     }
 
     private EvalResult evalTypedFrames(FuncDeclaration function_) {
@@ -44,17 +44,15 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.bytecode.core.machine: run;
         import quickbite.backends.bytecode.core.reify: reify;
 
-        try {
+        return displayEvalResult(() {
             auto compilation = compile(function_);
             const bytes =
                 run(*compilation.program, compilation.compileFunction);
-            return EvalResult(reify(
+            return reify(
                 bytes,
                 compilation.program.functions[0].returnType,
-            ));
-        }
-        catch (Exception exception)
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
+            );
+        }, function_);
     }
 }
 

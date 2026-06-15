@@ -6,6 +6,8 @@ private:
 private enum ArrayDisplay {
     normal,
     string,
+    wstring,
+    dstring,
 }
 
 
@@ -70,6 +72,22 @@ public struct Value {
             values ~= Value(element);
 
         return Value(Array(values, ArrayDisplay.string));
+    }
+
+    public static Value stringValue(in wchar[] elements) @safe pure {
+        Value[] values;
+        foreach (element; elements)
+            values ~= Value(element);
+
+        return Value(Array(values, ArrayDisplay.wstring));
+    }
+
+    public static Value stringValue(in dchar[] elements) @safe pure {
+        Value[] values;
+        foreach (element; elements)
+            values ~= Value(element);
+
+        return Value(Array(values, ArrayDisplay.dstring));
     }
 
     public static Value characterArrayValue(in Value[] elements) @safe pure {
@@ -196,6 +214,15 @@ public struct Value {
         );
     }
 
+    public string stringTypeAnnotation() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.typeAnnotation,
+            (_) => "",
+        );
+    }
+
     private dchar asDchar() const @safe pure {
         import std.sumtype: match;
 
@@ -265,7 +292,7 @@ public struct Value {
         );
     }
 
-    private string dText() const @safe pure {
+    public string dText() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
 
@@ -296,18 +323,19 @@ public struct Value {
     public string toString() const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
+        import std.traits: isSomeChar;
 
         return data.match!(
             (value) {
                 alias T = typeof(value);
                 static if (is(T == const(ubyte))) {
-                    return text(value, ": ubyte");
+                    return text(value);
                 } else static if (is(T == const(byte))) {
-                    return text(value, ": byte");
+                    return text(value);
                 } else static if (is(T == const(short))) {
-                    return text(value, ": short");
+                    return text(value);
                 } else static if (is(T == const(ushort))) {
-                    return text(value, ": ushort");
+                    return text(value);
                 } else static if (is(T == const(uint))) {
                     return text(value, "u");
                 } else static if (is(T == const(long))) {
@@ -315,9 +343,13 @@ public struct Value {
                 } else static if (is(T == const(ulong))) {
                     return text(value, "UL");
                 } else static if (is(T == const(float))) {
-                    return text(value, "f");
+                    return text(decimalText(value), "f");
+                } else static if (is(T == const(double))) {
+                    return decimalText(value);
                 } else static if (is(T == const(real))) {
-                    return text(value, ": real");
+                    return text(decimalText(value), "L");
+                } else static if (isSomeChar!T) {
+                    return text("'", asUtf8Character, "'");
                 } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
                     return value.toString;
                 } else static if (is(T == const(Struct)) || is(T == Struct)) {
@@ -337,6 +369,14 @@ public struct Value {
                 }
             },
         );
+    }
+
+    private static string decimalText(T)(in T value) @safe pure {
+        import std.algorithm: canFind;
+        import std.conv: text;
+
+        const result = text(value);
+        return result.canFind('.', 'e', 'E', "inf", "nan") ? result : result ~ ".0";
     }
 
     public Value castTo(T)() const @safe pure {
@@ -393,6 +433,19 @@ public struct Value {
                 } else {
                     return false;
                 }
+            },
+        );
+    }
+
+    public bool isFloatingScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+        import std.traits: Unqual, isFloatingPoint;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                return isFloatingPoint!T;
             },
         );
     }
@@ -1025,7 +1078,39 @@ private struct Array {
             case normal:
                 return toString;
             case string:
+            case wstring:
+            case dstring:
                 return `"` ~ charArrayString ~ `"`;
+        }
+    }
+
+    public string typeAnnotation() const @safe pure nothrow {
+        import std.sumtype: match;
+        import std.traits: Unqual;
+
+        if (elements.length != 0)
+            return elements[0].data.match!(
+                (value) {
+                    alias T = Unqual!(typeof(value));
+
+                    static if (is(T == wchar)) {
+                        return "w";
+                    } else static if (is(T == dchar)) {
+                        return "d";
+                    } else {
+                        return "";
+                    }
+                },
+            );
+
+        final switch (display) with (ArrayDisplay) {
+            case normal:
+            case string:
+                return "";
+            case wstring:
+                return "w";
+            case dstring:
+                return "d";
         }
     }
 

@@ -8,15 +8,15 @@ import std.typecons: tuple;
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("literal." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("0").should == Value(0);
-        newBackend!backend.eval("7").should == Value(7);
+        newBackend!backend.eval("0").should == "0";
+        newBackend!backend.eval("7").should == "7";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("add.int.0." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("1 + 2").should == Value(3);
+        newBackend!backend.eval("1 + 2").should == "3";
     }
 }
 
@@ -24,29 +24,29 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
 
     @("add.int.1." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("2 + 2").should == Value(4);
+        newBackend!backend.eval("2 + 2").should == "4";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.int.2." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("3 + 3").should == Value(6);
+        newBackend!backend.eval("3 + 3").should == "6";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("add.float." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("1.5f + 2.25f").should == Value(3.75f);
+        newBackend!backend.eval("1.5f + 2.25f").should == "3.75f";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("integerLikeBinaryOperands." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("cast(char) 65 + 1").should == Value(66);
-        newBackend!backend.eval("true + 1").should == Value(2);
+        newBackend!backend.eval("cast(char) 65 + 1").should == "66";
+        newBackend!backend.eval("true + 1").should == "2";
     }
 }
 
@@ -54,14 +54,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("arithmetic." ~ backend.stringof)
     unittest {
         static immutable cases = [
-            tuple("4 + 5", 9),
-            tuple("10 - 3", 7),
-            tuple("3 * 4", 12),
-            tuple("8 / 2", 4),
-            tuple("7 + 8", 15),
+            tuple("4 + 5", "9"),
+            tuple("10 - 3", "7"),
+            tuple("3 * 4", "12"),
+            tuple("8 / 2", "4"),
+            tuple("7 + 8", "15"),
         ];
         foreach (c; cases)
-            newBackend!backend.eval(c[0]).should == Value(c[1]);
+            newBackend!backend.eval(c[0]).should == c[1];
     }
 }
 
@@ -69,28 +69,23 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
 
     @("multiCell." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == Value(2);
+        newBackend!backend.eval("int x;\n++x;\n++x;\nx").should == "2";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("preservesScalarValueTypes." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("cast(byte) -3").should ==
-            Value(cast(byte) -3);
-        newBackend!backend.eval("cast(ubyte) 3").should ==
-            Value(cast(ubyte) 3);
-        newBackend!backend.eval("cast(short) -3").should ==
-            Value(cast(short) -3);
-        newBackend!backend.eval("cast(ushort) 3").should ==
-            Value(cast(ushort) 3);
-        newBackend!backend.eval("3").should == Value(3);
-        newBackend!backend.eval("3u").should == Value(3u);
-        newBackend!backend.eval("3L").should == Value(3L);
-        newBackend!backend.eval("3UL").should == Value(3UL);
-        newBackend!backend.eval("cast(char) 65").should ==
-            Value(cast(char) 65);
-        newBackend!backend.eval("1.25").should == Value(1.25);
+        newBackend!backend.eval("cast(byte) -3").should == "-3";
+        newBackend!backend.eval("cast(ubyte) 3").should == "3";
+        newBackend!backend.eval("cast(short) -3").should == "-3";
+        newBackend!backend.eval("cast(ushort) 3").should == "3";
+        newBackend!backend.eval("3").should == "3";
+        newBackend!backend.eval("3u").should == "3u";
+        newBackend!backend.eval("3L").should == "3L";
+        newBackend!backend.eval("3UL").should == "3UL";
+        newBackend!backend.eval("cast(char) 65").should == "'A'";
+        newBackend!backend.eval("1.25").should == "1.25";
     }
 }
 
@@ -98,7 +93,7 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("castsFloatingValueNumerically." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("double input = 7.75;\ncast(int) input")
-            .should == Value(7);
+            .should == "7";
     }
 }
 
@@ -106,28 +101,28 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("castsRuntimeValuesToIntegerTypes." ~ backend.stringof)
     unittest {
         newBackend!backend.eval("int input = 258;\ncast(byte) input")
-            .should == Value(cast(byte) 258);
+            .should == "2";
         newBackend!backend.eval("int input = 258;\ncast(ubyte) input")
-            .should == Value(cast(ubyte) 258);
+            .should == "2";
         newBackend!backend.eval("int input = 258;\ncast(short) input")
-            .should == Value(cast(short) 258);
+            .should == "258";
         newBackend!backend.eval("int input = 258;\ncast(ushort) input")
-            .should == Value(cast(ushort) 258);
+            .should == "258";
         newBackend!backend.eval("int input = 258;\ncast(int) input")
-            .should == Value(cast(int) 258);
+            .should == "258";
         newBackend!backend.eval("int input = 258;\ncast(uint) input")
-            .should == Value(cast(uint) 258);
+            .should == "258u";
         newBackend!backend.eval("int input = 258;\ncast(long) input")
-            .should == Value(cast(long) 258);
+            .should == "258L";
         newBackend!backend.eval("int input = 258;\ncast(ulong) input")
-            .should == Value(cast(ulong) 258);
+            .should == "258UL";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("defaultUintPreservesScalarType." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval("uint value;\nvalue").should == Value(0u);
+        newBackend!backend.eval("uint value;\nvalue").should == "0u";
     }
 }
 
@@ -138,8 +133,8 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
             "double left = 7.75;\ndouble right = 2.25;\nleft - right",
             );
 
-        result.should == Value(5.5);
-        result.should.not == Value(0);
+        result.should == "5.5";
+        result.should.not == "0";
     }
 }
 
@@ -148,8 +143,8 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     unittest {
         const result = newBackend!backend.eval("double input = 7.75;\n-input");
 
-        result.should == Value(-7.75);
-        result.should.not == Value(0);
+        result.should == "-7.75";
+        result.should.not == "0";
     }
 }
 
@@ -160,8 +155,8 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
             "import std.math: fabs;\nfloat input = -1.25f;\nfabs(input)",
             );
 
-        result.should == Value(cast(float) 1.25);
-        result.should.not == Value(1.25);
+        result.should == "1.25f";
+        result.should.not == "1.25";
     }
 }
 
@@ -172,14 +167,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
             "import std.math: pow;\nfloat base = 2.0f;\nfloat exponent = 3.0f;\npow(base, exponent)",
             );
 
-        result.should == Value(cast(float) 8.0);
-        result.should.not == Value(8.0);
+        result.should == "8.0f";
+        result.should.not == "8.0";
     }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, IR, Interpreter)) {
     @("stringLiteralIsArray." ~ backend.stringof)
     unittest {
-        newBackend!backend.eval(q{ "abc" }).should == Value("abc");
+        newBackend!backend.eval(q{ "abc" }).should == `"abc"`;
     }
 }
