@@ -2,7 +2,7 @@ module benchmarks.backends;
 
 import quickbite.backends.runner: Runner;
 import quickbite.backends.ctfe: Ctfe;
-import quickbite.backends.native: SystemLinker;
+import quickbite.backends.native: LLVMJit, SystemLinker;
 
 private:
 
@@ -30,10 +30,18 @@ private Runner makeSystemLinker(in BackendEnv env) {
     );
 }
 
+// In-process ORC JIT: reuses SystemLinker's object production but resolves
+// druntime/phobos from the running process, so it ignores env (no archive
+// linking) like Ctfe does. Archive-backed dub packages are out of its scope.
+private Runner makeLLVMJit(in BackendEnv env) {
+    return new LLVMJit;
+}
+
 public Runner[string] makeRunners(in BackendEnv env) {
     Runner function(in BackendEnv)[string] registry = [
         "ctfe":          &makeCtfe,
         "system-linker": &makeSystemLinker,
+        "llvmjit":       &makeLLVMJit,
     ];
 
     Runner[string] runners;
