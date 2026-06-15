@@ -744,6 +744,14 @@ private struct Walker {
                 return runAssocArrayHookCall(call, assocArrayHook);
         }
 
+        if (call.f !is null && !call.f.needThis) {
+            import quickbite.frontend.dmd.functions:
+                hasNoAvailableSource, noAvailableSourceMessage;
+
+            if (hasNoAvailableSource(call.f))
+                throw new Exception(noAvailableSourceMessage(call.f));
+        }
+
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
