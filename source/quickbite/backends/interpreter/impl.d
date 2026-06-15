@@ -15,6 +15,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     public override EvalResult eval(FuncDeclaration function_) {
         return displayEvalResult(() {
             Walker walker;
+            walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             walker.runStatement(function_.fbody);
             return walker.result;
         }, function_);
@@ -34,8 +35,12 @@ private enum LoopControl {
 }
 
 private class InterpretedException: Exception {
-    public this(string message) {
+    public imported!"quickbite.lang".Value object;
+
+    public this(in imported!"quickbite.lang".Value object) {
+        const message = object.classFieldNamed("msg").asCharArrayString;
         super(message);
+        this.object = object;
     }
 }
 
@@ -71,9 +76,12 @@ private struct Walker {
     private size_t allocationCount;
     private Value result;
     private bool runningCalledFunction;
+    private bool inUnitTest;
     private FuncDeclaration currentFunction;
     private Value thisValue;
     private bool hasThis;
+    private Value pendingFinallyBodyException;
+    private bool hasPendingFinallyBodyException;
     private StructArrayFieldAliases thisStructArrayFieldAliases;
     private bool returned;
     private Statement pendingGotoTarget;
@@ -125,15 +133,57 @@ private struct Walker {
         }
 
         if (auto tryFinally = statement.isTryFinallyStatement) {
-            runStatement(tryFinally._body);
+            Exception bodyException;
+            try {
+                runStatement(tryFinally._body);
+            } catch (Throwable exception) {
+                bodyException = cast(Exception) exception;
+                if (bodyException is null)
+                    throw exception;
+            }
+
+            const savedReturned = returned;
+            const savedResult = result;
             const savedLoopControl = loopControl;
             const savedLoopControlLabel = loopControlLabel;
+            returned = false;
             loopControl = LoopControl.none;
             loopControlLabel = null;
-            runStatement(tryFinally.finalbody);
-            if (loopControl == LoopControl.none) {
+            const savedPendingFinallyBodyException = pendingFinallyBodyException;
+            const savedHasPendingFinallyBodyException =
+                hasPendingFinallyBodyException;
+            if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
+                pendingFinallyBodyException = bodyInterpreted.object;
+                hasPendingFinallyBodyException = true;
+            }
+            scope(exit) {
+                pendingFinallyBodyException = savedPendingFinallyBodyException;
+                hasPendingFinallyBodyException =
+                    savedHasPendingFinallyBodyException;
+            }
+            try {
+                runStatement(tryFinally.finalbody);
+            } catch (Exception exception) {
+                auto finalException = cast(InterpretedException) exception;
+                if (finalException is null)
+                    throw exception;
+                if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
+                    bodyInterpreted.object = chainExceptionObject(
+                        bodyInterpreted.object,
+                        finalException.object,
+                    );
+                    throw bodyInterpreted;
+                }
+                throw finalException;
+            }
+            if (!returned && loopControl == LoopControl.none) {
+                returned = savedReturned;
+                if (returned)
+                    result = savedResult;
                 loopControl = savedLoopControl;
                 loopControlLabel = savedLoopControlLabel;
+                if (bodyException !is null)
+                    throw bodyException;
             }
             return;
         }
@@ -274,9 +324,7 @@ private struct Walker {
         }
 
         if (auto throw_ = statement.isThrowStatement) {
-            import quickbite.backends.interpreter.messages: thrownExceptionMessage;
-
-            throw new InterpretedException(thrownExceptionMessage(throw_.exp));
+            throwInterpretedException(throw_.exp);
         }
 
         import std.conv: text;
@@ -290,41 +338,141 @@ private struct Walker {
         try {
             runStatement(tryCatch._body);
         } catch (Exception exception) {
-            if (!isCatchableInterpretedException(exception))
+            auto interpreted = cast(InterpretedException) exception;
+            if (interpreted is null)
                 throw exception;
 
-            auto catch_ = firstCatch(tryCatch);
+            auto catch_ = matchingCatch(tryCatch, interpreted.object);
             if (catch_ is null)
                 throw exception;
 
+            bindCatchVariable(catch_, interpreted.object);
             runStatement(catch_.handler);
         }
     }
 
-    private imported!"dmd.statement".Catch firstCatch(
+    private imported!"dmd.statement".Catch matchingCatch(
         imported!"dmd.statement".TryCatchStatement tryCatch,
+        in Value object,
     ) {
         if (tryCatch.catches is null || tryCatch.catches.length == 0)
             return null;
 
-        return (*tryCatch.catches)[0];
+        foreach (catch_; *tryCatch.catches)
+            if (catchMatches(catch_, object))
+                return catch_;
+
+        return null;
     }
 
-    private bool isCatchableInterpretedException(Exception exception) const {
-        import std.algorithm: startsWith;
-
-        if (cast(InterpretedException) exception !is null)
+    private bool catchMatches(
+        imported!"dmd.statement".Catch catch_,
+        in Value object,
+    ) {
+        if (catch_.type is null)
             return true;
 
+        auto classType = catch_.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            return false;
+
+        return object.classHasType(className(classType.sym));
+    }
+
+    private void bindCatchVariable(
+        imported!"dmd.statement".Catch catch_,
+        in Value object,
+    ) {
+        if (catch_.var is null)
+            return;
+
+        locals[catch_.var] = object;
+        uninitializedLocals.remove(catch_.var);
+    }
+
+    private void throwInterpretedException(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto object = runExpression(expression);
+        if (!object.isClassObject)
+            throw new Exception("Unsupported throw expression.");
+        if (hasPendingFinallyBodyException)
+            throw new InterpretedException(chainExceptionObject(
+                pendingFinallyBodyException,
+                object,
+            ));
+
+        throw new InterpretedException(object);
+    }
+
+    private Value chainExceptionObject(in Value thrown, in Value next) const {
+        if (!thrown.isClassObject || !thrown.hasClassFieldNamed("_nextInChainPtr"))
+            return thrown;
+
+        return thrown.withClassFieldNamed("_nextInChainPtr", next);
+    }
+
+    private bool isThrowableConstructor(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) const {
+        auto class_ = function_.parent is null
+            ? null
+            : function_.parent.isClassDeclaration;
+        if (class_ is null)
+            return false;
+
+        const name = className(class_);
+        if (name == "Throwable" || name == "Exception" || name == "Error")
+            return true;
+
+        return false;
+    }
+
+    private Value applyThrowableConstructor(
+        in Value object,
+        in Value[] arguments,
+    ) const {
+        if (!object.isClassObject || arguments.length == 0)
+            return object;
+
+        auto result = object.withClassFieldNamed("msg", arguments[0]);
+        if (
+            arguments.length >= 4 &&
+            arguments[3].isClassObject &&
+            result.hasClassFieldNamed("_nextInChainPtr")
+        )
+            result = result.withClassFieldNamed("_nextInChainPtr", arguments[3]);
+
+        return result;
+    }
+
+    private Value runThisConstructorCall(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
+    ) {
+        if (!hasThis || !thisValue.isClassObject || !isThrowableConstructor(function_))
+            throw new Exception("Unsupported eval call.");
+
+        thisValue = applyThrowableConstructor(thisValue, arguments);
+        return thisValue;
+    }
+
+    private bool isThisOrSuperExpression(
+        imported!"dmd.expression".Expression expression,
+    ) const {
         return
-            exception.msg != "unittest failure" &&
-            exception.msg != "Unittest assertion failed." &&
-            !exception.msg.startsWith("`assert(") &&
-            !exception.msg.startsWith("Unsupported ") &&
-            !exception.msg.startsWith("No function body to execute: ") &&
-            !exception.msg.startsWith("cannot read uninitialized variable ") &&
-            !exception.msg.startsWith("array index ") &&
-            !exception.msg.startsWith("index ");
+            expression.isThisExp !is null ||
+            expression.isSuperExp !is null;
+    }
+
+    private bool isThisOrSuperMemberCall(
+        imported!"dmd.expression".CallExp call,
+    ) const {
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return false;
+
+        return isThisOrSuperExpression(dot.e1);
     }
 
     private bool skipUntilSwitchTarget(Statement statement) {
@@ -618,7 +766,7 @@ private struct Walker {
 
             if (!isTruthy(runExpression(assert_.e1)))
                 throw new Exception(
-                    assertFailureMessage(assert_, runningCalledFunction, &runExpression),
+                    assertFailureMessage(assert_, runningCalledFunction, inUnitTest, &runExpression),
                 );
             return Value(true);
         }
@@ -662,6 +810,11 @@ private struct Walker {
 
         if (auto conditional = expression.isCondExp)
             return runConditionalExpression(conditional);
+
+        if (auto throw_ = expression.isThrowExp) {
+            throwInterpretedException(throw_.e1);
+            return Value.void_;
+        }
 
         if (auto post = expression.isPostExp)
             return runPostIncrementExpression(post);
@@ -773,8 +926,32 @@ private struct Walker {
             return thisValue;
         }
 
+        if (expression.isSuperExp !is null) {
+            if (!hasThis)
+                throw new Exception("Unsupported eval expression: super");
+            return thisValue;
+        }
+
         if (auto typeid_ = expression.isTypeidExp)
             return runTypeidExpression(typeid_);
+
+        if (auto identifier = expression.isIdentifierExp) {
+            const name = identifier.ident is null
+                ? ""
+                : identifier.ident.toString.idup;
+
+            // DMD-generated exception support can leave the magic __ctfe flag
+            // as an identifier instead of lowering it to a VarExp.
+            if (name == "__ctfe")
+                return Value(true);
+
+            if (
+                hasThis &&
+                thisValue.isClassObject &&
+                thisValue.hasClassFieldNamed(name)
+            )
+                return thisValue.classFieldNamed(name);
+        }
 
         if (auto var = expression.isVarExp) {
             import dmd.id: Id;
@@ -1204,6 +1381,12 @@ private struct Walker {
             if (call.f !is null && call.f.needThis) {
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
+
+                if (
+                    call.f.isCtorDeclaration !is null &&
+                    isThisOrSuperMemberCall(call)
+                )
+                    return runThisConstructorCall(call.f, arguments);
 
                 if (hasNoAvailableSource(call.f))
                     throw new Exception(noAvailableSourceMessage(call.f));
@@ -1640,23 +1823,13 @@ private struct Walker {
         child.lastStaticArrayCopyDestructor = lastStaticArrayCopyDestructor;
         child.bindFunctionParameters(function_, arguments);
 
-        child.runStatement(function_.fbody);
-        nextLocalPointerId = child.nextLocalPointerId;
-        nextFunctionPointerId = child.nextFunctionPointerId;
-        functionPointers = child.functionPointers;
-        functionPointerIds = child.functionPointerIds;
-        allocationCount = child.allocationCount;
-        arrayAllocations = child.arrayAllocations;
-        arrayAllocationVariables = child.arrayAllocationVariables;
-        staticArrayCopySources = child.staticArrayCopySources;
-        lastStaticArrayCopySource = child.lastStaticArrayCopySource;
-        lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
-        lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
-        writeBackNestedLocals(function_, child);
-        writeBackGlobals(child);
-        writeBackLocalPointerTargets(child);
-        writeBackRefArguments(function_, argumentExpressions, child);
-        writeBackByValueStructArguments(function_, argumentExpressions, child);
+        try {
+            child.runStatement(function_.fbody);
+        } catch (InterpretedException exception) {
+            writeBackFunctionState(function_, argumentExpressions, child);
+            throw exception;
+        }
+        writeBackFunctionState(function_, argumentExpressions, child);
         return child.result;
     }
 
@@ -1715,7 +1888,59 @@ private struct Walker {
         child.hasThis = true;
         child.bindFunctionParameters(function_, arguments);
 
-        child.runStatement(function_.fbody);
+        try {
+            child.runStatement(function_.fbody);
+        } catch (InterpretedException exception) {
+            writeBackMemberFunctionState(
+                function_,
+                receiverExpression,
+                argumentExpressions,
+                child,
+            );
+            throw exception;
+        }
+        writeBackMemberFunctionState(
+            function_,
+            receiverExpression,
+            argumentExpressions,
+            child,
+        );
+
+        if (function_.isCtorDeclaration !is null)
+            return child.thisValue;
+
+        return child.result;
+    }
+
+    private void writeBackFunctionState(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
+        nextLocalPointerId = child.nextLocalPointerId;
+        nextFunctionPointerId = child.nextFunctionPointerId;
+        functionPointers = child.functionPointers;
+        functionPointerIds = child.functionPointerIds;
+        allocationCount = child.allocationCount;
+        arrayAllocations = child.arrayAllocations;
+        arrayAllocationVariables = child.arrayAllocationVariables;
+        staticArrayCopySources = child.staticArrayCopySources;
+        lastStaticArrayCopySource = child.lastStaticArrayCopySource;
+        lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
+        lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
+        writeBackNestedLocals(function_, child);
+        writeBackGlobals(child);
+        writeBackLocalPointerTargets(child);
+        writeBackRefArguments(function_, argumentExpressions, child);
+        writeBackByValueStructArguments(function_, argumentExpressions, child);
+    }
+
+    private void writeBackMemberFunctionState(
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression receiverExpression,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        ref Walker child,
+    ) {
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
         functionPointers = child.functionPointers;
@@ -1733,11 +1958,6 @@ private struct Walker {
         writeBackThisStructArrayFieldAliases(child);
         child.returned = false;
         writeBackThis(receiverExpression, child.thisValue);
-
-        if (function_.isCtorDeclaration !is null)
-            return child.thisValue;
-
-        return child.result;
     }
 
     private void writeBackNestedLocals(
@@ -2010,6 +2230,8 @@ private struct Walker {
             const target = receiver.isLocalPointer
                 ? localPointerTarget(receiver)
                 : receiver;
+            if (target.isClassObject)
+                return target.classFieldAt(classFieldIndex(dot));
             return target.structFieldAt(structFieldIndex(dot));
         }
 
@@ -2075,21 +2297,24 @@ private struct Walker {
             return;
         }
 
+        if (target.isSuperExp !is null && hasThis) {
+            thisValue = value;
+            return;
+        }
+
         if (auto dot = target.isDotVarExp) {
             const receiver = runExpression(dot.e1);
             if (receiver.isLocalPointer) {
-                writeLocation(
-                    dot.e1,
-                    localPointerTarget(receiver)
-                        .withStructField(structFieldIndex(dot), value),
-                );
+                const targetValue = localPointerTarget(receiver);
+                writeLocation(dot.e1, targetValue.isClassObject
+                    ? targetValue.withClassField(classFieldIndex(dot), value)
+                    : targetValue.withStructField(structFieldIndex(dot), value));
                 return;
             }
 
-            writeLocation(
-                dot.e1,
-                receiver.withStructField(structFieldIndex(dot), value),
-            );
+            writeLocation(dot.e1, receiver.isClassObject
+                ? receiver.withClassField(classFieldIndex(dot), value)
+                : receiver.withStructField(structFieldIndex(dot), value));
             return;
         }
 
@@ -2166,6 +2391,22 @@ private struct Walker {
 
         foreach (index; 0 .. structType.sym.fields.length)
             if (structType.sym.fields[index] is field)
+                return index;
+
+        throw new Exception("Unsupported interpreter field access.");
+    }
+
+    private size_t classFieldIndex(imported!"dmd.expression".DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            throw new Exception("Unsupported interpreter field access.");
+
+        auto classType = receiverClassType(dot.e1);
+        if (classType is null || classType.sym is null)
+            throw new Exception("Unsupported interpreter field access.");
+
+        foreach (index, candidate; classFields(classType.sym))
+            if (candidate is field)
                 return index;
 
         throw new Exception("Unsupported interpreter field access.");
@@ -2494,6 +2735,15 @@ private struct Walker {
             return Value.void_;
         }
 
+        if (type.ty == TY.Tclass)
+            return classCastValue(cast_);
+
+        if (type.ty == TY.Tident) {
+            Value value;
+            if (tryIdentifierClassCastValue(cast_, value))
+                return value;
+        }
+
         if (isTransparentArrayCastTarget(type))
             return runExpression(cast_.e1);
 
@@ -2501,6 +2751,44 @@ private struct Walker {
             return pointerCastValue(cast_);
 
         return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+    }
+
+    private Value classCastValue(imported!"dmd.expression".CastExp cast_) {
+        const value = runExpression(cast_.e1);
+        if (value == Value.null_)
+            return value;
+
+        auto classType = cast_.to.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            throw new Exception("Unsupported class cast target.");
+
+        return value.classHasType(className(classType.sym))
+            ? value
+            : Value.null_;
+    }
+
+    private bool tryIdentifierClassCastValue(
+        imported!"dmd.expression".CastExp cast_,
+        out Value result,
+    ) {
+        import std.algorithm: canFind;
+
+        if (!typeChars(cast_.to).canFind("Throwable"))
+            return false;
+
+        const value = runExpression(cast_.e1);
+        if (value == Value.null_) {
+            result = value;
+            return true;
+        }
+
+        if (!value.isClassObject)
+            return false;
+
+        result = value.classHasType("Throwable")
+            ? value
+            : Value.null_;
+        return true;
     }
 
     // DMD semantic lowers `array.ptr` to `cast(T*) array`
@@ -2894,11 +3182,15 @@ private struct Walker {
     }
 
     private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
+        import dmd.astenums: TY;
         import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
         import std.conv: text;
 
         if (new_.placement !is null || new_.thisexp !is null)
             throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        if (new_.type.toBasetype.ty == TY.Tclass)
+            return runNewClassExpression(new_);
 
         if (
             isPointerType(new_.type) &&
@@ -2966,6 +3258,49 @@ private struct Walker {
         }
 
         return Value.pointerValue(structVal);
+    }
+
+    private Value runNewClassExpression(
+        imported!"dmd.expression".NewExp new_,
+    ) {
+        import std.conv: text;
+
+        auto classType = new_.type.toBasetype.isTypeClass;
+        if (classType is null || classType.sym is null)
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        Value[] arguments;
+        if (new_.arguments !is null)
+            foreach (argument; *new_.arguments)
+                arguments ~= runExpression(argument);
+
+        auto object = classDefaultValue(classType.sym);
+        if (new_.member is null)
+            return object;
+
+        if (isThrowableConstructor(new_.member))
+            return applyThrowableConstructor(object, arguments);
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = new_.member;
+        child.result = Value(false);
+        child.locals = locals.dup;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.functionPointers = functionPointers.dup;
+        child.functionPointerIds = functionPointerIds.dup;
+        child.nextFunctionPointerId = nextFunctionPointerId;
+        child.thisValue = object;
+        child.hasThis = true;
+        child.bindFunctionParameters(new_.member, arguments);
+        child.runStatement(new_.member.fbody);
+        nextLocalPointerId = child.nextLocalPointerId;
+        nextFunctionPointerId = child.nextFunctionPointerId;
+        functionPointers = child.functionPointers;
+        functionPointerIds = child.functionPointerIds;
+        return child.thisValue;
     }
 
     private Value newArrayValue(
@@ -3307,6 +3642,75 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 }
 
 
+private imported!"dmd.mtype".TypeClass receiverClassType(
+    imported!"dmd.expression".Expression receiver,
+) {
+    if (receiver.type is null)
+        return null;
+
+    return receiver.type.toBasetype.isTypeClass;
+}
+
+
+private imported!"quickbite.lang".Value classDefaultValue(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    import quickbite.frontend.dmd.values: defaultValue;
+    import quickbite.lang: Value;
+
+    string[] fieldNames;
+    Value[] fields;
+    foreach (field; classFields(class_)) {
+        fieldNames ~= variableName(field);
+        fields ~= defaultValue(field.type);
+    }
+
+    return Value.classValue(
+        className(class_),
+        classTypeNames(class_),
+        fieldNames,
+        fields,
+    );
+}
+
+
+private imported!"dmd.declaration".VarDeclaration[] classFields(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    imported!"dmd.dclass".ClassDeclaration[] classes;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        classes ~= current;
+
+    imported!"dmd.declaration".VarDeclaration[] fields;
+    foreach_reverse (current; classes)
+        foreach (field; current.fields)
+            fields ~= field;
+
+    return fields;
+}
+
+
+private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
+    string[] names;
+    for (auto current = class_; current !is null; current = current.baseClass)
+        names ~= className(current);
+
+    return names;
+}
+
+
+private string className(imported!"dmd.dclass".ClassDeclaration class_) @safe {
+    return class_.ident is null ? "" : class_.ident.toString.idup;
+}
+
+
+private string variableName(
+    imported!"dmd.declaration".VarDeclaration variable,
+) @safe {
+    return variable.ident is null ? "" : variable.ident.toString.idup;
+}
+
+
 private string structLiteralName(
     imported!"dmd.expression".StructLiteralExp literal,
 ) @safe {
@@ -3332,6 +3736,15 @@ private string expressionChars(imported!"dmd.expression".Expression expression) 
     import std.string: fromStringz;
 
     return expression.toChars.fromStringz.idup;
+}
+
+// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
+// string owned by the AST node, which we copy with `idup` before returning,
+// so no unsafe pointer escapes.
+private string typeChars(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return type.toChars.fromStringz.idup;
 }
 
 // @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C

@@ -505,10 +505,17 @@ public string equalFailureMessage(
 public string assertFailureMessage(
     imported!"dmd.expression".AssertExp assert_,
     in bool runningCalledFunction,
+    in bool inUnitTest,
     scope imported!"quickbite.lang".Value delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import quickbite.lang: Value;
     import std.conv: text;
+
+    // A literal `assert(false)` directly in a unittest body raises the plain
+    // _d_unittest hook message in compiled code; match the SystemLinker oracle
+    // rather than the CTFE-style "`assert(false)` failed" wording.
+    if (inUnitTest && assert_.msg is null && isLiteralFalse(assert_.e1))
+        return "unittest failure";
 
     if (assert_.msg !is null) {
         if (assert_.msg.isStringExp !is null)
@@ -557,6 +564,13 @@ public string assertFailureMessage(
     }
 
     return "`assert(false)` failed";
+}
+
+private bool isLiteralFalse(imported!"dmd.expression".Expression expression) {
+    if (auto integer = expression.isIntegerExp)
+        return integer.toInteger == 0;
+
+    return false;
 }
 
 public string indexOutOfBoundsMessage(
