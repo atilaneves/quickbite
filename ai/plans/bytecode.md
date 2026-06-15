@@ -848,6 +848,48 @@ Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
 directly on the new core per the slice roadmap.
 
+## eval.d Completion Analysis (2026-06-15)
+All `eval.d` blocks were promoted to `BytecodeNewCore` and run in isolation.
+8 of 17 passed unchanged: the literal-arithmetic blocks (`add.int.*`,
+`arithmetic`, `integerLikeBinaryOperands`) pass because DMD constant-folds
+all-literal arithmetic to a single `IntegerExp` before the compiler sees it,
+and `castsRuntimeValuesToIntegerTypes` / `defaultUintPreservesScalarType`
+pass because the existing scalar cast, extend, and default-`T.init`
+declaration-initializer paths already cover them.
+
+The 9 failures group into four root causes:
+
+1. **Floating-point scalars** (`add.float`, `castsFloatingValueNumerically`,
+   `floatingSubtractionUsesNumericValues`,
+   `floatingUnaryMinusUsesNumericValue`, the `1.25` case in
+   `preservesScalarValueTypes`). `ScalarType` has no `float_`/`double_`, so
+   `scalarType` throws `Unsupported type in bytecode core: float`/`double`.
+   Needs: float/double `ScalarType`s and sizes, `RealExp` literal lowering
+   into the constant pool, type-tagged floating add/subtract opcodes, unary
+   minus, int↔float and float↔float casts, and float/double reification plus
+   operand display.
+2. **`std.math` builtins returning float** (`fabsFloatPreservesReturnType`,
+   `powFloatDoesNotReturnDoubleValue`). Depends on cause 1, then needs the VM
+   to recognise DMD's `fabs`/`pow` builtin classification and execute them as
+   VM intrinsics (per "Builtins and Native Calls": builtin parity stays
+   mechanically tied to DMD's builtin classification and is executed by the
+   VM), preserving the `float` return type.
+3. **Compound assignment / pre-increment** (`multiCell`). `++x` lowers to a
+   `+= 1` (`x += 1`) expression the compiler does not handle; it throws
+   `Unsupported expression in bytecode core: x += 1`. Needs lvalue
+   compound-assignment lowering through the existing `add` opcode (no new
+   increment opcode, per the PR-123 lesson).
+4. **String literals as arrays** (`stringLiteralIsArray`). `"abc"` has type
+   `string`, which `scalarType` rejects. Needs minimal array-slice support:
+   store literal bytes in the constant pool, produce a slice descriptor, and
+   reify/display it as `"abc"`. This is the leading edge of slice 5 pulled in
+   to finish the module.
+
+Each cause is fixed by a dedicated subagent in dependency order
+(3 → 1 → 2 → 4), sequentially in this worktree so each builds on the
+previous committed state, since all touch the shared core modules
+(`compiler.d`, `program.d`, `machine.d`, `reify.d`).
+
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.
 - Add focused VM contract tests only for bytecode-specific properties such as
