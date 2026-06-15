@@ -139,7 +139,8 @@ SystemLinker matrix stays green under `--random` and both historical seeds
 
 ✅ DONE. `native/llvm_orc.d` (hand-written ORC-V2 / Core / Object bindings +
 `pragma(lib)`/`libs`) and `native/llvm_jit.d` (`LLVMJit : GroupedRunner`,
-`this(ExecutionMode)`) are stood up. `runTests`:
+no-mode constructor like `SystemLinker` — native is inherently runtime, see
+`ai/plans/single-oracle.md`) are stood up. `runTests`:
 
 1. calls `native/codegen.d` to get object paths (child emits, no link);
 2. parent: creates LLJIT (null builder → host-default JITLink
@@ -233,20 +234,30 @@ correct sum — allocation and a mid-test collection both behave.
 
 ✅ DONE. `LLVMJit` is re-exported through `native/package.d` (reachable from
 test modules via `import ut.backends;`, no change needed in
-`tests/ut/backends/package.d`). It was added to the `AliasSeq` alongside
-`SystemLinker` in four SystemLinker-oracle `rt/` blocks — pre-approved per
-`AGENTS.md` — each already carrying `@Tags(backend.stringof)` so `LLVMJit` is
-opt-out-able exactly like `SystemLinker`:
+`tests/ut/backends/package.d`). It is promoted alongside `SystemLinker` (its
+single behaviour oracle) — pre-approved per `AGENTS.md` — in the
+`@Tags(backend.stringof)` `rt/` block carrying it, so `LLVMJit` is opt-out-able
+exactly like `SystemLinker`.
 
-- `tests/ut/backends/runner/rt/control_flow.d`
-- `tests/ut/backends/runner/rt/exceptions.d`
-- `tests/ut/backends/runner/rt/expressions.d`
-- `tests/ut/backends/runner/rt/logic.d`
+The original four promotion targets (`rt/{control_flow,exceptions,expressions,
+logic}.d`) no longer exist: master's single-oracle migration
+(`ai/plans/single-oracle.md`) moved every language-surface `rt/` module into
+`ct/`, redefining `rt/` as behaviour that needs the runtime environment.
+`LLVMJit` is an `rt/` backend (oracle = `SystemLinker`) and must not appear in
+`ct/` blocks, so after the merge it is promoted into the only surviving `rt/`
+SystemLinker-oracle block:
 
-Gate met: `./bin/ut -l` shows the new `LLVMJit` instances; `./bin/ut @LLVMJit`
-green solo (12 tests, 0 failed), `./bin/ut @SystemLinker` still green, and
-`./bin/ut --random` plus both historical seeds (`2828407573`, `3516581215`)
-all green.
+- `tests/ut/backends/runner/rt/cstdlib.d` — the `malloc.` block (a real
+  runtime libc `malloc` call through the in-process JIT).
+
+The Step 1 gate proofs in `tests/ut/backends/runner/rt/llvm_jit.d`
+(`passingFixtureRuns`, `failingFixtureMessageMatchesSystemLinker`,
+`ehFrameProofNonAllocatingAssert`) remain `LLVMJit`-tagged and provide the
+core matrix coverage.
+
+Gate met: `./bin/ut -l` shows the `LLVMJit` instances; `./bin/ut @LLVMJit`
+green solo, `./bin/ut @SystemLinker` still green, and `./bin/ut --random` plus
+both historical seeds (`2828407573`, `3516581215`) all green.
 
 ### Step 3 — measure (GC registration already resolved in Step 1) ✅ DONE
 
@@ -336,7 +347,7 @@ bin/ut @LLVMJit                     # the new backend's matrix blocks
   fork-and-emit out of (Step 0) and the `runUnitTest` shape to mirror
 - `source/quickbite/backends/native/package.d` — re-export point for both
   backends
-- `source/quickbite/backends/runner.d` — `GroupedRunner`, `ExecutionMode`
+- `source/quickbite/backends/runner.d` — `GroupedRunner`
 - `tests/ut/backends/package.d` — `newBackend`, backend exports
 - `ai/plans/dmd-backend.md` — Scope stage 3 (load in parent) and the
   `DmdCodegenRam` druntime-registration warning (the central risk here)

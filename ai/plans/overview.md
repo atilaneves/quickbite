@@ -77,10 +77,11 @@ No lowering step, no IR. Wrapped as `ExecutorBackend.treeWalking`.
 Pipeline: delegate execution directly to DMD's built-in CTFE interpreter.
 
 Wrapped as `ExecutorBackend.dmdCtfe`. Serves as a correctness reference
-and a ceiling on what the DMD frontend alone can do.
-For backend language-surface tests, CTFE is the canonical oracle for supported
-behaviour unless the completed dmd codegen backend demonstrates that compiled
-D code behaves differently.
+and a ceiling on what the DMD frontend alone can do, and as a convenient
+real-D fixture source. It is *not* the oracle: `SystemLinker` (compiled D)
+is the single behaviour oracle for backend language-surface tests
+(`ai/plans/single-oracle.md`). Where CTFE diverges from `SystemLinker`,
+its behaviour is characterized, not treated as truth.
 
 ### 4. BytecodeExecutor
 
@@ -165,8 +166,9 @@ Adding a backend to an existing backend-parity test does not require a fresh
 test-approval stop. Adding a new test or modifying existing test behaviour
 still requires approval before editing the test.
 
-Do not add language-surface tests whose expected result differs from CTFE or
-compiled D behaviour. Backend-specific regression tests may cover internal
+Do not add language-surface tests whose expected result differs from compiled
+D behaviour (`SystemLinker`, the oracle per `ai/plans/single-oracle.md`).
+Backend-specific regression tests may cover internal
 mechanics only when they do not contradict D semantics, and they must be named
 and scoped as backend-specific implementation tests rather than placed in the
 language-surface matrix.

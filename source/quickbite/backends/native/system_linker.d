@@ -5,29 +5,41 @@ private:
 
 
 public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
-    import quickbite.backends.runner: ExecutionMode, TestResult;
+    import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
 
     private const SystemLinkerInputs _inputs;
 
-    // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends.
     public this(
-        in ExecutionMode mode = ExecutionMode.runtime,
         in SystemLinkerInputs inputs = SystemLinkerInputs.init,
     ) @safe @nogc nothrow pure {
-        assert(mode == ExecutionMode.runtime);
         _inputs = inputs;
     }
 
     public this(
-        in ExecutionMode mode,
         const string[] linkFiles,
         const string[] archiveImportPaths,
     ) @safe @nogc nothrow pure {
         this(
-            mode,
-            SystemLinkerInputs(linkFiles, archiveImportPaths, false),
+            SystemLinkerInputs(linkFiles, archiveImportPaths),
+        );
+    }
+
+    // Derives the archive import paths from the raw dub import paths and the
+    // package root: the driver forwards what dub reported and lets the backend
+    // decide what is already compiled into the archives. The filtering uses
+    // std.path/std.algorithm, so this constructor cannot be @nogc nothrow pure
+    // like its siblings.
+    public this(
+        const string[] linkFiles,
+        const string[] importPaths,
+        in string packageRoot,
+    ) @safe {
+        this(
+            SystemLinkerInputs(
+                linkFiles,
+                archiveImportPathsUnder(importPaths, packageRoot),
+            ),
         );
     }
 
@@ -67,11 +79,30 @@ public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
 public struct SystemLinkerInputs {
     // Link files are prebuilt libraries appended to every link. Modules under
     // archive import paths are defined by those libraries and must not be
-    // codegen'd again. Default imports are only traversed when the caller
-    // knows dependency templates can need druntime/phobos members in this link.
+    // codegen'd again.
     public const string[] linkFiles;
     public const string[] archiveImportPaths;
-    public bool includeDefaultImportsForTemplateCodegen;
+}
+
+// import paths under the package belong to the project under test and are
+// compiled fresh per run; the rest belong to dependencies, whose objects
+// come from the dub-built archives in linkFiles.
+private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
+    import std.algorithm.iteration: filter, map;
+    import std.algorithm.searching: startsWith;
+    import std.array: array;
+    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+    const root = packageRoot.absolutePath.buildNormalizedPath;
+    bool underPackage(in string path) {
+        const normalised = path.absolutePath.buildNormalizedPath;
+        return normalised == root
+            || normalised.startsWith(root ~ dirSeparator);
+    }
+    return importPaths
+        .filter!(path => !underPackage(path))
+        .map!(path => path.idup)
+        .array;
 }
 
 private void* compileToSharedLibrary(
@@ -106,7 +137,6 @@ private void* compileToSharedLibrary(
             dir,
             CodegenInputs(
                 inputs.archiveImportPaths,
-                inputs.includeDefaultImportsForTemplateCodegen,
             ),
         );
     });

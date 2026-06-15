@@ -15,6 +15,8 @@ public interface Evaluator {
     // as the diagnostic rather than throwing.
     public EvalResult eval(FuncDeclaration function_);
 
+    public ReplSession createReplSession();
+
     // Convenience for tests / ad-hoc eval. Throwing here is a terminal
     // boundary for a single expression, not internal control flow.
     public final Value eval(in string expr) {
@@ -54,6 +56,36 @@ public interface Evaluator {
                       )
                     : result;
         }
+    }
+}
+
+public interface ReplSession {
+    import quickbite.frontend.repl: ReplCell;
+
+    public EvalResult submit(ReplCell cell);
+}
+
+public ReplSession replayReplSession(Evaluator evaluator) {
+    return new ReplayReplSession(evaluator);
+}
+
+private class ReplayReplSession: ReplSession {
+    private Evaluator _evaluator;
+
+    public this(Evaluator evaluator) {
+        _evaluator = evaluator;
+    }
+
+    public override EvalResult submit(ReplCell cell) {
+        import quickbite.frontend.repl: ReplCellKind;
+        import quickbite.lang: Value;
+
+        const result = _evaluator.eval(cell.evalCell);
+        if (result.failed || cell.kind != ReplCellKind.typeExpression)
+            return result;
+
+        // A type-expression cell reports the value's type name.
+        return EvalResult(Value.typeName(result.value.asCharArrayString));
     }
 }
 

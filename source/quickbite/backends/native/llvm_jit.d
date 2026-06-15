@@ -10,18 +10,14 @@ private:
 // spawn. Object production is shared via native/codegen.d; this backend
 // differs from SystemLinker only after the objects exist on disk.
 public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
-    import quickbite.backends.runner: ExecutionMode, TestResult;
+    import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
 
     private const LLVMJitInputs _inputs;
 
-    // Native code is inherently runtime; the mode parameter exists for
-    // constructor uniformity across backends.
     public this(
-        in ExecutionMode mode = ExecutionMode.runtime,
         in LLVMJitInputs inputs = LLVMJitInputs.init,
     ) @safe @nogc nothrow pure {
-        assert(mode == ExecutionMode.runtime);
         _inputs = inputs;
     }
 
@@ -47,14 +43,13 @@ public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
 
 public struct LLVMJitInputs {
     // Modules under archive import paths are defined by prebuilt libraries and
-    // must not be codegen'd again. Default imports are only traversed when the
-    // caller knows dependency templates can need druntime/phobos members in
-    // this link. There is no `linkFiles` field as SystemLinker has: ORC
-    // resolves druntime/phobos symbols from the running process, and any
-    // archive symbols would have to be loaded into the JIT separately (not POC
-    // scope).
+    // must not be codegen'd again. Whether default imports are traversed for
+    // template-instance codegen is derived from the modules themselves by the
+    // shared codegen path, not from a caller flag. There is no `linkFiles`
+    // field as SystemLinker has: ORC resolves druntime/phobos symbols from the
+    // running process, and any archive symbols would have to be loaded into the
+    // JIT separately (not POC scope).
     public const string[] archiveImportPaths;
-    public bool includeDefaultImportsForTemplateCodegen;
 }
 
 // Emit the objects (shared codegen path, child emits, no link) and stand up an
@@ -96,7 +91,6 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
             dir,
             CodegenInputs(
                 inputs.archiveImportPaths,
-                inputs.includeDefaultImportsForTemplateCodegen,
             ),
         );
     });

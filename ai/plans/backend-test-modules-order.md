@@ -1,8 +1,10 @@
 # Backend Test Module Order
 
-This order ranks CTFE-backed backend behavior modules by the amount of D
+This order ranks the shared backend behaviour modules by the amount of D
 language surface a new backend must implement before the whole module can pass.
-Use it when choosing which existing CTFE tests to promote to a backend.
+Use it when choosing which existing tests to promote to a backend.
+`SystemLinker` (compiled D) is the oracle for these modules
+(`ai/plans/single-oracle.md`); `Ctfe` is a fixture source, not an oracle.
 
 This is the shared ordering companion for backend-specific plans. New backend
 plans should be able to reuse this order without changing this file.
@@ -26,8 +28,9 @@ enclosing `static foreach` still excludes the target backend. If the candidate
 is already covered, treat the note as historical progress and choose the next
 smallest current candidate from the files, not from the stale text.
 
-Start with the earliest module whose remaining CTFE-only tests can be promoted
-honestly through the target backend's real pipeline. If a backend plan has
+Start with the earliest module whose remaining not-yet-promoted tests can be
+promoted honestly through the target backend's real pipeline. If a backend
+plan has
 entry-point slices before it can join the shared language matrix, finish those
 first, then use this order for shared behavior coverage.
 
@@ -51,9 +54,9 @@ backends explicitly with `static foreach (backend; AliasSeq!(...))`. Promoting
 a test means adding the target backend type to that one block's `AliasSeq`,
 not broadening an entire file at once.
 
-Adding a backend to an existing CTFE-backed test is a backend promotion, not a
-new behavior test. Adding a new test or changing expected behavior still needs
-the normal test-approval stop.
+Adding a backend to an existing shared behaviour test is a backend promotion,
+not a new behavior test. Adding a new test or changing expected behavior still
+needs the normal test-approval stop.
 
 | Order | Difficulty | Module |
 | ---: | ---: | --- |
@@ -72,11 +75,20 @@ the normal test-approval stop.
 | 13 | 10.0 | `tests/ut/backends/runner/ct/cerealed.d` |
 | 14 | 10.5 | `tests/ut/bin/repl.d` |
 
-Re-graded 2026-06-10 against the current checkout. The matrices observed then
-agreed with this order: every module ranked 1-7 already ran on several
-backends, the modules ranked 8-13 were still CTFE-only, and the REPL module
-ran its early session-state tests on three backends but kept everything
-involving Phobos, display formats, or loaded unittests CTFE-only.
+Re-graded 2026-06-15 against the current checkout. The order still holds, and
+observed backend breadth now decreases monotonically as the difficulty score
+rises, which corroborates the ranking. Modules ranked 1-7 run on several
+backends (four to six, spanning `Ctfe`, `Interpreter`, `Bytecode`,
+`BytecodeNewCore`, `IR`, and `SystemLinker`). Since the 2026-06-10 grading,
+`SystemLinker` (and in places `Interpreter`) has been promoted across the
+formerly `Ctfe`-only tail: `arrays.d` and `structs.d` (8-9) now run mostly on
+`Ctfe`, `Interpreter`, and `SystemLinker`; `control_flow.d`, `exceptions.d`,
+`expressions.d`, and `cerealed.d` (10-13) now run mostly on `Ctfe` and
+`SystemLinker`, with diverging diagnostic-message tests split into per-backend
+variants. The REPL module still runs its early session-state tests on three
+backends (`Ctfe`, `Interpreter`, `Bytecode`) but has added `Interpreter` to its
+Phobos and display-format tests, so only the Bytecode-incompatible cases remain
+on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
 
 ## Classification Notes
 

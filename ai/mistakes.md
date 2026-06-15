@@ -232,3 +232,17 @@
   reach for `_d_dso_registry`/`.init_array` — the LLVM C API can't run
   initializers and the shared-druntime registry path crashes on JIT mmap'd
   code.
+
+- SystemLinker's default-import template codegen is not derivable from "has
+  archive imports": root-promoting druntime/phobos modules
+  (`prepareArchiveImportsForTemplateCodegen`) permanently mutates process-
+  global `importedFrom`, so doing it for an archive dep that needs nothing
+  (e.g. the trivial archive unit-test dep) silently breaks unrelated later
+  links in the same process — an order-dependent `bin/ut --random` flake, not
+  an isolated-test failure. Derive it from whether an archive-backed module
+  actually holds template-instance members instead.
+
+- A `bin/ut --random` regression that passes in isolation and only fails in
+  some orderings points at process-global state mutation, not the test. Bisect
+  it by running both baseline and patched builds several times under `--random`
+  and comparing failure counts, not a single shared seed.

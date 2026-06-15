@@ -6,7 +6,7 @@ Design and build, from scratch, a bytecode VM for D behind the existing
 internal bytecode artifact and executes it in-process, with no object files
 and no linker on the hot path.
 
-Two product goals, in priority order:
+Product goal:
 
 1. Minimise the latency from an edit in the project under test (not
    necessarily in its dub dependencies) to a yes/no "did the relevant tests
@@ -14,55 +14,37 @@ Two product goals, in priority order:
    covers the execution engine only: compiling from the AST and running.
    Bytecode artifact caching and affected-test selection are separate, later
    plans; this design must not preclude them but does not deliver them.
-2. Serve as a replacement for the DMD CTFE engine, for performance. Backends
-   take a construction-time mode parameter: in CTFE-only mode the VM limits
-   itself to what D allows at compile time and matches DMD CTFE's legality
-   and diagnostics exactly (value semantics follow the two-tier oracle
-   below); otherwise it targets all of D.
 
-Correctness overrides both goals: the VM must have the same observable
+The VM targets all of D and is held to one oracle: compiled D.
+
+**Deferred (out of scope):** serving as a replacement for the DMD CTFE
+engine. That goal implied a per-backend CTFE-only/full-D mode and a second
+(CTFE) oracle; both are dropped (`ai/plans/single-oracle.md`). Revisit only
+if the current CTFE engine is actually replaced, at which point a
+CTFE-faithful mode and its legality/diagnostics matching can be re-specified
+from scratch. The design must not *preclude* that swap (see "Re-entrancy"
+below), but it is not built for now.
+
+Correctness overrides the goal: the VM must have the same observable
 semantics as if the source had been compiled to native code and run. Fast
 but wrong is worthless.
 
-## Modes and Oracles
-- The mode is a constructor parameter on the backend. It selects bytecode
-  emission (checked vs unchecked opcodes), the native-call policy, and the
-  diagnostic flavour.
-- Full-D mode oracle: really-compiled code. The arbiter for any observable
-  behaviour, including failure message text, is a real
+## Oracle
+- The single oracle is really-compiled code, via `SystemLinker`
+  (`ai/plans/single-oracle.md`). The arbiter for any observable behaviour,
+  including failure message text, is a real
   `dmd -unittest -checkaction=context` compile-and-run of the fixture, byte
   for byte — the same discipline `dmd-backend.md` established for
   `SystemLinker`.
-- CTFE-only mode oracle: DMD CTFE (`dmd.dinterpret`), in two tiers:
-  - Legality and diagnostics: binding. Accept exactly what dinterpret
-    accepts, reject exactly what it rejects, with byte-identical
-    diagnostics.
-  - Value semantics: correct (compiled) semantics win. Where dinterpret
-    computes a wrong value for a program it accepts (e.g. the known
-    static-array-copy aliasing quirk), the VM produces the correct value
-    and the divergence is documented with a test asserting the correct
-    result — never emulated. If replacing dinterpret inside DMD ever
-    demands bug compatibility for a specific quirk, that is an explicit
-    per-quirk decision recorded at that time, not a blanket rule.
-    (Precedent: `dmd-backend.md`'s oracle lesson exists because CTFE
-    expectations may themselves encode CTFE quirks; the resolution there
-    was per-backend expectation splits, never quirk emulation.)
-- Mode coverage in the current matrix: of the ~153 `Bytecode` matrix
-  blocks, exactly two sites assert CTFE-flavoured text — the `= void`
-  uninitialized-read diagnostic in `runner/ct/diagnostics.d` and the
-  `runner/rt/cstdlib.d` no-available-source family. The other ~95% assert
-  `-checkaction=context`-style output that compiled code produces too, so
-  the matrix is mostly mode-agnostic, not CTFE-only. The two CTFE-flavoured
-  sites stay pinned to CTFE-only mode (and get full-D twins when the bridge
-  lands, e.g. `malloc` succeeding, per `ffi.md`'s first runtime-mode test);
-  representative mode-conditional blocks run in full-D mode from the moment
-  the checked/unchecked opcode split exists (see the rewrite strategy).
-- A future swap of `dmd.dinterpret` itself (semantic-time CTFE: `static if`,
-  mixins, template arguments) is not a deliverable, but the design must not
-  preclude it. Concretely: the VM core is re-entrant with no global mutable
-  state, entry is per-`FuncDeclaration` rather than per-module, and results
-  are reachable as raw memory plus a static type, so they can be reified as
-  a DMD `Expression` just as well as a `quickbite.lang.Value`.
+- `Ctfe` is not an oracle. Where `Ctfe` diverges from `SystemLinker` (e.g.
+  the static-array-copy aliasing quirk), the VM produces the
+  compiled-D result and the divergence is characterized against `Ctfe`,
+  not emulated.
+- Re-entrancy (keeping the deferred CTFE swap possible): the VM core is
+  re-entrant with no global mutable state, entry is per-`FuncDeclaration`
+  rather than per-module, and results are reachable as raw memory plus a
+  static type, so they can be reified as a DMD `Expression` just as well as
+  a `quickbite.lang.Value`. This costs nothing now and leaves the door open.
 
 ## Core Architecture
 
@@ -83,7 +65,7 @@ This is the load-bearing decision; everything else follows from it.
   slices into locals, unions, and reinterpret casts behave exactly as native
   code does. This eliminates the whole class of deviations the tree-walking
   interpreter's pointer-snapshot model is known for.
-- Full-D mode heap: interpreted data structures are native data structures
+- Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
   project's compilation, so the VM executes their bodies like any other
@@ -93,11 +75,8 @@ This is the load-bearing decision; everything else follows from it.
   references held in frames keep objects alive; conservative scanning of
   large frame regions (false-pointer pinning) and `addRange`/`removeRange`
   churn are known costs the bench checkpoints must watch.
-- CTFE-only mode heap: the VM owns all allocations and registers each one in
-  a provenance table (allocation id, bounds, static type, initialization
-  shadow). No native memory is reachable and no native code is called.
 
-### Runtime type metadata (full-D mode)
+### Runtime type metadata
 Native-layout memory is not enough for the druntime leaves; they also
 consume type metadata that compiled code gets from the code generator:
 
@@ -110,7 +89,7 @@ consume type metadata that compiled code gets from the code generator:
   `key.toHash()`/`opEquals` directly. For VM-compiled types those function
   pointers must point at VM entry thunks.
 
-So full-D mode synthesizes native `TypeInfo`/`TypeInfo_Class` instances,
+So the VM synthesizes native `TypeInfo`/`TypeInfo_Class` instances,
 init blobs, and vtables for VM-compiled types, with function-pointer slots
 (dtor, postblit, copy ctor, toHash, opEquals) filled by inbound VM entry
 thunks. "The real runtime manipulates the real heap" holds without this
@@ -118,34 +97,29 @@ metadata only for POD element/key types. Because GC finalization can fire
 long after the allocating call, thunk lifetime is tied to the VM session,
 not the call.
 
-Exposing tests (full-D mode, compiled oracle): append to an array of a
+Exposing tests (compiled oracle): append to an array of a
 struct with a postblit; `new` a class with `~this()`, drop the reference,
 `GC.collect()`, assert the dtor ran; an AA keyed on a struct with a custom
 `toHash`.
 
 ### Module-level state
 - Each module gets a VM-owned data segment with native layout — sizes,
-  alignments, and offsets from DMD, the same authority as frames. In full-D
-  mode segments are GC-registered like stack chunks.
+  alignments, and offsets from DMD, the same authority as frames. Segments
+  are GC-registered like stack chunks.
 - `static this()` runs before the first access to the module's state,
   ordered by druntime's cycle-checked import-graph semantics. This is an
   eager per-module obligation layered on lazy per-function compilation: the
   first call into a module triggers its (and its imports') constructors
   before the called function body runs.
-- CTFE-only mode reproduces dinterpret's global-access rules through the
-  checked opcodes: reads of mutable globals are rejected with dinterpret's
-  diagnostics; immutable/const-initialized globals evaluate as dinterpret
-  does.
 - TLS: the VM executes single-threaded for now, so TLS and `__gshared`
   coincide. This is an explicit assumption, recorded with the
   concurrency-readiness constraints.
 
-Exposing test (full-D mode, compiled oracle): a module with
+Exposing test (compiled oracle): a module with
 `int counter; static this() { counter = 40; } int bump() { return counter += 2; }`
 and a unittest asserting `bump() == 42` — forces segment storage,
 ctor-before-first-access ordering, and function-level (not unittest-body)
-visibility of the global. The CTFE-only twin asserts dinterpret's
-mutable-global rejection diagnostic byte for byte.
+visibility of the global.
 
 ### No universal runtime value type
 - `quickbite.lang.Value` must not appear in the bytecode compiler, the
@@ -192,16 +166,16 @@ mutable-global rejection diagnostic byte for byte.
 - The interpreter core stays small and direct: explicit frame bookkeeping,
   no abstraction stack between the dispatch loop and memory.
 
-### Native bridge (full-D mode only)
+### Native bridge
 - The boundary is the body-less leaf, not package ownership: native means
   `fbody is null` — C libraries and separately compiled extern symbols.
   Everything with available source is executed by the VM, including
   druntime and Phobos template bodies instantiated with project types
   (`xs.map!(x => x * 2)` has no precompiled body anywhere). Stated plainly:
   the VM will interpret large swaths of Phobos, which raises the feature
-  floor for goal 1 — ranges, capturing lambdas, classes, and exceptions
-  arrive with the first `std.algorithm`-using test, regardless of slice
-  order.
+  floor for the latency goal — ranges, capturing lambdas, classes, and
+  exceptions arrive with the first `std.algorithm`-using test, regardless of
+  slice order.
 - Reconciliation with `ffi.md`: that document prescribes wrapper thunks for
   dependency calls, classifies mixed template instantiations as
   backend-executed or separately cached, and lists direct extern(D) calls
@@ -223,8 +197,7 @@ mutable-global rejection diagnostic byte for byte.
   resolution. "No marshalling layer" is scoped to data representation:
   values cross unchanged; the call goes through a cached FFI descriptor.
   `real` in signatures is a known libffi hazard on x86_64 and gets explicit
-  fixtures (CTFE-only mode must match dinterpret's `real` precision, full-D
-  mode the compiled oracle's).
+  fixtures (matching the compiled oracle's `real` precision).
 - Every outbound call carries an exception guard converting native
   `Throwable`s into VM unwinding (see Exception Handling); "pass values
   as-is" describes the arguments, not the call.
@@ -236,38 +209,23 @@ mutable-global rejection diagnostic byte for byte.
   thunks before classes do (see Runtime type metadata) — not by the
   classes/vtable slice; the calling convention must not preclude either
   mechanism.
-- Exposing tests for the call mechanism (full-D mode, compiled oracle, byte
+- Exposing tests for the call mechanism (compiled oracle, byte
   for byte): call a precompiled extern function taking a 24-byte struct by
   value and returning one (forces memory-class classification and `sret`);
   the same with `real` in the signature.
-- CTFE-only mode has no bridge. A call to anything without available source
-  keeps the existing "cannot be interpreted at compile time, because it has
-  no available source code" diagnostic, and druntime lowerings are executed
-  by the VM itself against VM-owned memory (the call-site interception the
-  Interpreter backend already proved out).
 
-### CTFE legality checking
-- CTFE-only mode emits checked opcode variants; full-D mode emits unchecked
-  ones. Full-D execution pays zero cost for CTFE support.
-- Checked operations validate against the provenance table: reads of
-  uninitialized memory, reads of mutable module-level state, out-of-bounds
-  access, pointer comparison and subtraction across allocations,
-  pointer-to-integer conversion, disallowed reinterpretation, and escaping
-  CTFE-owned pointers are rejected with diagnostics byte-identical to DMD
-  CTFE's.
-- The provenance table and initialization shadow run on every checked load
-  and store; their granularity (per-byte shadow, per-slot, per-allocation
-  bitmap) is the dominant cost decision for goal 2 and is settled by
-  measurement: slice 2 carries an explicit benchmark gate — checked-mode VM
-  vs the `Ctfe` backend on the bench fixtures — so a losing shadow design
-  is caught while it is one slice old.
-- `__ctfe` evaluates to `true` in CTFE-only mode and `false` in full-D mode,
-  decided at emit time.
+### CTFE legality checking (deferred)
+The checked-opcode / provenance-table machinery that made the VM match DMD
+CTFE's legality and diagnostics existed only for the deferred CTFE-engine
+replacement goal (`ai/plans/single-oracle.md`). It is out of scope: the VM
+targets full D, emits unchecked operations, and `__ctfe` evaluates to
+`false`. Re-specify checked execution from scratch if the CTFE-replacement
+goal is ever revived.
 
 ### Concurrency readiness
 - Threads, `synchronized`, atomics, and fibers are out of scope until a test
-  forces them, with an explicit unsupported diagnostic (CTFE-only mode
-  rejects them the way DMD CTFE does). The design must not preclude them: no
+  forces them, with an explicit unsupported diagnostic. The design must not
+  preclude them: no
   module-level mutable VM state, one machine instantiable per thread, heap
   and provenance structures designed to become shared-capable.
 - Known exception to "no shared mutable state": the compile-on-first-call
@@ -299,17 +257,6 @@ keeps the full suite green.
 - Each slice makes a chosen set of already-green matrix behaviours pass on
   the new core. When the entire matrix passes on the new core, flip the
   default and delete the old core in the same change.
-- The CTFE-only constructor parameter exists from the first slice. The
-  existing matrix runs in CTFE-only mode by default, but its expectations
-  are ~95% mode-agnostic (see Modes and Oracles): from slice 2 — the first
-  slice where the checked/unchecked opcode split exists — every opcode
-  family with mode-conditional emission or handlers gets at least one
-  representative matrix block also running in full-D mode. A handful of
-  blocks, not a doubled suite: enough that the unchecked path and
-  `__ctfe`-conditional emission are continuously exercised rather than dark
-  until the bridge slice. (In slice 1, before the split exists, both modes
-  are the same code and dual runs test nothing.) The flip criterion
-  includes those representative full-D blocks.
 
 ### Slice roadmap
 Earn the design back test-first, in this order. Each slice follows the
@@ -328,13 +275,11 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
    Reification grows with each new type category from here on (structs at
    slice 4, arrays/slices at slice 5, class references at slice 9), so the
    eval/REPL surface re-earns incrementally instead of as a final cliff.
-2. CTFE provenance: allocation table, initialization shadow, checked
-   opcodes. Re-earn the uninitialized-read and `= void` diagnostics.
-   Benchmark gate: checked-mode VM vs the `Ctfe` backend (see CTFE legality
-   checking). Representative full-D-mode matrix blocks start here, one per
-   mode-conditional opcode family.
+2. (Removed.) Was CTFE provenance / checked opcodes — deferred with the
+   CTFE-replacement goal (see Oracle). The slice number is kept so later
+   cross-references hold.
 3. Control flow completion: the `control_flow.d` surface (currently
-   CTFE/SystemLinker only).
+   `SystemLinker`, plus `Ctfe` where it agrees).
 4. Structs with native layout: field offsets from DMD, by-value copies,
    methods, constructors — the `structs.d` surface.
 5. Arrays, slices, and pointers with true aliasing: real addresses into
@@ -342,11 +287,11 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
    `arrays.d` surface, including the cases a snapshot model can never pass.
 6. Exceptions: handler tables, throw/catch/finally/scope(exit) — the
    `exceptions.d` surface.
-7. Associative arrays and druntime lowerings in CTFE-only mode via call-site
-   interception against VM-owned memory.
-8. Full-D mode: outbound native bridge, real druntime heap, host GC
-   integration, compiled-output diagnostics; split per-mode message
-   expectations where CTFE and compiled text differ. This slice also
+7. Associative arrays and druntime lowerings via call-site interception
+   against VM-owned memory (the technique the Interpreter backend proved
+   out).
+8. Native runtime: outbound native bridge, real druntime heap, host GC
+   integration, compiled-output diagnostics. This slice also
    synthesizes runtime type metadata and decides the inbound trampoline
    mechanism — GC finalizers and AA key methods force thunks before classes
    do (see Runtime type metadata). If the slice ships POD-only element/key
@@ -361,7 +306,7 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
 - Start each slice with the smallest behaviour that can honestly fail. If a
   slice needs unittest blocks, literals, equality, calls, returns, and
   assert handling all at once, it is too broad; pick a smaller test.
-- Promote CTFE-backed test modules in the order documented by
+- Promote test modules in the order documented by
   `ai/plans/backend-test-modules-order.md`. Treat the module, not a single
   template instantiation, as the unit of migration; promote whole test
   families once one instantiation proves the behaviour.
@@ -383,11 +328,8 @@ the new core), minimal implementation, green suite, benchmark checkpoint.
 
 ### Benchmarks and success criteria
 - `bin/bench` post-parse comparisons at every slice checkpoint: the new core
-  must beat the old core, and full-D mode targets beating `SystemLinker`'s
-  measured ~43 ms median per test by an order of magnitude on the bench
-  fixtures.
-- CTFE-only mode targets beating the `Ctfe` backend (DMD's `ctfeInterpret`)
-  on the same fixtures — that is the entire case for goal 2.
+  must beat the old core, and targets beating `SystemLinker`'s measured
+  ~43 ms median per test by an order of magnitude on the bench fixtures.
 - The REPL session-depth benchmark tracks `Evaluator` latency.
 
 ## Current Coverage State
@@ -891,13 +833,10 @@ switch; `Bytecode` still defaults to the old core):
   at the comparison width.
 
 The engine switch is an internal constructor parameter on `Bytecode`
-defaulting to the old core. The slice-1 plan called for the CTFE-only mode
-constructor parameter from the first slice; it is deliberately not added
-here because the in-flight `backend-execution-mode` branch already adds an
-`ExecutionMode` parameter to every backend constructor — the enum this
-plan's modes map onto. The new core starts consulting it in slice 2 (the
-checked/unchecked opcode split) once that branch lands; in slice 1 both
-modes are the same code.
+defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
+dual-mode model and the `ExecutionMode` enum have been removed
+(`ai/plans/single-oracle.md`); the VM targets full D against the
+`SystemLinker` oracle.
 
 ## Current Next Step
 Continue rewrite slice 1 on the new core: re-earn the remaining `eval.d`
@@ -914,15 +853,11 @@ directly on the new core per the slice roadmap.
 - Add focused VM contract tests only for bytecode-specific properties such as
   operand typing, frame behavior, and diagnostic boundaries.
 - Keep unsupported-slice tests narrow and behavior-driven, not layout-driven.
-- Oracles are per mode: in CTFE-only mode DMD CTFE is canonical for
-  legality and diagnostics (value semantics defer to compiled correctness —
-  see Modes and Oracles); in full-D mode really-compiled
-  `dmd -unittest -checkaction=context` output is, byte for byte. Where the
-  two disagree, the test carries per-mode expectations.
-- CTFE coverage reports do not rank Quickbite test modules by simplicity. All
-  backend language modules run against CTFE, so use
-  `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets by
-  required D language features, not by file length or coverage counts.
+- One oracle: really-compiled `dmd -unittest -checkaction=context` output
+  via `SystemLinker`, byte for byte (see Oracle). `Ctfe` is not an oracle;
+  where it diverges, its behaviour is characterized, not pinned as truth.
+- Use `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets
+  by required D language features, not by file length or coverage counts.
 - Verify each new slice before expanding scope: red test, minimal
   implementation, green suite, then the next slice.
 - Do not trust backend progress text as an edit target without checking the
@@ -1088,12 +1023,12 @@ directly on the new core per the slice roadmap.
 - Do not add the pass until a benchmark justifies it.
 
 ## Builtins and Native Calls
-- CTFE-only mode never calls native code. CTFE builtin parity (`sqrt`,
-  `fabs`, ...) stays mechanically tied to DMD's builtin classification and
-  is executed by the VM; druntime lowerings are intercepted at the call site
-  and applied to VM-owned memory.
-- In full-D mode the native bridge (see Core Architecture) is the general
-  mechanism: values cross unchanged because VM memory is native-layout, and
+- Builtin parity (`sqrt`, `fabs`, ...) stays mechanically tied to DMD's
+  builtin classification and is executed by the VM; druntime lowerings are
+  intercepted at the call site and applied to VM-owned memory.
+- The native bridge (see Core Architecture) is the general mechanism for
+  body-less leaves: values cross unchanged because VM memory is
+  native-layout, and
   the call itself goes through the bridge's cached libffi descriptors.
   Bridge entries carry typed signatures, the cached CIF, and cached symbol
   resolution; D exceptions crossing the boundary are converted between
@@ -1113,10 +1048,8 @@ directly on the new core per the slice roadmap.
   caller.
 - D exceptions must not propagate silently through every C interpreter frame;
   the VM owns the decision of how test failures are caught and reported.
-- In full-D mode thrown objects are real `Throwable` instances on the host
-  heap; the bridge converts between native unwinding and VM unwinding at
-  boundary crossings. In CTFE-only mode uncaught exceptions report DMD's
-  "uncaught CTFE exception" text.
+- Thrown objects are real `Throwable` instances on the host heap; the bridge
+  converts between native unwinding and VM unwinding at boundary crossings.
 
 ## Debug Info
 - The minimum required is bytecode-offset-to-source-line mapping, sufficient
@@ -1149,7 +1082,7 @@ directly on the new core per the slice roadmap.
   closure variables are not frame slots. That removes the retrofit risk
   entirely.
 - The deferral horizon is short: capturing lambdas arrive with the first
-  Phobos-using full-D test (see Native bridge) and are common in plain
+  Phobos-using test (see Native bridge) and are common in plain
   project test code.
 - Exposing test: `int local = 1; auto f = () => local; local = 2;
   assert(f() == 2);` — write-through visibility after capture; any

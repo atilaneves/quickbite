@@ -11,11 +11,10 @@ private:
 // emitted objects.
 public struct CodegenInputs {
     // Modules under archive import paths are defined by prebuilt libraries on
-    // the link line and must not be codegen'd again. Default imports are only
-    // traversed when the caller knows dependency templates can need
-    // druntime/phobos members in this link.
+    // the link line and must not be codegen'd again. Whether default imports
+    // are traversed for template-instance codegen is derived from the modules
+    // themselves (see anyHasTemplateInstanceMember), not from a caller flag.
     public const string[] archiveImportPaths;
-    public bool includeDefaultImportsForTemplateCodegen;
 }
 
 // Fork, run DMD's backend, and write one object file per emitted module into
@@ -53,25 +52,33 @@ public string[] emitObjectFilesForLink(
     // are the exception: a prebuilt library on the link line already defines
     // their symbols, so they get neither the root promotion (saving their
     // semantic3) nor an object of their own.
-    auto allUserImports = userImportedModules(
-        rootModules,
-        inputs.includeDefaultImportsForTemplateCodegen,
-    );
-    auto userImports = allUserImports
+    // The non-default (user-path) imports are the same whether or not default
+    // imports are requested, so walk once without them to split them and to
+    // derive whether default-path codegen is needed.
+    auto nonDefaultImports = userImportedModules(rootModules, false);
+    auto userImports = nonDefaultImports
         .filter!(import_ =>
-            !isUnderDefaultImportPaths(import_)
-            && !isUnderImportPaths(import_, inputs.archiveImportPaths))
+            !isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
-    auto archiveImports = allUserImports
+    auto archiveImports = nonDefaultImports
         .filter!(import_ =>
-            !isUnderDefaultImportPaths(import_)
-            && isUnderImportPaths(import_, inputs.archiveImportPaths))
+            isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
-    auto defaultImports = allUserImports
-        .filter!(import_ => isUnderDefaultImportPaths(import_))
-        .array;
-    if (!inputs.includeDefaultImportsForTemplateCodegen)
-        defaultImports = [];
+    // Derive the need for druntime/phobos template-instance codegen from the
+    // modules themselves rather than from how the caller was invoked. The
+    // signal is an archive-backed module that holds template-instance members:
+    // a prebuilt library defines its ordinary symbols, but the snippet's use
+    // of its templates instantiates them here (often parameterized on the
+    // snippet's or phobos' types), and emitting those instances pulls in the
+    // druntime/phobos members they reference, so the default-path modules must
+    // join this link. A trivial archive dep with no templates instantiates
+    // none, so root-promoting the default-path modules would only pollute
+    // later links in this process; leave them out.
+    auto defaultImports = anyHasTemplateInstanceMember(archiveImports)
+        ? userImportedModules(rootModules, true)
+            .filter!(import_ => isUnderDefaultImportPaths(import_))
+            .array
+        : null;
     prepareForCodegen(userImports);
     prepareArchiveImportsForTemplateCodegen(archiveImports);
     prepareArchiveImportsForTemplateCodegen(defaultImports);
@@ -88,7 +95,7 @@ public string[] emitObjectFilesForLink(
     bool[Module] linkSet;
     foreach (linkModule; modules)
         linkSet[linkModule] = true;
-    foreach (userImport; allUserImports)
+    foreach (userImport; userImports ~ archiveImports ~ defaultImports)
         linkSet[userImport] = true;
 
     string[] objPaths;
@@ -553,6 +560,23 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
     foreach (module_; rootModules)
         walk(module_);
     return result;
+}
+
+// Whether any of these modules holds a template instance as a member. The
+// snippet's semantic pass appends an archive-backed module's instantiated
+// templates to that module's members, so a non-empty hit means this link will
+// emit instances that can reference druntime/phobos members.
+private bool anyHasTemplateInstanceMember(
+    imported!"dmd.dmodule".Module[] modules,
+) {
+    foreach (module_; modules) {
+        if (module_.members is null)
+            continue;
+        foreach (i; 0 .. module_.members.length)
+            if ((*module_.members)[i].isTemplateInstance)
+                return true;
+    }
+    return false;
 }
 
 private bool isUnderDefaultImportPaths(imported!"dmd.dmodule".Module module_) {

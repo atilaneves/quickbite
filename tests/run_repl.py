@@ -67,7 +67,7 @@ def test_interactive_error_label_is_red() -> None:
 
         child.sendline(":t")
         child.expect_exact(
-            "\x1b[31mError:\x1b[0m unittest at <repl>(1) failed: 1 != 2",
+            "\x1b[31mError:\x1b[0m unittest at <repl cell 1>(1) failed: 1 != 2",
         )
         child.expect(r"\[\s+\d+\.\d ms\] > ")
 
