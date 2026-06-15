@@ -26,10 +26,116 @@ public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
     }
 
     public override TestResult[] runTests(Module[] modules) {
-        import quickbite.frontend.util: foreachUnitTestDeclaration;
+        return runTestsInChild(modules, _inputs);
+    }
+}
 
-        auto jit = jitForObjects(modules, _inputs);
-        scope(exit) disposeJit(jit);
+// dmd emits each module's ModuleInfo, ClassInfo/vtables and template TypeInfos
+// into the JIT object; weak-symbol interposition (defineHostSymbols) redirects
+// only the symbols the host process also exports, so metadata unique to the
+// object (user classes, the module's own TypeInfo, Throwable subtypes) stays
+// JIT-resident. If the long-lived parent ran the tests, those metadata objects
+// would survive in its GC heap as pointers into JIT memory, and the moment that
+// memory is reclaimed they become dangling — a later collection would walk a
+// survivor and dereference an unmapped ClassInfo/vtable, crashing the suite
+// (ai/plans/llvm-jit.md, Step 4). So run the whole create -> load -> execute
+// cycle in a forked child that _exits when done: the child takes all
+// JIT-tainted heap and eh_frame state with it, and reports each test's result
+// to the parent over a pipe. This mirrors the codegen fork the child itself
+// then performs (native/codegen.d).
+private imported!"quickbite.backends.runner".TestResult[] runTestsInChild(
+    imported!"dmd.dmodule".Module[] modules,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.runner: TestResult;
+    import core.stdc.errno: EINTR, errno;
+    import core.stdc.stdio: fflush;
+    import core.sys.posix.unistd: _exit, close, fork, pipe, read;
+    import core.sys.posix.sys.wait:
+        WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG, waitpid;
+    import std.conv: text;
+
+    // The child inherits stdio buffers; flush so it cannot re-emit them.
+    fflush(null);
+
+    int[2] fds;
+    if (pipe(fds) != 0)
+        throw new Exception("pipe() failed");
+
+    const pid = fork();
+    if (pid < 0)
+        throw new Exception("fork() failed");
+
+    if (pid == 0) { // child: run the JIT cycle, report over the pipe, never return
+        close(fds[0]);
+        runChildAndReport(fds[1], modules, inputs);
+        close(fds[1]);
+        _exit(0);
+    }
+
+    // parent: read the report before reaping the child so a report larger than
+    // the pipe buffer cannot deadlock against waitpid.
+    close(fds[1]);
+    ubyte[] data;
+    ubyte[4096] buffer;
+    for (;;) {
+        const got = read(fds[0], buffer.ptr, buffer.length);
+        if (got < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (got == 0)
+            break;
+        data ~= buffer[0 .. got];
+    }
+    close(fds[0]);
+
+    int status;
+    for (;;) {
+        const reaped = waitpid(pid, &status, 0);
+        if (reaped == pid)
+            break;
+        if (reaped < 0 && errno == EINTR)
+            continue;
+        throw new Exception("waitpid failed for the JIT child");
+    }
+
+    // The child _exits 0 after writing a complete frame (error frames included),
+    // so a signal or non-zero exit means it died mid-report — surface it rather
+    // than pass for success. A fixture that genuinely crashes lands here; none
+    // of the SystemLinker-oracle fixtures do.
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        const detail = WIFSIGNALED(status)
+            ? text("signal ", WTERMSIG(status))
+            : WIFEXITED(status)
+                ? text("exit code ", WEXITSTATUS(status))
+                : text("status ", status);
+        throw new Exception(text("JIT child died (", detail, ")"));
+    }
+
+    return decodeFrame(data);
+}
+
+// Child side: build the JIT, run every unittest, and write a result frame to
+// the pipe. Never lets a Throwable unwind out — the child must not run the
+// parent's inherited scope(exit)s — so infrastructure failures are reported as
+// an error frame instead. A failing assert is not seen here: runUnitTest
+// catches it into a TestResult.
+private void runChildAndReport(
+    int fd,
+    imported!"dmd.dmodule".Module[] modules,
+    in LLVMJitInputs inputs,
+) {
+    import quickbite.backends.runner: TestResult;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+    try {
+        // No LLVMOrcDisposeLLJIT: the child _exits immediately after reporting,
+        // so the OS reclaims the JIT mapping. Disposing here would be the very
+        // munmap-then-collect that crashes the parent; _exit avoids both the
+        // explicit unmap and any gc_term sweep over a JIT-resident survivor.
+        auto jit = jitForObjects(modules, inputs);
 
         TestResult[] cases;
         foreach (module_; modules)
@@ -37,7 +143,13 @@ public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
                 cases ~= runUnitTest(jit, unitTest);
             });
 
-        return cases;
+        writeResults(fd, cases);
+    } catch (Throwable throwable) {
+        // toString can itself throw and would unwind into the parent's frames;
+        // msg is a plain field, so report it and swallow any further failure.
+        try
+            writeError(fd, throwable.msg);
+        catch (Throwable) {}
     }
 }
 
@@ -306,12 +418,110 @@ private imported!"quickbite.backends.runner".TestResult runUnitTest(
     return result;
 }
 
-private void disposeJit(
-    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
+// The child -> parent result frame. The first byte is the kind: 1 means a
+// results frame (a size_t count followed by that many [passed, name, location,
+// message] records), 0 means an error frame (the rest of the stream is the
+// message). Strings are length-prefixed with a size_t; both sides are the same
+// process image, so native endianness needs no normalisation.
+private void writeResults(int fd, in imported!"quickbite.backends.runner".TestResult[] cases) {
+    writeByte(fd, 1);
+    writeSizeT(fd, cases.length);
+    foreach (testCase; cases) {
+        writeByte(fd, testCase.passed ? 1 : 0);
+        writeString(fd, testCase.name);
+        writeString(fd, testCase.location);
+        writeString(fd, testCase.message);
+    }
+}
+
+private void writeError(int fd, in char[] message) {
+    writeByte(fd, 0);
+    writeAll(fd, message);
+}
+
+private void writeString(int fd, in char[] str) {
+    writeSizeT(fd, str.length);
+    writeAll(fd, str);
+}
+
+private void writeByte(int fd, ubyte value) {
+    writeAll(fd, (&value)[0 .. 1]);
+}
+
+private void writeSizeT(int fd, size_t value) {
+    writeAll(fd, (cast(const(ubyte)*) &value)[0 .. size_t.sizeof]);
+}
+
+// write(2) may write partially or fail with EINTR; the frame must survive both
+// or the parent sees a truncated report.
+private void writeAll(int fd, scope const(void)[] data) {
+    import core.stdc.errno: EINTR, errno;
+    import core.sys.posix.unistd: write;
+
+    const(ubyte)[] bytes = cast(const(ubyte)[]) data;
+    size_t written = 0;
+    while (written < bytes.length) {
+        const wrote = write(fd, bytes.ptr + written, bytes.length - written);
+        if (wrote < 0) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        written += wrote;
+    }
+}
+
+// Parent side: turn the bytes read from the pipe back into results, or throw
+// the child's reported infrastructure error.
+private imported!"quickbite.backends.runner".TestResult[] decodeFrame(
+    const(ubyte)[] data,
 ) {
-    import quickbite.backends.native.llvm_orc: LLVMOrcDisposeLLJIT;
-    // Disposal returns an error of its own; ignore it on the cleanup path.
-    cast(void) LLVMOrcDisposeLLJIT(jit);
+    import quickbite.backends.runner: TestResult;
+
+    if (data.length == 0)
+        throw new Exception("JIT child reported no results");
+
+    const kind = data[0];
+    auto rest = data[1 .. $];
+    if (kind == 0) // error frame: the remainder is the message
+        throw new Exception((cast(const(char)[]) rest).idup);
+
+    size_t pos = 0;
+    const count = readSizeT(rest, pos);
+    TestResult[] cases;
+    cases.reserve(count);
+    foreach (_; 0 .. count) {
+        const passed = readByte(rest, pos) != 0;
+        const name = readString(rest, pos);
+        const location = readString(rest, pos);
+        const message = readString(rest, pos);
+        cases ~= TestResult(passed, name, location, message);
+    }
+    return cases;
+}
+
+private string readString(const(ubyte)[] data, ref size_t pos) {
+    const length = readSizeT(data, pos);
+    if (pos + length > data.length)
+        throw new Exception("truncated result stream");
+    auto str = (cast(const(char)[]) data[pos .. pos + length]).idup;
+    pos += length;
+    return str;
+}
+
+private size_t readSizeT(const(ubyte)[] data, ref size_t pos) {
+    if (pos + size_t.sizeof > data.length)
+        throw new Exception("truncated result stream");
+    size_t value;
+    (cast(ubyte*) &value)[0 .. size_t.sizeof] = data[pos .. pos + size_t.sizeof];
+    pos += size_t.sizeof;
+    return value;
+}
+
+private ubyte readByte(const(ubyte)[] data, ref size_t pos) {
+    if (pos + 1 > data.length)
+        throw new Exception("truncated result stream");
+    return data[pos++];
 }
 
 // An LLVMErrorRef is null on success; on failure it carries a message that
