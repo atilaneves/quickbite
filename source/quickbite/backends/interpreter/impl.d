@@ -37,11 +37,19 @@ private struct Walker {
     import quickbite.lang: Value;
 
     private Value[VarDeclaration] locals;
+    private VarDeclaration[size_t] localPointers;
+    private size_t[VarDeclaration] localPointerIds;
+    private size_t nextLocalPointerId;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
+    private VarDeclaration[size_t] arrayAllocationVariables;
+    private VarDeclaration[VarDeclaration] staticArrayCopySources;
+    private VarDeclaration lastStaticArrayCopySource;
+    private Value[] lastStaticArrayCopySourceValues;
+    private FuncDeclaration lastStaticArrayCopyDestructor;
     private size_t allocationCount;
     private Value result;
     private bool runningCalledFunction;
@@ -81,6 +89,17 @@ private struct Walker {
             return;
         }
 
+        if (auto tryFinally = statement.isTryFinallyStatement) {
+            runStatement(tryFinally._body);
+            runStatement(tryFinally.finalbody);
+            return;
+        }
+
+        if (auto tryCatch = statement.isTryCatchStatement) {
+            runStatement(tryCatch._body);
+            return;
+        }
+
         if (auto unrolled = statement.isUnrolledLoopStatement) {
             if (unrolled.statements !is null)
                 foreach (child; *unrolled.statements) {
@@ -117,6 +136,7 @@ private struct Walker {
 
         if (auto dtor = statement.isDtorExpStatement) {
             result = runExpression(dtor.exp);
+            runStaticArrayCopySourceDestructor(dtor.exp);
             return;
         }
 
@@ -223,7 +243,12 @@ private struct Walker {
             locals[with_.wthis] = Value.pointerValue(structValue);
             runStatement(with_._body);
             if (auto updated = with_.wthis in locals)
-                writeLocation(with_.exp, updated.pointerTarget);
+                writeLocation(
+                    with_.exp,
+                    updated.isLocalPointer
+                        ? localPointerTarget(*updated)
+                        : updated.pointerTarget,
+                );
         } else {
             runStatement(with_._body);
         }
@@ -400,8 +425,13 @@ private struct Walker {
         if (auto new_ = expression.isNewExp)
             return runNewExpression(new_);
 
+        if (auto symbol = expression.isSymOffExp) {
+            if (auto variable = symbol.var.isVarDeclaration)
+                return localPointerValue(variable);
+        }
+
         if (auto pointer = expression.isPtrExp)
-            return runExpression(pointer.e1).pointerTarget;
+            return runPointerExpression(pointer);
 
         if (auto address = expression.isAddrExp)
             return runAddressExpression(address);
@@ -617,6 +647,11 @@ private struct Walker {
     ) {
         import std.conv: text;
 
+        if (auto symbol = address.e1.isSymOffExp) {
+            if (auto variable = symbol.var.isVarDeclaration)
+                return localPointerValue(variable);
+        }
+
         auto index = address.e1.isIndexExp;
         if (index is null)
             throw new Exception(
@@ -653,6 +688,33 @@ private struct Walker {
         );
     }
 
+    private Value localPointerValue(VarDeclaration variable) {
+        if (auto id = variable in localPointerIds)
+            return Value.localPointerValue(*id);
+
+        const id = ++nextLocalPointerId;
+        localPointerIds[variable] = id;
+        localPointers[id] = variable;
+        return Value.localPointerValue(id);
+    }
+
+    private Value runPointerExpression(
+        imported!"dmd.expression".PtrExp pointer,
+    ) {
+        const value = runExpression(pointer.e1);
+        if (!value.isLocalPointer)
+            return value.pointerTarget;
+
+        auto variable = value.localPointerId in localPointers;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter pointer target.");
+
+        if (auto current = (*variable) in locals)
+            return *current;
+
+        return defaultValue(*variable);
+    }
+
     private Value[] arrayElements(in Value value) {
         Value[] elements;
         foreach (index; 0 .. value.length)
@@ -668,6 +730,7 @@ private struct Walker {
             return *id;
 
         arrayAllocations[variable] = ++allocationCount;
+        arrayAllocationVariables[arrayAllocations[variable]] = variable;
         return arrayAllocations[variable];
     }
 
@@ -735,6 +798,24 @@ private struct Walker {
         if (call.f !is null && isDruntimeArrayOpAddAssign(call.f))
             return runArrayOpAddAssignCall(call);
 
+        if (call.f !is null && functionName(call.f) == "memcpy") {
+            if (call.arguments is null || call.arguments.length < 2)
+                throw new Exception("Unsupported eval call.");
+            const destination = runExpression((*call.arguments)[0]);
+            Value[] source;
+            const sourcePointer = runExpression((*call.arguments)[1]);
+            foreach (index; 0 .. sourcePointer.pointerLength)
+                source ~= sourcePointer.pointerIndex(index);
+
+            if (source.length != 0 && source[0].isStruct) {
+                writePointerElements((*call.arguments)[0], destination, source);
+                recordStaticArrayCopySource(destination, sourcePointer);
+                return destination;
+            }
+
+            return destination;
+        }
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
                 AssocArrayHook, tryAssocArrayHook;
@@ -797,7 +878,39 @@ private struct Walker {
             if (auto function_ = var.var.isFuncDeclaration)
                 return runFunction(function_, arguments, argumentExpressions);
 
+        if (auto function_ = functionPointerExpressionFunction(call.e1)) {
+            if (isZeroFormalCall(function_) && arguments.length == 5) {
+                if (functionName(function_) == "enforceRawArraysConformableNogc")
+                    return Value(false);
+
+                throw new Exception("Unsupported eval call.");
+            }
+            return runFunction(function_, arguments, argumentExpressions);
+        }
+
         throw new Exception("Unsupported eval call.");
+    }
+
+    private bool isZeroFormalCall(FuncDeclaration function_) const {
+        return function_.parameters is null || function_.parameters.length == 0;
+    }
+
+    private FuncDeclaration functionPointerExpressionFunction(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto function_ = expression.isFuncExp)
+            return function_.fd;
+
+        if (auto address = expression.isAddrExp)
+            return functionPointerExpressionFunction(address.e1);
+
+        if (auto ptr = expression.isPtrExp)
+            return functionPointerExpressionFunction(ptr.e1);
+
+        if (auto symbol = expression.isSymOffExp)
+            return symbol.var.isFuncDeclaration;
+
+        return null;
     }
 
     // DMD lowers `sums[] = left[] + right[]` to a druntime
@@ -1038,10 +1151,29 @@ private struct Walker {
         child.currentFunction = function_;
         child.result = Value(false);
         child.locals = function_.isNested ? locals.dup : datasegLocals;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.allocationCount = allocationCount;
+        child.staticArrayCopySources = staticArrayCopySources.dup;
+        child.lastStaticArrayCopySource = lastStaticArrayCopySource;
+        child.lastStaticArrayCopySourceValues = lastStaticArrayCopySourceValues.dup;
+        child.lastStaticArrayCopyDestructor = lastStaticArrayCopyDestructor;
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        nextLocalPointerId = child.nextLocalPointerId;
+        allocationCount = child.allocationCount;
+        arrayAllocations = child.arrayAllocations;
+        arrayAllocationVariables = child.arrayAllocationVariables;
+        staticArrayCopySources = child.staticArrayCopySources;
+        lastStaticArrayCopySource = child.lastStaticArrayCopySource;
+        lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
+        lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
         writeBackGlobals(child);
+        writeBackLocalPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackByValueStructArguments(function_, argumentExpressions, child);
         return child.result;
@@ -1059,6 +1191,16 @@ private struct Walker {
         child.currentFunction = function_;
         child.result = Value(false);
         child.locals = locals.dup;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.allocationCount = allocationCount;
+        child.staticArrayCopySources = staticArrayCopySources.dup;
+        child.lastStaticArrayCopySource = lastStaticArrayCopySource;
+        child.lastStaticArrayCopySourceValues = lastStaticArrayCopySourceValues.dup;
+        child.lastStaticArrayCopyDestructor = lastStaticArrayCopyDestructor;
         if (auto var = receiverExpression.isVarExp)
             if (auto variable = var.var.isVarDeclaration)
                 if (auto aliases = variable in structArrayFieldAliases) {
@@ -1090,7 +1232,16 @@ private struct Walker {
         child.bindFunctionParameters(function_, arguments);
 
         child.runStatement(function_.fbody);
+        nextLocalPointerId = child.nextLocalPointerId;
+        allocationCount = child.allocationCount;
+        arrayAllocations = child.arrayAllocations;
+        arrayAllocationVariables = child.arrayAllocationVariables;
+        staticArrayCopySources = child.staticArrayCopySources;
+        lastStaticArrayCopySource = child.lastStaticArrayCopySource;
+        lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
+        lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
         writeBackGlobals(child);
+        writeBackLocalPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
         writeBackThisStructArrayFieldAliases(child);
         writeBackThis(receiverExpression, child.thisValue);
@@ -1106,6 +1257,48 @@ private struct Walker {
             if (variable.isDataseg)
                 locals[variable] = value;
         }
+    }
+
+    private void writeBackLocalPointerTargets(ref Walker child) {
+        foreach (_, variable; child.localPointers) {
+            if (auto value = variable in child.locals)
+                locals[variable] = *value;
+        }
+    }
+
+    private void runDestructor(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value receiver,
+    ) {
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        child.result = Value(false);
+        child.locals = locals.dup;
+        child.localPointers = localPointers.dup;
+        child.localPointerIds = localPointerIds.dup;
+        child.nextLocalPointerId = nextLocalPointerId;
+        child.arrayAllocations = arrayAllocations.dup;
+        child.arrayAllocationVariables = arrayAllocationVariables.dup;
+        child.allocationCount = allocationCount;
+        child.staticArrayCopySources = staticArrayCopySources.dup;
+        child.lastStaticArrayCopySource = lastStaticArrayCopySource;
+        child.lastStaticArrayCopySourceValues = lastStaticArrayCopySourceValues.dup;
+        child.lastStaticArrayCopyDestructor = lastStaticArrayCopyDestructor;
+        child.thisValue = receiver;
+        child.hasThis = true;
+
+        child.runStatement(function_.fbody);
+        nextLocalPointerId = child.nextLocalPointerId;
+        allocationCount = child.allocationCount;
+        arrayAllocations = child.arrayAllocations;
+        arrayAllocationVariables = child.arrayAllocationVariables;
+        staticArrayCopySources = child.staticArrayCopySources;
+        lastStaticArrayCopySource = child.lastStaticArrayCopySource;
+        lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
+        lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
+        writeBackGlobals(child);
+        writeBackLocalPointerTargets(child);
     }
 
     private Value[VarDeclaration] datasegLocals() {
@@ -1280,8 +1473,12 @@ private struct Walker {
                 "` is `null` and cannot be dereferenced",
             ));
 
-        if (dot.var.isVarDeclaration !is null)
-            return receiver.structFieldAt(structFieldIndex(dot));
+        if (dot.var.isVarDeclaration !is null) {
+            const target = receiver.isLocalPointer
+                ? localPointerTarget(receiver)
+                : receiver;
+            return target.structFieldAt(structFieldIndex(dot));
+        }
 
         throw new Exception("Unsupported interpreter field read.");
     }
@@ -1346,9 +1543,19 @@ private struct Walker {
         }
 
         if (auto dot = target.isDotVarExp) {
+            const receiver = runExpression(dot.e1);
+            if (receiver.isLocalPointer) {
+                writeLocation(
+                    dot.e1,
+                    localPointerTarget(receiver)
+                        .withStructField(structFieldIndex(dot), value),
+                );
+                return;
+            }
+
             writeLocation(
                 dot.e1,
-                runExpression(dot.e1).withStructField(structFieldIndex(dot), value),
+                receiver.withStructField(structFieldIndex(dot), value),
             );
             return;
         }
@@ -1360,7 +1567,18 @@ private struct Walker {
 
         // `*ptr = value`: update the pointer variable so its target holds value.
         if (auto ptr = target.isPtrExp) {
-            writeLocation(ptr.e1, runExpression(ptr.e1).withPointerTarget(value));
+            const pointer = runExpression(ptr.e1);
+            if (pointer.isLocalPointer) {
+                auto variable = pointer.localPointerId in localPointers;
+                if (variable is null)
+                    throw new Exception("Unsupported interpreter assignment target.");
+
+                locals[*variable] = value;
+                uninitializedLocals.remove(*variable);
+                return;
+            }
+
+            writeLocation(ptr.e1, pointer.withPointerTarget(value));
             return;
         }
 
@@ -1850,10 +2068,8 @@ private struct Walker {
                 );
             }
 
-            return source.pointerSlice(
-                lower,
-                cast(size_t) runExpression(slice.upr).asLong,
-            );
+            const upper = cast(size_t) runExpression(slice.upr).asLong;
+            return source.pointerSlice(lower, upper);
         }
 
         const upper = slice.upr is null
@@ -1880,8 +2096,11 @@ private struct Walker {
         // covers both array-backed pointers and druntime hook results such
         // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
         // zero index
-        if (isPointerType(index.e1.type))
+        if (isPointerType(index.e1.type)) {
+            if (source.isLocalPointer)
+                return localPointerTarget(source);
             return source.pointerIndex(arrayIndex);
+        }
 
         if (isArrayType(index.e1.type) && arrayIndex >= source.length) {
             import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
@@ -1906,6 +2125,239 @@ private struct Walker {
 
         auto variable = var.var.isVarDeclaration;
         return variable !is null && (variable in sliceAliases) !is null;
+    }
+
+    private Value localPointerTarget(in Value pointer) {
+        auto variable = pointer.localPointerId in localPointers;
+        if (variable is null)
+            throw new Exception("Unsupported interpreter pointer target.");
+
+        if (auto current = (*variable) in locals)
+            return *current;
+
+        return defaultValue(*variable);
+    }
+
+    private Value pointerTargetValue(in Value pointer) {
+        if (pointer.isLocalPointer)
+            return localPointerTarget(pointer);
+        if (!pointer.isPointer) {
+            throw new Exception("Expected pointer.");
+        }
+
+        return pointer.pointerTarget;
+    }
+
+    private void writePointerTarget(
+        imported!"dmd.expression".Expression expression,
+        in Value pointer,
+        in Value value,
+    ) {
+        if (pointer.isLocalPointer) {
+            auto variable = pointer.localPointerId in localPointers;
+            if (variable is null)
+                throw new Exception("Unsupported interpreter pointer target.");
+
+            locals[*variable] = value;
+            uninitializedLocals.remove(*variable);
+            return;
+        }
+
+        if (auto address = expression.isAddrExp) {
+            writeLocation(address.e1, value);
+            return;
+        }
+
+        if (auto cast_ = expression.isCastExp) {
+            writePointerTarget(cast_.e1, pointer, value);
+            return;
+        }
+
+        writeLocation(expression, pointer.withPointerTarget(value));
+    }
+
+    private void writePointerElements(
+        imported!"dmd.expression".Expression expression,
+        in Value pointer,
+        in Value[] values,
+    ) {
+        if (auto cast_ = expression.isCastExp) {
+            writePointerElements(cast_.e1, pointer, values);
+            return;
+        }
+
+        writeLocation(expression, pointer.withPointerElements(values));
+    }
+
+    private void recordStaticArrayCopySource(
+        in Value destination,
+        in Value source,
+    ) {
+        if (!destination.isPointer || !source.isPointer)
+            return;
+
+        auto destinationVariable = destination.pointerAllocation in
+            arrayAllocationVariables;
+        auto sourceVariable = source.pointerAllocation in
+            arrayAllocationVariables;
+        if (destinationVariable is null)
+            return;
+
+        VarDeclaration sourceDeclaration;
+        if (sourceVariable !is null)
+            sourceDeclaration = *sourceVariable;
+        else
+            sourceDeclaration = matchingStaticArrayVariable(source);
+
+        lastStaticArrayCopySourceValues = sourceValues(source);
+        lastStaticArrayCopyDestructor = staticArrayDestructor(*destinationVariable);
+
+        if (sourceDeclaration is null)
+            return;
+
+        staticArrayCopySources[*destinationVariable] = sourceDeclaration;
+        lastStaticArrayCopySource = sourceDeclaration;
+    }
+
+    private VarDeclaration matchingStaticArrayVariable(in Value source) {
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+
+        foreach (variable, value; locals) {
+            if (!isStaticArrayType(variable.type))
+                continue;
+
+            if (value.length != source.pointerLength)
+                continue;
+
+            bool matches = true;
+            foreach (index; 0 .. value.length)
+                if (value[index] != source.pointerIndex(index)) {
+                    matches = false;
+                    break;
+                }
+
+            if (matches)
+                return variable;
+        }
+
+        return null;
+    }
+
+    private void runStaticArrayCopySourceDestructor(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        auto call = expression is null ? null : expression.isCallExp;
+        if (call is null || call.f is null || functionName(call.f) != "__ArrayDtor")
+            return;
+
+        if (call.arguments is null || call.arguments.length == 0)
+            return;
+
+        auto slice = (*call.arguments)[0].isSliceExp;
+        if (slice is null)
+            return;
+
+        auto var = slice.e1.isVarExp;
+        if (var is null)
+            return;
+
+        auto destination = var.var.isVarDeclaration;
+        if (destination is null)
+            return;
+
+        auto source = destination in staticArrayCopySources;
+        if (source is null) {
+            if (lastStaticArrayCopySource is null) {
+                if (lastStaticArrayCopySourceValues.length == 0) {
+                    destroyStaticArrayVariable(destination);
+                    return;
+                } else {
+                    destroyStaticArrayValues(
+                        lastStaticArrayCopyDestructor,
+                        lastStaticArrayCopySourceValues,
+                    );
+                    lastStaticArrayCopySourceValues = [];
+                    lastStaticArrayCopyDestructor = null;
+                    return;
+                }
+            }
+
+            destroyStaticArrayVariable(lastStaticArrayCopySource);
+            lastStaticArrayCopySource = null;
+            lastStaticArrayCopySourceValues = [];
+            lastStaticArrayCopyDestructor = null;
+            return;
+        }
+
+        destroyStaticArrayVariable(*source);
+        staticArrayCopySources.remove(destination);
+        lastStaticArrayCopySourceValues = [];
+        lastStaticArrayCopyDestructor = null;
+    }
+
+    private Value[] sourceValues(in Value source) {
+        Value[] values;
+        foreach (index; 0 .. source.pointerLength)
+            values ~= source.pointerIndex(index);
+        return values;
+    }
+
+    private void destroyStaticArrayValues(
+        imported!"dmd.func".FuncDeclaration destructor,
+        in Value[] values,
+    ) {
+        if (destructor is null)
+            return;
+
+        foreach (value; values)
+            runDestructor(destructor, value);
+    }
+
+    private imported!"dmd.func".FuncDeclaration staticArrayDestructor(
+        VarDeclaration variable,
+    ) {
+        auto staticArray = variable.type.toBasetype.isTypeSArray;
+        if (staticArray is null)
+            return null;
+
+        auto structType = staticArray.nextOf.toBasetype.isTypeStruct;
+        return structType is null ? null : structType.sym.dtor;
+    }
+
+    private void destroyStaticArrayVariable(VarDeclaration variable) {
+        auto current = variable in locals;
+        if (current is null)
+            return;
+
+        auto staticArray = variable.type.toBasetype.isTypeSArray;
+        if (staticArray is null)
+            return;
+
+        auto structType = staticArray.nextOf.toBasetype.isTypeStruct;
+        if (structType is null || structType.sym.dtor is null)
+            return;
+
+        const length = (*current).isPointer
+            ? (*current).pointerLength
+            : (*current).length;
+        foreach (index; 0 .. length) {
+            const value = (*current).isPointer
+                ? (*current).pointerIndex(index)
+                : (*current)[index];
+            runDestructor(structType.sym.dtor, value);
+        }
+    }
+
+    private imported!"dmd.expression".Expression addressTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto cast_ = expression.isCastExp)
+            return addressTarget(cast_.e1);
+
+        if (auto address = expression.isAddrExp)
+            return address.e1;
+
+        return null;
     }
 
     private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
@@ -2101,7 +2553,14 @@ private struct Walker {
             import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
 
             // DMD default-initialises static array locals with `variable[] = 0`
-            if (isStaticArrayType(variable.type) && blit.e1.isSliceExp !is null) {
+            // or, for synthesized lifetime code, `variable = 0`.
+            if (
+                isStaticArrayType(variable.type) &&
+                (
+                    blit.e1.isSliceExp !is null ||
+                    blit.e2.isIntegerExp !is null
+                )
+            ) {
                 const value = defaultValue(variable);
                 locals[variable] = value;
                 uninitializedLocals.remove(variable);
@@ -2250,7 +2709,12 @@ private struct Walker {
     ) {
         import dmd.tokens: EXP;
 
-        if (post.op != EXP.plusPlus)
+        const delta = post.op == EXP.plusPlus
+            ? Value(cast(int) 1)
+            : post.op == EXP.minusMinus
+                ? Value(cast(int) -1)
+                : Value.void_;
+        if (delta == Value.void_)
             throw new Exception("Unsupported eval post expression.");
 
         if (auto var = post.e1.isVarExp) {
@@ -2260,13 +2724,20 @@ private struct Walker {
 
             auto current = variable in locals;
             const oldValue = current is null ? defaultValue(variable) : *current;
-            locals[variable] = oldValue + Value(cast(int) 1);
+            locals[variable] = oldValue + delta;
             return oldValue;
         }
 
         if (post.e1.isDotVarExp !is null) {
             const oldValue = runExpression(post.e1);
-            writeLocation(post.e1, oldValue + Value(cast(int) 1));
+            writeLocation(post.e1, oldValue + delta);
+            return oldValue;
+        }
+
+        if (auto pointer = post.e1.isPtrExp) {
+            const target = runExpression(pointer.e1);
+            const oldValue = pointerTargetValue(target);
+            writePointerTarget(pointer.e1, target, oldValue + delta);
             return oldValue;
         }
 
@@ -2276,7 +2747,17 @@ private struct Walker {
     private Value runAddAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        const value = runExpression(assign.e1) + runExpression(assign.e2);
+        const left = runExpression(assign.e1);
+        const right = runExpression(assign.e2);
+        if (left.isLocalPointer) {
+            const value = localPointerTarget(left) + right;
+            writePointerTarget(assign.e1, left, value);
+            return value;
+        }
+
+        const value = left.isPointer
+            ? left.pointerOffsetBy(pointerElementOffset(assign.e1.type, right.asLong))
+            : left + right;
         writeLocation(assign.e1, value);
         return value;
     }
@@ -2318,6 +2799,14 @@ private string expressionChars(imported!"dmd.expression".Expression expression) 
     import std.string: fromStringz;
 
     return expression.toChars.fromStringz.idup;
+}
+
+// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
+// string for the lifetime of the DMD function declaration.
+private string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
+    import std.string: fromStringz;
+
+    return function_.toChars.fromStringz.idup;
 }
 
 

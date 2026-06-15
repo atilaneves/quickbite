@@ -36,6 +36,7 @@ public struct Value {
 
         Array,
         AssocArray,
+        LocalPointer,
         Pointer,
         Struct,
         TypeName,
@@ -95,6 +96,10 @@ public struct Value {
         return Value(Pointer(allocation, allocationId, offset));
     }
 
+    public static Value localPointerValue(in size_t id) @safe pure {
+        return Value(LocalPointer(id));
+    }
+
     public static Value typeName(in string name) @safe pure {
         return Value(TypeName(name));
     }
@@ -124,6 +129,10 @@ public struct Value {
     }
 
     private this(Pointer value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(LocalPointer value) @safe pure {
         data = Data(value);
     }
 
@@ -403,6 +412,7 @@ public struct Value {
         return data.match!(
             (const(Array) array) => array.elements.length,
             (const(AssocArray) assocArray) => assocArray.entries.length,
+            (const(Pointer) pointer) => pointer.target.length,
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
@@ -546,7 +556,29 @@ public struct Value {
 
         return data.match!(
             (const(Pointer) pointer) => true,
+            (const(LocalPointer) pointer) => true,
             (_) => false,
+        );
+    }
+
+    public bool isLocalPointer() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(LocalPointer) pointer) => true,
+            (_) => false,
+        );
+    }
+
+    public size_t localPointerId() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(LocalPointer) pointer) => pointer.id,
+            (_) {
+                throw new Exception("Expected local pointer.");
+                return size_t.init;
+            },
         );
     }
 
@@ -603,6 +635,25 @@ public struct Value {
         );
     }
 
+    public Value withPointerElements(in Value[] values) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) {
+                auto target = pointer.target.dup;
+                foreach (index, value; values) {
+                    const element = pointer.offset + cast(long) index;
+                    target[cast(size_t) element] = value;
+                }
+                return Value(Pointer(target, pointer.allocation, pointer.offset));
+            },
+            (_) {
+                throw new Exception("Expected pointer.");
+                return Value.void_;
+            },
+        );
+    }
+
     public Value pointerIndex(in size_t index) const @safe pure {
         import std.conv: text;
         import std.sumtype: match;
@@ -624,6 +675,18 @@ public struct Value {
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;
+            },
+        );
+    }
+
+    public size_t pointerLength() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.target.length,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return size_t.init;
             },
         );
     }
@@ -685,7 +748,7 @@ public struct Value {
         );
     }
 
-    private size_t pointerAllocation() const @safe pure {
+    public size_t pointerAllocation() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -714,6 +777,7 @@ public struct Value {
 
         return data.match!(
             (const(Array) array) => array.elements[index],
+            (const(Pointer) pointer) => pointer.target[cast(size_t) pointer.offset + index],
             (_) {
                 throw new Exception("Expected array.");
                 return Value.void_;
@@ -1125,6 +1189,11 @@ private struct Pointer {
         this.allocation = allocation;
         this.offset = offset;
     }
+}
+
+
+private struct LocalPointer {
+    public size_t id;
 }
 
 
