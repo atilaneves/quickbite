@@ -909,7 +909,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1067,10 +1067,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     }
 }
 
-// Interpreter ("Expected struct."), Bytecode ("Unsupported bytecode assignment
-// target."), BytecodeNewCore ("Unsupported type in bytecode core: Rank"), and
-// IR (unmapped struct type assert) cannot run struct-typed values yet.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+// Bytecode ("Unsupported bytecode assignment target."), BytecodeNewCore
+// ("Unsupported type in bytecode core: Rank"), and IR (unmapped struct type
+// assert) cannot run struct-typed values yet.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.opCmpOrdersValues." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1100,7 +1100,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Same VM-backend limitations as struct.opCmpOrdersValues above.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.opBinaryAddsOperands." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1129,7 +1129,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Same VM-backend limitations as struct.opCmpOrdersValues above.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.opIndexSelectsElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1159,7 +1159,7 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
 }
 
 // Same VM-backend limitations as struct.opCmpOrdersValues above.
-static foreach (backend; AliasSeq!(Ctfe, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
     @("struct.opUnaryNegatesValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

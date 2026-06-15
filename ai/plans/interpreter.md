@@ -1242,6 +1242,40 @@ already green through existing struct assignment/operator handling; signal was
 verified by temporarily changing the promoted fixture's expected value from
 `42` to `43`, which failed the focused Interpreter test with `42 != 43`.
 
+Structs operator/postblit promotion probe:
+All remaining backend-matrix blocks in
+`tests/ut/backends/runner/ct/structs.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-structs-operators`. Four newly
+promoted operator-overload tests passed immediately and should remain promoted:
+
+- `struct.opCmpOrdersValues.Interpreter`
+- `struct.opBinaryAddsOperands.Interpreter`
+- `struct.opIndexSelectsElement.Interpreter`
+- `struct.opUnaryNegatesValue.Interpreter`
+
+Running only the structs Interpreter tests left exactly one failing promoted
+test:
+
+- `struct.staticArrayCopyRunsPostblitAndDtors.Interpreter`: the interpreter
+  reports `Unsupported eval statement: TryFinally`.
+
+Failure cause: DMD lowers the fixture's scoped block with static-array copy,
+postblit calls, and destructor cleanup into `TryFinally`, `memcpy`,
+array-conformance helper, pointer-field, post-increment/decrement, and
+`__ArrayDtor` shapes that the interpreter did not yet cover. The first missing
+node was `TryFinally`; after that, the copy/postblit path needed local-pointer
+values for `&postblits`/`&dtors`, whole-allocation pointer copy for the lowered
+`memcpy`, dereferenced-pointer post-increment for `++*postblits`, and
+compiler-generated post-decrement for destructor loops.
+
+Resolution: the interpreter now runs `TryFinally` final bodies on normal
+completion, models local pointers and writes through them, copies whole pointer
+allocations for lowered `memcpy`, skips the lowered
+`enforceRawArraysConformableNogc` conformance check, supports pointer
+post-increment and scalar post-decrement, and runs the missing copied-from
+static-array destructor pass for the lowered static-array copy cleanup. The
+focused structs Interpreter module run passes: 43 run, 0 failed.
+
 REPL progress: `repl.backend.multilineFunctionDeclarationsBufferUntilComplete`
 in `tests/ut/backends/api/repl.d` now runs on `Interpreter`. It was already
 green through the backend-agnostic `pendingInput` buffering in `frontend.cell`
