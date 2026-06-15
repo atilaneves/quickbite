@@ -68,6 +68,66 @@ instead of reporting "skipping cerealed system-linker".
   `cerealed system-linker` row (median 975.745 ms on the verification
   run), not a skip.
 
+`symbolIsForeign` member-instance fix (2026-06-15): the rod prune
+dropped a template instance whose argument type *is* emitted in this
+link but reports `needsCodegen == false`. The victim was the `new`
+lowering `core.lifetime._d_newitemT!(std.random.MersenneTwisterEngine!
+(...))`: the engine struct instance is reference-pulled into the object
+by the sibling `std.random.uniform!(...)` instances that use it, so it
+is defined, but `needsCodegen` on it is false, and `symbolIsForeign`
+used `instance.inst !in memberInstances || !needsCodegen(instance.inst)`
+— the second clause marked the argument foreign, so the `_d_newitemT`
+instance was pruned and the link/load failed with an undefined symbol.
+Fix: membership in a codegen'd module's members array, not
+`needsCodegen`, settles foreignness (`(instance.inst in memberInstances)
+is null`). A member instance is emitted from that array regardless of
+`needsCodegen`. Also: `loadSharedLibrary` now appends the real
+`dlerror()` to its exception instead of swallowing it — the only way the
+actual missing symbol was visible. Full `bin/ut` suite green.
+
+## Open: per-fixture completeness (cross-fixture instance homing)
+
+`bin/bench --dub cerealed -b system-linker` produces a row because a dub
+package is timed as one **grouped** compile (all fixture modules in one
+shared library — every instance is in-link, so nothing is missing). The
+single-backend path also sets `skipCheck`, so correctness is not
+verified there. The unsolved problem is the **per-fixture** path
+(`checkRunnerResults`, used by any multi-backend cross-check): each
+fixture is compiled as its own link, and that exposes a completeness
+gap.
+
+Root cause: DMD homes a template instance on the members of the *first*
+root module that instantiates it (its `minst`); a root module's
+`importedFrom` is itself, so the instance does **not** funnel to the
+rod. In a persistent process every fixture is its own root, and all
+fixtures are parsed up front, so an instance like
+`cerealed.decerealiser.Decerealiser.value!int` (a method-template
+instance, nested in the `Decerealiser` struct) is claimed by whichever
+fixture used it first. A later fixture's separate link references the
+same cached instance but finds it homed on a module not in *its* link,
+so nothing emits it — undefined symbol under `-z defs`.
+
+Started but **not** banked (it over-reaches): `adoptForeignInstances`,
+which re-homes foreign-module template instances onto the rod in the
+fork child (mirroring `adoptTypeInfos`), then lets `pruneForeignMembers`
+drop the foreign-arg ones. It fixes the `value!int` class, but because
+adoption is static and broad it also pulls in instances claimed by
+*unrelated* fixtures, and arg-based pruning cannot detect an instance
+with innocent args whose *body* references another fixture's type
+(`tests.structs.CustomStruct`, `tests.range.MyInputRange.empty`) — those
+references then go undefined and break the link. Mechanism and the
+robust shape are documented in dmd-backend.md lesson 16.
+
+Robust fix (deferred): adopt only the instances **actually referenced**
+by this link. The linker already computes that set — so the shape is a
+reference-driven loop in the fork child: emit, attempt link, parse the
+undefined symbols, adopt only the foreign instances matching those
+symbols, re-emit the rod and relink, to fixpoint. Needs a
+mangled-symbol -> `TemplateInstance` map and multi-pass linking. A
+cheaper alternative that sidesteps the whole problem: validate a dub
+package as one group (matching how it is timed) rather than per fixture
+— but that changes `checkRunnerResults` behaviour and needs sign-off.
+
 ## Next, in order
 
 1. Benchmark random dub projects: make `--dub` robust across package

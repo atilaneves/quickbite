@@ -181,8 +181,13 @@ private void* loadSharedLibrary(in string libPath) {
     // constructors, GC ranges, unloadable later). It requires the host to
     // link druntime as a shared library.
     auto handle = Runtime.loadLibrary(libPath);
-    if (handle is null)
-        throw new Exception("failed to load shared library: " ~ libPath);
+    if (handle is null) {
+        import core.sys.posix.dlfcn: dlerror;
+        import std.string: fromStringz;
+        auto err = dlerror();
+        throw new Exception("failed to load shared library: " ~ libPath
+            ~ (err is null ? "" : " :: " ~ err.fromStringz.idup));
+    }
 
     return handle;
 }
