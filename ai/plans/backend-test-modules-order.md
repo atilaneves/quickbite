@@ -75,11 +75,20 @@ needs the normal test-approval stop.
 | 13 | 10.0 | `tests/ut/backends/runner/ct/cerealed.d` |
 | 14 | 10.5 | `tests/ut/bin/repl.d` |
 
-Re-graded 2026-06-10 against the current checkout. The matrices observed then
-agreed with this order: every module ranked 1-7 already ran on several
-backends, the modules ranked 8-13 still ran only on `Ctfe`, and the REPL
-module ran its early session-state tests on three backends but kept everything
-involving Phobos, display formats, or loaded unittests on `Ctfe` only.
+Re-graded 2026-06-15 against the current checkout. The order still holds, and
+observed backend breadth now decreases monotonically as the difficulty score
+rises, which corroborates the ranking. Modules ranked 1-7 run on several
+backends (four to six, spanning `Ctfe`, `Interpreter`, `Bytecode`,
+`BytecodeNewCore`, `IR`, and `SystemLinker`). Since the 2026-06-10 grading,
+`SystemLinker` (and in places `Interpreter`) has been promoted across the
+formerly `Ctfe`-only tail: `arrays.d` and `structs.d` (8-9) now run mostly on
+`Ctfe`, `Interpreter`, and `SystemLinker`; `control_flow.d`, `exceptions.d`,
+`expressions.d`, and `cerealed.d` (10-13) now run mostly on `Ctfe` and
+`SystemLinker`, with diverging diagnostic-message tests split into per-backend
+variants. The REPL module still runs its early session-state tests on three
+backends (`Ctfe`, `Interpreter`, `Bytecode`) but has added `Interpreter` to its
+Phobos and display-format tests, so only the Bytecode-incompatible cases remain
+on `Ctfe`/`Interpreter` rather than `Ctfe` alone.
 
 ## Classification Notes
 
