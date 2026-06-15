@@ -259,10 +259,81 @@ disabling the Interpreter `call.f` dispatch.
 
 Runner progress: `runBackendFileFixtureTests.withImportPaths` in
 `tests/ut/backends/api/runner.d` now runs on `Interpreter`. It was already
-green through the existing parse-file-with-import-paths fixture path and narrow
-imported free-function call handling; signal was verified by temporarily
-disabling both Interpreter direct free-function call dispatch paths. All
-current `runner.d` backend-matrix tests now cover `Interpreter`.
+green through the existing parse-file-with-import-paths fixture path and
+narrow imported free-function call handling; signal was verified by
+temporarily disabling both Interpreter direct free-function call dispatch
+paths. All current `runner.d` backend-matrix tests now cover `Interpreter`.
+
+Control-flow module probe:
+`tests/ut/backends/runner/ct/control_flow.d` was promoted wholesale to
+`Interpreter` on branch `interpreter-next-module`. The focused run
+`bin/ut $(bin/ut -l | rg
+'^ut\.backends\.runner\.ct\.control_flow\..*Interpreter$')` ran 65
+interpreter cases: 33 passed and 32 failed. The passing promoted surface
+already includes ordinary free-function calls, parameters, `in` and `ref`
+parameters, explicit returns, default arguments, overload resolution, basic
+`if`/`else`, simple `while`/`do`/`for` loops without control-transfer, and
+simple array/range foreach.
+
+Failure causes from that first focused run:
+
+- `continue` and `break` need structured loop control, not plain unsupported
+  statements. Failures include `for.continue`,
+  `doWhile.breakAndContinue`, labelled loop break/continue, and foreach tuple
+  break/continue.
+- `switch`/`case`/`default`, including `goto case` and `goto default`, are
+  still unsupported interpreter statements. All switch cases in the module
+  fail with `Unsupported eval statement: Switch`.
+- Direct `goto` currently records a target but does not restart compound
+  traversal robustly enough for the module's restart-point tests, and
+  `try`/`finally`/`catch` goto variants still only execute the happy body path.
+- Struct member `return` currently marks the caller as returned; method-return
+  control must be restored after member calls just like free-function calls.
+- Function pointer tests need `FuncDeclaration` values to survive assignment,
+  equality, and call dispatch through the interpreter.
+- UTF string foreach tests need D's foreach decoding/encoding semantics for
+  `char`/`wchar`/`dchar` strings; simple array and range foreach already pass.
+
+Loop-control progress: `for.continue`, `doWhile.breakAndContinue`,
+`labeledBreak.exitsOuterForLoop`,
+`labeledContinue.skipsToOuterForIncrement`, and
+`foreach.expressionTupleBreakAndContinue` now pass on `Interpreter` through
+structured `break`/`continue` state in the walker.
+
+Member-return progress:
+`function.structMethodReturnDoesNotSkipCallerStatements` now passes on
+`Interpreter`. The method body's `return;` remains isolated to the child
+walker, and the caller reaches the following unittest-body `assert(false)`,
+which currently matches the existing Ctfe-style literal assertion
+characterization.
+
+Function-pointer progress: the three `functionPointer.*` control-flow tests
+now pass on `Interpreter`. Function symbols are preserved as opaque
+`Value.FunctionPointer` ids keyed by `FuncDeclaration` identity, not by name
+or hash, so the hash-collision fixture dispatches to the correct callee.
+
+UTF foreach progress: the four promoted UTF string foreach tests now pass on
+`Interpreter`. The walker intercepts the DMD-lowered `_aApply*` helper calls
+needed by these fixtures, decodes UTF-8/UTF-16 to `dchar`, encodes `dstring`
+iteration to UTF-8 `char`, and writes back nested foreach delegate locals.
+
+Switch progress: basic `switch` case/default selection, fallthrough,
+`goto case`, `goto default`, labelled outer breaks from a switch, final switch
+over enums, and try/finally goto-case/default now pass on `Interpreter`.
+Remaining switch-related failures after this slice are string-case hashing
+(`leftShift`) and case-range/multi-value AST handling.
+
+Catch progress: the three `catch.gotoRestarts*` control-flow tests now pass on
+`Interpreter`. Direct `throw new Exception(...)` in interpreted code is
+represented separately from backend/assertion failures so `catch (Exception)`
+can run its handler without swallowing test-framework failures.
+
+Control-flow module completion: all 65 promoted
+`tests/ut/backends/runner/ct/control_flow.d` `Interpreter` cases now pass in
+the focused run. The final switch-tail fixes added the integer bitwise/shift
+operators reached by DMD-lowered string-switch hashing and made switch target
+matching handle nested case/default/case-range wrappers used by range and
+multi-value case syntax.
 
 Runtime cstdlib progress: `malloc` in
 `tests/ut/backends/runtime/cstdlib.d` now runs on `Interpreter`. The test is

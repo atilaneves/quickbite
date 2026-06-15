@@ -85,6 +85,27 @@ is null`). A member instance is emitted from that array regardless of
 `dlerror()` to its exception instead of swallowing it — the only way the
 actual missing symbol was visible. Full `bin/ut` suite green.
 
+Fixture discovery from dub, not a `tests/` glob (2026-06-15): `--dub`
+used to hardcode `buildPath(pkgDir, "tests")` and depth-glob `*.d`
+under it. That threw outright on packages with no `tests/` dir (their
+unittests live in `source/`, e.g. concepts) and swept in
+intentionally-failing example modules dub leaves out of the unittest
+build (unit-threaded's `tests/examples/fail/`). Replaced with
+`dub describe --config=unittest --data=source-files`, the authoritative
+list of what `dub test` compiles, run through a new pure
+`discoverFixtures(pkgDir, sourceFiles)` that keeps files under `pkgDir`
+(dropping the generated `dub_test_root.d` in the cache and dependency
+sources that leak into the list) minus runner/`package.d` files.
+Covered by `discoverFixturesKeepsInPackageTestModules`. cerealed
+regression-free (still rows; library modules now harmlessly
+conflict-skip — DMD sees them loaded both as fixtures and as
+imports-by-name, and they're still exercised via the importing tests).
+Full `bin/ut --random` green.
+
+This is the right foundation but does **not** by itself land a new
+corpus entry: it moved concepts and unit-threaded *past* the discovery
+failure into distinct downstream blockers (see "Next" item 1).
+
 ## Open: per-fixture completeness (cross-fixture instance homing)
 
 `bin/bench --dub cerealed -b system-linker` produces a row because a dub
@@ -130,13 +151,29 @@ package as one group (matching how it is timed) rather than per fixture
 
 ## Next, in order
 
-1. Benchmark random dub projects: make `--dub` robust across package
-   layouts and grow the corpus. Known-good simple entry: cerealed
-   git-hash (0.6.12) -> concepts (one dep; concepts is template-only so
-   its archive is nearly empty — proves plumbing, not savings).
-   Meatier: unit-threaded 2.2.3 (8 concrete-code dep archives). Note
-   `findPkgDir` sorts versions lexically and picks the last, so the
-   git-hash dir wins over 0.6.8.
+1. Grow the corpus past cerealed. Fixture discovery is now layout-robust
+   (Done, 2026-06-15), but discovery was only the first gate; each new
+   package hits a distinct downstream blocker, in rough order of effort:
+   - **concepts** (closest to a 2nd row): discovery works, but the
+     SystemLinker link fails with `unrecognized file extension`. concepts
+     is template-only so its `linkFiles` is **empty** — this is a
+     SystemLinker degenerate-link bug (empty/odd object set), not a
+     layout issue, and likely affects any zero-dependency package. Two
+     of its three modules are negative-compile tests
+     (`static assert(!__traits(compiles, ...))`) that skip when compiled
+     in isolation. Fix the empty-link path first.
+   - **unit-threaded** (the "meatier" target): its test modules
+     **import each other by short name** (`unable to read module
+     'normal'`) and the library `should` module collides with a fixture
+     of the same name. Its suite is not structured for per-module
+     benchmarking; it needs the nested `tests/.../` dirs added as import
+     roots and a module-name-collision policy. Reassess whether it is
+     the right "meatier" entry or pick a package with concrete-code deps
+     and standalone test modules instead.
+   - Environment robustness (separate from layout): `findPkgDir`
+     hardcodes `~/.dub/packages` (ignores `DUB_HOME`) and sorts versions
+     lexically (so the git-hash dir wins over 0.6.8) — switch to dub's
+     own path resolution when this bites.
 2. Instrument the bench with a per-phase breakdown of the edit cycle:
    one-time cold dependency parse+sema (currently in no measurement
    window at all), then per-edit root parse+sema, semantic3 of imports,
