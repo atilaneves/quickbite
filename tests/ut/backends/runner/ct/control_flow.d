@@ -182,7 +182,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // Ctfe diverges from SystemLinker here: CTFE-evaluated `assert(false)` raises
 // the message "`assert(false)` failed", so this block characterizes Ctfe
 // rather than the SystemLinker oracle below.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
     unittest {
@@ -204,7 +204,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 // Compiled `assert(false)` in a unittest body raises the plain _d_unittest
 // hook message "unittest failure"; "`assert(false)` failed" is CTFE-only.
-static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
     @Tags(backend.stringof)

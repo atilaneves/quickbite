@@ -580,6 +580,114 @@ The focused Interpreter-only math module run passed: 57 run, 0 failed. No
 production failure causes were found, so no subagent fix slices were needed for
 this module.
 
+Exceptions promotion probe:
+All current SystemLinker-backed backend-matrix tests in
+`tests/ut/backends/runner/ct/exceptions.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-exceptions`. CTFE-only characterization
+blocks stayed CTFE-only; the split compiled-behavior blocks now include
+`Interpreter`, keeping `SystemLinker` as the oracle.
+
+Running only the exceptions Interpreter tests with
+`bin/ut $(bin/ut -l | rg
+'^ut\.backends\.runner\.ct\.exceptions\..*Interpreter$')` ran 26 cases: 11
+passed and 15 failed. Passing promoted surface includes uncaught throw message
+reporting, basic catch execution, throw from a directly called function, a
+runtime branch throw from a directly called function, simple `try`/`finally`,
+`goto` through `finally`, and `goto` inside/leaving a catch handler.
+
+Failure causes from the first focused run:
+
+- Interpreted thrown exceptions carry only a message. Catch variables therefore
+  bind as `null`, dynamic catch selection always uses the first catch clause,
+  casts to class types report `Unsupported cast target: Tclass`, and derived
+  fields cannot be read through a caught base reference. Failures include
+  `catchExceptionBindsCaughtObject`, `catchSkipsNonMatchingSiblingException`,
+  `catchByBaseReadsDerivedField`, `multipleCatchClausesSelectByDynamicType`,
+  `finally.runsFinalbodyBeforeCatch`, and `finally.throwChainsBodyException`.
+- Throw propagation across nested interpreted calls is incomplete. A callee
+  throw after a side effect can be swallowed or followed by later caller
+  statements, so ref side effects end as the non-throw path value. Failures
+  include `catchThrowAfterCalleeSideEffect`,
+  `catchNestedBranchThrowFromCalledFunction`,
+  `throwAfterRuntimeBranchPreservesRefSideEffect`,
+  `throwExpressionInConditionalIsCaught`, and `rethrowPropagatesToOuterHandler`.
+- `try`/`finally` runs the final body for normal fallthrough, but return-state
+  handling is too narrow. Returns from inside the try body are not finalized
+  before the caller observes ref side effects or the pre-finally return value.
+  Failures include `finally.runsAfterReturn`,
+  `finally.returnCapturesValueBeforeFinally`, and
+  `finally.branchReturnsCaptureValueBeforeFinally`.
+- The compiled-oracle promotion for
+  `catchExceptionDoesNotCatchAssertFailure` expects the SystemLinker
+  `_d_unittest` message `unittest failure`, while the interpreter currently
+  reports the CTFE-style `` `assert(false)` failed ``. The fix is a runner
+  boundary diagnostic choice for literal unittest assertion failures, not catch
+  semantics: the catch already does not swallow the assertion.
+
+Exception-object progress:
+The first exceptions worker added narrow interpreted class-object values,
+class-backed `throw new Exception(...)` / subclass construction, dynamic catch
+selection, catch-variable binding, class casts, and promoted class field
+reads/writes. The focused exceptions Interpreter-only run now reports 26 run
+and 9 failed. The former catch-object/type-selection failures now pass,
+including `catchExceptionBindsCaughtObject`,
+`catchSkipsNonMatchingSiblingException`, `catchByBaseReadsDerivedField`,
+`multipleCatchClausesSelectByDynamicType`, and `errorIsNotCaughtByExceptionHandler`.
+Remaining failures are callee throw/ref propagation, `try`/`finally` return and
+throw state, one exception chaining expression shape, and the compiled-oracle
+literal `assert(false)` message.
+
+Handoff:
+The worktree was interrupted after the exceptions module reached 24 passing
+and 2 failing Interpreter cases. The remaining red tests at the handoff point
+are:
+
+- `exception.catchExceptionDoesNotCatchAssertFailure.Interpreter`
+- `finally.throwChainsBodyException.Interpreter`
+
+The control-flow and class-object slices are already committed in the working
+tree state for the current session. The next pass should treat the two failures
+as separate, narrow fixes: one runner-diagnostic policy slice for literal
+`assert(false)` in unittest bodies, and one exception-chaining expression-shape
+slice for the `.next` access in the `finally` test.
+
+Handoff resolution:
+On resuming, `finally.throwChainsBodyException.Interpreter` was already green in
+the working tree (the exception-chaining slice had landed), leaving only
+`exception.catchExceptionDoesNotCatchAssertFailure.Interpreter` red. That test
+expects the compiled `_d_unittest` message `unittest failure` for a literal
+`assert(false)` directly in a unittest body, while the interpreter reported the
+CTFE-style `` `assert(false)` failed ``.
+
+Fix: the `Walker` now carries an `inUnitTest` flag, set in `Interpreter.eval`
+from `function_.isUnitTestDeclaration !is null` and naturally false in the
+freshly-constructed child walkers used for called functions. When a literal
+`assert(false)`/`assert(0)` (no custom message) fails directly in a unittest
+body, `assertFailureMessage` returns `unittest failure`, matching the
+SystemLinker oracle; called-function asserts keep the existing CTFE-style
+wording because their child walker has `inUnitTest == false`. This is the
+Interpreter making itself oracle-correct for one cross-cutting behavior, not new
+module coverage.
+
+Because the literal-`assert(false)`-in-unittest message is pinned identically in
+three modules, making the Interpreter oracle-correct required moving it out of
+the CTFE characterization block and into the SystemLinker-oracle block in the
+two sibling modules as well (user-approved as the oracle-correct resolution):
+
+- `tests/ut/backends/runner/ct/diagnostics.d` `literalFalseAssertionMatchesDmd`:
+  Interpreter moved from the `Ctfe, Bytecode, IR` (``assert(false)` failed`)
+  block to the `Interpreter, SystemLinker` (`unittest failure`) block.
+- `tests/ut/backends/runner/ct/control_flow.d`
+  `function.structMethodReturnDoesNotSkipCallerStatements`: Interpreter moved
+  from the `Ctfe` block to the `Interpreter, SystemLinker` block. The test still
+  verifies that a struct method's `return;` does not skip the caller's following
+  `assert(false)`; only the asserted message text changed to the oracle wording.
+
+`Bytecode` and `IR` stay on the CTFE-style `` `assert(false)` failed `` wording;
+only the Interpreter is being driven to oracle parity. The focused exceptions
+Interpreter run is now 26 run, 0 failed, and `bin/ut --random` is green (1718
+run, 0 failed, 4/4 `@ShouldFail` expected).
+
 REPL promotion probe:
 All remaining CTFE-backed backend-matrix tests in
 `tests/ut/backends/api/repl.d` were promoted to also run on `Interpreter` in
