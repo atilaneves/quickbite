@@ -31,7 +31,7 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
-        StringExp;
+        NegExp, RealExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -150,6 +150,24 @@ private struct Compiler {
             return Operand(offset, type);
         }
 
+        if (auto real_ = expression.isRealExp) {
+            const type = scalarType(real_.type);
+            const offset = allocate(type);
+            _code ~= Instruction(
+                Op.loadConstant,
+                offset,
+                constantIndex(floatBits(real_, type)),
+                cast(ushort) size(type),
+            );
+            return Operand(offset, type);
+        }
+
+        if (auto negate = expression.isNegExp)
+            return compileNegateExpression(negate);
+
+        if (auto subtract = expression.isMinExp)
+            return compileSubtractExpression(subtract);
+
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _locals)
@@ -235,6 +253,20 @@ private struct Compiler {
         const source = compileExpression(cast_.e1);
         const target = scalarType(cast_.to);
 
+        // Crossing the int/float boundary needs a numeric conversion, not a
+        // byte copy or integer extension. Only double -> int is needed today.
+        if (source.type == ScalarType.double_ && target == ScalarType.int_) {
+            const offset = allocate(target);
+            _code ~= Instruction(Op.convertDoubleToInt, offset, source.offset);
+            return Operand(offset, target);
+        }
+
+        if (isFloating(source.type) != isFloating(target))
+            throw new Exception(text(
+                "Unsupported numeric cast in bytecode core: ",
+                expressionChars(cast_),
+            ));
+
         if (size(target) <= size(source.type)) {
             const offset = allocate(target);
             _code ~= Instruction(
@@ -252,12 +284,70 @@ private struct Compiler {
     private Operand compileAddExpression(Expression expression) {
         auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(add !is null);
-        return compileIntBinaryExpression(
+
+        const lhs = compileExpression(add.e1);
+        const rhs = compileExpression(add.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.addFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.addDouble, lhs, rhs, ScalarType.double_);
+
+        return compileIntBinaryResult(
             add,
+            lhs,
+            rhs,
             Op.addInt4,
             ScalarType.int_,
             "Unsupported addition in bytecode core: ",
         );
+    }
+
+    private Operand compileSubtractExpression(BinExp subtract) {
+        import std.conv: text;
+
+        const lhs = compileExpression(subtract.e1);
+        const rhs = compileExpression(subtract.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.subFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
+
+        throw new Exception(text(
+            "Unsupported subtraction in bytecode core: ",
+            expressionChars(subtract),
+        ));
+    }
+
+    private Operand compileNegateExpression(NegExp negate) {
+        import std.conv: text;
+
+        const source = compileExpression(negate.e1);
+        if (source.type == ScalarType.float_) {
+            const offset = allocate(ScalarType.float_);
+            _code ~= Instruction(Op.negateFloat, offset, source.offset);
+            return Operand(offset, ScalarType.float_);
+        }
+        if (source.type == ScalarType.double_) {
+            const offset = allocate(ScalarType.double_);
+            _code ~= Instruction(Op.negateDouble, offset, source.offset);
+            return Operand(offset, ScalarType.double_);
+        }
+
+        throw new Exception(text(
+            "Unsupported negation in bytecode core: ",
+            expressionChars(negate),
+        ));
+    }
+
+    private Operand emitBinary(
+        in Op op,
+        in Operand lhs,
+        in Operand rhs,
+        in ScalarType resultType,
+    ) @safe pure {
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
+        return Operand(offset, resultType);
     }
 
     // DMD lowers `++x` to the compound add-assign `x += 1`. Lower it through
@@ -307,10 +397,23 @@ private struct Compiler {
         in ScalarType resultType,
         in string unsupportedMessage,
     ) {
-        import std.conv: text;
-
         const lhs = compileExpression(expression.e1);
         const rhs = compileExpression(expression.e2);
+        return compileIntBinaryResult(
+            expression, lhs, rhs, op, resultType, unsupportedMessage,
+        );
+    }
+
+    private Operand compileIntBinaryResult(
+        BinExp expression,
+        in Operand lhs,
+        in Operand rhs,
+        in Op op,
+        in ScalarType resultType,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
         if (lhs.type != ScalarType.int_ ||
             rhs.type != ScalarType.int_ ||
             (resultType == ScalarType.int_ &&
@@ -525,6 +628,10 @@ private struct Compiler {
                 return ScalarType.wchar_;
             case Tdchar:
                 return ScalarType.dchar_;
+            case Tfloat32:
+                return ScalarType.float_;
+            case Tfloat64:
+                return ScalarType.double_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
@@ -579,6 +686,46 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
         case 8: return Op.equal8;
         default: assert(0, "No equality opcode for the operand size.");
     }
+}
+
+private bool isFloating(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.float_ || type == ScalarType.double_;
+}
+
+// Lower a float/double literal to the raw bits loadConstant copies: the
+// IEEE-754 pattern of the value at the target width sits in the low bytes.
+private ulong floatBits(
+    imported!"dmd.expression".RealExp real_,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+    import std.bitmanip: nativeToLittleEndian;
+
+    if (type == ScalarType.float_) {
+        const ubyte[float.sizeof] bytes =
+            nativeToLittleEndian(cast(float) realValue(real_));
+        ulong bits;
+        foreach (i; 0 .. float.sizeof)
+            bits |= cast(ulong) bytes[i] << (8 * i);
+        return bits;
+    }
+
+    const ubyte[double.sizeof] bytes =
+        nativeToLittleEndian(cast(double) realValue(real_));
+    ulong bits;
+    foreach (i; 0 .. double.sizeof)
+        bits |= cast(ulong) bytes[i] << (8 * i);
+    return bits;
+}
+
+private real realValue(imported!"dmd.expression".RealExp real_) @trusted {
+    // RealExp.value is a dmd longdouble (real_t); reading it is pure data
+    // access with no aliasing, but the dmd field accessor is not @safe.
+    return cast(real) real_.value;
 }
 
 private imported!"dmd.func".FuncDeclaration callFunction(

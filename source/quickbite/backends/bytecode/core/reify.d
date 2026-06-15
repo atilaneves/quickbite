@@ -38,6 +38,10 @@ package(quickbite.backends.bytecode) imported!"quickbite.lang".Value reify(
             return Value(scalar!wchar(bytes));
         case dchar_:
             return Value(scalar!dchar(bytes));
+        case float_:
+            return Value(scalar!float(bytes));
+        case double_:
+            return Value(scalar!double(bytes));
     }
 }
 
