@@ -206,7 +206,7 @@ unittest {
     checkRunnerResults(
         runners,
         ["good", "bad"],
-        [BenchmarkRun("fixture", testModule)],
+        [standaloneUnit("fixture", testModule)],
     )
         .shouldThrow;
 }
@@ -219,7 +219,7 @@ unittest {
     const checkedResults = checkRunnerResults(
         runners,
         ["a"],
-        [BenchmarkRun("fixture", testModule)],
+        [standaloneUnit("fixture", testModule)],
     );
 
     const results = checkedResults[pairKey("fixture", "a")];
@@ -237,7 +237,7 @@ unittest {
     const checkedResults = checkRunnerResults(
         runners,
         ["a", "b"],
-        [BenchmarkRun("fixture", testModule)],
+        [standaloneUnit("fixture", testModule)],
     );
 
     checkedResults[pairKey("fixture", "a")].length.should == 1;
@@ -254,12 +254,60 @@ unittest {
     const checkedResults = checkRunnerResults(
         runners,
         ["a"],
-        [BenchmarkRun("fixture", testModule)],
+        [standaloneUnit("fixture", testModule)],
     );
 
     const results = checkedResults[pairKey("fixture", "a")];
     results.length.should == 1;
     results[0].passed.should == true;
+}
+
+@("results.GroupedUnitChecksAllMemberModules")
+unittest {
+    import quickbite.frontend.compiler: parseModule;
+
+    Runner[string] runners;
+    runners["a"] = new IndexedFailureRunner(1);
+
+    auto moduleWithOneTest = parseModule(q{ // Module is a mutable DMD AST node.
+        unittest {
+            assert(1 == 1);
+        }
+    }).module_;
+    auto moduleWithTwoTests = parseModule(q{ // Module is a mutable DMD AST node.
+        unittest {
+            assert(1 == 1);
+        }
+
+        unittest {
+            assert(2 == 2);
+        }
+    }).module_;
+
+    const checkedResults = checkRunnerResults(
+        runners,
+        ["a"],
+        [
+            BenchmarkUnit(
+                "package",
+                [
+                    BenchmarkRun("fixture_a", moduleWithOneTest),
+                    BenchmarkRun("fixture_b", moduleWithTwoTests),
+                ],
+                true,
+            ),
+        ],
+    );
+
+    const results = checkedResults[pairKey("package", "a")];
+    results.length.should == 3;
+    results[0].passed.should == true;
+    results[1].passed.should == false;
+    results[2].passed.should == true;
+}
+
+private BenchmarkUnit standaloneUnit(in string name, Module module_) {
+    return BenchmarkUnit(name, [BenchmarkRun(name, module_)], false);
 }
 
 private Module testModule() {
@@ -297,6 +345,34 @@ private final class FixedVerdictRunner: Runner {
                 "loc",
                 failureMessage,
             );
+        });
+
+        return results;
+    }
+}
+
+private final class IndexedFailureRunner: Runner {
+    private size_t _failingIndex;
+    private size_t _index;
+
+    this(in size_t failingIndex) {
+        _failingIndex = failingIndex;
+    }
+
+    public override TestResult[] runTests(Module module_) {
+        import quickbite.frontend.util: foreachUnitTestDeclaration;
+        import std.conv: text;
+
+        TestResult[] results;
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            const passed = _index != _failingIndex;
+            results ~= TestResult(
+                passed,
+                text("test", _index),
+                "loc",
+                passed ? null : "1 != 2",
+            );
+            ++_index;
         });
 
         return results;

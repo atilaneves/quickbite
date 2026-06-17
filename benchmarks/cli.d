@@ -89,16 +89,22 @@ public void run(string[] args) {
     auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
     auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, runs);
 
+    BenchmarkUnit[] units;
+    foreach (run; fixtureRuns)
+        units ~= BenchmarkUnit(run.displayName, [run], false);
+    if (dubRuns.length > 0)
+        units ~= BenchmarkUnit(dubPkg, dubRuns, true);
+
     TestResult[][string] checkedResults;
     if (skipCheck) {
         foreach (name; backendNames)
-            foreach (run; fixtureRuns ~ dubRuns)
-                checkedResults[pairKey(run.displayName, name)] = [];
+            foreach (unit; units)
+                checkedResults[pairKey(unit.displayName, name)] = [];
     } else {
-        checkedResults = checkRunnerResults(runners, backendNames, fixtureRuns ~ dubRuns);
-        foreach (run; fixtureRuns ~ dubRuns)
+        checkedResults = checkRunnerResults(runners, backendNames, units);
+        foreach (unit; units)
             foreach (name; backendNames) {
-                const key = pairKey(run.displayName, name);
+                const key = pairKey(unit.displayName, name);
                 if (key !in checkedResults)
                     continue;
 
@@ -106,7 +112,7 @@ public void run(string[] args) {
                 if (failure !is null)
                     stderr.writefln(
                         "skipping %s %s: %s",
-                        run.displayName,
+                        unit.displayName,
                         name,
                         failure.firstLine,
                     );
@@ -129,12 +135,6 @@ public void run(string[] args) {
         }
         writeln;
     }
-
-    BenchmarkUnit[] units;
-    foreach (run; fixtureRuns)
-        units ~= BenchmarkUnit(run.displayName, [run], false);
-    if (dubRuns.length > 0)
-        units ~= BenchmarkUnit(dubPkg, dubRuns, true);
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
@@ -197,19 +197,23 @@ string firstLine(in string message) {
 public TestResult[][string] checkRunnerResults(
     Runner[string] runners,
     in string[] backendNames,
-    BenchmarkRun[] runs,
+    BenchmarkUnit[] units,
 ) {
     import std.conv: text;
 
     TestResult[][string] checkedResults;
 
-    foreach (run; runs) {
+    foreach (unit; units) {
+        Module[] modules;
+        foreach (member; unit.members)
+            modules ~= member.module_;
+
         string[] resultNames;
         TestResult[][] allResults;
 
         foreach (name; backendNames) {
             try {
-                allResults ~= runners[name].runTests(run.module_);
+                allResults ~= runTests(runners[name], modules);
                 resultNames ~= name;
             } catch (Exception e) {
                 allResults ~= [
@@ -229,12 +233,12 @@ public TestResult[][string] checkRunnerResults(
             if (mismatch !is null)
                 throw new Exception(text(
                     "backends ", resultNames[0], " and ", resultNames[i],
-                    " disagree on ", run.displayName, ": ", mismatch,
+                    " disagree on ", unit.displayName, ": ", mismatch,
                 ));
         }
 
         foreach (i, name; resultNames)
-            checkedResults[pairKey(run.displayName, name)] = allResults[i];
+            checkedResults[pairKey(unit.displayName, name)] = allResults[i];
     }
 
     return checkedResults;
@@ -284,20 +288,15 @@ bool checkedTestsPassing(
 ) {
     size_t passed;
     size_t total;
-    foreach (member; unit.members) {
-        const key = pairKey(member.displayName, backendName);
-        if (key !in checkedResults)
-            return false;
+    const key = pairKey(unit.displayName, backendName);
+    if (key !in checkedResults)
+        return false;
 
-        const results = checkedResults[key];
-        if (results.length == 0)
-            continue;
-
-        foreach (result; results) {
-            ++total;
-            if (result.passed)
-                ++passed;
-        }
+    const results = checkedResults[key];
+    foreach (result; results) {
+        ++total;
+        if (result.passed)
+            ++passed;
     }
 
     return total > 0 && passed == total;
@@ -312,16 +311,14 @@ string checkedTestsDisplay(
 
     size_t passed;
     size_t total;
-    foreach (member; unit.members) {
-        const key = pairKey(member.displayName, backendName);
-        if (key !in checkedResults)
-            return "unchecked";
+    const key = pairKey(unit.displayName, backendName);
+    if (key !in checkedResults)
+        return "unchecked";
 
-        foreach (result; checkedResults[key]) {
-            ++total;
-            if (result.passed)
-                ++passed;
-        }
+    foreach (result; checkedResults[key]) {
+        ++total;
+        if (result.passed)
+            ++passed;
     }
 
     if (total == 0)
@@ -344,10 +341,10 @@ public struct BenchmarkRun {
     public bool frontendUnmeasurable;
 }
 
-struct BenchmarkUnit {
-    string displayName;
-    BenchmarkRun[] members;   // 1 for a standalone fixture, N for a dub package
-    bool grouped;             // a dub package reports under one name across N modules
+public struct BenchmarkUnit {
+    public string displayName;
+    public BenchmarkRun[] members;   // 1 for a standalone fixture, N for a dub package
+    public bool grouped;             // a dub package reports under one name across N modules
 }
 
 public struct BenchmarkRow {
