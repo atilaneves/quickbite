@@ -42,6 +42,7 @@ public struct Value {
         AssocArray,
         ClassObject,
         LocalPointer,
+        NativePointer,
         Pointer,
         Struct,
         TypeName,
@@ -131,6 +132,10 @@ public struct Value {
         return Value(LocalPointer(id));
     }
 
+    public static Value nativePointerValue(void* pointer) @safe pure {
+        return Value(NativePointer(pointer));
+    }
+
     public static Value functionPointerValue(in size_t id) @safe pure {
         return Value(FunctionPointer(id));
     }
@@ -180,6 +185,10 @@ public struct Value {
     }
 
     private this(LocalPointer value) @safe pure {
+        data = Data(value);
+    }
+
+    private this(NativePointer value) @safe pure {
         data = Data(value);
     }
 
@@ -385,6 +394,8 @@ public struct Value {
                     return value.toString;
                 } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
                     return value.toString;
+                } else static if (is(T == const(NativePointer)) || is(T == NativePointer)) {
+                    return value.toString;
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
@@ -447,6 +458,8 @@ public struct Value {
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
                 } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
+                    return value.toString;
+                } else static if (is(T == const(NativePointer)) || is(T == NativePointer)) {
                     return value.toString;
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
@@ -753,6 +766,7 @@ public struct Value {
         return data.match!(
             (const(Pointer) pointer) => true,
             (const(LocalPointer) pointer) => true,
+            (const(NativePointer) pointer) => true,
             (_) => false,
         );
     }
@@ -795,6 +809,19 @@ public struct Value {
             (_) {
                 throw new Exception("Expected function pointer.");
                 return size_t.init;
+            },
+        );
+    }
+
+    public void* asNativePointer() const {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativePointer) pointer) => cast(void*) pointer.pointer,
+            (const(Null) null_) => null,
+            (_) {
+                throw new Exception("Expected native pointer.");
+                return null;
             },
         );
     }
@@ -1814,6 +1841,17 @@ private struct Pointer {
 
 private struct LocalPointer {
     public size_t id;
+}
+
+
+private struct NativePointer {
+    public void* pointer;
+
+    public string toString() const @safe pure {
+        import std.conv: text;
+
+        return text(pointer);
+    }
 }
 
 

@@ -923,7 +923,7 @@ newly-compiled (dub-dependency image, §3–§5): needs load + module-ctor +
 ### 21.1 Shared, backend-neutral resolver
 
 The resident native-call resolver is shared infrastructure, not per-backend
-code and not a backend choice (proposed module `quickbite.native`). The first
+code and not a backend choice (proposed module `quickbite.ffi`). The first
 mechanical trigger is a resolved `FuncDeclaration` with `fbody is null`, but
 the resolver should serve every supported already-resident native call,
 including functions reached today through DMD-builtin bridges such as `fabs`
@@ -1026,7 +1026,7 @@ Ctfe (characterization): rejected — the call fails to interpret, exactly as
   Ctfe characterization test, not as the definition of correct behaviour.
 ```
 
-What Increment 1 forces into existence (all in `quickbite.native` unless
+What Increment 1 forces into existence (all in `quickbite.ffi` unless
 noted):
 
 ```text
