@@ -1372,3 +1372,336 @@ After all four items, `logic.d` is complete on `BytecodeNewCore` (34/34).
   queries.
 - The VM should remain independent of DMD internals except at the compiler
   boundary.
+
+## diagnostics.d Promotion Analysis (BytecodeNewCore)
+
+All 26 tests from `tests/ut/backends/runner/ct/diagnostics.d` have been
+promoted to include `BytecodeNewCore` in their `AliasSeq` blocks. 13 pass
+unchanged: `voidFunctionReturnsToCaller`, `ok`, `oops`,
+`okFailureMessage.0`, `localIntReturnOops`, `voidFunctionOops`,
+`functionParametersOops`, `tenFunctionParametersOops`,
+`functionParameterOops`, `ifElseOops`, `inFunctionParametersOops`,
+`boolAssertionContextMatchesDmd`, and `charAssertionContextMatchesDmd`.
+Group C tests (`nullClassMethodCallReportsDiagnostic`,
+`nullClassFieldReadReportsDiagnostic`,
+`typeidNullClassReferenceReportsDiagnostic`,
+`nullClassNotIdentityUsesNotEqualPolarity`, and
+`voidInitializedScalarReadReportsUninitialized`) are deliberately not
+promoted: the first four require class-reference support (slice 9) and the
+last is a CTFE-only diagnostic (`= void` uninitialized-read) that the new
+core — targeting the SystemLinker oracle — will never emit. The remaining
+13 failures group into 6 root-cause failure modes.
+
+All six failure modes touch the shared core modules (`compiler.d`,
+`machine.d`, `program.d`). Subagents **must run sequentially**, each
+building on the previous committed state. `reify.d` requires no changes
+(all new result types are already reifiable scalar or string results).
+
+### Failure mode 1: Comparison-assert operators `<`, `<=`, `>`, `>=`,
+`!=` and unsigned `>=` not recognised
+
+**Root cause:** `compileLoweredComparisonAssert` in `compiler.d` (line
+840) gates on `operatorText(operator) != "=="` and returns `false` for
+every other 3-argument `_d_assert_fail` form. All five comparison-assert
+tests hit this gate and fall through to the "Unsupported assert" throw.
+`uintGreaterOrEqualUsesUnsignedComparison` hits the same gate: DMD lowers
+`assert(uint.max >= 0u)` to `assert(__assertOp71 >= 0u, _d_assert_fail(">=",
+__assertOp71, 0u))` and because `">="` fails the gate, the assert throws
+instead of passing silently. Both `uint.max` and `0u` are `uint` (`Tuns32`),
+which `scalarType` maps to `ScalarType.uint_`, and `uint.max >= 0u` is true
+under unsigned semantics — the only requirement is that the new comparison
+opcodes use the correct signed/unsigned comparison.
+
+`logic.d` already contributed `Op.lessThan4` and `Op.greaterThan4` with
+signed `int` semantics (machine.d lines 135–146). Those two are reused
+as-is for `"<"` and `">"`. The required delta is four new opcodes:
+`lessOrEqual4`, `greaterOrEqual4`, `greaterOrEqualUnsigned4` (for `uint`
+operands), and `notEqual4`. `invertedOperator` in `machine.d` currently
+maps only `"=="` → `"!="` (line 399–403); it must be extended with
+`"<"` → `">="`, `"<="` → `">"`, `">"` → `"<="`, `">="` → `"<"`, and
+`"!="` → `"=="`.
+
+The unsigned variant (`uintGreaterOrEqualUsesUnsignedComparison`) must
+evaluate true and not throw: emit `greaterOrEqualUnsigned4` when the
+operand `ScalarType` is `uint_` (or any unsigned type), `greaterOrEqual4`
+(signed) otherwise. Rendering in `operandText` already handles unsigned
+types correctly (the `!isSigned` branch, line 431).
+
+**Failing tests (6):** `intLessThanOops`, `intLessOrEqualOops`,
+`intGreaterThanOops`, `intGreaterOrEqualOops`, `intNotEqualOops`,
+`uintGreaterOrEqualUsesUnsignedComparison`.
+
+**Oracle behavior:** Failed `<` → `"42 >= 42"`, `<=` → `"43 > 42"`,
+`>` → `"42 <= 42"`, `>=` → `"41 < 42"`, `!=` → `"42 == 42"`. The
+unsigned `>= 0u` assert passes silently (no throw).
+
+**Required implementation:**
+- `compiler.d` — extend `compileLoweredComparisonAssert` beyond the
+  `"=="` gate to also dispatch `"<"`, `"<="`, `">"`, `">="`, `"!="`,
+  selecting a signed or unsigned opcode based on the operand `ScalarType`.
+  Extend `compileIntBinaryResult` or add a parallel helper that accepts
+  `uint_`/`ulong_` operand types without rejecting them.
+- `program.d` — add `Op.lessOrEqual4`, `Op.greaterOrEqual4`,
+  `Op.greaterOrEqualUnsigned4`, `Op.notEqual4`.
+- `machine.d` — add handlers for the four new opcodes; extend
+  `invertedOperator` with the five missing operator strings listed above.
+
+### Failure mode 2: Ref-parameter writeback missing
+
+**Root cause:** `parameterLayout` in `compiler.d` (lines 956–958) throws
+unconditionally when `parameter.isReference` is true:
+`"Unsupported ref parameter in bytecode core"`. Both `refParameterOops`
+(`ref int`) and `refSizeTParameterOops` (`ref size_t`) hit this path
+immediately during compilation of the callee. The old core already
+implements scalar ref writeback (recorded in the Current Coverage State log:
+the `Bytecode` entry for `refParameterOops` notes "scalar local `ref`
+argument writeback"). The new core needs the same narrow slice.
+
+The mechanism is: pass a ref parameter as its caller-frame slot offset (a
+pointer into the caller's frame), compile the callee body treating the
+parameter as a load/store through that offset, and on `ret` write the final
+value back to the caller slot. Concretely: `parameterLayout` must accept
+`isReference` parameters and record them separately; `compileCall` must
+pass the caller-frame offset of the argument variable rather than copying
+its value; and the `ret` handler (or a pre-`ret` writeback sequence) must
+copy the callee's parameter slot back to the caller offset.
+
+**Failing tests (2):** `refParameterOops`, `refSizeTParameterOops`.
+
+**Oracle behavior:** After `addOne(value)` (ref int), the caller's `value`
+is incremented and the final failed equality reports `"42 != 43"`. Same
+pattern for `size_t`.
+
+**Required implementation:**
+- `compiler.d` — in `parameterLayout`, record ref parameters with their
+  size/type (the referenced type, not a pointer type) and mark them as
+  pass-by-reference. In `compileCall`, detect ref arguments and instead
+  of emitting a `copy` into the argument area, emit the caller-slot offset
+  as the argument word. In the callee body, load/store through the passed
+  offset rather than a private slot. On `ret`, write each ref-parameter slot
+  back to the provided caller offset.
+- `machine.d` — the `call` handler must distinguish ref-parameter
+  argument words (offsets into caller frame) from value words; the `ret`
+  handler must perform writebacks for ref parameters before returning to
+  the caller frame.
+- `program.d` — `CompiledFunction` or `parameterBytes` metadata may need
+  a ref-parameter descriptor so the machine knows which argument words are
+  offsets and which are values.
+
+### Failure mode 3: Runtime-bool truth assert (`""` operator on
+`bool_` operand) not handled
+
+**Root cause:** DMD with `-checkaction=context` lowers `assert(nope())`
+(where `nope()` returns `bool`) to
+`assert(__assertOp69, _d_assert_fail("", __assertOp69))`. The `__assertOp69`
+temp is a `bool` local. In `compileLoweredComparisonAssert`, the 2-argument
+`""` operator branch delegates to `compileNonzeroAssert` (line 831). Inside
+`compileNonzeroAssert` (line 878), the compiled operand has type
+`ScalarType.bool_`, but the check `operand.type != ScalarType.int_` rejects
+it with `"Unsupported truth assert in bytecode core: __assertOp69"`.
+
+The fix is narrow: relax `compileNonzeroAssert` to accept `bool_` in
+addition to `int_`. The existing `assertNonzeroInt4` opcode operates on a
+frame byte and compares to zero, which is correct for a `bool_` slot
+(stored as one byte, 0 or 1). Alternatively, use a direct
+`Op.assertTrue`/`jumpIfFalse` pattern with a `bool_` diagnostic, since the
+existing `assertTrue` opcode already handles single-byte condition slots.
+The `assertMessage` in `machine.d` for operator `""` renders
+`"<value> != true"`, which for a `bool_` operand (via `operandText`) renders
+`"false != true"` — matching the oracle.
+
+**Failing tests (1):** `runtimeBoolAssertionContextMatchesDmd`.
+
+**Oracle behavior:** `"false != true"`.
+
+**Required implementation:**
+- `compiler.d` — in `compileNonzeroAssert`, accept `ScalarType.bool_` in
+  addition to `ScalarType.int_`. The existing `assertNonzeroInt4` opcode
+  is byte-correct for `bool_` (1-byte frame slot). No new opcode needed.
+
+### Failure mode 4: Explicit string assert messages not handled
+
+**Root cause:** Two tests involve asserts with an explicit string message.
+They share a common gap: no branch in `compileAssert` handles the case
+where `assert_.msg` is a non-null expression that is not a
+`_d_assert_fail` call.
+
+`explicitAssertMessageOverridesContext`: `assert(1 == 2, "oops")` is
+constant-folded by DMD to `assert(false, "oops")` (an `IntegerExp(0)` with
+a `StringExp` message). `compileLiteralFalseAssert` returns `false` when
+`assert_.msg != null` (line 768). `compileLoweredComparisonAssert` checks
+`call = assert_.msg.isCallExp` — a `StringExp` is not a `CallExp`, so it
+returns `false`. `compileVerbatimStringAssert` requires `assert_.e1` to be
+a `LogicalExp` or `NotExp`, but the condition is `IntegerExp(0)`, so it
+returns `false`. Falls through to "Unsupported assert".
+
+`dynamicAssertMessageMatchesDmd`: `assert(false, msg)` where `msg` is a
+`string` local variable. The message expression is a `VarExp`, not a
+`StringExp`. Same chain of misses. Reaches "Unsupported type: string"
+because `scalarType` is called on the `string` type of the local, and
+`string` (`Tarray` of `Tchar`) has no `ScalarType` entry.
+
+Both require a new `compileExplicitMessageAssert` branch in `compileAssert`
+that fires when `assert_.msg` is present and is neither a `_d_assert_fail`
+call nor a verbatim logical-expression string. The branch should:
+(1) compile the condition to a bool, jumping past the message if true; (2)
+on failure, evaluate the message expression (which may be a `StringExp`
+literal or a `VarExp` for a local `string` variable — already a
+string-slice in the frame from `compileStringLiteral` or the variable's
+slot); (3) throw via `Op.throwString`.
+
+The `string` local (`VarExp` of type `string`) is already stored in the
+frame as a string-slice descriptor (8 bytes: data offset + length) by
+`compileVariableDeclaration` → `compileStringLiteral`. The `Op.throwString`
+opcode already reads such a descriptor (machine.d line 304). So the only
+new compiler logic needed is recognising the message-bearing assert forms
+and emitting a conditional branch over a `throwString`.
+
+For `explicitAssertMessageOverridesContext` the message is a `StringExp`
+literal; `compileStringLiteral` produces the slice descriptor. For
+`dynamicAssertMessageMatchesDmd` the message is a cast-wrapped `VarExp`
+over a `string` local; the old core's `compileDynamicAssertMessage` (line
+936 of bytecode/compiler.d) and `compileAssertMessageExpression` (line 967)
+show the pattern: unwrap any `CastExp` wrapper, compile the inner `VarExp`
+to get its slot offset, emit a conditional throw.
+
+**Failing tests (2):** `explicitAssertMessageOverridesContext`,
+`dynamicAssertMessageMatchesDmd`.
+
+**Oracle behavior:** Both throw `"oops"` — the message string, not a
+generated comparison context.
+
+**Required implementation:**
+- `compiler.d` — add a `compileExplicitMessageAssert` helper that fires
+  when `assert_.msg` is not null, is not a `_d_assert_fail` call, and is
+  not the verbatim-logical-expression string form. Compile `assert_.e1` to
+  a condition bool. If false (using `jumpIfFalse`), evaluate `assert_.msg`
+  — either a `StringExp` literal via `compileStringLiteral`, or a
+  cast-unwrapped `VarExp` whose slot is already a string-slice descriptor —
+  and emit `Op.throwString` on the message slot. Also extend
+  `compileLiteralFalseAssert` (or the new branch) to handle
+  `assert(false, "oops")` / `assert(0, msg)` where the condition is
+  already a compile-time zero (skip the condition compilation, just compile
+  the message and emit `throwString` unconditionally).
+- No new opcodes needed (`Op.throwString` already exists).
+
+### Failure mode 5: Literal-false assert in unittest body emits wrong
+message
+
+**Root cause:** `compileLiteralFalseAssert` (compiler.d line 775) always
+emits `Op.halt`, which the machine throws as `"Assertion failure"`. But
+compiled D uses the `_d_unittest` hook for `assert(false)` (and `assert(0)`)
+directly inside a unittest body, which throws `"unittest failure"`. The
+existing `voidFunctionOops` test correctly uses `"Assertion failure"` for
+`assert(0)` inside a *called* non-unittest function — that is the right
+compiled-D behaviour for a non-unittest caller. `literalFalseAssertionMatchesDmd`
+has `assert(false)` directly in the unittest body and expects
+`"unittest failure"`.
+
+The distinction is whether `assert_.e1` is a literal zero (constant false)
+inside the *entry function* (a `UnitTestDeclaration`) versus inside a callee.
+The new-core `compile(entry)` function (compiler.d line 17) receives the
+entry `FuncDeclaration`; `entry.isUnitTestDeclaration` returns non-null when
+it is a unittest block. The compiler currently has no `_inUnittest` flag.
+
+The smallest fix: track whether the current function being compiled is the
+entry `UnitTestDeclaration` (not a lazily-compiled callee), and in
+`compileLiteralFalseAssert`, emit `Op.haltUnittest` (throwing
+`"unittest failure"`) when inside the unittest entry, `Op.halt` otherwise.
+Only the entry function body is a unittest; callees are always
+`isUnitTestDeclaration == null` in the new core's lazy-compilation model.
+`Op.haltUnittest` is a new one-byte opcode with no operands, analogous to
+`Op.halt`.
+
+Note: `assert(false)` is represented as `IntegerExp(0)` in the DMD AST
+after semantic analysis, identical to `assert(0)`. The distinction is
+purely contextual (entry unittest body vs. callee).
+
+**Failing tests (1):** `literalFalseAssertionMatchesDmd`.
+
+**Oracle behavior:** `"unittest failure"`.
+
+**Required implementation:**
+- `compiler.d` — add a `_inUnittestEntry` bool field to `Compiler`,
+  set to `entry.isUnitTestDeclaration !is null` in `compile()` before
+  calling `compileFunctionBody(0)`, and cleared to `false` in
+  `compileFunctionBody` before compiling any callee (index > 0). In
+  `compileLiteralFalseAssert`, emit `Op.haltUnittest` when `_inUnittestEntry`
+  is true, `Op.halt` when false.
+- `program.d` — add `Op.haltUnittest`.
+- `machine.d` — add a handler that throws `"unittest failure"`.
+
+### Failure mode 6: `compileLoweredComparisonAssert` ArrayIndexError on
+`assert(true, message)` where message is a `CallExp`
+
+**Root cause:** `assertMessageDoesNotEvaluateOnSuccess` contains
+`assert(true, message)` where `message()` has `assert(0)`. The condition is
+the literal `true`, so the message is dead code that must never be evaluated.
+`assert(true, message)` with a non-null message reaches
+`compileLiteralTrueAssert` which returns `false`
+when `assert_.msg != null` (line 755). It then falls through to
+`compileLoweredComparisonAssert` (line 816). There, `assert_.msg` is not
+null; `call = assert_.msg.isCallExp` succeeds because the message
+expression is the `CallExp` `message()`. Then `call.arguments` is the
+argument list of the `message()` call — which has no arguments, so
+`call.arguments.length == 0`. Line 824 then executes
+`(*call.arguments)[0].isStringExp`, indexing an empty array, causing the
+`ArrayIndexError` crash.
+
+The fix is a guard in `compileLoweredComparisonAssert`: after confirming
+`call.arguments` is not null, check `call.arguments.length >= 1` before
+accessing `(*call.arguments)[0]`. If the call has no arguments, it is not a
+`_d_assert_fail` shape; return `false` immediately.
+
+Additionally, `compileLiteralTrueAssert` should be extended to accept
+`assert(true, message)` — the message must not be evaluated because the
+condition is statically true, exactly as compiled code does (the message
+expression is dead code). Extend `compileLiteralTrueAssert` to return `true`
+(emit no code) for any `assert(nonzero_integer, ...)` regardless of
+`assert_.msg`.
+
+**Failing tests (1):** `assertMessageDoesNotEvaluateOnSuccess`.
+
+**Oracle behavior:** The assert passes silently; `message()` is never
+called; no throw.
+
+**Required implementation:**
+- `compiler.d` — (a) In `compileLiteralTrueAssert` (line 754), remove the
+  `assert_.msg !is null` early return so that `assert(nonzero, anything)`
+  is recognized as a literal-true assert and emits no code. (b) In
+  `compileLoweredComparisonAssert` (line 816), add a guard after
+  `call.arguments` null check: if `call.arguments.length == 0` return
+  `false`. These two changes together fix the crash and the silent-pass
+  contract.
+- No machine or program changes needed.
+
+### Subagent partition (dependency-ordered, sequential)
+
+All six items touch `compiler.d` and/or `machine.d`/`program.d`; no
+parallelism is possible. Each subagent commits in this worktree before the
+next begins. The recommended order is:
+
+1. **Comparison-assert operators** (failure mode 1) — fixes 6 tests. No
+   prerequisites. Adds `lessOrEqual4`, `greaterOrEqual4`,
+   `greaterOrEqualUnsigned4`, `notEqual4` opcodes; extends
+   `compileLoweredComparisonAssert` and `invertedOperator`.
+2. **Ref-parameter writeback** (failure mode 2) — fixes 2 tests. No
+   prerequisites; logically independent of mode 1 but runs after it to
+   avoid merge conflicts in shared files.
+3. **Runtime-bool truth assert** (failure mode 3) — fixes 1 test. After
+   mode 1 (mode 1 already extends `compileLoweredComparisonAssert`; the
+   bool fix is a one-line relaxation in `compileNonzeroAssert`).
+4. **Explicit string assert messages** (failure mode 4) — fixes 2 tests.
+   After mode 3 (shares `compileAssert` dispatch logic; no opcode
+   dependency).
+5. **Literal-false assert in unittest body** (failure mode 5) — fixes 1
+   test. After mode 4 (adds `Op.haltUnittest`; independent of modes 2–4
+   but keeps commits small).
+6. **`compileLoweredComparisonAssert` ArrayIndex guard + literal-true
+   with message** (failure mode 6) — fixes 1 test. After mode 4 (the
+   `compileLiteralTrueAssert` change interacts with the new explicit-
+   message branch added in mode 4; running last avoids re-editing the
+   same function twice).
+
+After all six items, `diagnostics.d` is complete on `BytecodeNewCore`
+(26/26, modulo the deliberately deferred Group C tests).
