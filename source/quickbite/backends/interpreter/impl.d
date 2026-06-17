@@ -1319,6 +1319,27 @@ private struct Walker {
         return functionPointer;
     }
 
+    private Value runFunctionLiteralDeclaration(
+        imported!"dmd.expression".FuncExp literal,
+    ) {
+        if (literal.fd is null)
+            throw new Exception("Unsupported eval expression: functionLiteral");
+
+        const functionPointer = newFunctionPointerValue(literal.fd);
+
+        RuntimeDelegate runtime;
+        runtime.function_ = literal.fd;
+        runtime.functionPointerId = functionPointer.functionPointerId;
+        runtime.contextPointer = Value.pointerValue(Value.void_);
+        if (literal.fd.isNested && hasThis) {
+            runtime.receiver = thisValue;
+            runtime.hasReceiver = true;
+        }
+
+        delegates[functionPointer.functionPointerId] = runtime;
+        return functionPointer;
+    }
+
     private Value delegateContextPointer(
         imported!"dmd.expression".DelegateExp delegate_,
     ) {
@@ -4289,9 +4310,12 @@ private struct Walker {
         const isArrayElementAlias = isRefVariable(variable) &&
             indexInitializer !is null;
         size_t arrayElementAliasIndex;
+        auto literal = initializer.isFuncExp;
         auto value = storageValue(
             variable.type,
-            isArrayElementAlias
+            literal !is null
+                ? runFunctionLiteralDeclaration(literal)
+                : isArrayElementAlias
                 ? runIndexExpression(indexInitializer, arrayElementAliasIndex)
                 : runExpression(initializer),
         );

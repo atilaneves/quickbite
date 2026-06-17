@@ -737,14 +737,20 @@ The full random run reported 2268 run, 0 failed, 5/5 expected failures.
    inside the member function and reads `_data` through the enclosing member
    `this`, but `runFunction` currently creates a child walker for nested
    functions without propagating `thisValue` / `hasThis` from the enclosing
-   member call. Next slice should reduce this to a self-contained member
-   function with a nested lambda reading a field through `this`, get approval
-   for the test, then propagate the enclosing receiver only for nested
-   functions that need it.
+   member call. PARTIALLY FIXED on this branch: the approved
+   `function.nestedLambdaReadsEnclosingThisField` test covers a member function
+   that stores a nested lambda in a local delegate and then calls it; function
+   literal declarations now preserve the enclosing receiver when the literal is
+   nested. That test is green on CTFE, Interpreter, SystemLinker, and LLVMJit.
 
-Next step: get approval for the slice 5 test, then repeat the RED→GREEN loop.
-Nothing on this branch is committed yet — commit one slice per fix (each with
-its test) before opening the PR. Run `ci.sh` before the PR.
+   The live repro still fails at the same diagnostic because `Appender.put`
+   uses the direct IIFE shape above. That path calls the `FuncExp` directly
+   instead of going through a stored local delegate, so it still bypasses the
+   receiver-preserving runtime delegate.
+
+Next step: get approval for a direct nested-lambda IIFE test, then repeat the
+RED→GREEN loop. Commit this stored-lambda slice first, then make the direct
+IIFE fix as a separate slice. Run `ci.sh` before the PR.
 
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in
