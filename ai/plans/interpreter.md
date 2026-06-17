@@ -751,13 +751,22 @@ The full random run reported 2268 run, 0 failed, 5/5 expected failures.
 6. `Error: pointer slice ``[0..1]`` exceeds allocated memory block ``[0..0]```
    — after slice 5, the live repro advances past the direct IIFE and fails
    while slicing the pointer returned from `_data.arr.ptr`. The array field was
-   resized earlier, but the pointer still carries a zero-length allocation
-   block. Next slice should reduce this to a self-contained array-field
-   pointer/slice fixture with no cerealed dependency and use `SystemLinker` as
-   the oracle.
+   temporarily resized earlier, then shrunk back to visible length zero while
+   retaining capacity one, but the interpreter used the visible length as the
+   pointer allocation length. FIXED on this branch: `Value.Array` now preserves
+   a backing allocation across array slices, and pointer casts use that backing
+   allocation. Test `cast.arrayFieldPtrSliceUsesResizedLength` is green on
+   CTFE, Interpreter, SystemLinker, and LLVMJit.
 
-Next step: get approval for the pointer-slice fixture, then repeat the
-RED→GREEN loop. Commit this direct-IIFE slice first. Run `ci.sh` before the PR.
+7. `Error: Unsupported interpreter pointer target.` — after slice 6, the live
+   repro advances to `emplace(&bigData[len], *itemUnqual)` in
+   `std.array.Appender.put`. Next slice should reduce this to a self-contained
+   pointer-to-slice-element write fixture with no cerealed dependency and use
+   `SystemLinker` as the oracle.
+
+Next step: commit the pointer-slice slice, then get approval for the
+pointer-target fixture and repeat the RED→GREEN loop. Run `ci.sh` before the
+PR.
 
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in

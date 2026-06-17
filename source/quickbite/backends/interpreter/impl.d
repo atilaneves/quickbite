@@ -1243,12 +1243,14 @@ private struct Walker {
 
         auto var = array.isVarExp;
         if (var is null) {
-            if (array.isDotVarExp !is null)
+            if (array.isDotVarExp !is null) {
+                const value = runExpression(array);
                 return Value.arrayPointerValue(
-                    arrayElements(runExpression(array)),
+                    arrayPointerElements(value),
                     ++allocationCount,
-                    offset,
+                    arrayPointerOffset(value, offset),
                 );
+            }
 
             throw new Exception(text("Unsupported eval expression: ", op));
         }
@@ -1262,9 +1264,9 @@ private struct Walker {
             throw new Exception(text("Unsupported eval expression: ", op));
 
         return Value.arrayPointerValue(
-            arrayElements(*current),
+            arrayPointerElements(*current),
             allocationId(variable),
-            offset,
+            arrayPointerOffset(*current, offset),
         );
     }
 
@@ -1400,6 +1402,18 @@ private struct Walker {
             elements ~= value[index];
 
         return elements;
+    }
+
+    private Value[] arrayPointerElements(in Value value) {
+        return value.isArray
+            ? value.arrayAllocationElements
+            : arrayElements(value);
+    }
+
+    private long arrayPointerOffset(in Value value, in long offset) {
+        return value.isArray
+            ? cast(long) value.arrayAllocationOffset + offset
+            : offset;
     }
 
     // pointers into the same array local share an opaque allocation id so
@@ -3692,11 +3706,7 @@ private struct Walker {
             ? source.length
             : cast(size_t) runExpression(slice.upr).asLong;
 
-        Value[] values;
-        foreach (index; lower .. upper)
-            values ~= source[index];
-
-        return Value.arrayValue(values);
+        return source.arraySlice(lower, upper);
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {

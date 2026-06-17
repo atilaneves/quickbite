@@ -1022,6 +1022,38 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("cast.arrayFieldPtrSliceUsesResizedLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                ubyte[] values;
+            }
+
+            struct Appender {
+                Holder* holder;
+
+                ubyte readArrayFieldPointerSlice() {
+                    holder = new Holder;
+                    holder.values.length = 1;
+                    holder.values = holder.values[0 .. 0];
+                    immutable len = holder.values.length;
+                    auto slice = (() => holder.values.ptr[0 .. len + 1])();
+                    slice[len] = 42;
+                    holder.values = slice;
+                    return slice[0];
+                }
+            }
+
+            unittest {
+                auto appender = Appender();
+                assert(appender.readArrayFieldPointerSlice() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
