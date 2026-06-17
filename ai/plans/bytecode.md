@@ -869,6 +869,13 @@ switch; `Bytecode` still defaults to the old core):
   `assert(0)` divergence is why `BytecodeNewCore` joins the
   `SystemLinker`/`LLVMJit` group for `logicalAndCallShortCircuitFailureMessage.1`
   rather than the CTFE group.
+- All `tests/ut/backends/runner/results.d` blocks, completing `results.d`
+  (module order 5) on the new core. 10 of 12 passed unchanged after promotion;
+  the remaining two needed narrow `ThrowStatement` lowering for
+  `throw new Exception(<string expression>)`. The new core now compiles the
+  constructor message through the existing string-slice path and executes a
+  `throwString` opcode that reports the rendered message through the runner.
+  DMD-folded `assert(true)` emits no code, matching compiled output.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -877,17 +884,68 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1), `integrals.d` (3), and `logic.d` (4) are now
-complete on the new core (see Rewrite Coverage State). Continue rewrite slice 1
-with `math.d`, then `diagnostics.d` per the slice roadmap, promoting one named
-behaviour (or one tight failure-message family) at a time by adding
-`BytecodeNewCore` to the block's `AliasSeq`. The float/builtin/string-slice
-machinery earned for `eval.d` and the logical/comparison/short-circuit
-machinery earned for `logic.d` are now available to those modules.
+`eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), and `results.d`
+(5) are now complete on the new core (see Rewrite Coverage State). Continue
+with `diagnostics.d` (module order 6), promoting one named behaviour or one
+tight failure-message family at a time. The float/builtin/string-slice
+machinery earned for `eval.d`, logical/comparison/short-circuit machinery
+earned for `logic.d`, and narrow throw/result plumbing earned for `results.d`
+are now available to the later modules.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
 directly on the new core per the slice roadmap.
+
+## results.d Promotion Analysis (BytecodeNewCore)
+
+All 12 tests from `tests/ut/backends/runner/results.d` have been promoted to
+include `BytecodeNewCore` in their `AliasSeq` and were run in isolation by
+their full unit-threaded names. 10 pass unchanged:
+`runBackendSourceFixtureTests.throwsOnUnittestFailure`,
+`runTests.reportsAssertFailureMessages`,
+`runBackendSourceFixtureTests.importPathsRetryAfterFailure`,
+`runTests.countsAttributedPassingAndFailingUnittests`,
+`runTests.countsAllPassingUnittests`,
+`runTests.countsAssertErrorsAsFailures`,
+`runTests.reportsDmdUnittestSymbolNames`,
+`runTests.reportsFileBackedUnittestLocations`,
+`runBackendSourceFixtureTests.withImportPaths`, and
+`runBackendFileFixtureTests.withImportPaths`.
+
+The two failures share one root cause: the new core does not lower
+`ThrowStatement`. `runTests.reportsThrownExceptionMessages` reports the
+unsupported-statement diagnostic `Unsupported statement in bytecode core:
+Throw` instead of the thrown `Exception` message, and
+`runTests.runsTestsInEachModule` fails after the backend instance has observed a
+throwing module. The old core already has a narrow implementation for
+`throw new Exception(message)`; the new core needs the same behaviour through
+its typed-frame pipeline.
+
+### Failure mode: narrow throw-statement lowering missing
+
+**Failing tests (2):** `runTests.reportsThrownExceptionMessages` and
+`runTests.runsTestsInEachModule`.
+
+**Oracle behavior:** `throw new Exception("message")` inside a unittest is
+reported as a failed test whose message contains the constructor string. A
+passing module run before a later throwing module must still report its own
+unittest as passing when the same backend instance runs both modules.
+
+**Required implementation:** Add a `ThrowStatement` branch in
+`source/quickbite/backends/bytecode/core/compiler.d` that supports the narrow
+slice `throw new Exception(<string expression>)`, matching the old-core
+behaviour without adding general class allocation. Lower the message
+expression to the typed-frame/string-literal representation the new core
+already uses, add a bytecode operation that throws the rendered string, and
+handle it in `source/quickbite/backends/bytecode/core/machine.d`. If the
+message expression is outside this narrow form, keep an explicit unsupported
+diagnostic.
+
+**Completed implementation:** The new core now recognises the narrow
+`throw new Exception(<string expression>)` slice, compiles the message as a
+string-slice operand, and executes `Op.throwString` by rendering the slice from
+`Program.data`. Unsupported throw forms still produce explicit diagnostics.
+After the implementation, all 12 `results.d` tests pass on `BytecodeNewCore`.
 
 ## eval.d Completion Analysis (2026-06-15)
 All `eval.d` blocks were promoted to `BytecodeNewCore` and run in isolation.
