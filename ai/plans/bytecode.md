@@ -876,6 +876,23 @@ switch; `Bytecode` still defaults to the old core):
   constructor message through the existing string-slice path and executes a
   `throwString` opcode that reports the rendered message through the runner.
   DMD-folded `assert(true)` emits no code, matching compiled output.
+- All promotable `tests/ut/backends/runner/ct/diagnostics.d` blocks,
+  completing `diagnostics.d` (module order 6) on the new core. 13 of 26
+  promoted tests passed unchanged; the other 13 were earned in six slices
+  (see the diagnostics analysis section): comparison-assert operators
+  (`<`/`<=`/`>`/`>=`/`!=` plus unsigned `>=`, four new opcodes), scalar
+  ref-parameter writeback (caller-slot offset passing plus on-`ret`
+  writeback), accepting a `bool_` operand in the `""` truth assert (with a
+  width-aware zero-slot read), explicit/dynamic string assert messages
+  through the existing `throwString` path, an `Op.haltUnittest` that emits
+  `"unittest failure"` for a literal-false assert lexically inside a unittest
+  body (distinct from a callee's `"Assertion failure"`), and a
+  literal-true-skips-dead-message fix plus a `_d_assert_fail` arity guard.
+  Group C (`nullClass*`, `typeidNull*`, `nullClassNotIdentity`,
+  `voidInitializedScalarRead`) was deliberately not promoted: CTFE-only
+  characterization diagnostics with no `SystemLinker` oracle that require
+  class support (slice 9) or test CTFE-only divergence the new core will not
+  emulate.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -884,13 +901,17 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), and `results.d`
-(5) are now complete on the new core (see Rewrite Coverage State). Continue
-with `diagnostics.d` (module order 6), promoting one named behaviour or one
-tight failure-message family at a time. The float/builtin/string-slice
-machinery earned for `eval.d`, logical/comparison/short-circuit machinery
-earned for `logic.d`, and narrow throw/result plumbing earned for `results.d`
-are now available to the later modules.
+`eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
+(5), and `diagnostics.d` (6) are now complete on the new core (see Rewrite
+Coverage State). Continue with `math.d` (module order 7), promoting one named
+behaviour or one tight failure-message family at a time. The
+float/builtin/string-slice machinery earned for `eval.d`,
+logical/comparison/short-circuit machinery earned for `logic.d`, narrow
+throw/result plumbing earned for `results.d`, and the comparison-operator /
+ref-parameter / explicit-message / unittest-halt machinery earned for
+`diagnostics.d` are now available to the later modules. The `std.math`
+builtin classification (`fabs`/`pow`) already executed for `eval.d` is the
+leading edge of `math.d`'s `sqrt`/`isNaN`/`isInfinity`/`signbit` surface.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
