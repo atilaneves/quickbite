@@ -300,6 +300,13 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case halt:
                 throw new Exception("Assertion failure");
 
+            case throwString:
+                throw new Exception(stringFromSlice(
+                    stack,
+                    base + instruction.a,
+                    program.data,
+                ));
+
             case ret:
                 const resultSize =
                     size(program.functions[functionIndex].returnType);
@@ -323,6 +330,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
         }
     }
+}
+
+private string stringFromSlice(
+    in ubyte[] stack,
+    in size_t offset,
+    in ubyte[] data,
+) @safe pure {
+    const dataOffset = scalarValue!uint(stack, offset);
+    const length = scalarValue!uint(stack, offset + uint.sizeof);
+    return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
 }
 
 private struct Frame {

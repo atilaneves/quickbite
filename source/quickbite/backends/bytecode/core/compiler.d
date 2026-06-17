@@ -31,7 +31,8 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, DivExp,
-        Expression, LogicalExp, NegExp, NotExp, OrExp, RealExp, StringExp;
+        Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
+        StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -115,6 +116,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto throw_ = statement.isThrowStatement) {
+            compileThrow(throw_);
+            return;
+        }
+
         // An import only brings symbols into scope; semantic has already
         // resolved them, so it emits no code.
         if (statement.isImportStatement !is null)
@@ -138,6 +144,28 @@ private struct Compiler {
             compileStatement(if_.elsebody);
 
         patchJump(endJump);
+    }
+
+    private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
+        import std.conv: text;
+
+        auto new_ = throw_.exp is null ? null : throw_.exp.isNewExp;
+        if (!isPlainExceptionNew(new_))
+            throw new Exception(text(
+                "Unsupported throw expression in bytecode core: ",
+                throw_.exp is null ? "<null>" : expressionChars(throw_.exp),
+            ));
+
+        auto messageExpression =
+            (*new_.arguments)[0]; // DMD Expression APIs require mutable AST.
+        const message = compileExpression(messageExpression);
+        if (!message.isString)
+            throw new Exception(text(
+                "Unsupported throw message in bytecode core: ",
+                expressionChars(messageExpression),
+            ));
+
+        _code ~= Instruction(Op.throwString, message.offset);
     }
 
     private Operand compileExpression(Expression expression) {
@@ -703,6 +731,9 @@ private struct Compiler {
     private void compileAssert(AssertExp assert_) {
         import std.conv: text;
 
+        if (compileLiteralTrueAssert(assert_))
+            return;
+
         if (compileLiteralFalseAssert(assert_))
             return;
 
@@ -716,6 +747,16 @@ private struct Compiler {
             "Unsupported assert in bytecode core: ",
             expressionChars(assert_),
         ));
+    }
+
+    // DMD can fold `assert(1 == 1)` to `assert(true)`. Compiled code emits no
+    // runtime check for that case, so the VM emits no bytecode either.
+    private bool compileLiteralTrueAssert(AssertExp assert_) {
+        if (assert_.msg !is null)
+            return false;
+
+        auto integer = assert_.e1.isIntegerExp;
+        return integer !is null && integer.toInteger != 0;
     }
 
     // `assert(0)` (a compile-time-false literal with no message) in a compiled
@@ -990,6 +1031,24 @@ private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isString; // when set, `offset` holds a string-slice descriptor
+}
+
+private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
+    if (new_ is null ||
+        new_.placement !is null ||
+        new_.thisexp !is null ||
+        new_.arguments is null ||
+        new_.arguments.length == 0)
+        return false;
+
+    auto classType = new_.newtype is null
+        ? null
+        : new_.newtype.toBasetype.isTypeClass;
+    if (classType is null || classType.sym is null)
+        return false;
+
+    return classType.sym.ident !is null &&
+        classType.sym.ident.toString == "Exception";
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op extendOp(
