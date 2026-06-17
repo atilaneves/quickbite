@@ -46,19 +46,27 @@ Important current behaviour:
 That last point is the correctness hole. The noise is annoying, but the fake
 pass path is worse.
 
-## Oracle Rule
+## Check Rule
 
-For every backend except `Ctfe`, `SystemLinker` is the behaviour oracle. Bench
-must not time another backend on a module or group unless the same unit has been
-checked against `SystemLinker`, or the user explicitly passes `--skip-check`.
+Bench is not a language-correctness oracle, but it still needs enough checking
+to avoid timing nothing, timing a backend that already reported failed
+unittests, or comparing timings for backends that did not run the same tests.
 
-`Ctfe` is still useful as a backend to measure, but it is not an oracle.
+Before timing, run the selected backend or backends once on the benchmark unit
+and inspect their `TestResult[]`.
 
-Current exception: `SystemLinker` is not yet reliable for the dub benchmark
-path. Until it is, a single selected backend uses a self-check: run that backend
-once on the benchmark unit, inspect its `TestResult[]`, and time it only if the
-reported tests pass. This is weaker than an oracle comparison, so the output
-must show the test pass count instead of implying oracle validation.
+For a single selected backend, time the unit only when:
+
+- the backend reports at least one unittest result; and
+- every reported unittest passes.
+
+For multiple selected backends, time the unit only when every backend returns
+the same `TestResult[]`: same count, same test names, and same pass/fail
+outcomes. Failure messages may differ.
+
+`--skip-check` means exactly what it says and bypasses these checks. The
+timed row should show the reported pass count so the output proves that the
+backend did not benchmark an empty unit.
 
 ## Target Shape
 
@@ -71,13 +79,15 @@ dub package        -> all prepared package modules
 
 Then use that same unit for:
 
-- correctness checking;
+- the selected backend checks;
 - skip decisions;
 - unittest counting; and
 - timing.
 
-The driver should not check per fixture and time per group. That mismatch hides
-the answer to "what did this row actually run?".
+The driver should not claim full language correctness. A single-backend row
+only needs to prove that this backend ran at least one unittest before timing,
+and that none of those reported tests failed. A multi-backend run should also
+prove that all timed backends reported the same test results.
 
 ## Work Items
 
@@ -90,28 +100,40 @@ Instead:
 - `--skip-check` means exactly what it says and is the only implicit-pass path.
 - `-b interpreter --dub cerealed` still runs `interpreter` once before timing.
 - A single selected backend is timed only if its self-check returns passing
-  `TestResult[]`.
+  nonempty `TestResult[]`.
 - The timed row reports how many tests were returned and how many passed.
-- Once `SystemLinker` works on this path, replace self-check confidence with an
-  untimed oracle check for non-`system-linker` backends.
 
 The first test should use fake runners: one runner reports a failing
 `TestResult`, and a single selected backend must not be marked passing unless
 `--skip-check` is set.
 
-### 2. Check The Same Group That Will Be Timed
+### 2. Compare Results Only For Multi-Backend Runs
 
-Replace fixture-pair checking with benchmark-unit checking.
+Do not compare a single selected backend with an implicit oracle backend.
+Cross-backend agreement is useful only when the user explicitly selected more
+than one backend to time.
 
-For standalone fixtures this is unchanged: the unit has one module.
+For one backend, keep only a same-backend preflight:
 
-For dub packages, check the grouped `Module[]` unit against the oracle and the
-candidate backend. This deliberately matches the timing path and avoids the
-known SystemLinker per-fixture completeness gap documented in
-`ai/plans/dub-deps.md`.
+- run the selected backend once on the unit that will be timed;
+- collect the returned `TestResult[]`;
+- skip timing if the result count is zero;
+- skip timing if any result failed; and
+- print the pass count in the timed row.
 
-The check result should be keyed by benchmark unit and backend name, not by
-fixture display name alone.
+For multiple backends, run every selected backend once on the unit that will be
+timed and require all returned `TestResult[]` values to agree on:
+
+- result count;
+- test names; and
+- pass/fail outcomes.
+
+Failure messages may differ. A mismatch means at least one timed backend did
+not run the same benchmark, so skip or reject that row before measuring.
+
+For standalone fixtures, the unit has one module. For dub packages, the unit is
+the prepared package module group if the runner supports grouped execution, or
+the existing `runTests(Runner, Module[])` fallback otherwise.
 
 ### 3. Count Runnable Unittests
 
@@ -126,8 +148,8 @@ For grouped dub rows, include at least:
 
 - prepared module count;
 - skipped module count;
-- runnable unittest count; and
-- checked backend/oracle status.
+- reported unittest pass count; and
+- check status.
 
 This can be compact. The point is not verbose output; the point is falsifiable
 output.
@@ -172,7 +194,7 @@ Investigate a file-backed parse path for benchmark fixtures:
   same-source files with different module identities cannot collide.
 
 This may reduce the cerealed conflict noise. It is secondary to correctness:
-do not depend on it for oracle checks.
+do not depend on it for benchmark checks.
 
 ### 7. Keep The Driver Backend-Neutral
 
@@ -182,7 +204,7 @@ already abstracts grouped execution.
 
 Preserve that direction. The driver may know that `SystemLinker` is the oracle,
 but backend-specific construction policy belongs in the backend factory, not in
-the timing loop.
+the timing loop. The timing loop should not add implicit oracle backends.
 
 ## Proposed Output Shape
 
@@ -199,8 +221,8 @@ cerealed.attrs                   unmeasurable (module declaration)
 ...
 
 == post-parse ==
-unit        backend       modules  unittests  oracle         median
-cerealed    interpreter        30        151  system-linker  9.720 ms
+unit        backend       modules  tests       check   median
+cerealed    interpreter        30  151/151     pass    9.720 ms
 ```
 
 Avoid a wall of conflict diagnostics before the metadata block. A detailed
@@ -215,9 +237,11 @@ Useful first tests to propose:
 
 1. a single selected backend that reports a failing unittest is not timed unless
    `--skip-check` is set;
-2. a grouped benchmark unit is checked as the same `Module[]` that timing uses;
-3. a grouped unit with zero runnable unittests is skipped or rejected; and
-4. preparation skips are rendered as preparation status, not backend status.
+2. a backend that reports zero unittest results is not timed unless
+   `--skip-check` is set;
+3. two selected backends with different `TestResult[]` values are not timed;
+4. a passing backend row prints the reported pass count; and
+5. preparation skips are rendered as preparation status, not backend status.
 
 Use fake runners for the first driver tests. Do not require a real dub package
 or per-test process spawning in unit tests.
@@ -238,6 +262,8 @@ Then smoke-test benchmark behaviour:
 ./bin/bench.sh -w 0 -r 1 -b interpreter -b system-linker --dub cerealed
 ```
 
-Expected result: the interpreter row is printed only after the same grouped unit
-has been checked, and the output states enough counts to tell whether cerealed's
+Expected result: a single-backend interpreter row is printed only after the
+selected backend has reported at least one passing unittest result. A
+multi-backend run is printed only when the selected backends report the same
+test results. The output states enough counts to tell whether cerealed's
 unittest bodies actually ran.
