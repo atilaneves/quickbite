@@ -71,6 +71,17 @@ Benchmarks below):
    parse only the new input; the sole O(transcript) path is the type-alias
    probe, which short-circuits for statements.)
 
+## Current Status
+
+As of 2026-06-17, `Interpreter` is selectable in the REPL with
+`--backend=interpreter`. The implicit REPL default remains `ctfe`, so a plain
+`qb` / `repl` session preserves the existing CTFE behaviour while the
+tree-walker path is available on request.
+
+This does not change the architecture target below: pure backends may still use
+snapshot replay, and future native/persistent sessions still need
+backend-owned state.
+
 ## Constraints
 
 - **dmd glue lowers modules and functions only.** There is no

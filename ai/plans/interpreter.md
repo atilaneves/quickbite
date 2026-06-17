@@ -14,6 +14,35 @@ interpreter surface grows. Keep any compatibility aliases or test-matrix
 transitions narrow and temporary; the long-term public backend name should be
 `Interpreter`, not `Interpreter`.
 
+## Current Status
+
+As of 2026-06-17, the ordered module-promotion campaign from
+`ai/plans/backend-test-modules-order.md` is complete for the current checkout.
+All current oracle-backed backend-matrix tests in the ordered modules now
+either include `Interpreter` or are deliberately split into a CTFE
+characterization / runtime-only / compiled-only block. The merged suite has no
+known failing `Interpreter` tests.
+
+The `Interpreter` is now a first-class user-facing backend as well as a test
+backend:
+
+- the REPL CLI can select `Interpreter` with `--backend=interpreter`; `ctfe`
+  remains the default when no backend is specified;
+- the benchmark driver registers `interpreter`;
+- default benchmark runs include `ctfe`, `interpreter`, `system-linker`, and
+  `llvmjit` unless the user narrows the set with `-b` / `--backend`.
+
+Remaining work is no longer "promote the next module" by default. Treat future
+interpreter work as one of these categories:
+
+- newly added oracle-backed tests that do not yet include `Interpreter`;
+- mutation-based signal verification for older bulk promotions that were kept
+  green without individual proof;
+- cleanup of historical notes in this file after confirming they are
+  superseded by current tests;
+- intentional non-target decisions for CTFE characterizations, runtime-only
+  native tests, and linker/codegen pollution tests.
+
 The process mirrors the IR backend: pick the simplest test that does
 not yet run under the tree walker, add the tree-walking backend to it,
 confirm it is red, implement the smallest handler that makes it green,
@@ -1864,7 +1893,8 @@ support together, the chosen test is too broad for the first PR.
 - Use `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets
   by required D language features, not by file length or coverage counts.
   `SystemLinker` is the oracle (`ai/plans/single-oracle.md`).
-- After each slice, run `dub test -- --random` to catch regressions.
+- After each slice, run `ninja bin/ut` and `bin/ut --random` to catch
+  regressions.
 
 ## Assumptions
 
