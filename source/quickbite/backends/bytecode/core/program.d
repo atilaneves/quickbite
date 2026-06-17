@@ -114,6 +114,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     assertTrueVerbatim,
     assertNonzeroInt4, // a: int frame offset, b: assert diagnostic index
     halt, // unconditional abort throwing the plain "Assertion failure" message
+    // unconditional abort throwing the "unittest failure" message, for a
+    // literal-false assert lexically inside a unittest body
+    haltUnittest,
     throwString, // a: frame offset of a string-slice descriptor
     ret, // a: frame offset of the return value
 }

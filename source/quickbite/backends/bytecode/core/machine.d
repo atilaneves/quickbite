@@ -370,6 +370,9 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case halt:
                 throw new Exception("Assertion failure");
 
+            case haltUnittest:
+                throw new Exception("unittest failure");
+
             case throwString:
                 throw new Exception(stringFromSlice(
                     stack,

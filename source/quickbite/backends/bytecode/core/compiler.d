@@ -19,6 +19,11 @@ package(quickbite.backends.bytecode) Compilation compile(
 ) {
     auto compiler = new Compiler;
     compiler.registerFunction(entry);
+    // A literal-false assert directly in a unittest body must throw
+    // "unittest failure" (DMD's _d_unittest hook); the same assert in a
+    // called function throws "Assertion failure". Only the entry can be a
+    // unittest declaration; lazily-compiled callees never are.
+    compiler._inUnittestEntry = entry.isUnitTestDeclaration !is null;
     compiler.compileFunctionBody(0);
     return Compilation(compiler._program, &compiler.compileFunctionBody);
 }
@@ -45,8 +50,15 @@ private struct Compiler {
     private ushort[VarDeclaration] _locals;
     private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     private size_t[ulong] _constantIndices;
+    private bool _inUnittestEntry; // true only while compiling the entry
+                                   // function when it is a UnitTestDeclaration
 
     private void compileFunctionBody(in size_t index) {
+        // Only the entry (index 0) can be a unittest body; any lazily
+        // compiled callee is an ordinary function.
+        if (index > 0)
+            _inUnittestEntry = false;
+
         auto function_ = _functions[index];
         _code = null;
         _locals = null;
@@ -863,7 +875,7 @@ private struct Compiler {
         if (integer is null || integer.toInteger != 0)
             return false;
 
-        _code ~= Instruction(Op.halt);
+        _code ~= Instruction(_inUnittestEntry ? Op.haltUnittest : Op.halt);
         return true;
     }
 
