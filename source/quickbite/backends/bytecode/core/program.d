@@ -87,6 +87,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     normaliseBool, // a: destination (one boolean byte), b: source (!= 0 ? 1 : 0)
     lessThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <)
     greaterThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed >)
+    lessOrEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <=)
+    greaterOrEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (signed >=)
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >=)
+    greaterOrEqualUnsigned4,
+    notEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (4-byte !=)
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs

@@ -837,8 +837,19 @@ private struct Compiler {
         if (call.arguments.length == 2 && operatorText(operator) == "!")
             return compileNotAssert((*call.arguments)[1]);
 
-        if (call.arguments.length != 3 || operatorText(operator) != "==")
+        // The 3-argument form carries a relational operator and both operands;
+        // `==`, `!=`, `<`, `<=`, `>`, `>=` are asserted on their comparison and
+        // render the inverted relation on failure.
+        if (call.arguments.length != 3)
             return false;
+
+        const op = operatorText(operator);
+        switch (op) {
+            case "==", "!=", "<", "<=", ">", ">=":
+                break;
+            default:
+                return false;
+        }
 
         // D's integer promotions appear only in the rewritten condition, not
         // in the _d_assert_fail operands; replicate them so mixed-width
@@ -852,7 +863,7 @@ private struct Compiler {
 
         const condition = allocateBytes(1, 1);
         _code ~= Instruction(
-            equalOp(size(lhs.type)),
+            comparisonAssertOp(op, lhs.type),
             condition,
             lhs.offset,
             rhs.offset,
@@ -860,7 +871,7 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
-            AssertDiagnostic("==", lhs.offset, rhs.offset, lhs.type);
+            AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -1085,6 +1096,33 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
         case 4: return Op.equal4;
         case 8: return Op.equal8;
         default: assert(0, "No equality opcode for the operand size.");
+    }
+}
+
+// The comparison opcode for a relational `_d_assert_fail` operator. `==`
+// reuses the width-tagged equality opcodes; `!=` and the order relations only
+// need the 4-byte int forms today (the operands the lowered asserts carry),
+// selecting the unsigned `>=` opcode for unsigned operands.
+private imported!"quickbite.backends.bytecode.core.program".Op
+    comparisonAssertOp(
+    in string operator,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType
+        operandType,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType, isSigned,
+        size;
+
+    switch (operator) {
+        case "==": return equalOp(size(operandType));
+        case "!=": return Op.notEqual4;
+        case "<": return Op.lessThan4;
+        case "<=": return Op.lessOrEqual4;
+        case ">": return Op.greaterThan4;
+        case ">=":
+            return isSigned(operandType)
+                ? Op.greaterOrEqual4
+                : Op.greaterOrEqualUnsigned4;
+        default: assert(0, "Unsupported comparison-assert operator.");
     }
 }
 

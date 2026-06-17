@@ -146,6 +146,34 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case lessOrEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) <=
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) >=
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualUnsigned4:
+                stack[base + instruction.a] =
+                    scalarValue!uint(stack, base + instruction.b) >=
+                    scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) !=
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
             case addFloat:
                 const ubyte[float.sizeof] sum = floatBytes(
                     floatValue!float(stack, base + instruction.b) +
@@ -398,6 +426,11 @@ private string assertMessage(
 private string invertedOperator(in string operator) @safe @nogc nothrow pure {
     switch (operator) {
         case "==": return "!=";
+        case "!=": return "==";
+        case "<": return ">=";
+        case "<=": return ">";
+        case ">": return "<=";
+        case ">=": return "<";
         default: assert(0, "Unsupported assert operator.");
     }
 }
