@@ -977,20 +977,40 @@ success path is defined by `SystemLinker`.
 
 ## 22. Increment 1: first resident native call
 
-The first test pins the native-call chokepoint in place from day one.
-`malloc`/`free` are the first pointer-returning proof, not a special case in
-the implementation.
+**Scope warning.** Do not start by promoting the existing
+`rt/cstdlib.malloc` acceptance test to the Interpreter. That fixture writes
+to and reads from `ptr[index]`, so it drives native allocation **plus native
+memory indexing and mutation**. That is larger than the first resident-call
+slice and should remain an expected-failure test until §22.2.
 
-Source under test:
+The #1 task for this slice is to add a new, narrow oracle-backed test before
+writing production code. Do not reuse the existing `rt/cstdlib.malloc`
+success fixture for this slice.
+
+Add a new fixture in `tests/ut/backends/runner/rt/cstdlib.d`, initially with
+`SystemLinker` as the oracle. After seeing it fail on `Interpreter`, promote
+`Interpreter` to that same fixture and make it pass. The source under test is
+exactly:
 
 ```d
 unittest {
     import core.stdc.stdlib: malloc, free;
-    auto p = cast(ubyte*) malloc(8);
-    assert(p !is null);
-    free(p);
+
+    auto ptr = malloc(8);
+
+    assert(ptr !is null);
+
+    free(ptr);
 }
 ```
+
+Name it separately from the existing memory test, e.g.
+`malloc.pointerRoundTrip.<backend>`, so the later byte-memory fixture remains
+clearly distinct.
+
+This test pins the native-call chokepoint in place from day one.
+`malloc`/`free` are the first pointer-returning proof, not a special case in
+the implementation.
 
 `malloc`/`free` are `extern(C)`, body-less, not pure, and absent from DMD's
 `BUILTIN` whitelist — the cleanest pointer-returning probe of the chokepoint.
@@ -1019,6 +1039,20 @@ noted):
 - marshalling: size_t in, void* out, void* in
 ```
 
+What Increment 1 deliberately does **not** force:
+
+```text
+- pointer dereference;
+- pointer indexing;
+- writes through a native pointer;
+- preserving native allocation lengths for bounds checks;
+- calloc/realloc/string/out-parameter/struct-return support.
+```
+
+Do not replace or weaken the existing
+`malloc.pointerReturn.nativeMemory` expected-failure fixture; it is the next
+slice, not the first one.
+
 The next proof should use another resident `extern(C)` scalar call, such as
 `core.stdc.stdlib.abs`, to prove the path is descriptor-driven rather than
 malloc-specific.
@@ -1034,6 +1068,32 @@ This is the first resident-native-call rung of the ladder. Pointer
 dereference, indexing, and writes are deferred until a later memory-semantics
 slice. The next rungs (file read, then GC-returning calls needing the
 handle-table/arena from §13) build on the same chokepoint.
+
+### 22.2 Increment 2: native byte memory
+
+Only after Increment 1 is green should the Interpreter adopt the existing
+`rt/cstdlib.malloc` success fixture. That promotion requires a native pointer
+value that can carry enough allocation metadata to support `ubyte*`
+indexing and writes:
+
+```d
+ptr[0] = 0x11;
+ptr[7] = 0xff;
+
+assert(ptr[0] == 0x11);
+assert(ptr[7] == 0xff);
+assert(ptr[7] != 0);
+```
+
+This is a memory-semantics increment, not just an FFI-call increment. Keep it
+limited to byte-addressed `ubyte*` memory returned by resident libc allocation
+calls. Do not generalize to typed loads/stores, strings, slices, out
+parameters, structs, callbacks, or backend-owned GC memory in this step.
+
+`free(null)` may be promoted with either Increment 1 or Increment 2 if the
+shared chokepoint already supports null pointer arguments. `calloc`,
+`realloc`, `atoi`, `strtol`, `div`, and `ldiv` remain later rungs because
+they each add another independent ABI or frontend surface.
 
 ## 23. Amendment: native-layout backends
 
