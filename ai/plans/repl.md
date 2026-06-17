@@ -71,6 +71,19 @@ Benchmarks below):
    parse only the new input; the sole O(transcript) path is the type-alias
    probe, which short-circuits for statements.)
 
+## Current Status
+
+As of 2026-06-17, `Interpreter` is the default REPL backend. Users can still
+select CTFE and the other supported backends explicitly with `--backend`, but a
+plain `qb` / `repl` session now starts on `Interpreter`. This matches the
+interpreter's current backend-matrix coverage and keeps the lower-latency
+tree-walker path on the default interactive route.
+
+The default switch does not change the architecture target below: pure
+backends may still use snapshot replay, and future native/persistent sessions
+still need backend-owned state. It only changes the user-facing default and
+keeps `ctfe` as an explicit compatibility option.
+
 ## Constraints
 
 - **dmd glue lowers modules and functions only.** There is no

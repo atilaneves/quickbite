@@ -13,6 +13,12 @@ private:
 enum size_t defaultWarmup = 1;
 // Odd, so the median is a single sample without averaging two values.
 enum size_t defaultRuns = 9;
+public immutable string[] defaultBackendNames = [
+    "ctfe",
+    "interpreter",
+    "system-linker",
+    "llvmjit",
+];
 
 public void run(string[] args) {
     import std.algorithm.searching: all;
@@ -75,7 +81,7 @@ public void run(string[] args) {
     auto runners = makeRunners(env);
 
     if (backendNames.length == 0)
-        backendNames = ["ctfe", "system-linker", "llvmjit"];
+        backendNames = defaultBackendNames.dup;
 
     foreach (name; backendNames)
         if (name !in runners)

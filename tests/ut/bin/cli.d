@@ -6,14 +6,14 @@ import ut;
 
 private:
 
-@("repl.cli.defaultBackendIsCtfe")
+@("repl.cli.defaultBackendIsInterpreter")
 unittest {
     import quickbite.repl_cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb"]);
 
     result.status.should == 0;
-    result.options.backend.should == ReplBackendName.ctfe;
+    result.options.backend.should == ReplBackendName.interpreter;
 }
 
 @("repl.cli.acceptsLongCtfeBackendOption")
@@ -34,6 +34,16 @@ unittest {
 
     result.status.should == 0;
     result.options.backend.should == ReplBackendName.ctfe;
+}
+
+@("repl.cli.acceptsInterpreterBackendOption")
+unittest {
+    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+
+    const result = parseReplArgs(["qb", "--backend", "interpreter"]);
+
+    result.status.should == 0;
+    result.options.backend.should == ReplBackendName.interpreter;
 }
 
 @("repl.cli.acceptsSystemLinkerBackendOption")

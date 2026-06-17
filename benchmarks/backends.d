@@ -2,6 +2,7 @@ module benchmarks.backends;
 
 import quickbite.backends.runner: Runner;
 import quickbite.backends.ctfe: Ctfe;
+import quickbite.backends.interpreter: Interpreter;
 import quickbite.backends.native: LLVMJit, SystemLinker;
 
 private:
@@ -14,10 +15,14 @@ public struct BackendEnv {
     string packageRoot;
 }
 
-// One registry entry per backend; adding bytecode/ir/interpreter later is a
-// single line in the AA below.
+// One registry entry per backend; adding bytecode/ir later is a single line in
+// the AA below.
 private Runner makeCtfe(in BackendEnv env) {
     return new Ctfe;
+}
+
+private Runner makeInterpreter(in BackendEnv env) {
+    return new Interpreter;
 }
 
 // Like `dub test`: dependency objects come from the dub-built archives; only
@@ -40,6 +45,7 @@ private Runner makeLLVMJit(in BackendEnv env) {
 public Runner[string] makeRunners(in BackendEnv env) {
     Runner function(in BackendEnv)[string] registry = [
         "ctfe":          &makeCtfe,
+        "interpreter":   &makeInterpreter,
         "system-linker": &makeSystemLinker,
         "llvmjit":       &makeLLVMJit,
     ];

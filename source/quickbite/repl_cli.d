@@ -33,8 +33,8 @@ public ReplCliResult parseReplArgs(string[] args) {
     import std.getopt;
 
     ReplCliResult result;
-    result.options.backend = ReplBackendName.ctfe;
-    string backendName = "ctfe";
+    result.options.backend = ReplBackendName.interpreter;
+    string backendName = "interpreter";
 
     GetoptResult helpInfo;
     try {
@@ -47,7 +47,7 @@ public ReplCliResult parseReplArgs(string[] args) {
             "I", "Add import path.", (string _, string val) {
                 result.options.importPaths ~= val;
             },
-            "b|backend", "Select backend (default: ctfe).", &backendName,
+            "b|backend", "Select backend (default: interpreter).", &backendName,
             "l", "Start the REPL after loading file arguments.",
                 &result.options.liveAfterFiles,
         );
@@ -83,7 +83,7 @@ private enum helpText =
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
     "  -I <path>             Add import path\n" ~
-    "  -b, --backend <name>  Select backend (default: ctfe; valid: " ~
+    "  -b, --backend <name>  Select backend (default: interpreter; valid: " ~
         validBackendNames ~ ")\n" ~
     "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";

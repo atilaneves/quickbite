@@ -19,6 +19,27 @@ unittest {
     run(["bench", "--backend=ctfe", "--help"]);
 }
 
+@("benchmarkBackendsIncludeInterpreter")
+unittest {
+    import benchmarks.backends: BackendEnv, makeRunners;
+
+    auto runners = makeRunners(BackendEnv());
+
+    assert(("interpreter" in runners) !is null);
+}
+
+@("defaultBenchmarkBackendsIncludeInterpreter")
+unittest {
+    import benchmarks.cli: defaultBackendNames;
+
+    defaultBackendNames.should == [
+        "ctfe",
+        "interpreter",
+        "system-linker",
+        "llvmjit",
+    ];
+}
+
 @("preParseReportsMissingFixture")
 unittest {
     import quickbite.benchmarks: populateDmdCodegenModuleSet;

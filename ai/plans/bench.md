@@ -21,6 +21,21 @@ from prebuilt archives, only the project codegen'd per run) for benchmark
 fidelity. The backend has no business shelling out to dub. We move *policy*
 into the backend (items 1–2) and make the *driver* uniform (items 3–4).
 
+## Current Status
+
+As of 2026-06-17, item 3 is complete. The benchmark driver constructs
+backends through `benchmarks.backends`, and the registry includes `ctfe`,
+`interpreter`, `system-linker`, and `llvmjit`. Default benchmark runs now use
+that same four-backend set:
+
+```
+ctfe, interpreter, system-linker, llvmjit
+```
+
+`--backend=interpreter` is selectable in the same path as the other backends.
+Future benchmark-backend additions should extend the registry and, if they
+belong in ordinary runs, `defaultBackendNames`.
+
 ## Current shape (for reference)
 
 - `cli.d:7` — concrete import `SystemLinker, SystemLinkerInputs`.
@@ -69,7 +84,7 @@ Verify: per-run codegen still covers only the project under test (not
 dependencies) — confirm by timing parity with the pre-refactor numbers and by
 the correctness check passing.
 
-### 3. Construct backends through a name→Runner factory
+### 3. Construct backends through a name→Runner factory — complete
 
 `cli.d:7` imports the concrete type; `cli.d:79-86` hand-assemble its
 constructor while `Ctfe` is `new Ctfe`.
@@ -81,11 +96,13 @@ constructor while `Ctfe` is `new Ctfe`.
 - The CLI body then depends only on `Runner`; remove the `SystemLinker` /
   `SystemLinkerInputs` import and the two SystemLinker-only locals.
 
-Side benefit: adding `bytecode` / `ir` / `interpreter` to the matrix becomes a
-one-line registry entry instead of a driver edit.
+Side benefit: adding `bytecode` / `ir` to the matrix becomes a one-line
+registry entry instead of a driver edit. `interpreter` has already been added
+and is part of the default benchmark set.
 
 Verify: `--backend=ctfe` and `--backend=system-linker` select correctly;
-`unknown backend` error path still fires.
+`--backend=interpreter` selects correctly; the `unknown backend` error path
+still fires.
 
 ### 4. Collapse the two run loops into one over "benchmark units"
 
