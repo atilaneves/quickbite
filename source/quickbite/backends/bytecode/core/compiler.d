@@ -31,7 +31,7 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
-        NegExp, OrExp, RealExp, StringExp;
+        NegExp, NotExp, OrExp, RealExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -172,6 +172,9 @@ private struct Compiler {
 
         if (auto negate = expression.isNegExp)
             return compileNegateExpression(negate);
+
+        if (auto not = expression.isNotExp)
+            return compileNotExpression(not);
 
         if (auto subtract = expression.isMinExp)
             return compileSubtractExpression(subtract);
@@ -388,6 +391,16 @@ private struct Compiler {
             "Unsupported negation in bytecode core: ",
             expressionChars(negate),
         ));
+    }
+
+    // Logical not always yields a bool regardless of the operand type
+    // (`inner == 0 ? 1 : 0`), so a single opcode covers every case; no
+    // per-type family.
+    private Operand compileNotExpression(NotExp not) {
+        const source = compileExpression(not.e1);
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.notBool, offset, source.offset);
+        return Operand(offset, ScalarType.bool_);
     }
 
     private Operand emitBinary(
@@ -621,6 +634,13 @@ private struct Compiler {
         if (call.arguments.length == 2 && operatorText(operator) == "")
             return compileNonzeroAssert((*call.arguments)[1]);
 
+        // `assert(!boolExpr)` lowers to `_d_assert_fail("!", boolExpr)`: the
+        // condition holds when `boolExpr` is false, and the failure renders
+        // "<value> == true" (the un-negated operand against the `true` it was
+        // implicitly compared to).
+        if (call.arguments.length == 2 && operatorText(operator) == "!")
+            return compileNotAssert((*call.arguments)[1]);
+
         if (call.arguments.length != 3 || operatorText(operator) != "==")
             return false;
 
@@ -671,6 +691,33 @@ private struct Compiler {
         _code ~= Instruction(
             Op.assertNonzeroInt4,
             operand.offset,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(!boolExpr)`: compile the operand, assert its negation is true
+    // (i.e. the operand is false). The diagnostic carries the un-negated
+    // operand and renders "<value> == true" via the "!" inverted operator.
+    private bool compileNotAssert(Expression expression) {
+        import std.conv: text;
+
+        const operand = compileExpression(expression);
+        if (operand.type != ScalarType.bool_)
+            throw new Exception(text(
+                "Unsupported logical-not assert in bytecode core: ",
+                expressionChars(expression),
+            ));
+
+        const condition = allocateBytes(1, 1);
+        _code ~= Instruction(Op.notBool, condition, operand.offset);
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic("!", operand.offset, operand.offset, operand.type);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
             cast(ushort) diagnostic,
         );
         return true;

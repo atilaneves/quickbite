@@ -110,6 +110,12 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case notBool:
+                stack[base + instruction.a] =
+                    stack[base + instruction.b] == 0 ? 1 : 0;
+                ++ip;
+                break;
+
             case addFloat:
                 const ubyte[float.sizeof] sum = floatBytes(
                     floatValue!float(stack, base + instruction.b) +
@@ -307,6 +313,14 @@ private string assertMessage(
         return text(
             operandText(frame, diagnostic.lhs, diagnostic.operandType),
             " != true",
+        );
+
+    // A logical-not assert (`assert(!x)`) carries the "!" operator and renders
+    // the un-negated operand against the `true` it failed to differ from.
+    if (diagnostic.operator == "!")
+        return text(
+            operandText(frame, diagnostic.lhs, diagnostic.operandType),
+            " == true",
         );
 
     return text(

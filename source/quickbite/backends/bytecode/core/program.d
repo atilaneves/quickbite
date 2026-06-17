@@ -82,6 +82,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
+    notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs
