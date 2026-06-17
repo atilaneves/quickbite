@@ -6,14 +6,14 @@ import ut;
 
 private:
 
-@("repl.cli.defaultBackendIsInterpreter")
+@("repl.cli.defaultBackendIsCtfe")
 unittest {
     import quickbite.repl_cli: ReplBackendName, parseReplArgs;
 
     const result = parseReplArgs(["qb"]);
 
     result.status.should == 0;
-    result.options.backend.should == ReplBackendName.interpreter;
+    result.options.backend.should == ReplBackendName.ctfe;
 }
 
 @("repl.cli.acceptsLongCtfeBackendOption")

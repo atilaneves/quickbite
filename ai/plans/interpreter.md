@@ -26,11 +26,11 @@ known failing `Interpreter` tests.
 The `Interpreter` is now a first-class user-facing backend as well as a test
 backend:
 
-- the REPL CLI defaults to `Interpreter`, while `--backend=ctfe` and the other
-  explicit backend options remain selectable;
+- the REPL CLI can select `Interpreter` with `--backend=interpreter`; `ctfe`
+  remains the default when no backend is specified;
 - the benchmark driver registers `interpreter`;
 - default benchmark runs include `ctfe`, `interpreter`, `system-linker`, and
-  `llvmjit`.
+  `llvmjit` unless the user narrows the set with `-b` / `--backend`.
 
 Remaining work is no longer "promote the next module" by default. Treat future
 interpreter work as one of these categories:
