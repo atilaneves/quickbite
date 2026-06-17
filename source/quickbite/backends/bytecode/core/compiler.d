@@ -853,11 +853,11 @@ private struct Compiler {
     }
 
     // DMD can fold `assert(1 == 1)` to `assert(true)`. Compiled code emits no
-    // runtime check for that case, so the VM emits no bytecode either.
+    // runtime check for that case, so the VM emits no bytecode either. A
+    // statically-true condition makes any message dead code: it is never
+    // evaluated, so `assert(true, message)` likewise emits nothing regardless
+    // of `assert_.msg`.
     private bool compileLiteralTrueAssert(AssertExp assert_) {
-        if (assert_.msg !is null)
-            return false;
-
         auto integer = assert_.e1.isIntegerExp;
         return integer !is null && integer.toInteger != 0;
     }
@@ -981,6 +981,13 @@ private struct Compiler {
 
         auto call = assert_.msg.isCallExp;
         if (call is null || call.arguments is null)
+            return false;
+
+        // A `_d_assert_fail` call carries at least the operator-string
+        // argument. A bare `message()` call (e.g. `assert(true, message)`)
+        // has no arguments and is not this shape, so indexing `[0]` would
+        // crash; bail out before touching the empty argument list.
+        if (call.arguments.length == 0)
             return false;
 
         auto operator = (*call.arguments)[0].isStringExp;
