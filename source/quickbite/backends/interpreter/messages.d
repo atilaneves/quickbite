@@ -24,8 +24,12 @@ public string indexOutOfBoundsMessage(
     in size_t index,
     in size_t length,
     in bool isSlice,
+    in bool runningCalledFunction,
 ) @safe pure {
     import std.conv: text;
+
+    if (runningCalledFunction)
+        return compiledIndexOutOfBoundsMessage(index, length);
 
     return isSlice
         ? text("index ", index, " exceeds array length ", length)
@@ -588,5 +592,19 @@ public string indexOutOfBoundsMessage(
         " is out of bounds `[0..",
         length,
         "]`",
+    );
+}
+
+private string compiledIndexOutOfBoundsMessage(
+    in size_t index,
+    in size_t length,
+) @safe pure {
+    import std.conv: text;
+
+    return text(
+        "index [",
+        index,
+        "] is out of bounds for array of length ",
+        length,
     );
 }

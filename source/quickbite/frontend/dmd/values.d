@@ -198,12 +198,16 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tclass:
         case Tnull:
             return Value.null_;
+        case Tdelegate:
+            return Value.null_;
         case Tsarray:
             return staticArrayDefaultValue(type.isTypeSArray);
         case Tstruct:
             return structDefaultValue(type.isTypeStruct);
         case Tarray:
             return Value.arrayValue([]);
+        case Taarray:
+            return Value.assocArrayValue([], []);
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -214,7 +218,6 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tcomplex64:
         case Tcomplex80:
         case Tfunction:
-        case Taarray:
         case Tident:
         case Tinstance:
         case Ttypeof:
@@ -228,7 +231,6 @@ public imported!"quickbite.lang".Value defaultValue(
         case Tnoreturn:
         case Ttag:
         case Tenum:
-        case Tdelegate:
         case Treference:
         case Tnone:
             throw new Exception("Unsupported DMD default value.");
