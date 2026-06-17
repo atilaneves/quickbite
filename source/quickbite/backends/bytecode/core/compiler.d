@@ -43,12 +43,14 @@ private struct Compiler {
     private Instruction[] _code;
     private uint _frameOffset;
     private ushort[VarDeclaration] _locals;
+    private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     private size_t[ulong] _constantIndices;
 
     private void compileFunctionBody(in size_t index) {
         auto function_ = _functions[index];
         _code = null;
         _locals = null;
+        _stringLocals = null;
 
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
@@ -211,8 +213,11 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declaration in _locals)
+                if (auto existing = declaration in _locals) {
+                    if (declaration in _stringLocals)
+                        return Operand(*existing, ScalarType.void_, true);
                     return Operand(*existing, scalarType(declaration.type));
+                }
 
             throw new Exception(text(
                 "Unsupported variable in bytecode core: ",
@@ -307,9 +312,16 @@ private struct Compiler {
     private void compileVariableDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
-        const type = scalarType(variable.type);
-        const offset = allocate(type);
+        // A `string` local holds an 8-byte slice descriptor (data offset and
+        // length), not a scalar; allocate the descriptor width and copy the
+        // initializer's slice into it.
+        const isString = isStringType(variable.type);
+        const type = isString ? ScalarType.void_ : scalarType(variable.type);
+        const slotSize = isString ? stringSliceSize : size(type);
+        const offset = allocateBytes(slotSize, isString ? 4 : size(type));
         _locals[variable] = offset;
+        if (isString)
+            _stringLocals[variable] = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -325,7 +337,7 @@ private struct Compiler {
             Op.copy,
             offset,
             operand.offset,
-            cast(ushort) size(type),
+            cast(ushort) slotSize,
         );
     }
 
@@ -819,6 +831,9 @@ private struct Compiler {
         if (compileVerbatimStringAssert(assert_))
             return;
 
+        if (compileExplicitMessageAssert(assert_))
+            return;
+
         throw new Exception(text(
             "Unsupported assert in bytecode core: ",
             expressionChars(assert_),
@@ -883,6 +898,65 @@ private struct Compiler {
             cast(ushort) diagnostic,
         );
         return true;
+    }
+
+    // `assert(cond, message)` with an explicit string message that is neither
+    // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
+    // the message string itself on failure. The message is either a `StringExp`
+    // literal (`assert(1 == 2, "oops")`, folded to `assert(false, "oops")`) or a
+    // (cast-wrapped) `VarExp` over a `string` local whose slot already holds the
+    // slice descriptor. A compile-time-false condition (`assert(false, msg)`)
+    // throws unconditionally; otherwise the condition is compiled and the throw
+    // is skipped when it holds.
+    private bool compileExplicitMessageAssert(AssertExp assert_) {
+        if (assert_.msg is null)
+            return false;
+
+        // `_d_assert_fail` calls and the verbatim-logical string belong to the
+        // earlier branches; an explicit message is anything else.
+        if (isAssertFailCall(assert_.msg))
+            return false;
+
+        auto message = messageSlice(assert_.msg);
+        if (message is null)
+            return false;
+
+        auto integer = assert_.e1.isIntegerExp;
+        if (integer !is null && integer.toInteger == 0) {
+            const slice = *message;
+            _code ~= Instruction(Op.throwString, slice.offset);
+            return true;
+        }
+
+        const condition = compileExpression(assert_.e1);
+        const skipJump = emitJumpIfTrue(condition);
+        const slice = *message;
+        _code ~= Instruction(Op.throwString, slice.offset);
+        patchJump(skipJump);
+        return true;
+    }
+
+    // The string-slice operand for an explicit assert message, or null if the
+    // expression is not an explicit string message. A `StringExp` literal lands
+    // in the data segment via compileStringLiteral; a (cast-wrapped) `VarExp`
+    // over a `string` local reuses the local's slice slot.
+    private Operand* messageSlice(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return messageSlice(cast_.e1);
+
+        if (auto string_ = expression.isStringExp) {
+            auto slice = new Operand;
+            *slice = compileStringLiteral(string_);
+            return slice;
+        }
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _stringLocals)
+                    if (auto existing = declaration in _locals)
+                        return new Operand(*existing, ScalarType.void_, true);
+
+        return null;
     }
 
     // DMD with -checkaction=context rewrites `assert(a == b)` into an
@@ -1208,6 +1282,17 @@ private imported!"quickbite.backends.bytecode.core.program".Op
                 : Op.greaterOrEqualUnsigned4;
         default: assert(0, "Unsupported comparison-assert operator.");
     }
+}
+
+// A `_d_assert_fail` lowering: a `CallExp` carrying a leading operator
+// `StringExp` and the asserted operands. The explicit-message branch defers
+// these to compileLoweredComparisonAssert.
+private bool isAssertFailCall(imported!"dmd.expression".Expression expression) {
+    auto call = expression.isCallExp;
+    if (call is null || call.arguments is null || call.arguments.length == 0)
+        return false;
+
+    return (*call.arguments)[0].isStringExp !is null;
 }
 
 // A `string`/`wstring`/`dstring` (immutable char-element array): the only
