@@ -102,9 +102,62 @@ conflict-skip — DMD sees them loaded both as fixtures and as
 imports-by-name, and they're still exercised via the importing tests).
 Full `bin/ut --random` green.
 
+File-backed fixture parsing (2026-06-17): benchmark fixture preparation
+now parses source files through the frontend's file-backed `parseModule`
+path instead of the in-memory `parseSnippet` path. This removed the old
+cerealed DMD module-table conflicts caused by parsing a module-declared
+source file under a synthetic `snippet_N.d` identity.
+
 This is the right foundation but does **not** by itself land a new
 corpus entry: it moved concepts and unit-threaded *past* the discovery
 failure into distinct downstream blockers (see "Next" item 1).
+
+## Open: parse dub packages as root module sets
+
+The current `--dub` preparation still parses discovered package source
+files one at a time. That is not equivalent to what dub hands to DMD:
+
+```text
+dmd -unittest <all package source files> -I <import paths>
+```
+
+In a real dub unittest build, the package's source and test modules are
+root modules before import traversal can parse any of them as ordinary
+imports. Quickbite's one-file-at-a-time path can instead parse
+`cerealed.range` first, let it import `cerealed.scopebuffer`, and later
+reuse that already-loaded `scopebuffer` module as a fixture.
+
+DMD intentionally skips unittest bodies in non-root imported modules and
+leaves bodyless `UnitTestDeclaration` placeholders. That is why:
+
+```text
+./bin/bench.sh -b ctfe --dub cerealed
+```
+
+can report that `__unittest_L302_C1` has no available source code even
+though `src/cerealed/scopebuffer.d` has a real unittest at that line.
+Running `scopebuffer.d` as a standalone root reaches the expected CTFE
+limitation instead: `realloc` cannot be interpreted at compile time.
+
+Fix this at the frontend boundary, not with package-specific ordering or
+diagnostic workarounds. Add:
+
+```d
+ModuleParseResult[] parseRootModules(
+    in string[] filePaths,
+    in string[] importPaths,
+);
+```
+
+The API should establish every `filePaths` entry as a root before any
+source content is parsed, run the same parse/import/semantic phases over
+that root set, and return modules in input order. It should preserve
+file identity and reject reuse of a previously-loaded non-root module as
+a runnable root fixture.
+
+`--dub` should prepare its grouped benchmark unit through
+`parseRootModules` once. Standalone fixture benchmarks should keep the
+existing `parseModule` path.
 
 ## Open: per-fixture completeness (cross-fixture instance homing)
 
@@ -149,9 +202,22 @@ cheaper alternative that sidesteps the whole problem: validate a dub
 package as one group (matching how it is timed) rather than per fixture
 — but that changes `checkRunnerResults` behaviour and needs sign-off.
 
+Do not prioritize this before `parseRootModules`. A per-fixture link
+model is still useful for standalone fixtures, but a dub package's
+correctness check should first use the same grouped root-set unit that
+will be timed. Otherwise the checker is debugging an artifact of
+Quickbite's preparation model rather than a behaviour dub itself would
+compile.
+
 ## Next, in order
 
-1. Grow the corpus past cerealed. Fixture discovery is now layout-robust
+1. Implement `parseRootModules` and route `--dub` preparation through it.
+   Verify with a package-shaped sandbox test where one root imports
+   another root whose unittest must still have a runnable body. Then run
+   `./bin/bench.sh -b ctfe --dub cerealed` to confirm the misleading
+   bodyless-unittest failure is gone; a CTFE failure on `realloc` is an
+   honest backend limitation and should be reported as such.
+2. Grow the corpus past cerealed. Fixture discovery is now layout-robust
    (Done, 2026-06-15), but discovery was only the first gate; each new
    package hits a distinct downstream blocker, in rough order of effort:
    - **concepts** (closest to a 2nd row): discovery works, but the
@@ -174,13 +240,13 @@ package as one group (matching how it is timed) rather than per fixture
      hardcodes `~/.dub/packages` (ignores `DUB_HOME`) and sorts versions
      lexically (so the git-hash dir wins over 0.6.8) — switch to dub's
      own path resolution when this bites.
-2. Instrument the bench with a per-phase breakdown of the edit cycle:
+3. Instrument the bench with a per-phase breakdown of the edit cycle:
    one-time cold dependency parse+sema (currently in no measurement
    window at all), then per-edit root parse+sema, semantic3 of imports,
    codegen split by project vs dependency source path, link, fork,
    execution. For VM backends: lowering vs execution split, execution
    time attributed by the module the executing function came from.
-3. Pick the next lever from the data, one at a time:
+4. Pick the next lever from the data, one at a time:
    - VM lowering dominates -> in-process bytecode cache keyed on
      function identity (falls out of the warm process; unchanged
      modules keep their AST objects).
