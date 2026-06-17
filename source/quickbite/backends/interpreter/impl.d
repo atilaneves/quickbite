@@ -751,8 +751,19 @@ private struct Walker {
         if (auto real_ = expression.isRealExp)
             return realValue(real_);
 
-        if (expression.isNullExp !is null)
+        if (auto null_ = expression.isNullExp) {
+            import dmd.astenums: TY;
+
+            // A `null` literal typed as a dynamic array is a null array, whose
+            // `.length` is 0 and which renders as `[]` — the same
+            // representation as a default-initialised array field
+            // (`defaultValue`).  `new S` of a struct with an array field passes
+            // this literal as the field's initialiser.
+            if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
+                return Value.arrayValue([]);
+
             return Value.null_;
+        }
 
         if (auto string_ = expression.isStringExp) {
             import quickbite.frontend.dmd.string_literals: stringValue;
@@ -1231,8 +1242,16 @@ private struct Walker {
         import std.conv: text;
 
         auto var = array.isVarExp;
-        if (var is null)
+        if (var is null) {
+            if (array.isDotVarExp !is null)
+                return Value.arrayPointerValue(
+                    arrayElements(runExpression(array)),
+                    ++allocationCount,
+                    offset,
+                );
+
             throw new Exception(text("Unsupported eval expression: ", op));
+        }
 
         auto variable = var.var.isVarDeclaration;
         if (variable is null)
@@ -2912,6 +2931,15 @@ private struct Walker {
             return;
         }
 
+        // `arr.length = n`: resize the array lvalue, padding with default
+        // elements when growing and truncating when shrinking, then write the
+        // rebuilt array back to its location (a local, or a field through a
+        // pointer as in `_data.arr.length = n`).
+        if (auto arrayLength = target.isArrayLengthExp) {
+            writeArrayLengthLocation(arrayLength, value);
+            return;
+        }
+
         // `*ptr = value`: update the pointer variable so its target holds value.
         if (auto ptr = target.isPtrExp) {
             const pointer = runExpression(ptr.e1);
@@ -2936,6 +2964,25 @@ private struct Walker {
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    private void writeArrayLengthLocation(
+        imported!"dmd.expression".ArrayLengthExp target,
+        in Value value,
+    ) {
+        import quickbite.frontend.dmd.types: arrayElementType;
+
+        const current = runExpression(target.e1);
+        const oldLength = current == Value.null_ ? 0 : current.length;
+        const newLength = cast(size_t) value.asLong;
+
+        Value[] elements;
+        foreach (index; 0 .. newLength)
+            elements ~= index < oldLength
+                ? current[index]
+                : defaultValue(arrayElementType(target.e1.type));
+
+        writeLocation(target.e1, Value.arrayValue(elements));
     }
 
     private Value storageValue(
@@ -3278,19 +3325,26 @@ private struct Walker {
         if (arrayLength is null)
             throw new Exception(text("Unsupported eval expression: ", assign.op));
 
+        const lengthValue = runExpression(assign.e2);
+
         auto var = arrayLength.e1.isVarExp;
-        if (var is null)
-            throw new Exception(text("Unsupported eval expression: ", assign.op));
+        if (var is null) {
+            writeArrayLengthLocation(arrayLength, lengthValue);
+            return lengthValue;
+        }
 
         auto variable = var.var.isVarDeclaration;
-        if (variable is null || !isDynamicArrayType(variable.type))
-            throw new Exception(text("Unsupported eval expression: ", assign.op));
+        if (variable is null || !isDynamicArrayType(variable.type)) {
+            writeArrayLengthLocation(arrayLength, lengthValue);
+            return lengthValue;
+        }
 
         auto current = variable in locals;
-        if (current is null)
-            throw new Exception(text("Unsupported eval expression: ", assign.op));
+        if (current is null) {
+            writeArrayLengthLocation(arrayLength, lengthValue);
+            return lengthValue;
+        }
 
-        const lengthValue = runExpression(assign.e2);
         const newLength = cast(size_t) lengthValue.asLong;
 
         Value[] elements;

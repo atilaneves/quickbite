@@ -648,6 +648,104 @@ to initialize the temp and a second time to remember the aliased slot. The fix
 records the array index returned by `runIndexExpression` and reuses it when
 installing the alias, so `index++` keeps normal single-evaluation semantics.
 
+Cerealed live REPL example (`c ~= 42`) — IN PROGRESS (handoff):
+Goal (user-directed loop): make the live interactive REPL example work end to
+end, then keep analysing/testing/fixing until it does, with self-contained
+tests that do NOT depend on cerealed. Repro:
+
+```
+printf 'import cerealed;\nauto c = Cerealiser();\nc ~= 42;\n' | \
+  bin/qb -b interpreter -I ~/coding/d/cerealed/src -I ~/coding/d/concepts/source
+```
+
+`c ~= 42` lowers through `CerealiserImpl.opOpAssign!"~"` → `grain` →
+`Appender!(ubyte[]).put` → `ensureAddable`, which under the interpreter's
+CTFE-style execution runs `_data = new Data;` then `_data.arr.length = reqlen;`
+(`std.array`). Each gap below was reduced to a self-contained
+struct/array/`new` fixture (no cerealed) in
+`tests/ut/backends/runner/ct/expressions.d`, backend matrix
+`AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)`, `SystemLinker` oracle.
+
+Diagnosis technique (for the next agent): the REPL/backend swallows the
+exception into a diagnostic string. To see the throwing line + stack, either
+temporarily `stderr.writeln(exception)` in
+`displayEvalResult` (`source/quickbite/backends/evaluator.d`) or tag the
+candidate `throw new Exception("Expected array.")` sites in
+`source/quickbite/lang/package.d`. Revert before committing.
+
+Error chain discovered (each is the next error after the previous fix):
+
+1. `Error: Unsupported eval expression: address` — `&` of a `ref` parameter
+   (`AddrExp(VarExp)`). FIXED and MERGED to master as PR #254 (commit
+   9bd36380). Test `pointer.addressOfRefParameterReadsThroughPointer`.
+
+2. `Error: Expected array.` — a null dynamic array's `.length`. `new S` of a
+   struct with an `int[]` field passes the field's `null` default initialiser
+   as a positional aggregate argument; `runExpression(NullExp)` returned
+   `Value.null_`, so `S(0, null)` and `.length` threw, whereas compiled D gives
+   `S(0, [])` and length 0. FIXED on this branch: in `runExpression`'s
+   `NullExp` branch (`impl.d` ~line 754) a `null` literal typed `Tarray` now
+   returns `Value.arrayValue([])`, matching `defaultValue`. Test
+   `new.heapStructArrayFieldHasZeroLength` is green on all four backends.
+
+3. `Error: Unsupported interpreter assignment target: arrayLength` /
+   `Unsupported eval expression: loweredAssignExp` — resizing an array field
+   through a pointer (`_data.arr.length = reqlen`). The existing
+   `runLoweredAssignExpression` only handled a plain local `VarExp` lvalue; the
+   field-through-pointer lvalue was rejected. FIXED on this branch:
+   `writeLocation` now delegates `ArrayLengthExp` lvalues to
+   `writeArrayLengthLocation`, and `runLoweredAssignExpression` falls back to
+   the same helper for non-local array-length lvalues while preserving the
+   existing local dynamic-array fast path. Test
+   `new.heapStructArrayFieldGrowsByLengthAssign` is green on all four
+   backends.
+
+Verification for slices 2-3:
+
+```
+ninja bin/ut
+bin/ut \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldHasZeroLength.Ctfe \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldHasZeroLength.Interpreter \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldHasZeroLength.SystemLinker \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldHasZeroLength.LLVMJit \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldGrowsByLengthAssign.Ctfe \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldGrowsByLengthAssign.Interpreter \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldGrowsByLengthAssign.SystemLinker \
+  ut.backends.runner.ct.expressions.new.heapStructArrayFieldGrowsByLengthAssign.LLVMJit
+bin/ut --random --seed 2911382024
+```
+
+The full random run reported 2268 run, 0 failed, 5/5 expected failures.
+
+4. `Error: Unsupported eval expression: cast_` — after rebuilding `bin/qb`,
+   the live repro advances to DMD's lowering of an array field `.ptr`:
+   `cast(ubyte*)(*this._data).arr`. Temporary diagnostics showed the cast
+   source as `(*this._data).arr` (`dotVariable`, type `ubyte[]`) and target as
+   `ubyte*`. The interpreter's `arrayPointer` helper only accepts plain local
+   array variables, so it rejected this field-through-pointer array
+   expression. FIXED on this branch for the read case:
+   `arrayPointer` now accepts a `DotVarExp` array field by evaluating the field
+   and constructing a pointer over those elements. Test
+   `cast.arrayFieldPointerDereferencesFirstElement` is green on all four
+   backends.
+
+5. `Error: Unsupported eval expression: this` — after slice 4, the live repro
+   advances into `std.array.Appender.put`'s generated zero-argument lambda at
+   `/usr/include/dlang/dmd/std/array.d:3796`:
+   `(() @trusted => _data.arr.ptr[0 .. len + 1])()`. The lambda is nested
+   inside the member function and reads `_data` through the enclosing member
+   `this`, but `runFunction` currently creates a child walker for nested
+   functions without propagating `thisValue` / `hasThis` from the enclosing
+   member call. Next slice should reduce this to a self-contained member
+   function with a nested lambda reading a field through `this`, get approval
+   for the test, then propagate the enclosing receiver only for nested
+   functions that need it.
+
+Next step: get approval for the slice 5 test, then repeat the RED→GREEN loop.
+Nothing on this branch is committed yet — commit one slice per fix (each with
+its test) before opening the PR. Run `ci.sh` before the PR.
+
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in
 `tests/ut/backends/runner/ct/diagnostics.d` were promoted to also run on
