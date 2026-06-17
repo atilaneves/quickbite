@@ -100,6 +100,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case addInt8:
+                const ubyte[long.sizeof] sum = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) +
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = sum;
+                ++ip;
+                break;
+
             case bitOrInt4:
                 const ubyte[int.sizeof] bits = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) |
@@ -142,6 +152,34 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case greaterThan4:
                 stack[base + instruction.a] =
                     scalarValue!int(stack, base + instruction.b) >
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) <=
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) >=
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualUnsigned4:
+                stack[base + instruction.a] =
+                    scalarValue!uint(stack, base + instruction.b) >=
+                    scalarValue!uint(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqual4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) !=
                     scalarValue!int(stack, base + instruction.c) ? 1 : 0;
                 ++ip;
                 break;
@@ -262,7 +300,29 @@ package(quickbite.backends.bytecode) ubyte[] run(
                         base + instruction.b
                         .. base + instruction.b + callee.parameterBytes
                     ];
-                frames ~= Frame(functionIndex, ip + 1, base, instruction.c);
+
+                // Each scalar `ref` parameter's slot currently holds the
+                // caller-frame offset of its argument (copied with the rest of
+                // the argument block). Record that offset for writeback on
+                // return, then replace the slot with the referenced value.
+                RefWriteback[] refWritebacks;
+                foreach (refParameter; callee.refParameters) {
+                    const valueSize = size(refParameter.type);
+                    const callerOffset = base + scalarValue!uint(
+                        stack, calleeBase + refParameter.offset,
+                    );
+                    refWritebacks ~= RefWriteback(
+                        callerOffset, refParameter.offset, valueSize,
+                    );
+                    stack[
+                        calleeBase + refParameter.offset
+                        .. calleeBase + refParameter.offset + valueSize
+                    ] = stack[callerOffset .. callerOffset + valueSize];
+                }
+
+                frames ~= Frame(
+                    functionIndex, ip + 1, base, instruction.c, refWritebacks,
+                );
                 functionIndex = instruction.a;
                 base = calleeBase;
                 ip = 0;
@@ -288,9 +348,19 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case assertNonzeroInt4:
-                if (scalarValue!int(stack, base + instruction.a) == 0)
+                // The operand width follows its scalar type: a `bool` is a
+                // single frame byte, an `int` four. Reading only `size(type)`
+                // bytes avoids treating a zero `bool` as nonzero because of
+                // adjacent frame bytes.
+                const nonzeroDiagnostic =
+                    program.assertDiagnostics[instruction.b];
+                if (isZeroSlot(
+                        stack,
+                        base + instruction.a,
+                        size(nonzeroDiagnostic.operandType),
+                    ))
                     throw new Exception(assertMessage(
-                        program.assertDiagnostics[instruction.b],
+                        nonzeroDiagnostic,
                         stack[base .. $],
                     ));
 
@@ -299,6 +369,9 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
             case halt:
                 throw new Exception("Assertion failure");
+
+            case haltUnittest:
+                throw new Exception("unittest failure");
 
             case throwString:
                 throw new Exception(stringFromSlice(
@@ -318,6 +391,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
                 const frame = frames[$ - 1];
                 frames.length -= 1;
+
+                // Write each scalar `ref` parameter's final value back to the
+                // caller-frame slot it referenced.
+                foreach (writeback; frame.refWritebacks)
+                    stack[
+                        writeback.callerOffset
+                        .. writeback.callerOffset + writeback.size
+                    ] = stack[
+                        base + writeback.calleeOffset
+                        .. base + writeback.calleeOffset + writeback.size
+                    ];
+
                 stack[
                     frame.base + frame.destination
                     .. frame.base + frame.destination + resultSize
@@ -347,6 +432,16 @@ private struct Frame {
     size_t ip;
     size_t base;
     ushort destination;
+    RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
+}
+
+// A pending scalar `ref` writeback: copy `size` bytes from the callee
+// parameter slot (relative to the callee base) back to an absolute caller-frame
+// offset on return.
+private struct RefWriteback {
+    size_t callerOffset; // absolute stack offset of the referenced caller slot
+    ushort calleeOffset; // the parameter slot's offset within the callee frame
+    uint size;
 }
 
 private uint equalOperandSize(
@@ -398,6 +493,11 @@ private string assertMessage(
 private string invertedOperator(in string operator) @safe @nogc nothrow pure {
     switch (operator) {
         case "==": return "!=";
+        case "!=": return "==";
+        case "<": return ">=";
+        case "<=": return ">";
+        case ">": return "<=";
+        case ">=": return "<";
         default: assert(0, "Unsupported assert operator.");
     }
 }
@@ -445,6 +545,20 @@ private ubyte[T.sizeof] scalarBytes(T)(in T value)
         bytes[i] = cast(ubyte) ((raw >> (8 * i)) & 0xff);
 
     return bytes;
+}
+
+// True when every byte of the `width`-byte frame slot at `offset` is zero,
+// i.e. the operand is zero regardless of its scalar width.
+private bool isZeroSlot(
+    in ubyte[] stack,
+    in size_t offset,
+    in size_t width,
+) @safe @nogc nothrow pure {
+    foreach (b; stack[offset .. offset + width])
+        if (b != 0)
+            return false;
+
+    return true;
 }
 
 private T scalarValue(T)(

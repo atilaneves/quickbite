@@ -19,6 +19,11 @@ package(quickbite.backends.bytecode) Compilation compile(
 ) {
     auto compiler = new Compiler;
     compiler.registerFunction(entry);
+    // A literal-false assert directly in a unittest body must throw
+    // "unittest failure" (DMD's _d_unittest hook); the same assert in a
+    // called function throws "Assertion failure". Only the entry can be a
+    // unittest declaration; lazily-compiled callees never are.
+    compiler._inUnittestEntry = entry.isUnitTestDeclaration !is null;
     compiler.compileFunctionBody(0);
     return Compilation(compiler._program, &compiler.compileFunctionBody);
 }
@@ -27,11 +32,11 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        ResultType, ScalarType, isSigned, size, stringSliceSize;
+        RefParameter, ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, DivExp,
-        Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
+        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
+        DivExp, Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
         StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
@@ -43,12 +48,21 @@ private struct Compiler {
     private Instruction[] _code;
     private uint _frameOffset;
     private ushort[VarDeclaration] _locals;
+    private bool[VarDeclaration] _stringLocals; // locals holding a string slice
     private size_t[ulong] _constantIndices;
+    private bool _inUnittestEntry; // true only while compiling the entry
+                                   // function when it is a UnitTestDeclaration
 
     private void compileFunctionBody(in size_t index) {
+        // Only the entry (index 0) can be a unittest body; any lazily
+        // compiled callee is an ordinary function.
+        if (index > 0)
+            _inUnittestEntry = false;
+
         auto function_ = _functions[index];
         _code = null;
         _locals = null;
+        _stringLocals = null;
 
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
@@ -76,11 +90,13 @@ private struct Compiler {
         const index = _functions.length;
         _functions ~= function_;
         _functionIndices[function_] = index;
+        const layout = parameterLayout(function_);
         _program.functions ~= CompiledFunction(
             null,
             0,
-            parameterLayout(function_).blockSize,
+            layout.blockSize,
             resultType(returnType(function_)),
+            layout.refParameters.dup,
         );
         return cast(ushort) index;
     }
@@ -209,8 +225,11 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declaration in _locals)
+                if (auto existing = declaration in _locals) {
+                    if (declaration in _stringLocals)
+                        return Operand(*existing, ScalarType.void_, true);
                     return Operand(*existing, scalarType(declaration.type));
+                }
 
             throw new Exception(text(
                 "Unsupported variable in bytecode core: ",
@@ -255,6 +274,9 @@ private struct Compiler {
 
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
+
+        if (auto assign = expression.isAssignExp)
+            return compileAssignExpression(assign);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -302,9 +324,16 @@ private struct Compiler {
     private void compileVariableDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
-        const type = scalarType(variable.type);
-        const offset = allocate(type);
+        // A `string` local holds an 8-byte slice descriptor (data offset and
+        // length), not a scalar; allocate the descriptor width and copy the
+        // initializer's slice into it.
+        const isString = isStringType(variable.type);
+        const type = isString ? ScalarType.void_ : scalarType(variable.type);
+        const slotSize = isString ? stringSliceSize : size(type);
+        const offset = allocateBytes(slotSize, isString ? 4 : size(type));
         _locals[variable] = offset;
+        if (isString)
+            _stringLocals[variable] = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -320,7 +349,7 @@ private struct Compiler {
             Op.copy,
             offset,
             operand.offset,
-            cast(ushort) size(type),
+            cast(ushort) slotSize,
         );
     }
 
@@ -368,6 +397,13 @@ private struct Compiler {
             return emitBinary(Op.addFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.addDouble, lhs, rhs, ScalarType.double_);
+
+        // 8-byte integer addition (e.g. `size_t`): same operand and result
+        // type on both sides, kept at the full width.
+        if (isEightByteInteger(lhs.type) &&
+            lhs.type == rhs.type &&
+            scalarType(add.type) == lhs.type)
+            return emitBinary(Op.addInt8, lhs, rhs, lhs.type);
 
         return compileIntBinaryResult(
             add,
@@ -565,6 +601,36 @@ private struct Compiler {
         return lhs;
     }
 
+    // `local = expr` for a scalar local lvalue (including a `ref` parameter's
+    // slot): evaluate the right-hand side and copy it into the local's slot,
+    // yielding the local as the assignment's result. Scoped to local-variable
+    // lvalues with a matching scalar type; anything else is unsupported.
+    private Operand compileAssignExpression(AssignExp assign) {
+        import std.conv: text;
+
+        auto variable = assign.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const type = slot is null
+            ? ScalarType.void_
+            : scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (slot is null || rhs.type != type)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(assign),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            *slot,
+            rhs.offset,
+            cast(ushort) size(type),
+        );
+        return Operand(*slot, type);
+    }
+
     private Operand compileEqualExpression(Expression expression) {
         auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(equal !is null);
@@ -643,11 +709,29 @@ private struct Compiler {
 
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+
+                // A `ref` argument passes the caller-frame offset of the
+                // referenced local, not its value: the machine dereferences it
+                // on entry and writes the slot back to it on return.
+                if (layout.isReference[argumentIndex]) {
+                    const reference =
+                        referenceOffset((*call.arguments)[argumentIndex]);
+                    _code ~= Instruction(
+                        Op.loadConstant,
+                        slot,
+                        constantIndex(reference),
+                        cast(ushort) size(ScalarType.uint_),
+                    );
+                    continue;
+                }
+
                 const operand =
                     compileExpression((*call.arguments)[argumentIndex]);
                 _code ~= Instruction(
                     Op.copy,
-                    cast(ushort) (argumentArea + layout.offsets[argumentIndex]),
+                    slot,
                     operand.offset,
                     cast(ushort) size(operand.type),
                 );
@@ -660,6 +744,22 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // The caller-frame offset of a scalar `ref` argument: the slot of the
+    // local being passed by reference. Only a plain local lvalue is supported.
+    private ushort referenceOffset(Expression argument) {
+        import std.conv: text;
+
+        if (auto variable = argument.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _locals)
+                    return *existing;
+
+        throw new Exception(text(
+            "Unsupported ref argument in bytecode core: ",
+            expressionChars(argument),
+        ));
     }
 
     // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
@@ -743,6 +843,9 @@ private struct Compiler {
         if (compileVerbatimStringAssert(assert_))
             return;
 
+        if (compileExplicitMessageAssert(assert_))
+            return;
+
         throw new Exception(text(
             "Unsupported assert in bytecode core: ",
             expressionChars(assert_),
@@ -750,11 +853,11 @@ private struct Compiler {
     }
 
     // DMD can fold `assert(1 == 1)` to `assert(true)`. Compiled code emits no
-    // runtime check for that case, so the VM emits no bytecode either.
+    // runtime check for that case, so the VM emits no bytecode either. A
+    // statically-true condition makes any message dead code: it is never
+    // evaluated, so `assert(true, message)` likewise emits nothing regardless
+    // of `assert_.msg`.
     private bool compileLiteralTrueAssert(AssertExp assert_) {
-        if (assert_.msg !is null)
-            return false;
-
         auto integer = assert_.e1.isIntegerExp;
         return integer !is null && integer.toInteger != 0;
     }
@@ -772,7 +875,7 @@ private struct Compiler {
         if (integer is null || integer.toInteger != 0)
             return false;
 
-        _code ~= Instruction(Op.halt);
+        _code ~= Instruction(_inUnittestEntry ? Op.haltUnittest : Op.halt);
         return true;
     }
 
@@ -809,6 +912,65 @@ private struct Compiler {
         return true;
     }
 
+    // `assert(cond, message)` with an explicit string message that is neither
+    // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
+    // the message string itself on failure. The message is either a `StringExp`
+    // literal (`assert(1 == 2, "oops")`, folded to `assert(false, "oops")`) or a
+    // (cast-wrapped) `VarExp` over a `string` local whose slot already holds the
+    // slice descriptor. A compile-time-false condition (`assert(false, msg)`)
+    // throws unconditionally; otherwise the condition is compiled and the throw
+    // is skipped when it holds.
+    private bool compileExplicitMessageAssert(AssertExp assert_) {
+        if (assert_.msg is null)
+            return false;
+
+        // `_d_assert_fail` calls and the verbatim-logical string belong to the
+        // earlier branches; an explicit message is anything else.
+        if (isAssertFailCall(assert_.msg))
+            return false;
+
+        auto message = messageSlice(assert_.msg);
+        if (message is null)
+            return false;
+
+        auto integer = assert_.e1.isIntegerExp;
+        if (integer !is null && integer.toInteger == 0) {
+            const slice = *message;
+            _code ~= Instruction(Op.throwString, slice.offset);
+            return true;
+        }
+
+        const condition = compileExpression(assert_.e1);
+        const skipJump = emitJumpIfTrue(condition);
+        const slice = *message;
+        _code ~= Instruction(Op.throwString, slice.offset);
+        patchJump(skipJump);
+        return true;
+    }
+
+    // The string-slice operand for an explicit assert message, or null if the
+    // expression is not an explicit string message. A `StringExp` literal lands
+    // in the data segment via compileStringLiteral; a (cast-wrapped) `VarExp`
+    // over a `string` local reuses the local's slice slot.
+    private Operand* messageSlice(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return messageSlice(cast_.e1);
+
+        if (auto string_ = expression.isStringExp) {
+            auto slice = new Operand;
+            *slice = compileStringLiteral(string_);
+            return slice;
+        }
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _stringLocals)
+                    if (auto existing = declaration in _locals)
+                        return new Operand(*existing, ScalarType.void_, true);
+
+        return null;
+    }
+
     // DMD with -checkaction=context rewrites `assert(a == b)` into an
     // AssertExp whose message is a `_d_assert_fail` call carrying the
     // operator string and both operands; compile the operands once and
@@ -819,6 +981,13 @@ private struct Compiler {
 
         auto call = assert_.msg.isCallExp;
         if (call is null || call.arguments is null)
+            return false;
+
+        // A `_d_assert_fail` call carries at least the operator-string
+        // argument. A bare `message()` call (e.g. `assert(true, message)`)
+        // has no arguments and is not this shape, so indexing `[0]` would
+        // crash; bail out before touching the empty argument list.
+        if (call.arguments.length == 0)
             return false;
 
         auto operator = (*call.arguments)[0].isStringExp;
@@ -837,8 +1006,19 @@ private struct Compiler {
         if (call.arguments.length == 2 && operatorText(operator) == "!")
             return compileNotAssert((*call.arguments)[1]);
 
-        if (call.arguments.length != 3 || operatorText(operator) != "==")
+        // The 3-argument form carries a relational operator and both operands;
+        // `==`, `!=`, `<`, `<=`, `>`, `>=` are asserted on their comparison and
+        // render the inverted relation on failure.
+        if (call.arguments.length != 3)
             return false;
+
+        const op = operatorText(operator);
+        switch (op) {
+            case "==", "!=", "<", "<=", ">", ">=":
+                break;
+            default:
+                return false;
+        }
 
         // D's integer promotions appear only in the rewritten condition, not
         // in the _d_assert_fail operands; replicate them so mixed-width
@@ -852,7 +1032,7 @@ private struct Compiler {
 
         const condition = allocateBytes(1, 1);
         _code ~= Instruction(
-            equalOp(size(lhs.type)),
+            comparisonAssertOp(op, lhs.type),
             condition,
             lhs.offset,
             rhs.offset,
@@ -860,7 +1040,7 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
-            AssertDiagnostic("==", lhs.offset, rhs.offset, lhs.type);
+            AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -869,13 +1049,14 @@ private struct Compiler {
         return true;
     }
 
-    // `assert(intExpr)`: throw when the int evaluates to zero; the failure
-    // renders "<value> != true", so the diagnostic carries only the operand.
+    // `assert(intExpr)` / `assert(boolExpr)`: throw when the operand evaluates
+    // to zero; the failure renders "<value> != true", so the diagnostic carries
+    // only the operand. A `bool` operand renders "false != true".
     private bool compileNonzeroAssert(Expression expression) {
         import std.conv: text;
 
         const operand = compileExpression(expression);
-        if (operand.type != ScalarType.int_)
+        if (operand.type != ScalarType.int_ && operand.type != ScalarType.bool_)
             throw new Exception(text(
                 "Unsupported truth assert in bytecode core: ",
                 expressionChars(expression),
@@ -952,16 +1133,19 @@ private struct Compiler {
 
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
-            if (parameter.isReference)
-                throw new Exception(
-                    "Unsupported ref parameter in bytecode core",
-                );
 
+            // A scalar `ref` parameter has a frame slot sized for the
+            // referenced value, just like a value parameter; the difference is
+            // only in how the argument word is passed and written back.
             const type = scalarType(parameter.type);
             const alignment = size(type);
             layout.blockSize =
                 (layout.blockSize + alignment - 1) & ~(alignment - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= parameter.isReference;
+            if (parameter.isReference)
+                layout.refParameters ~=
+                    RefParameter(cast(ushort) layout.blockSize, type);
             layout.blockSize += size(type);
         }
 
@@ -1023,7 +1207,11 @@ private struct Compiler {
 }
 
 private struct ParameterLayout {
+    import quickbite.backends.bytecode.core.program: RefParameter;
+
     ushort[] offsets;
+    bool[] isReference; // per parameter: true for a scalar `ref` parameter
+    RefParameter[] refParameters; // the slot and type of each `ref` parameter
     uint blockSize;
 }
 
@@ -1088,6 +1276,44 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
     }
 }
 
+// The comparison opcode for a relational `_d_assert_fail` operator. `==`
+// reuses the width-tagged equality opcodes; `!=` and the order relations only
+// need the 4-byte int forms today (the operands the lowered asserts carry),
+// selecting the unsigned `>=` opcode for unsigned operands.
+private imported!"quickbite.backends.bytecode.core.program".Op
+    comparisonAssertOp(
+    in string operator,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType
+        operandType,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType, isSigned,
+        size;
+
+    switch (operator) {
+        case "==": return equalOp(size(operandType));
+        case "!=": return Op.notEqual4;
+        case "<": return Op.lessThan4;
+        case "<=": return Op.lessOrEqual4;
+        case ">": return Op.greaterThan4;
+        case ">=":
+            return isSigned(operandType)
+                ? Op.greaterOrEqual4
+                : Op.greaterOrEqualUnsigned4;
+        default: assert(0, "Unsupported comparison-assert operator.");
+    }
+}
+
+// A `_d_assert_fail` lowering: a `CallExp` carrying a leading operator
+// `StringExp` and the asserted operands. The explicit-message branch defers
+// these to compileLoweredComparisonAssert.
+private bool isAssertFailCall(imported!"dmd.expression".Expression expression) {
+    auto call = expression.isCallExp;
+    if (call is null || call.arguments is null || call.arguments.length == 0)
+        return false;
+
+    return (*call.arguments)[0].isStringExp !is null;
+}
+
 // A `string`/`wstring`/`dstring` (immutable char-element array): the only
 // non-scalar result the core lowers today.
 private bool isStringType(imported!"dmd.mtype".Type type) {
@@ -1115,6 +1341,14 @@ private bool isFloating(
     import quickbite.backends.bytecode.core.program: ScalarType;
 
     return type == ScalarType.float_ || type == ScalarType.double_;
+}
+
+private bool isEightByteInteger(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.long_ || type == ScalarType.ulong_;
 }
 
 // Lower a float/double literal to the raw bits loadConstant copies: the
