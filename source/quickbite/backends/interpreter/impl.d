@@ -1400,6 +1400,11 @@ private struct Walker {
             unaryBuiltinCall;
 
         if (call.f !is null) {
+            import dmd.funcsem: functionSemantic3;
+            functionSemantic3(call.f);
+        }
+
+        if (call.f !is null) {
             import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
             InterpreterBuiltin builtin;
