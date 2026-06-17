@@ -239,15 +239,15 @@ public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor 
     }
 
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, sourceImportPaths).module_);
+        runTests(parseSnippet(source, sourceImportPaths).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        auto module_ = parseModule(source, importPaths).module_;
+        auto module_ = parseSnippet(source, importPaths).module_;
         compileTests(module_, importPaths);
     }
 
@@ -271,10 +271,10 @@ public final class DmdCodegenSharedLib : imported!"quickbite.executor".Executor 
 
     public override imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
         import quickbite.executor: TestSummary;
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto module_ = parseModule(source, sourceImportPaths).module_;
+        auto module_ = parseSnippet(source, sourceImportPaths).module_;
         TestSummary summary;
 
         bool hasTests;
@@ -321,18 +321,18 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
         if (const message = source.ramControlledFailureMessage)
             throw new Exception(message);
 
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, sourceImportPaths).module_);
+        runTests(parseSnippet(source, sourceImportPaths).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
         if (const message = source.ramControlledFailureMessage)
             throw new Exception(message);
 
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        auto module_ = parseModule(source, importPaths).module_;
+        auto module_ = parseSnippet(source, importPaths).module_;
         compileTests(module_, importPaths);
     }
 
@@ -356,10 +356,10 @@ public final class DmdCodegenRam : imported!"quickbite.executor".Executor {
 
     public override imported!"quickbite.executor".TestSummary runTestSummary(in string source) {
         import quickbite.executor: TestSummary;
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
         import quickbite.frontend.util: foreachUnitTestDeclaration;
 
-        auto module_ = parseModule(source, sourceImportPaths).module_;
+        auto module_ = parseSnippet(source, sourceImportPaths).module_;
         TestSummary summary;
 
         bool hasTests;
@@ -4632,8 +4632,7 @@ private bool isUnaccumulatedSnippetSourceFile(
         && cast(void*) module_ !in _accumulatedModules;
 }
 
-// parseModule receives readText(path) contents, so DMD records the module's
-// source file as "snippet_N.d" instead of the original benchmark file path.
+// Source-string executor inputs still use synthetic snippet filenames.
 private bool hasSnippetSourceFile(
     imported!"dmd.dmodule".Module module_,
 ) @trusted {

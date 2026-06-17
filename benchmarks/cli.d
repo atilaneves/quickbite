@@ -4,7 +4,7 @@ import benchmarks.harness: measure, Result;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner: Runner, TestResult, runTests;
 import quickbite.benchmarks: moduleDisplayName;
-import quickbite.frontend.compiler: parseModuleFile, parseModuleUncached;
+import quickbite.frontend.compiler: parseModule, parseSnippetUncached;
 import dmd.dmodule: Module;
 
 private:
@@ -605,7 +605,7 @@ public BenchmarkRun[] prepareFixtureRuns(
         const displayName = moduleDisplayName(path, importPaths);
         Module module_;
         try {
-            module_ = parseModuleFile(path, importPaths).module_;
+            module_ = parseModule(path, importPaths).module_;
         } catch (Exception e) {
             import std.stdio: stderr;
 
@@ -622,7 +622,7 @@ public BenchmarkRun[] prepareFixtureRuns(
         try {
             frontend = measure(
                 () {
-                    parseModuleUncached(source, importPaths);
+                    parseSnippetUncached(source, importPaths);
                 },
                 warmup,
                 runs,

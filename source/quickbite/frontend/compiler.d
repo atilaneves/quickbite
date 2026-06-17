@@ -28,47 +28,51 @@ shared static ~this() {
     compiler.shutdown;
 }
 
-public ModuleParseResult parseModule(in string source) {
-    return compiler.parseModule(source, []);
+public ModuleParseResult parseModule(in string filePath) {
+    return compiler.parseModule(filePath, []);
 }
 
 public ModuleParseResult parseModule(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModule(source, importPaths);
-}
-
-public ModuleParseResult parseModuleUncached(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModuleUncached(source, importPaths);
-}
-
-public ModuleParseResult parseModuleFile(
     in string filePath,
     in string[] importPaths,
 ) {
-    return compiler.parseModuleFile(filePath, importPaths);
+    return compiler.parseModule(filePath, importPaths);
 }
 
-public ModuleParseResult parseModuleWithCheckActionContext(in string source) {
-    return compiler.parseModuleWithCheckActionContext(source, []);
+public ModuleParseResult parseSnippet(in string source) {
+    return compiler.parseSnippet(source, []);
+}
+
+public ModuleParseResult parseSnippet(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippet(source, importPaths);
+}
+
+public ModuleParseResult parseSnippetUncached(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippetUncached(source, importPaths);
+}
+
+public ModuleParseResult parseSnippetWithCheckActionContext(in string source) {
+    return compiler.parseSnippetWithCheckActionContext(source, []);
+}
+
+public ModuleParseResult parseSnippetWithCheckActionContext(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippetWithCheckActionContext(source, importPaths);
 }
 
 public ModuleParseResult parseModuleWithCheckActionContext(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModuleWithCheckActionContext(source, importPaths);
-}
-
-public ModuleParseResult parseModuleFileWithCheckActionContext(
     in string filePath,
     in string[] importPaths,
 ) {
-    return compiler.parseModuleFileWithCheckActionContext(filePath, importPaths);
+    return compiler.parseModuleWithCheckActionContext(filePath, importPaths);
 }
 
 public void withCompilerLock(scope void delegate() action) {
@@ -98,9 +102,9 @@ final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
     private imported!"dmd.dmodule".Module _rod;
-    // Keyed by source content and import paths; prevents re-registering the
-    // same module in DMD's process-global table when multiple executors parse
-    // the same file with the same import context.
+    // Keyed by source content, import paths, and an optional caller-provided
+    // identity salt; prevents re-registering the same root module in DMD's
+    // process-global table.
     private imported!"dmd.dmodule".Module[string] sourceCache;
 
     private this() {
@@ -124,7 +128,7 @@ final class Compiler {
         findImportPaths.each!addImport;
 
         // Prevent DMD from calling exit() when too many cascading errors
-        // accumulate.  parseModule already checks global.errors after
+        // accumulate. The shared parse path already checks global.errors after
         // fullSemantic and throws an Exception, so returning true here is safe.
         // This is intentionally process-global: the correct response to a DMD
         // fatal error in any quickbite test is a thrown Exception, not a
@@ -248,24 +252,7 @@ final class Compiler {
         action();
     }
 
-    ModuleParseResult parseModule(in string source, in string[] importPaths) {
-        mutex.lock;
-        scope(exit) mutex.unlock;
-
-        return parseModuleLocked(source, importPaths, null, true);
-    }
-
-    ModuleParseResult parseModuleUncached(
-        in string source,
-        in string[] importPaths,
-    ) {
-        mutex.lock;
-        scope(exit) mutex.unlock;
-
-        return parseModuleLocked(source, importPaths, null, false);
-    }
-
-    ModuleParseResult parseModuleFile(
+    ModuleParseResult parseModule(
         in string filePath,
         in string[] importPaths,
     ) {
@@ -281,7 +268,7 @@ final class Compiler {
             return result;
         }
 
-        return parseModuleLocked(
+        return parseSourceLocked(
             filePath.readText,
             importPaths,
             text("file\0", filePath),
@@ -290,7 +277,24 @@ final class Compiler {
         );
     }
 
-    ModuleParseResult parseModuleWithCheckActionContext(
+    ModuleParseResult parseSnippet(in string source, in string[] importPaths) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseSourceLocked(source, importPaths, null, true);
+    }
+
+    ModuleParseResult parseSnippetUncached(
+        in string source,
+        in string[] importPaths,
+    ) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseSourceLocked(source, importPaths, null, false);
+    }
+
+    ModuleParseResult parseSnippetWithCheckActionContext(
         in string source,
         in string[] importPaths,
     ) {
@@ -304,10 +308,10 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseModuleLocked(source, importPaths, "checkaction=context", true);
+        return parseSourceLocked(source, importPaths, "checkaction=context", true);
     }
 
-    ModuleParseResult parseModuleFileWithCheckActionContext(
+    ModuleParseResult parseModuleWithCheckActionContext(
         in string filePath,
         in string[] importPaths,
     ) {
@@ -323,7 +327,7 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseModuleLocked(
+        return parseSourceLocked(
             filePath.readText,
             importPaths,
             text("checkaction=context\0", filePath),
@@ -375,7 +379,7 @@ final class Compiler {
         return expression;
     }
 
-    private ModuleParseResult parseModuleLocked(
+    private ModuleParseResult parseSourceLocked(
         in string source,
         in string[] importPaths,
         in string cacheSalt,

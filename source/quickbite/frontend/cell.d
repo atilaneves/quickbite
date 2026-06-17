@@ -502,11 +502,11 @@ private string escapedLineDirectiveFilePath(in string filePath) @safe pure {
 }
 
 public EvalSourceParseResult parseEvalSource(in string source) {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
     const evalSource = completeEvalSource(source);
     try {
-        auto moduleResult = parseModule(evalSource);
+        auto moduleResult = parseSnippet(evalSource);
         return EvalSourceParseResult(
             evalSource,
             evalFunction(moduleResult.module_),
@@ -544,10 +544,10 @@ private Cell evalCellFromSource(
     in string[] promotedLocalNames,
     in TranscriptCell[] promotedLocalCells,
 ) {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
     try {
-        auto moduleResult = parseModule(source, importPaths);
+        auto moduleResult = parseSnippet(source, importPaths);
         return Cell(
             kind,
             source,
@@ -1268,10 +1268,10 @@ private bool isResolvedTypeAliasCell(
     in string moduleSource,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler: parseModuleUncached;
+    import quickbite.frontend.compiler: parseSnippetUncached;
 
     try {
-        auto moduleResult = parseModuleUncached(
+        auto moduleResult = parseSnippetUncached(
             moduleSource ~ typeExpressionProbeSource(input),
             importPaths,
         );
@@ -1286,10 +1286,10 @@ private string resolvedTypeExpressionName(
     in string moduleSource,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler: parseModuleUncached;
+    import quickbite.frontend.compiler: parseSnippetUncached;
 
     try {
-        auto moduleResult = parseModuleUncached(
+        auto moduleResult = parseSnippetUncached(
             moduleSource ~ typeExpressionProbeSource(input),
             importPaths,
         );

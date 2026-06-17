@@ -94,12 +94,12 @@ prove that all timed backends reported the same test results.
 ### Current Status
 
 As of 2026-06-17, items 1, 2, and 6 are complete. Benchmark fixture
-preparation now parses source files through a file-backed frontend path instead
-of handing DMD synthetic `snippet_N.d` names, and it reuses modules DMD already
-loaded through imports. This removes the cerealed module-table conflicts during
-`--dub` preparation. `bench.sh --dub cerealed -b interpreter` still skips timing
-because the interpreter self-check reports `Expected array.`; that is backend
-behaviour work, not fixture preparation.
+preparation now parses source files through the frontend's file-backed
+`parseModule` path instead of the in-memory `parseSnippet` path, and it reuses
+modules DMD already loaded through imports. This removes the cerealed
+module-table conflicts during `--dub` preparation. `bench.sh --dub cerealed -b
+interpreter` still skips timing because the interpreter self-check reports
+`Expected array.`; that is backend behaviour work, not fixture preparation.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
 
@@ -192,8 +192,8 @@ Rename or annotate the section so this distinction is obvious.
 
 ### 6. Investigate File-Backed Fixture Parsing - complete
 
-The current parser path reads a file and asks DMD to parse it as `snippet_N.d`.
-That is convenient for in-memory snippets but poor for dub source files whose
+The old parser path read a file and asked DMD to parse it as `snippet_N.d`.
+That was convenient for in-memory snippets but poor for dub source files whose
 declared module names also appear in real import paths.
 
 Investigate a file-backed parse path for benchmark fixtures:

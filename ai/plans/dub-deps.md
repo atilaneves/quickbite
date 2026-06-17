@@ -41,7 +41,7 @@ instead of codegen'ing dependency modules per run, matching `dub test`.
 
 Bench fixture-skip fix (2026-06-12): module-declared fixtures used to
 be dropped entirely — the per-iteration frontend measurement
-(`parseModuleUncached`) re-parses the fixture, which collides with the
+(`parseSnippetUncached`) re-parses the fixture, which collides with the
 first parse's entry in DMD's package symbol table (dmodule.d, failed
 `dst.insert`; no eviction in the load path), and the single try/catch
 in `prepareFixtureRuns` took the whole fixture with it.

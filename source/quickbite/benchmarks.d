@@ -7,14 +7,13 @@ public void populateDmdCodegenModuleSet(
     in string[] importPaths,
 ) {
     import quickbite.frontend.compiler: parseModule;
-    import std.file: readText;
 
     // DMD-codegen walks Module.amodules, so parse every fixture before the
     // first timed run of this executor. Other benchmark executors keep their
     // existing per-fixture parse/skip behaviour.
     foreach (path; fixtures) {
         try {
-            parseModule(readText(path), importPaths);
+            parseModule(path, importPaths);
         } catch (Exception e) {
             throw new Exception(
                 "failed to pre-parse " ~ moduleDisplayName(path, importPaths)

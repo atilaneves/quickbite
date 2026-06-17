@@ -314,17 +314,17 @@ unittest {
 
 @("results.GroupedUnitChecksAllMemberModules")
 unittest {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
     Runner[string] runners;
     runners["a"] = new IndexedFailureRunner(1);
 
-    auto moduleWithOneTest = parseModule(q{ // Module is a mutable DMD AST node.
+    auto moduleWithOneTest = parseSnippet(q{ // Module is a mutable DMD AST node.
         unittest {
             assert(1 == 1);
         }
     }).module_;
-    auto moduleWithTwoTests = parseModule(q{ // Module is a mutable DMD AST node.
+    auto moduleWithTwoTests = parseSnippet(q{ // Module is a mutable DMD AST node.
         unittest {
             assert(1 == 1);
         }
@@ -361,9 +361,9 @@ private BenchmarkUnit standaloneUnit(in string name, Module module_) {
 }
 
 private Module testModule() {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
-    return parseModule(q{
+    return parseSnippet(q{
         unittest {
             assert(1 == 1);
         }

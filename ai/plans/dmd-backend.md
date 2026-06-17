@@ -853,7 +853,7 @@ adoption loop stays until a sound criterion exists.**
   `static if (is(T == SystemLinker))` in tests/ut/backends/package.d:41-52;
   `parseModuleWithCheckActionContextUncached` (compiler.d:60-65,
   242-257); the benchmark parse-order pre-parse (benchmarks/cli.d:497-503).
-  `parseModuleUncached` stays — cell.d and the bench timed loop use it
+  `parseSnippetUncached` stays — cell.d and the bench timed loop use it
   for unrelated reasons.
 - Gate: the full matrix (`bin/ut @SystemLinker`), `--random` repeatedly,
   both historical seeds, ./ci.sh. The spike's two-fixture pollution
