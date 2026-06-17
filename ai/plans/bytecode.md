@@ -849,6 +849,26 @@ switch; `Bytecode` still defaults to the old core):
   reified at the boundary, with a `ResultType` distinguishing the non-scalar
   string from the scalar path (`stringLiteralIsArray`). The string slice is
   the leading edge of the later arrays slice; only literals are supported.
+- All `tests/ut/backends/runner/ct/logic.d` blocks, completing `logic.d`
+  (module order 4) on the new core. Earned in three slices (the four-root-cause
+  analysis below predicted four subagents; `&&` and `||` share one
+  short-circuit lowering, so the third slice greened both): (a) bitwise-OR —
+  an `OrExp` branch emitting a single `bitOrInt4` opcode, plus the `""`
+  truth-assert form `_d_assert_fail("", intExpr)` via `assertNonzeroInt4`
+  (`assertNonzeroIntCondition*`); (b) logical-NOT — a `NotExp` branch emitting
+  one `notBool` opcode, the `_d_assert_fail("!", expr)` operator rendered as
+  `<value> == true`, and the equality forms reusing the existing `"=="` path
+  once `!x` yields a `bool_` (`logicalNot*`); (c) logical-AND/OR short-circuit
+  — one `compileLogicalExpression` for both `andAnd` and `orOr` using
+  `jumpIfFalse`/`jumpIfTrue` and `normaliseBool` into a single `bool_` result
+  slot, integer comparison operands (`lessThan4`/`greaterThan4`, plus `divInt4`
+  for the short-circuited `42 / zero` RHS that still compiles), a verbatim
+  `StringExp` assert (`assertTrueVerbatim`) for plain-truth `&&`/`||` failures,
+  and an unconditional `halt` for literal-false `assert(0)` (null msg) throwing
+  the compiled-D `"Assertion failure"` (`logicalAnd*`, `logicalOr*`). The
+  `assert(0)` divergence is why `BytecodeNewCore` joins the
+  `SystemLinker`/`LLVMJit` group for `logicalAndCallShortCircuitFailureMessage.1`
+  rather than the CTFE group.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -857,12 +877,13 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1) is now complete on the new core (see Rewrite
-Coverage State). Continue rewrite slice 1 with `logic.d`, then `math.d` and
-`diagnostics.d` per the slice roadmap, promoting one named behaviour (or one
-tight failure-message family) at a time by adding `BytecodeNewCore` to the
-block's `AliasSeq`. The float/builtin/string-slice machinery earned for
-`eval.d` is now available to those modules.
+`eval.d` (module order 1), `integrals.d` (3), and `logic.d` (4) are now
+complete on the new core (see Rewrite Coverage State). Continue rewrite slice 1
+with `math.d`, then `diagnostics.d` per the slice roadmap, promoting one named
+behaviour (or one tight failure-message family) at a time by adding
+`BytecodeNewCore` to the block's `AliasSeq`. The float/builtin/string-slice
+machinery earned for `eval.d` and the logical/comparison/short-circuit
+machinery earned for `logic.d` are now available to those modules.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
@@ -909,6 +930,138 @@ Each cause is fixed by a dedicated subagent in dependency order
 (3 → 1 → 2 → 4), sequentially in this worktree so each builds on the
 previous committed state, since all touch the shared core modules
 (`compiler.d`, `program.d`, `machine.d`, `reify.d`).
+
+## logic.d Completion Analysis (BytecodeNewCore)
+
+All 34 tests from `tests/ut/backends/runner/ct/logic.d` have been promoted to
+include `BytecodeNewCore` in their `AliasSeq`. 3 pass unchanged
+(`logicalOrBoolResult`, `logicalOrBoolResultFailureMessage.0`,
+`logicalOrBoolResultFailureMessage.1`) because DMD constant-folds `2 || false`
+to the literal `true` before the compiler sees it, so only an `IntegerExp`
+reaches `compileExpression` and the existing bool-equality assertion path
+handles the rest. The remaining 31 failures group into 4 root-cause failure
+modes. Causes 2–4 share a prerequisite: `compileLoweredComparisonAssert` in
+`source/quickbite/backends/bytecode/core/compiler.d` must be extended to
+recognise the `_d_assert_fail("!", <expr>)` 3-arg call (the `"!"` operator) in
+addition to `"=="`. Cause 3 additionally requires integer comparison
+expressions (`CmpExp` `<`/`>`), which appear only as `&&` operands and are
+therefore a sub-dependency of that cause, not a separate root cause.
+
+All four failure modes touch the same shared files (`compiler.d`, `machine.d`,
+`program.d`, `reify.d`). Subagents **must run sequentially**, each building on
+the previous committed state. The recommended dependency order is 1 → 2 → 3 → 4.
+
+### Failure mode 1: Bitwise-OR expression lowering missing (`OrExp`)
+
+**Root cause:** `compileExpression` falls through to the generic "Unsupported
+expression" throw on an `OrExp` node (`40 | mask()`); no `isOrExp` branch
+exists in the new core's `compileExpression`.
+
+**Failing tests (3):** `assertNonzeroIntCondition`,
+`assertNonzeroIntConditionFailureMessage.0`,
+`assertNonzeroIntConditionFailureMessage.1`.
+
+**Oracle behavior:** `0x28 | mask` evaluates the int bitwise-or; failures report
+`"42 != 43"` / `"41 != 42"`.
+
+**Required implementation:** Add an `isOrExp` branch in `compileExpression`
+parallel to `isAddExp`. Emit a single `bitOrInt4` opcode (int only — D has no
+float bitwise or) selected at emit time, add it to `Op` in `program.d` and a
+handler in `machine.d`. No `reify.d` change (plain `int` result).
+
+### Failure mode 2: Logical-NOT expression lowering missing (`NotExp`)
+
+**Root cause:** `compileExpression` has no `isNotExp` branch; `compileAssert`
+reaches the "Unsupported assert" throw when the condition is a `NotExp`. Also
+`compileLoweredComparisonAssert` only recognises `"=="`; it must also recognise
+the `"!"` operator that `-checkaction=context` emits for `assert(!expr)` on a
+runtime bool.
+
+**Failing tests (6):** `logicalNot`, `logicalNotCall`,
+`logicalNotCallFailureMessage.0`, `logicalNotCallFailureMessage.1`,
+`logicalNotFailureMessage.0`, `logicalNotFailureMessage.1`.
+
+**Oracle behavior:** `!bool` produces a bool; equality-context failures report
+`"true != false"` / `"false != true"`; the `"!"` diagnostic renders as
+`"<value> == true"`.
+
+**Required implementation:** (1) `isNotExp` branch emitting a single `notBool`
+opcode (`inner == 0 ? 1 : 0`). (2) Extend `compileLoweredComparisonAssert` to
+accept `"!"`: compile the inner condition, emit an assert diagnostic tagged
+`"!"` rendering as `"<value> == true"`; add `"!"` → `"=="` to `invertedOperator`
+in `machine.d`. (3) Extend `compileAssert` to handle a `NotExp` condition with a
+plain string message. (4) Add `Op.notBool` to `program.d` and its `machine.d`
+handler.
+
+### Failure mode 3: Logical-AND short-circuit lowering missing (`LogicalExp &&`)
+
+**Root cause:** `compileExpression` has no `isLogicalExp` branch for `&&`;
+`compileAssert` has no handler for a `LogicalExp &&` condition (the lowered
+`assert(left && right, "`assert(left && right)` failed")` form throws because
+the msg is a string literal, not a `_d_assert_fail` call). Comparison operands
+(`CmpExp` `<`/`>`) inside `&&` are a sub-dependency. This cause also covers the
+divergent `logicalAndCallShortCircuitFailureMessage.1` (`assert(0)` in a
+non-unittest callee must abort with `"Assertion failure"`, the compiled-D
+result; `"`assert(0)` failed"` is CTFE-only).
+
+**Failing tests (15):** `logicalAnd`, `logicalAndCall`,
+`logicalAndCallFailureMessage.0/1`, `logicalAndCallShortCircuit`,
+`logicalAndCallShortCircuitFailureMessage.0/1`, `logicalAndComparisonOperands`,
+`logicalAndComparisonOperandsFailureMessage.0/1`,
+`logicalAndFailureMessage.0/1`, `logicalAndShortCircuit`,
+`logicalAndShortCircuitFailureMessage.0/1`.
+
+**Oracle behavior:** short-circuit `&&` with bool result; plain-truth failures
+throw the verbatim `` `assert(left && right)` failed `` string; equality-context
+failures report `"true != false"` / `"false != true"`; the divergent case
+throws `"Assertion failure"`.
+
+**Required implementation:** (1) `lessThan4` / `greaterThan4` opcodes plus an
+`isCmpExp` branch for `<`/`>`. (2) `isLogicalExp &&` branch with a typed-frame
+short-circuit pattern writing a `bool_` result slot on both paths. (3) Extend
+`compileAssert` to throw the verbatim string for a `LogicalExp &&` condition
+with a string message. (4) Add `Op.halt` (throws `"Assertion failure"`) and emit
+it for `assert(0)` (literal-false, null msg) in non-unittest context. Placing
+`BytecodeNewCore` with the `SystemLinker`/`LLVMJit` group for this divergent
+test is correct: the new core compiles callee bodies eagerly, so `assert(0)`
+becomes a `halt` and yields the compiled-D message.
+
+### Failure mode 4: Logical-OR short-circuit lowering missing (`LogicalExp ||`)
+
+**Root cause:** `compileExpression` has no `isLogicalExp` branch for `||`;
+`compileAssert` falls through for `||` conditions. The `"!"` operator needed for
+`assert(!(left || ...))` is added in failure mode 2.
+
+**Failing tests (7):** `logicalOr`, `logicalOrFailureMessage.0/1`,
+`logicalOrOops`, `logicalOrShortCircuit`,
+`logicalOrShortCircuitFailureMessage.0/1`.
+
+**Oracle behavior:** short-circuit `||` with bool result; `logicalOrOops` throws
+the verbatim `` `assert(left || right)` failed ``; equality-context failures
+report `"true != false"` / `"false != true"`;
+`logicalOrShortCircuitFailureMessage.1` uses the `"!"` diagnostic and reports
+`"true == true"`.
+
+**Required implementation:** (1) `isLogicalExp ||` branch with the typed-frame
+short-circuit pattern. (2) Extend `compileAssert` to throw the verbatim string
+for a `LogicalExp ||` condition with a string message. The `"!"` operator
+(failure mode 2) already covers `logicalOrShortCircuitFailureMessage.1`.
+
+### Subagent partition (dependency-ordered, sequential)
+
+All four items touch `compiler.d`, `machine.d`, and/or `program.d`; no
+parallelism is possible. Each subagent commits in this worktree before the next
+begins. `reify.d` needs no changes (`bool_`/`int_` results are already
+reifiable).
+
+1. **Bitwise-OR (`OrExp`)** — fixes 3 tests. No prerequisites.
+2. **Logical-NOT (`NotExp`) + `"!"` assert operator** — fixes 6 tests. After 1.
+3. **Logical-AND (`LogicalExp &&`) + `CmpExp` + literal-false `halt`** — fixes 15
+   tests including the divergent `"Assertion failure"`. After 2.
+4. **Logical-OR (`LogicalExp ||`)** — fixes 7 tests. After 3; reuses the `"!"`
+   operator from item 2.
+
+After all four items, `logic.d` is complete on `BytecodeNewCore` (34/34).
 
 ## Test Plan
 - Use public behavior tests only for language semantics and backend parity.

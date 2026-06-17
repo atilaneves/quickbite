@@ -100,6 +100,52 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case bitOrInt4:
+                const ubyte[int.sizeof] bits = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) |
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = bits;
+                ++ip;
+                break;
+
+            case divInt4:
+                const ubyte[int.sizeof] quotient = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) /
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = quotient;
+                ++ip;
+                break;
+
+            case notBool:
+                stack[base + instruction.a] =
+                    stack[base + instruction.b] == 0 ? 1 : 0;
+                ++ip;
+                break;
+
+            case normaliseBool:
+                stack[base + instruction.a] =
+                    stack[base + instruction.b] == 0 ? 0 : 1;
+                ++ip;
+                break;
+
+            case lessThan4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) <
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThan4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) >
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
             case addFloat:
                 const ubyte[float.sizeof] sum = floatBytes(
                     floatValue!float(stack, base + instruction.b) +
@@ -197,6 +243,10 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ip = stack[base + instruction.a] == 0 ? instruction.b : ip + 1;
                 break;
 
+            case jumpIfTrue:
+                ip = stack[base + instruction.a] != 0 ? instruction.b : ip + 1;
+                break;
+
             case call:
                 if (program.functions[instruction.a].code.length == 0)
                     compileFunction(instruction.a);
@@ -227,6 +277,28 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
                 ++ip;
                 break;
+
+            case assertTrueVerbatim:
+                if (stack[base + instruction.a] == 0)
+                    throw new Exception(
+                        program.assertDiagnostics[instruction.b].operator,
+                    );
+
+                ++ip;
+                break;
+
+            case assertNonzeroInt4:
+                if (scalarValue!int(stack, base + instruction.a) == 0)
+                    throw new Exception(assertMessage(
+                        program.assertDiagnostics[instruction.b],
+                        stack[base .. $],
+                    ));
+
+                ++ip;
+                break;
+
+            case halt:
+                throw new Exception("Assertion failure");
 
             case ret:
                 const resultSize =
@@ -280,6 +352,22 @@ private string assertMessage(
     in ubyte[] frame,
 ) @safe pure {
     import std.conv: text;
+
+    // A truth assert (`assert(x)`) carries the empty operator and renders the
+    // single operand against the literal `true` it was implicitly compared to.
+    if (diagnostic.operator == "")
+        return text(
+            operandText(frame, diagnostic.lhs, diagnostic.operandType),
+            " != true",
+        );
+
+    // A logical-not assert (`assert(!x)`) carries the "!" operator and renders
+    // the un-negated operand against the `true` it failed to differ from.
+    if (diagnostic.operator == "!")
+        return text(
+            operandText(frame, diagnostic.lhs, diagnostic.operandType),
+            " == true",
+        );
 
     return text(
         operandText(frame, diagnostic.lhs, diagnostic.operandType),
