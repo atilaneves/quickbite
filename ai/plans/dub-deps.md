@@ -194,3 +194,46 @@ package as one group (matching how it is timed) rather than per fixture
    - Project-module re-sema dominates on multi-module projects -> the
      fork-for-sema extension (see dmd-backend.md); only then is the
      same-FQN reload problem worth attacking.
+
+## Non-resident native dependencies (anticipated, data-gated)
+
+The VM backends execute dependency D *source*, so most dub deps need no
+native loading — they compile transitively like project code. The
+native surface is only the `fbody is null` leaves, in three populations:
+
+1. Resident — libc, druntime, Phobos, already mapped into `bin/ut`;
+   resolved by `dlsym(RTLD_DEFAULT, mangleExact(f))` (ffi.md §21/§22).
+   cerealed bottoms out here and only here — its sole `extern(C)` leaves
+   are `mkdtemp`/`isatty` from libc — so it needs none of the below.
+   This is why cerealed is the right first target: it exercises the
+   whole dub-project path with zero native-loading work.
+2. Non-resident but installed — a package-manager `.so` a dep binds
+   (sqlite3, ssl, pq, ...). Present on the system, absent from the
+   process. The general case for real projects, but not cerealed.
+3. Static-only `.a` with no `.so` — rare in the popular ecosystem (the
+   common binders all ship `.so`s); deferred to the native-image /
+   mini-linker track (ffi.md §3-§20).
+
+Anticipated mechanism for (2), not built until a corpus project needs
+it: the driver extracts each dep's `libs`/`lflags` from `dub describe`,
+unioned across the closure, resolves names to sonames via
+pkg-config/ldconfig, and eagerly `dlopen(RTLD_GLOBAL)`s them before the
+run — so the uniform `dlsym(RTLD_DEFAULT)` resolver finds population 2
+exactly like population 1 and stays load-free and backend-neutral. Eager
+rather than lazy because a failed `dlsym` names a symbol with no
+owning-library provenance, and because eager matches the oracle's
+module-ctor ordering. `SystemLinker` itself needs the matching `-l` on
+its link line — a slot `SystemLinkerInputs` lacks today — fed from the
+same extraction step. `pragma(lib)` is a second, rare declaration site
+(dropped at lowering today); deferred.
+
+(2) splits by how the binding is declared: link-time binders
+(`libs`/`lflags`, linker-resolved) need the eager load; runtime-loader
+binders (bindbc-*, derelict-*-dynamic, gtk-d) declare nothing to dub and
+`dlopen` themselves, so executing their D loads the lib via the resident
+`dlopen` and they cost nothing extra.
+
+None of this is built speculatively: it waits for the first corpus
+project that fails to measure because a leaf resolves to a non-resident
+library. Priority stays cerealed (above) -> grow the corpus (Next item
+1) -> native loading only when a measured project demands it.
