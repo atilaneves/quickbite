@@ -1013,6 +1013,15 @@ private struct Walker {
 
             if (variable in uninitializedLocals) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
+                import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
+
+                // DMD's void diagnostic is field-granular: reading a whole
+                // void-initialized aggregate (as `S res = void; return res;`
+                // does) materialises a default value; only a still-void scalar
+                // read is reported. Match that so patterns like Phobos
+                // `trustedVoidInit` evaluate up to any real libc call.
+                if (isStructType(variable.type) || isStaticArrayType(variable.type))
+                    return defaultValue(variable);
 
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
