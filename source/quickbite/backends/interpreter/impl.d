@@ -1204,6 +1204,12 @@ private struct Walker {
                 return functionPointerValue(function_);
         }
 
+        // `&val` of a `ref` parameter is emitted as AddrExp(VarExp), not the
+        // SymOffExp produced for a plain local; point at the parameter's slot
+        if (auto var = address.e1.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                return localPointerValue(variable);
+
         if (auto delegate_ = address.e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 

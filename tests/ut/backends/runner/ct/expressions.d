@@ -1156,6 +1156,29 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
+// `&value` of a `ref` parameter is emitted by DMD as AddrExp(VarExp), not the
+// SymOffExp produced for a plain local; the interpreter must take the address
+// of the parameter's slot.  cerealed's grainReinterpret(ref T) hits this.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("pointer.addressOfRefParameterReadsThroughPointer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int readThroughRefPointer(ref int value) {
+                int* p = &value;
+                return *p;
+            }
+
+            unittest {
+                int seed = 41;
+                seed += 1;
+
+                assert(readThroughRefPointer(seed) == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("vector.scalarCastSplatsToStaticArray." ~ backend.stringof)
     @Tags(backend.stringof)
