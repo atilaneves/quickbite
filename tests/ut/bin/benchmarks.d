@@ -104,8 +104,18 @@ unittest {
     const report = renderBenchmarkSection(
         "frontend (parse + semantic)",
         [
-            BenchmarkRow(runs[0].displayName, "frontend", runs[0].frontend),
-            BenchmarkRow(runs[1].displayName, "frontend", runs[1].frontend),
+            BenchmarkRow(
+                runs[0].displayName,
+                "frontend",
+                "n/a",
+                runs[0].frontend,
+            ),
+            BenchmarkRow(
+                runs[1].displayName,
+                "frontend",
+                "n/a",
+                runs[1].frontend,
+            ),
         ],
     );
 
@@ -201,20 +211,21 @@ unittest {
         .shouldThrow;
 }
 
-@("results.SkipsFailingFixtures")
+@("results.SingleBackendSelfCheckRecordsFailure")
 unittest {
     Runner[string] runners;
     runners["a"] = new FixedVerdictRunner("1 != 2");
 
-    const check = checkRunnerResults(
+    const checkedResults = checkRunnerResults(
         runners,
         ["a"],
         [BenchmarkRun("fixture", testModule)],
     );
 
-    check.passingPairs.length.should == 0;
-    check.skipped.length.should == 1;
-    "1 != 2".should.be in check.skipped[0];
+    const results = checkedResults[pairKey("fixture", "a")];
+    results.length.should == 1;
+    results[0].passed.should == false;
+    results[0].message.should == "1 != 2";
 }
 
 @("results.AcceptsAgreeingBackends")
@@ -223,15 +234,32 @@ unittest {
     runners["a"] = new FixedVerdictRunner(null);
     runners["b"] = new FixedVerdictRunner(null);
 
-    const check = checkRunnerResults(
+    const checkedResults = checkRunnerResults(
         runners,
         ["a", "b"],
         [BenchmarkRun("fixture", testModule)],
     );
 
-    check.skipped.length.should == 0;
-    check.passingPairs.get(pairKey("fixture", "a"), false).should == true;
-    check.passingPairs.get(pairKey("fixture", "b"), false).should == true;
+    checkedResults[pairKey("fixture", "a")].length.should == 1;
+    checkedResults[pairKey("fixture", "a")][0].passed.should == true;
+    checkedResults[pairKey("fixture", "b")].length.should == 1;
+    checkedResults[pairKey("fixture", "b")][0].passed.should == true;
+}
+
+@("results.SingleBackendSelfCheckRecordsPassingSummary")
+unittest {
+    Runner[string] runners;
+    runners["a"] = new FixedVerdictRunner(null);
+
+    const checkedResults = checkRunnerResults(
+        runners,
+        ["a"],
+        [BenchmarkRun("fixture", testModule)],
+    );
+
+    const results = checkedResults[pairKey("fixture", "a")];
+    results.length.should == 1;
+    results[0].passed.should == true;
 }
 
 private Module testModule() {
