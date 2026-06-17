@@ -849,6 +849,26 @@ switch; `Bytecode` still defaults to the old core):
   reified at the boundary, with a `ResultType` distinguishing the non-scalar
   string from the scalar path (`stringLiteralIsArray`). The string slice is
   the leading edge of the later arrays slice; only literals are supported.
+- All `tests/ut/backends/runner/ct/logic.d` blocks, completing `logic.d`
+  (module order 4) on the new core. Earned in three slices (the four-root-cause
+  analysis below predicted four subagents; `&&` and `||` share one
+  short-circuit lowering, so the third slice greened both): (a) bitwise-OR —
+  an `OrExp` branch emitting a single `bitOrInt4` opcode, plus the `""`
+  truth-assert form `_d_assert_fail("", intExpr)` via `assertNonzeroInt4`
+  (`assertNonzeroIntCondition*`); (b) logical-NOT — a `NotExp` branch emitting
+  one `notBool` opcode, the `_d_assert_fail("!", expr)` operator rendered as
+  `<value> == true`, and the equality forms reusing the existing `"=="` path
+  once `!x` yields a `bool_` (`logicalNot*`); (c) logical-AND/OR short-circuit
+  — one `compileLogicalExpression` for both `andAnd` and `orOr` using
+  `jumpIfFalse`/`jumpIfTrue` and `normaliseBool` into a single `bool_` result
+  slot, integer comparison operands (`lessThan4`/`greaterThan4`, plus `divInt4`
+  for the short-circuited `42 / zero` RHS that still compiles), a verbatim
+  `StringExp` assert (`assertTrueVerbatim`) for plain-truth `&&`/`||` failures,
+  and an unconditional `halt` for literal-false `assert(0)` (null msg) throwing
+  the compiled-D `"Assertion failure"` (`logicalAnd*`, `logicalOr*`). The
+  `assert(0)` divergence is why `BytecodeNewCore` joins the
+  `SystemLinker`/`LLVMJit` group for `logicalAndCallShortCircuitFailureMessage.1`
+  rather than the CTFE group.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -857,12 +877,13 @@ dual-mode model and the `ExecutionMode` enum have been removed
 `SystemLinker` oracle.
 
 ## Current Next Step
-`eval.d` (module order 1) is now complete on the new core (see Rewrite
-Coverage State). Continue rewrite slice 1 with `logic.d`, then `math.d` and
-`diagnostics.d` per the slice roadmap, promoting one named behaviour (or one
-tight failure-message family) at a time by adding `BytecodeNewCore` to the
-block's `AliasSeq`. The float/builtin/string-slice machinery earned for
-`eval.d` is now available to those modules.
+`eval.d` (module order 1), `integrals.d` (3), and `logic.d` (4) are now
+complete on the new core (see Rewrite Coverage State). Continue rewrite slice 1
+with `math.d`, then `diagnostics.d` per the slice roadmap, promoting one named
+behaviour (or one tight failure-message family) at a time by adding
+`BytecodeNewCore` to the block's `AliasSeq`. The float/builtin/string-slice
+machinery earned for `eval.d` and the logical/comparison/short-circuit
+machinery earned for `logic.d` are now available to those modules.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
