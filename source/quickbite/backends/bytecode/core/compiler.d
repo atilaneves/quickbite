@@ -30,8 +30,8 @@ private struct Compiler {
         ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
-        NegExp, NotExp, OrExp, RealExp, StringExp;
+        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, DivExp,
+        Expression, LogicalExp, NegExp, NotExp, OrExp, RealExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -216,6 +216,15 @@ private struct Compiler {
         if (auto or = expression.isOrExp)
             return compileOrExpression(or);
 
+        if (auto divide = expression.isDivExp)
+            return compileDivideExpression(divide);
+
+        if (auto comparison = comparisonExpression(expression))
+            return compileComparisonExpression(comparison);
+
+        if (auto logical = expression.isLogicalExp)
+            return compileLogicalExpression(logical);
+
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
 
@@ -354,6 +363,90 @@ private struct Compiler {
             ScalarType.int_,
             "Unsupported bitwise or in bytecode core: ",
         );
+    }
+
+    // D's `/` on int is signed integer division. Only the 4-byte int form is
+    // needed today (it appears as the never-executed RHS of a short-circuited
+    // `&&`); a runtime divide-by-zero would fault, matching compiled code.
+    private Operand compileDivideExpression(DivExp divide) {
+        const lhs = compileExpression(divide.e1);
+        const rhs = compileExpression(divide.e2);
+        return compileIntBinaryResult(
+            divide,
+            lhs,
+            rhs,
+            Op.divInt4,
+            ScalarType.int_,
+            "Unsupported division in bytecode core: ",
+        );
+    }
+
+    // Integer `<` / `>`; both yield a bool. One opcode per operator, not per
+    // operand type. Only the forms `&&` operands produce are needed today.
+    private Operand compileComparisonExpression(CmpExp comparison) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const op = () {
+            switch (comparison.op) with (EXP) {
+                case lessThan: return Op.lessThan4;
+                case greaterThan: return Op.greaterThan4;
+                default:
+                    throw new Exception(text(
+                        "Unsupported comparison in bytecode core: ",
+                        expressionChars(comparison),
+                    ));
+            }
+        }();
+
+        const lhs = compileExpression(comparison.e1);
+        const rhs = compileExpression(comparison.e2);
+        return compileIntBinaryResult(
+            comparison,
+            lhs,
+            rhs,
+            op,
+            ScalarType.bool_,
+            "Unsupported comparison in bytecode core: ",
+        );
+    }
+
+    // `&&` / `||` short-circuit through jumps and write a bool result into one
+    // slot on both paths. `&&`: if lhs is false the result is 0 and rhs is
+    // never evaluated; otherwise the result is rhs normalised to bool. `||`:
+    // mirror image. No value stack; the result lives in a typed frame slot.
+    private Operand compileLogicalExpression(LogicalExp logical) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        if (logical.op != EXP.andAnd && logical.op != EXP.orOr)
+            throw new Exception(text(
+                "Unsupported logical expression in bytecode core: ",
+                expressionChars(logical),
+            ));
+
+        const result = allocate(ScalarType.bool_);
+        const lhs = compileExpression(logical.e1);
+        const shortCircuitJump = logical.op == EXP.andAnd
+            ? emitJumpIfFalse(lhs)
+            : emitJumpIfTrue(lhs);
+
+        // The non-short-circuiting path evaluates rhs and normalises it.
+        const rhs = compileExpression(logical.e2);
+        _code ~= Instruction(Op.normaliseBool, result, rhs.offset);
+        const endJump = emitJump;
+
+        // The short-circuit path: `&&` writes 0, `||` writes 1.
+        patchJump(shortCircuitJump);
+        _code ~= Instruction(
+            Op.loadConstant,
+            result,
+            constantIndex(logical.op == EXP.andAnd ? 0 : 1),
+            1,
+        );
+        patchJump(endJump);
+
+        return Operand(result, ScalarType.bool_);
     }
 
     private Operand compileSubtractExpression(BinExp subtract) {
@@ -595,6 +688,12 @@ private struct Compiler {
         return index;
     }
 
+    private size_t emitJumpIfTrue(in Operand condition) @safe pure {
+        const index = _code.length;
+        _code ~= Instruction(Op.jumpIfTrue, condition.offset);
+        return index;
+    }
+
     private void patchJump(in size_t index) @safe pure {
         _code[index].b = cast(ushort) _code.length;
         if (_code[index].op == Op.jump)
@@ -604,13 +703,69 @@ private struct Compiler {
     private void compileAssert(AssertExp assert_) {
         import std.conv: text;
 
+        if (compileLiteralFalseAssert(assert_))
+            return;
+
         if (compileLoweredComparisonAssert(assert_))
+            return;
+
+        if (compileVerbatimStringAssert(assert_))
             return;
 
         throw new Exception(text(
             "Unsupported assert in bytecode core: ",
             expressionChars(assert_),
         ));
+    }
+
+    // `assert(0)` (a compile-time-false literal with no message) in a compiled
+    // non-unittest function aborts with the plain _d_assert message
+    // "Assertion failure"; DMD emits no contextual operands, so the VM halts
+    // without reading any frame slot. (The CTFE "`assert(0)` failed" form is
+    // characterised on the interpretation backends, not here.)
+    private bool compileLiteralFalseAssert(AssertExp assert_) {
+        if (assert_.msg !is null)
+            return false;
+
+        auto integer = assert_.e1.isIntegerExp;
+        if (integer is null || integer.toInteger != 0)
+            return false;
+
+        _code ~= Instruction(Op.halt);
+        return true;
+    }
+
+    // `assert(cond)` on a non-comparison runtime condition (a `&&`/`||` chain)
+    // lowers to an AssertExp whose message is the verbatim DMD string
+    // "`assert(<source>)` failed". Compile the condition to a bool and, on
+    // failure, throw that exact string rather than synthesising one.
+    private bool compileVerbatimStringAssert(AssertExp assert_) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+
+        if (assert_.msg is null)
+            return false;
+
+        auto message = assert_.msg.isStringExp;
+        if (message is null)
+            return false;
+
+        if (assert_.e1.isLogicalExp is null && assert_.e1.isNotExp is null)
+            return false;
+
+        const condition = compileExpression(assert_.e1);
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            stringChars(message).idup,
+            condition.offset,
+            condition.offset,
+            condition.type,
+        );
+        _code ~= Instruction(
+            Op.assertTrueVerbatim,
+            condition.offset,
+            cast(ushort) diagnostic,
+        );
+        return true;
     }
 
     // DMD with -checkaction=context rewrites `assert(a == b)` into an
@@ -933,6 +1088,20 @@ private real realValue(imported!"dmd.expression".RealExp real_) @trusted {
     // RealExp.value is a dmd longdouble (real_t); reading it is pure data
     // access with no aliasing, but the dmd field accessor is not @safe.
     return cast(real) real_.value;
+}
+
+// DMD has no `isCmpExp`; a CmpExp is a BinExp whose op is a relational
+// operator. Only `<` / `>` are lowered today (the forms `&&` operands use).
+private imported!"dmd.expression".CmpExp comparisonExpression(
+    imported!"dmd.expression".Expression expression,
+) {
+    import dmd.expression: CmpExp;
+    import dmd.tokens: EXP;
+
+    if (expression.op != EXP.lessThan && expression.op != EXP.greaterThan)
+        return null;
+
+    return cast(CmpExp) expression;
 }
 
 private imported!"dmd.func".FuncDeclaration callFunction(

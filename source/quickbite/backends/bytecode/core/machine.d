@@ -110,9 +110,39 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case divInt4:
+                const ubyte[int.sizeof] quotient = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) /
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = quotient;
+                ++ip;
+                break;
+
             case notBool:
                 stack[base + instruction.a] =
                     stack[base + instruction.b] == 0 ? 1 : 0;
+                ++ip;
+                break;
+
+            case normaliseBool:
+                stack[base + instruction.a] =
+                    stack[base + instruction.b] == 0 ? 0 : 1;
+                ++ip;
+                break;
+
+            case lessThan4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) <
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThan4:
+                stack[base + instruction.a] =
+                    scalarValue!int(stack, base + instruction.b) >
+                    scalarValue!int(stack, base + instruction.c) ? 1 : 0;
                 ++ip;
                 break;
 
@@ -213,6 +243,10 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ip = stack[base + instruction.a] == 0 ? instruction.b : ip + 1;
                 break;
 
+            case jumpIfTrue:
+                ip = stack[base + instruction.a] != 0 ? instruction.b : ip + 1;
+                break;
+
             case call:
                 if (program.functions[instruction.a].code.length == 0)
                     compileFunction(instruction.a);
@@ -244,6 +278,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case assertTrueVerbatim:
+                if (stack[base + instruction.a] == 0)
+                    throw new Exception(
+                        program.assertDiagnostics[instruction.b].operator,
+                    );
+
+                ++ip;
+                break;
+
             case assertNonzeroInt4:
                 if (scalarValue!int(stack, base + instruction.a) == 0)
                     throw new Exception(assertMessage(
@@ -253,6 +296,9 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
                 ++ip;
                 break;
+
+            case halt:
+                throw new Exception("Assertion failure");
 
             case ret:
                 const resultSize =

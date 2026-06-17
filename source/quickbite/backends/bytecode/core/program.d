@@ -82,7 +82,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
+    divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
+    normaliseBool, // a: destination (one boolean byte), b: source (!= 0 ? 1 : 0)
+    lessThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <)
+    greaterThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed >)
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs
@@ -97,9 +101,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     equal8,
     jump, // a: absolute instruction index
     jumpIfFalse, // a: condition frame offset, b: absolute instruction index
+    jumpIfTrue, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
+    // a: condition frame offset, b: assert diagnostic index (verbatim message)
+    assertTrueVerbatim,
     assertNonzeroInt4, // a: int frame offset, b: assert diagnostic index
+    halt, // unconditional abort throwing the plain "Assertion failure" message
     ret, // a: frame offset of the return value
 }
 
