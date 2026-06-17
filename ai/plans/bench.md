@@ -4,7 +4,7 @@
 
 Benchmark output must make two things mechanically clear:
 
-1. which unittest bodies were checked against the oracle; and
+1. which unittest bodies were checked before timing; and
 2. which exact unit was timed.
 
 Fast numbers are useful only after that. A row such as:
@@ -54,6 +54,12 @@ checked against `SystemLinker`, or the user explicitly passes `--skip-check`.
 
 `Ctfe` is still useful as a backend to measure, but it is not an oracle.
 
+Current exception: `SystemLinker` is not yet reliable for the dub benchmark
+path. Until it is, a single selected backend uses a self-check: run that backend
+once on the benchmark unit, inspect its `TestResult[]`, and time it only if the
+reported tests pass. This is weaker than an oracle comparison, so the output
+must show the test pass count instead of implying oracle validation.
+
 ## Target Shape
 
 Represent everything as benchmark units:
@@ -82,11 +88,12 @@ Remove the rule that a single selected backend forces `skipCheck = true`.
 Instead:
 
 - `--skip-check` means exactly what it says and is the only implicit-pass path.
-- `-b interpreter --dub cerealed` still runs the oracle check before timing.
-- If the selected backend is not `system-linker`, include an untimed
-  `SystemLinker` oracle runner for checking.
-- If the selected backend is `system-linker`, it can check itself by executing
-  the same unit once before timing.
+- `-b interpreter --dub cerealed` still runs `interpreter` once before timing.
+- A single selected backend is timed only if its self-check returns passing
+  `TestResult[]`.
+- The timed row reports how many tests were returned and how many passed.
+- Once `SystemLinker` works on this path, replace self-check confidence with an
+  untimed oracle check for non-`system-linker` backends.
 
 The first test should use fake runners: one runner reports a failing
 `TestResult`, and a single selected backend must not be marked passing unless
