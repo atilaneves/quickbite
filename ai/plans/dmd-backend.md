@@ -66,11 +66,18 @@ How it works now:
 1. `initializeDmdState` (compiler.d) parses the **lightning rod**
    (`quickbite_rod.d`, an empty module) as the very first root module in
    the process and sets `Module.rootModule` to it — dmd.frontend never
-   sets `rootModule`; only dmd's own main.d does. All druntime/phobos
+   sets `rootModule`; only dmd's own main.d does. ~~All druntime/phobos
    template instances and TypeInfos funnel to the rod from then on
-   (lesson 8). Callers parse snippets with the normal **cached**
-   checkaction=context parse; `parseModuleWithCheckActionContextUncached`
-   is gone.
+   (lesson 8).~~ **CORRECTION (2026-06-17): this is false for phobos.**
+   An *empty* rod only owns the `importedFrom` of modules in its own
+   import closure (`object.d` and the universally-imported `core.*`
+   machinery), so druntime built-in instances funnel correctly but
+   phobos instances do not — the rod never imports `std.range`, so
+   `std.range.importedFrom` is claimed by the first transient parse that
+   does, and instances like `std.range.iota`'s Voldemort `Result` strand
+   at link. This is the `3.iota` bug. See lessons 17–20. Callers parse
+   snippets with the normal **cached** checkaction=context parse;
+   `parseModuleWithCheckActionContextUncached` is gone.
 2. `buildSharedLibrary` (system_linker.d), under the compiler lock:
    asserts `Module.rootModule is lightningRod`, collects the snippet's
    transitive user-imported modules (everything whose source is outside
@@ -572,6 +579,172 @@ instances the link actually references, which the linker already computes
 instances, relink to fixpoint — lesson 10's discovery mechanism, applied
 to instance homing rather than ELF-symbol ownership). See
 `ai/plans/dub-deps.md` "Open: per-fixture completeness".
+
+### 17. Why `3.iota` strands: the codegen walk only visits the roots it is handed (2026-06-17)
+
+Diagnosis session 2026-06-17, "why does `3.iota` fail in `system-linker`
+and `llvmjit`". The headline: **the break is not in `needsCodegen`, and
+fork is not the problem.** `needsCodegen` returns `true` for the iota
+instance; fork faithfully preserves the (already-broken) parent topology.
+The defect is one layer below — *where the instance is homed* vs. *which
+modules the codegen walk visits*.
+
+Two DMD facts collide:
+
+1. **The codegen walk is rooted at the modules you hand it.**
+   `generateCodeAndWrite` only visits the root modules in its argument
+   list and walks *their* members (`glue/package.d` `genObjFile` iterates
+   `module.members`). An instance is emitted only if it is reachable as a
+   member of one of those roots.
+2. **A template instance homes onto its *declaring* module's
+   `importedFrom` owner — not onto your snippet.**
+   `appendToModuleMember` (templatesem.d ~1757–1830), under `allInst`,
+   retargets `mi = ti.tempdecl.getModule()` (the **declaring** module,
+   e.g. `std.range`, line ~1789), then chases `mi.importedFrom`
+   (~1792–1794) and appends the instance to *that* module's members.
+
+In plain `dmd -shared one_file.d` there is exactly one root,
+`importedFrom` resolves back to it, the instance lands on it, the walk
+visits it, `Result` emits. **The whole scheme silently assumes one root
+module per process.** Quickbite has many roots (the rod, every snippet,
+*and* every transient cell-classification module — lesson 18), so
+`importedFrom` ownership of a phobos module goes to whichever root
+imported it first. For `std.range`, that is never the empty rod (it never
+imports `std.range`) — so iota's instance homes on a module that is not in
+the link set `[snippet, rod]`. Undefined symbol under `-z defs`
+(SystemLinker) / ORC lookup failure (LLVMJit).
+
+`allInst` is **not** what's broken: the gate at templatesem.d ~1768 passes
+for a root snippet via `minst.isRoot()` regardless; `allInst` only forces
+the funnel branch for instances instantiated by *non-root* modules, plus
+switches `needsCodegen` to `needsCodegenAllInst` (link-maximizing). The
+broken thing is the `importedFrom` *owner*, which lesson 20 fixes.
+
+### 18. Cell-classification parses steal phobos `importedFrom` before the snippet exists (2026-06-17)
+
+The cold trigger. `EvalSession.submit` classifies each REPL line by
+*parsing and running `fullSemantic`* on throwaway `eval_cell_N` modules —
+`isIncompleteCell`/`isModuleDeclarationCell` (cell.d ~976–1003, ~1162–1182)
+go through `parseModuleLocked` (compiler.d ~396–400), which calls
+`fullSemantic` on every classification parse. So when the user types
+`import std;`, the classification module `eval_cell_0` becomes the **first
+root to import `std.range`**, permanently setting
+`std.range.importedFrom = eval_cell_0` (first-importer-wins, dsymbolsem.d
+~8686 guard `!imp.mod.importedFrom`). The real snippet, synthesized later,
+inherits the cached iota instance already homed on `eval_cell_0.members` —
+a module in neither object file.
+
+Consequence: `3.iota` fails **cold** — the very first time it is used,
+with *no* prior native compilation, purely because a classification parse
+ran `fullSemantic` first. (Bare `3.iota` with no import in scope fails at
+*semantic* instead — undefined `iota` — not at link; the link failure
+needs the phobos import to have happened in a transient module first.)
+This is the same `importedFrom`-theft mechanism as lessons 1/2/8, but the
+thief is the REPL's own classification probing, not another backend.
+
+### 19. Non-codegen backends: interpreter/VM are read-only; CTFE mutates the parent (2026-06-17)
+
+Audited per the design claim "only the dmd-codegen backends should mutate
+`Module` further; if the interpreter or bytecode VM are mutating, we've
+done something wrong." Result:
+
+- **Interpreter** (`backends/interpreter/impl.d`) and **bytecode VM**
+  (`backends/bytecode/impl.d`): run in-parent (no fork) but are strictly
+  **read-only** over the already-analyzed AST. No sema pass, no template
+  instantiation, no TypeInfo creation. The only DMD call is
+  `dmd.typesem.size` on fully-resolved types — a computed query with no
+  side effects. They mutate nothing; the design claim holds for them.
+- **CTFE** (`backends/ctfe/dmd_ctfe.d`): runs in-parent and **does**
+  mutate shared semantic state. `Ctfe.eval` → `ctfeInterpret` →
+  `interpretFunction` → `functionSemantic3` → `semantic3` runs real
+  analysis: it instantiates templates (→ `appendToModuleMember`, homing
+  onto the rod/snippet), creates TypeInfos (→ `getTypeInfoType`,
+  typinf.d ~112 — lesson 15's mechanism), and advances
+  `FuncDeclaration.semanticRun` to `semantic3done` process-globally. It
+  *must*, to interpret — but it does so in the long-lived parent, at an
+  arbitrary point before a later backend's codegen fork snapshots it.
+
+So lesson 1's "CTFE-only runs by other backends" pollution has a concrete
+call chain: **a CTFE line mutates the shared instance/TypeInfo topology
+that a subsequent native fork inherits.** CTFE is not "doing something
+wrong" the way a mutating interpreter would be — semantic3 is intrinsic to
+interpretation — but for ownership purposes it must be treated as a
+mutator, not a read-only backend, and its ordering relative to codegen
+backends matters.
+
+### 20. The rod was *designed* to import everything but never did; the verified fix and its cost (2026-06-17)
+
+History (git + plan archaeology):
+
+- **2026-06-11 14:12 (`6af470b1`)** — the plan specified the rod importing
+  `core.internal.dassert` + `core.lifetime` and pre-instantiating the
+  built-in-type templates (`alias _lr_int = _d_assert_fail!int`, …), so
+  every druntime/phobos instance would be owned by the rod.
+- **2026-06-11 ~23:25 (`6ed736db`)** — the code shipped the rod as the
+  bare string `"module quickbite_rod;\n"`. **The import design was never
+  written.**
+- **2026-06-11 23:50 (`601817bd`)** — the spike rationale for dropping the
+  imports: *"an empty rod works — every module's semantic pulls in
+  `object.d` first, so the import chains bottom out at the rod."*
+
+**That spike conclusion is overgeneralized, and that is the defect.** It
+holds only for templates declared in modules the rod transitively pulls in
+— `object.d` and the universally-imported `core.*` machinery — for which
+`object.importedFrom = rod`. It does **not** hold for phobos: the rod never
+imports `std.range`, so `std.range.importedFrom` is not the rod (lesson 17).
+The empty rod was validated on the druntime built-in instances the spike
+happened to exercise and was never sufficient for phobos Voldemort types.
+
+**Verified fix (rewire the rod to import phobos, e.g. `import std;`).**
+Mechanically validated against DMD source end-to-end:
+
+- `import std;` propagates `importedFrom` to `std.range` via a 2-hop chain
+  through `std/package.d`'s unconditional `public import`s: rod imports
+  `std` → `std.importedFrom = rod`; `std`'s `importAll` then loads each
+  submodule with `sc._module = std` (dsymbolsem.d ~8510, ~8538) whose
+  `importedFrom` is already the rod → `std.range.importedFrom = rod`
+  (assignment at ~8686–8687). Confirmed against the real phobos
+  `std/package.d` (publicly imports `std.range`).
+- **First-importer-wins is permanent** (the `!imp.mod.importedFrom`
+  guard). Parsing the rod first with `import std;` claims phobos
+  ownership at init — so it also **kills the classification-theft of
+  lesson 18** (no later `eval_cell_N` can steal what the rod already
+  owns).
+- The iota instance then homes on `rod.members` (templatesem.d ~1789–94),
+  `needsCodegen` is `yes` (~3371–72), and the walk visits the rod (it is
+  in every link set) → `Result` emits and links.
+
+**The string attached: this completes the funnel, it does not remove it.**
+With the rod owning `importedFrom` for all of phobos, every snippet's
+phobos instances accumulate on `rod.members` across the whole session
+(cross-snippet, unbounded in the long-lived parent). `pruneForeignMembers`
+(codegen.d ~259) and `adoptTypeInfos` stay load-bearing — they drop the
+cross-snippet junk per-link in the child. So the fix vindicates the
+original design and gets `3.iota` working, but it is the opposite of
+deleting the red-flag machinery.
+
+**Decision (2026-06-17): fix-now, clean-up-later.** Land the minimal
+rod-imports-phobos fix for correctness first (matches the original
+design + kills the classification-theft), *then* pursue the ground-up
+cleanup (next section). No code was written in the diagnosis session — it
+was planning/diagnosis only.
+
+### Next: snippet-owns-its-instances (the cleanup that deletes the machinery)
+
+The funnel (rod + `allInst` + `pruneForeignMembers` + `adoptTypeInfos`) is
+all downstream compensation for instances landing on a root the codegen
+walk does not visit. The ground-up alternative is to make each snippet
+**self-contained**: drive emission from the snippet's own *transitive
+instance set* (reference-driven, exactly the fixpoint shape lesson 16 and
+`dub-deps.md` arrive at — emit, link, read undefined symbols, adopt the
+matching instances, relink) rather than relying on `importedFrom` member
+homing to deposit them somewhere a walk happens to reach. If emission is
+rooted at what the snippet actually references, instances need not be
+funneled to a shared root at all, and `allInst`, the rod, the prune, and
+the TypeInfo adoption can all be deleted. This is the "use dmd's backend
+on a module that was already parsed and analysed, without the template
+problems" goal stated at the top of this session. Scope it as its own
+slice; gate it on the same runner matrix.
 
 ## Parallel sessions
 

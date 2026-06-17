@@ -22,6 +22,14 @@ through `LLVMJit`, and the per-test latency is measurably below
 SystemLinker's. The eval/`Value` path is out of scope (slice-4 territory,
 same as SystemLinker).
 
+> **Shared defect (diagnosed 2026-06-17):** because `LLVMJit` reuses
+> SystemLinker's `emitObjectFilesForLink` verbatim, it inherits the
+> `3.iota` template-stranding bug — iota's Voldemort `Result` homes on a
+> module the codegen walk never visits, so ORC's symbol lookup fails just
+> as SystemLinker's `-z defs` link does. Not an LLVMJit bug; full
+> mechanism, fix, and cleanup direction in `ai/plans/dmd-backend.md`
+> lessons 17–20. Whatever fixes it for SystemLinker fixes it here.
+
 ## The one question that decides viability
 
 dmd's `.o` references druntime/phobos symbols and the synthesized

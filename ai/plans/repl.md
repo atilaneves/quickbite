@@ -70,6 +70,17 @@ Benchmarks below):
    classification-parse cost — the classification parses are O(1), they
    parse only the new input; the sole O(transcript) path is the type-alias
    probe, which short-circuits for statements.)
+10. **Classification parses steal phobos `importedFrom`** (diagnosed
+    2026-06-17): classification runs `fullSemantic` on throwaway
+    `eval_cell_N` modules (`isIncompleteCell`/`isModuleDeclarationCell` →
+    `parseModuleLocked`). The first such parse to import a phobos module
+    permanently claims that module's `importedFrom`, so template instances
+    (e.g. `std.range.iota`'s Voldemort `Result` from `3.iota`) home on a
+    transient classification module not in any link set and strand at link
+    in the native backends. This is the cold trigger for the `3.iota` bug;
+    full mechanism and the fix in `ai/plans/dmd-backend.md` lessons 17–20.
+    A cleanup candidate: classify by parse only, without `fullSemantic`, so
+    classification never claims ownership.
 
 ## Current Status
 
