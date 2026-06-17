@@ -128,15 +128,15 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
     import quickbite.executor: TestSummary;
 
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source).module_);
+        runTests(parseSnippet(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, importPaths).module_);
+        runTests(parseSnippet(source, importPaths).module_);
     }
 
     public override void runTests(
@@ -148,16 +148,16 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
     public override TestSummary runTestSummary(
         in string source,
     ) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
         // Keep the result mutable: the DMD frontend owns mutable Module state.
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         return testSummary(moduleResult.module_);
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
         import dmd.func: FuncDeclaration;
         import std.string: lastIndexOf;
         import std.sumtype: match;
@@ -167,7 +167,7 @@ public final class TreeWalkingExecutorOld : imported!"quickbite.executor".Execut
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         auto module_ = moduleResult.module_;
 
         FuncDeclaration f;

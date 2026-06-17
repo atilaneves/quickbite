@@ -37,20 +37,20 @@ public struct Repl {
     }
 
     public void loadModuleSource(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        parseModule(source, importPaths);
+        parseSnippet(source, importPaths);
         frontendSession.loadModuleSource(source);
     }
 
     public void loadModuleFile(in string filePath) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
         import std.file: readText;
 
         try {
             const source = filePath.readText;
             frontendSession.loadModuleFile(filePath, source);
-            parseModule(frontendSession.loadedModuleSource, importPaths);
+            parseSnippet(frontendSession.loadedModuleSource, importPaths);
         } catch (Exception exception) {
             throw new Exception(userDiagnostic(exception.msg));
         }
@@ -121,13 +121,13 @@ public struct Repl {
     }
 
     private ReplResult runLoadedTests() {
-        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+        import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
 
         if (frontendSession.loadedModuleSource.length == 0)
             return ReplResult.void_;
 
         const result = backend.runTests(
-            parseModuleWithCheckActionContext(
+            parseSnippetWithCheckActionContext(
                 frontendSession.loadedModuleSource,
                 importPaths,
             )

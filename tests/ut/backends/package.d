@@ -40,9 +40,9 @@ public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
 
-    auto moduleResult = parseModuleWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseSnippetWithCheckActionContext(moduleSource, importPaths);
     auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }
@@ -60,9 +60,9 @@ runBackendFileFixtureTestResults(T)(
     in string filePath,
     in string[] importPaths,
 ) {
-    import quickbite.frontend.compiler: parseModuleFileWithCheckActionContext;
+    import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
 
-    auto moduleResult = parseModuleFileWithCheckActionContext(
+    auto moduleResult = parseModuleWithCheckActionContext(
         filePath,
         importPaths,
     );

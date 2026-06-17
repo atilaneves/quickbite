@@ -14,7 +14,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
     @("runTests.archiveBackedImportLinksFromArchive." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
-        import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+        import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
         import std.path: buildPath;
         import std.process: execute;
 
@@ -40,7 +40,7 @@ static foreach (backend; AliasSeq!(SystemLinker)) {
                 int theAnswer() { return 0; }
             });
 
-            auto moduleResult = parseModuleWithCheckActionContext(
+            auto moduleResult = parseSnippetWithCheckActionContext(
                 q{
                     import dep;
                     unittest {
