@@ -67,6 +67,7 @@ private imported!"quickbite.backends".Backend newReplBackend(
     import quickbite.backends.ctfe: Ctfe;
     import quickbite.backends.interpreter: Interpreter;
     import quickbite.backends.ir: IR;
+    import quickbite.backends.native: LLVMJit, SystemLinker;
     import quickbite.repl_cli: ReplBackendName;
 
     final switch (backend) with (ReplBackendName) {
@@ -78,6 +79,10 @@ private imported!"quickbite.backends".Backend newReplBackend(
             return new IR;
         case interpreter:
             return new Interpreter;
+        case systemLinker:
+            return new SystemLinker;
+        case llvmJit:
+            return new LLVMJit;
     }
 }
 

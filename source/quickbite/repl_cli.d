@@ -7,6 +7,8 @@ public enum ReplBackendName {
     bytecode,
     ir,
     interpreter,
+    systemLinker,
+    llvmJit,
 }
 
 public struct ReplOptions {
@@ -86,7 +88,8 @@ private enum helpText =
     "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";
 
-private enum validBackendNames = "ctfe, bytecode, ir, interpreter";
+private enum validBackendNames =
+    "ctfe, bytecode, ir, interpreter, system-linker, llvmjit";
 
 private bool parseBackendName(
     in string input,
@@ -104,6 +107,12 @@ private bool parseBackendName(
             return true;
         case "interpreter":
             backend = interpreter;
+            return true;
+        case "system-linker":
+            backend = systemLinker;
+            return true;
+        case "llvmjit":
+            backend = llvmJit;
             return true;
         default:
             return false;

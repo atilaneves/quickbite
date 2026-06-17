@@ -36,6 +36,26 @@ unittest {
     result.options.backend.should == ReplBackendName.ctfe;
 }
 
+@("repl.cli.acceptsSystemLinkerBackendOption")
+unittest {
+    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+
+    const result = parseReplArgs(["qb", "--backend", "system-linker"]);
+
+    result.status.should == 0;
+    result.options.backend.should == ReplBackendName.systemLinker;
+}
+
+@("repl.cli.acceptsLLVMJitBackendOption")
+unittest {
+    import quickbite.repl_cli: ReplBackendName, parseReplArgs;
+
+    const result = parseReplArgs(["qb", "--backend", "llvmjit"]);
+
+    result.status.should == 0;
+    result.options.backend.should == ReplBackendName.llvmJit;
+}
+
 @("repl.cli.rejectsUnknownBackend")
 unittest {
     import quickbite.repl_cli: parseReplArgs;
@@ -45,7 +65,8 @@ unittest {
     result.status.should == 1;
     result.diagnostic.should ==
         "unknown backend: nonsense\n" ~
-        "valid backends: ctfe, bytecode, ir, interpreter";
+        "valid backends: ctfe, bytecode, ir, interpreter, " ~
+        "system-linker, llvmjit";
 }
 
 @("repl.cli.unknownBackendDiagnosticListsValidBackends")
@@ -56,8 +77,8 @@ unittest {
 
     result.status.should == 1;
     "unknown backend: nonsense".should.be in result.diagnostic;
-    "valid backends: ctfe, bytecode, ir, interpreter".should.be in
-        result.diagnostic;
+    ("valid backends: ctfe, bytecode, ir, interpreter, system-linker, " ~
+        "llvmjit").should.be in result.diagnostic;
 }
 
 @("repl.cli.acceptsHelpFlag")
