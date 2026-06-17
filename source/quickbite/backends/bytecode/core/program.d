@@ -81,6 +81,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     signExtend4to8, // a: destination frame offset, b: source frame offset
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
+    addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
@@ -124,11 +125,21 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort c;
 }
 
+// A scalar pass-by-reference parameter: its slot in the callee frame holds the
+// referenced value, but the matching word in the caller's argument area holds
+// the caller-frame offset of the argument. The machine dereferences that
+// offset on entry and writes the slot back to it on return.
+package(quickbite.backends.bytecode) struct RefParameter {
+    ushort offset; // the parameter's frame offset (also its argument-area word)
+    ScalarType type; // the referenced scalar's type, giving the value's size
+}
+
 package(quickbite.backends.bytecode) struct CompiledFunction {
     Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
     uint parameterBytes;
     ResultType returnType;
+    RefParameter[] refParameters; // empty for functions with no ref parameters
 }
 
 // How to render a failed assertion: read both operands from the frame and

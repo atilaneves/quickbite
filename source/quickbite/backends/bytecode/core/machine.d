@@ -100,6 +100,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case addInt8:
+                const ubyte[long.sizeof] sum = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) +
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = sum;
+                ++ip;
+                break;
+
             case bitOrInt4:
                 const ubyte[int.sizeof] bits = scalarBytes(
                     scalarValue!int(stack, base + instruction.b) |
@@ -290,7 +300,29 @@ package(quickbite.backends.bytecode) ubyte[] run(
                         base + instruction.b
                         .. base + instruction.b + callee.parameterBytes
                     ];
-                frames ~= Frame(functionIndex, ip + 1, base, instruction.c);
+
+                // Each scalar `ref` parameter's slot currently holds the
+                // caller-frame offset of its argument (copied with the rest of
+                // the argument block). Record that offset for writeback on
+                // return, then replace the slot with the referenced value.
+                RefWriteback[] refWritebacks;
+                foreach (refParameter; callee.refParameters) {
+                    const valueSize = size(refParameter.type);
+                    const callerOffset = base + scalarValue!uint(
+                        stack, calleeBase + refParameter.offset,
+                    );
+                    refWritebacks ~= RefWriteback(
+                        callerOffset, refParameter.offset, valueSize,
+                    );
+                    stack[
+                        calleeBase + refParameter.offset
+                        .. calleeBase + refParameter.offset + valueSize
+                    ] = stack[callerOffset .. callerOffset + valueSize];
+                }
+
+                frames ~= Frame(
+                    functionIndex, ip + 1, base, instruction.c, refWritebacks,
+                );
                 functionIndex = instruction.a;
                 base = calleeBase;
                 ip = 0;
@@ -346,6 +378,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
 
                 const frame = frames[$ - 1];
                 frames.length -= 1;
+
+                // Write each scalar `ref` parameter's final value back to the
+                // caller-frame slot it referenced.
+                foreach (writeback; frame.refWritebacks)
+                    stack[
+                        writeback.callerOffset
+                        .. writeback.callerOffset + writeback.size
+                    ] = stack[
+                        base + writeback.calleeOffset
+                        .. base + writeback.calleeOffset + writeback.size
+                    ];
+
                 stack[
                     frame.base + frame.destination
                     .. frame.base + frame.destination + resultSize
@@ -375,6 +419,16 @@ private struct Frame {
     size_t ip;
     size_t base;
     ushort destination;
+    RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
+}
+
+// A pending scalar `ref` writeback: copy `size` bytes from the callee
+// parameter slot (relative to the callee base) back to an absolute caller-frame
+// offset on return.
+private struct RefWriteback {
+    size_t callerOffset; // absolute stack offset of the referenced caller slot
+    ushort calleeOffset; // the parameter slot's offset within the callee frame
+    uint size;
 }
 
 private uint equalOperandSize(

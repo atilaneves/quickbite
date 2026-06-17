@@ -27,11 +27,11 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        ResultType, ScalarType, isSigned, size, stringSliceSize;
+        RefParameter, ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, BinExp, CallExp, CastExp, CmpExp, DivExp,
-        Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
+        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
+        DivExp, Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
         StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
@@ -76,11 +76,13 @@ private struct Compiler {
         const index = _functions.length;
         _functions ~= function_;
         _functionIndices[function_] = index;
+        const layout = parameterLayout(function_);
         _program.functions ~= CompiledFunction(
             null,
             0,
-            parameterLayout(function_).blockSize,
+            layout.blockSize,
             resultType(returnType(function_)),
+            layout.refParameters.dup,
         );
         return cast(ushort) index;
     }
@@ -256,6 +258,9 @@ private struct Compiler {
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
 
+        if (auto assign = expression.isAssignExp)
+            return compileAssignExpression(assign);
+
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
 
@@ -368,6 +373,13 @@ private struct Compiler {
             return emitBinary(Op.addFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.addDouble, lhs, rhs, ScalarType.double_);
+
+        // 8-byte integer addition (e.g. `size_t`): same operand and result
+        // type on both sides, kept at the full width.
+        if (isEightByteInteger(lhs.type) &&
+            lhs.type == rhs.type &&
+            scalarType(add.type) == lhs.type)
+            return emitBinary(Op.addInt8, lhs, rhs, lhs.type);
 
         return compileIntBinaryResult(
             add,
@@ -565,6 +577,36 @@ private struct Compiler {
         return lhs;
     }
 
+    // `local = expr` for a scalar local lvalue (including a `ref` parameter's
+    // slot): evaluate the right-hand side and copy it into the local's slot,
+    // yielding the local as the assignment's result. Scoped to local-variable
+    // lvalues with a matching scalar type; anything else is unsupported.
+    private Operand compileAssignExpression(AssignExp assign) {
+        import std.conv: text;
+
+        auto variable = assign.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const type = slot is null
+            ? ScalarType.void_
+            : scalarType(declaration.type);
+        const rhs = compileExpression(assign.e2);
+        if (slot is null || rhs.type != type)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(assign),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            *slot,
+            rhs.offset,
+            cast(ushort) size(type),
+        );
+        return Operand(*slot, type);
+    }
+
     private Operand compileEqualExpression(Expression expression) {
         auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(equal !is null);
@@ -643,11 +685,29 @@ private struct Compiler {
 
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+
+                // A `ref` argument passes the caller-frame offset of the
+                // referenced local, not its value: the machine dereferences it
+                // on entry and writes the slot back to it on return.
+                if (layout.isReference[argumentIndex]) {
+                    const reference =
+                        referenceOffset((*call.arguments)[argumentIndex]);
+                    _code ~= Instruction(
+                        Op.loadConstant,
+                        slot,
+                        constantIndex(reference),
+                        cast(ushort) size(ScalarType.uint_),
+                    );
+                    continue;
+                }
+
                 const operand =
                     compileExpression((*call.arguments)[argumentIndex]);
                 _code ~= Instruction(
                     Op.copy,
-                    cast(ushort) (argumentArea + layout.offsets[argumentIndex]),
+                    slot,
                     operand.offset,
                     cast(ushort) size(operand.type),
                 );
@@ -660,6 +720,22 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // The caller-frame offset of a scalar `ref` argument: the slot of the
+    // local being passed by reference. Only a plain local lvalue is supported.
+    private ushort referenceOffset(Expression argument) {
+        import std.conv: text;
+
+        if (auto variable = argument.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _locals)
+                    return *existing;
+
+        throw new Exception(text(
+            "Unsupported ref argument in bytecode core: ",
+            expressionChars(argument),
+        ));
     }
 
     // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
@@ -963,16 +1039,19 @@ private struct Compiler {
 
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
-            if (parameter.isReference)
-                throw new Exception(
-                    "Unsupported ref parameter in bytecode core",
-                );
 
+            // A scalar `ref` parameter has a frame slot sized for the
+            // referenced value, just like a value parameter; the difference is
+            // only in how the argument word is passed and written back.
             const type = scalarType(parameter.type);
             const alignment = size(type);
             layout.blockSize =
                 (layout.blockSize + alignment - 1) & ~(alignment - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= parameter.isReference;
+            if (parameter.isReference)
+                layout.refParameters ~=
+                    RefParameter(cast(ushort) layout.blockSize, type);
             layout.blockSize += size(type);
         }
 
@@ -1034,7 +1113,11 @@ private struct Compiler {
 }
 
 private struct ParameterLayout {
+    import quickbite.backends.bytecode.core.program: RefParameter;
+
     ushort[] offsets;
+    bool[] isReference; // per parameter: true for a scalar `ref` parameter
+    RefParameter[] refParameters; // the slot and type of each `ref` parameter
     uint blockSize;
 }
 
@@ -1153,6 +1236,14 @@ private bool isFloating(
     import quickbite.backends.bytecode.core.program: ScalarType;
 
     return type == ScalarType.float_ || type == ScalarType.double_;
+}
+
+private bool isEightByteInteger(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.long_ || type == ScalarType.ulong_;
 }
 
 // Lower a float/double literal to the raw bits loadConstant copies: the
