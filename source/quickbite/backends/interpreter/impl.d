@@ -1469,14 +1469,6 @@ private struct Walker {
                 return runAssocArrayHookCall(call, assocArrayHook);
         }
 
-        if (call.f !is null && !call.f.needThis) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
-
-            if (hasNoAvailableSource(call.f))
-                throw new Exception(noAvailableSourceMessage(call.f));
-        }
-
         auto stringForeachApply = call.f is null
             ? callExpressionFunction(call.e1)
             : call.f;
@@ -1528,9 +1520,15 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.ffi: tryCallResidentNative;
 
-            if (hasNoAvailableSource(call.f))
+            if (hasNoAvailableSource(call.f)) {
+                Value result;
+                if (!call.f.needThis && tryCallResidentNative(call.f, arguments, result))
+                    return result;
+
                 throw new Exception(noAvailableSourceMessage(call.f));
+            }
             return runFunction(call.f, arguments, argumentExpressions);
         }
 
