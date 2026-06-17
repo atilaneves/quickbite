@@ -157,6 +157,56 @@ unittest {
     }
 }
 
+@("prepareFixtureRunsUsesFileIdentityForPackageModules")
+unittest {
+    import std.path: buildPath;
+
+    with(immutable Sandbox()) {
+        const importPath = "src";
+        const importedPath = buildPath(importPath, "cerealed", "traits.d");
+        const importerPath = buildPath(importPath, "cerealed", "cerealiser.d");
+
+        writeFile(
+            importedPath,
+            q{
+                module cerealed.traits;
+
+                enum answer = 42;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+        writeFile(
+            importerPath,
+            q{
+                module cerealed.cerealiser;
+
+                import cerealed.traits;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+
+        const runs = prepareFixtureRuns(
+            [
+                inSandboxPath(importerPath),
+                inSandboxPath(importedPath),
+            ],
+            [inSandboxPath(importPath)],
+            0,
+            1,
+        );
+
+        runs.length.should == 2;
+        runs[0].displayName.should == "cerealed.cerealiser";
+        runs[1].displayName.should == "cerealed.traits";
+    }
+}
+
 @("discoverFixturesKeepsInPackageTestModules")
 unittest {
     import std.path: buildPath;

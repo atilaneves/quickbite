@@ -46,6 +46,13 @@ public ModuleParseResult parseModuleUncached(
     return compiler.parseModuleUncached(source, importPaths);
 }
 
+public ModuleParseResult parseModuleFile(
+    in string filePath,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleFile(filePath, importPaths);
+}
+
 public ModuleParseResult parseModuleWithCheckActionContext(in string source) {
     return compiler.parseModuleWithCheckActionContext(source, []);
 }
@@ -258,6 +265,31 @@ final class Compiler {
         return parseModuleLocked(source, importPaths, null, false);
     }
 
+    ModuleParseResult parseModuleFile(
+        in string filePath,
+        in string[] importPaths,
+    ) {
+        import std.conv: text;
+        import std.file: readText;
+
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        if (auto module_ = parsedModuleForFile(filePath, importPaths)) {
+            ModuleParseResult result;
+            result.module_ = module_;
+            return result;
+        }
+
+        return parseModuleLocked(
+            filePath.readText,
+            importPaths,
+            text("file\0", filePath),
+            true,
+            dmdFileName(filePath, importPaths),
+        );
+    }
+
     ModuleParseResult parseModuleWithCheckActionContext(
         in string source,
         in string[] importPaths,
@@ -419,6 +451,66 @@ final class Compiler {
 
         return text(source, "\0", importPaths.join("\0"), "\0", cacheSalt);
     }
+
+    private imported!"dmd.dmodule".Module parsedModuleForFile(
+        in string filePath,
+        in string[] importPaths,
+    ) const {
+        import dmd.dmodule: Module;
+
+        foreach (module_; Module.amodules)
+            if (moduleSourceMatches(module_, filePath, importPaths))
+                return module_;
+
+        return null;
+    }
+
+    private bool moduleSourceMatches(
+        imported!"dmd.dmodule".Module module_,
+        in string filePath,
+        in string[] importPaths,
+    ) const {
+        import std.path: absolutePath, buildNormalizedPath;
+
+        const absPath = filePath.absolutePath.buildNormalizedPath;
+        const sourcePath = module_.sourceFileName;
+        if (sourcePath.absolutePath.buildNormalizedPath == absPath)
+            return true;
+
+        foreach (importPath; importPaths) {
+            const candidate = sourcePath
+                .absolutePath(importPath)
+                .buildNormalizedPath;
+            if (candidate == absPath)
+                return true;
+        }
+
+        return false;
+    }
+
+    private string dmdFileName(in string filePath, in string[] importPaths) const {
+        import std.algorithm.searching: startsWith;
+        import std.path: absolutePath, buildNormalizedPath, relativePath;
+
+        const absPath = filePath.absolutePath.buildNormalizedPath;
+        foreach (importPath; importPaths) {
+            const relPath = absPath.relativePath(
+                importPath.absolutePath.buildNormalizedPath,
+            );
+            if (!relPath.startsWith(".."))
+                return relPath;
+        }
+
+        return filePath;
+    }
+}
+
+private string sourceFileName(imported!"dmd.dmodule".Module module_) @trusted {
+    import std.string: fromStringz;
+
+    // DMD owns `srcfile` for the lifetime of the Module; copy the
+    // null-terminated string immediately so no borrowed pointer escapes.
+    return module_.srcfile.toString.fromStringz.idup;
 }
 
 public string diagnosticMessage() {
