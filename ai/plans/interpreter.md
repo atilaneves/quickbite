@@ -737,20 +737,27 @@ The full random run reported 2268 run, 0 failed, 5/5 expected failures.
    inside the member function and reads `_data` through the enclosing member
    `this`, but `runFunction` currently creates a child walker for nested
    functions without propagating `thisValue` / `hasThis` from the enclosing
-   member call. PARTIALLY FIXED on this branch: the approved
+   member call. FIXED on this branch in two slices. The approved
    `function.nestedLambdaReadsEnclosingThisField` test covers a member function
    that stores a nested lambda in a local delegate and then calls it; function
    literal declarations now preserve the enclosing receiver when the literal is
    nested. That test is green on CTFE, Interpreter, SystemLinker, and LLVMJit.
 
-   The live repro still fails at the same diagnostic because `Appender.put`
-   uses the direct IIFE shape above. That path calls the `FuncExp` directly
-   instead of going through a stored local delegate, so it still bypasses the
-   receiver-preserving runtime delegate.
+   The approved `function.nestedLambdaIifeReadsEnclosingThisField` test covers
+   the direct IIFE shape used by `Appender.put`; direct nested function calls
+   now also preserve the enclosing receiver when the current frame has `this`.
+   That test is green on CTFE, Interpreter, SystemLinker, and LLVMJit.
 
-Next step: get approval for a direct nested-lambda IIFE test, then repeat the
-RED→GREEN loop. Commit this stored-lambda slice first, then make the direct
-IIFE fix as a separate slice. Run `ci.sh` before the PR.
+6. `Error: pointer slice ``[0..1]`` exceeds allocated memory block ``[0..0]```
+   — after slice 5, the live repro advances past the direct IIFE and fails
+   while slicing the pointer returned from `_data.arr.ptr`. The array field was
+   resized earlier, but the pointer still carries a zero-length allocation
+   block. Next slice should reduce this to a self-contained array-field
+   pointer/slice fixture with no cerealed dependency and use `SystemLinker` as
+   the oracle.
+
+Next step: get approval for the pointer-slice fixture, then repeat the
+RED→GREEN loop. Commit this direct-IIFE slice first. Run `ci.sh` before the PR.
 
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in

@@ -1571,6 +1571,15 @@ private struct Walker {
 
             if (hasNoAvailableSource(call.f))
                 throw new Exception(noAvailableSourceMessage(call.f));
+            if (call.f.isNested && hasThis)
+                return runMemberFunction(
+                    call.f,
+                    null,
+                    thisValue,
+                    arguments,
+                    argumentExpressions,
+                );
+
             return runFunction(call.f, arguments, argumentExpressions);
         }
 
@@ -1585,6 +1594,15 @@ private struct Walker {
 
                 throw new Exception("Unsupported eval call.");
             }
+            if (function_.isNested && hasThis)
+                return runMemberFunction(
+                    function_,
+                    null,
+                    thisValue,
+                    arguments,
+                    argumentExpressions,
+                );
+
             return runFunction(function_, arguments, argumentExpressions);
         }
 
