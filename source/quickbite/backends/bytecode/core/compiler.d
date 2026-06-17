@@ -956,13 +956,14 @@ private struct Compiler {
         return true;
     }
 
-    // `assert(intExpr)`: throw when the int evaluates to zero; the failure
-    // renders "<value> != true", so the diagnostic carries only the operand.
+    // `assert(intExpr)` / `assert(boolExpr)`: throw when the operand evaluates
+    // to zero; the failure renders "<value> != true", so the diagnostic carries
+    // only the operand. A `bool` operand renders "false != true".
     private bool compileNonzeroAssert(Expression expression) {
         import std.conv: text;
 
         const operand = compileExpression(expression);
-        if (operand.type != ScalarType.int_)
+        if (operand.type != ScalarType.int_ && operand.type != ScalarType.bool_)
             throw new Exception(text(
                 "Unsupported truth assert in bytecode core: ",
                 expressionChars(expression),

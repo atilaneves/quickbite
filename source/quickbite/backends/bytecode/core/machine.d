@@ -348,9 +348,19 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case assertNonzeroInt4:
-                if (scalarValue!int(stack, base + instruction.a) == 0)
+                // The operand width follows its scalar type: a `bool` is a
+                // single frame byte, an `int` four. Reading only `size(type)`
+                // bytes avoids treating a zero `bool` as nonzero because of
+                // adjacent frame bytes.
+                const nonzeroDiagnostic =
+                    program.assertDiagnostics[instruction.b];
+                if (isZeroSlot(
+                        stack,
+                        base + instruction.a,
+                        size(nonzeroDiagnostic.operandType),
+                    ))
                     throw new Exception(assertMessage(
-                        program.assertDiagnostics[instruction.b],
+                        nonzeroDiagnostic,
                         stack[base .. $],
                     ));
 
@@ -532,6 +542,20 @@ private ubyte[T.sizeof] scalarBytes(T)(in T value)
         bytes[i] = cast(ubyte) ((raw >> (8 * i)) & 0xff);
 
     return bytes;
+}
+
+// True when every byte of the `width`-byte frame slot at `offset` is zero,
+// i.e. the operand is zero regardless of its scalar width.
+private bool isZeroSlot(
+    in ubyte[] stack,
+    in size_t offset,
+    in size_t width,
+) @safe @nogc nothrow pure {
+    foreach (b; stack[offset .. offset + width])
+        if (b != 0)
+            return false;
+
+    return true;
 }
 
 private T scalarValue(T)(
