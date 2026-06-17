@@ -51,7 +51,12 @@ smallest honest handler rather than hard-coding the fixture.
 - Interpreter values, locals, temporaries, and function returns must use
   `quickbite.lang.Value` from the start. Do not use `long`, `bool`, or
   `void*`-keyed placeholder state for early slices just because the first
-  promoted test only observes integer or boolean behaviour.
+  promoted test only observes integer or boolean behaviour. Per
+  `ai/plans/value.md` (decision 2026-06-17) this boxed representation is
+  the interpreter's own and is slated to become interpreter-package-private
+  as the shared `quickbite.lang.Value` is dismantled — it is not being
+  removed from the interpreter, only un-shared. The bytecode VM, by
+  contrast, stays native-layout and uses no boxed value.
 - Use a flat environment model: a locals map keyed by declaration
   identity, extended and restored on scope entry and exit.
 - The executor must not import or delegate to other backends.

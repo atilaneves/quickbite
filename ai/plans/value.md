@@ -42,6 +42,27 @@ execute the prelude formatter. `Value`, `value.d`, `asCharArrayString`,
 (`userDiagnostic`/`userValueString`), now applied to the display string
 carried by `EvalResult`; `Repl.submit` returns the display `string`.
 
+Decision 2026-06-17: the endgame is narrowed from "delete the struct
+entirely" to "remove the *shared, cross-backend* value type". The
+tree-walking interpreter's *internal* runtime representation is
+legitimately a boxed tagged union: that is the natural form for a
+recursive AST walker, and re-expressing structs/classes/closures as raw
+bytes would duplicate the bytecode VM's hardest work inside the backend
+whose whole value is simplicity. So decisions 1-5 stand for the
+`Evaluator` contract and the display path — the reify → `Value` →
+`toString` scaffolding still goes, replaced by the decision-3 prelude
+formatter — but the interpreter keeps a boxed value type for its own
+evaluation. The change is one of *ownership*: that type becomes
+interpreter-package-private (under `backends/interpreter/`) rather than
+the shared `quickbite.lang.Value` that other backends and `EvalResult`
+no longer touch. The bytecode and IR cores stay native-layout and never
+reintroduce a boxed value (their cores already exclude it by design;
+`ai/plans/bytecode.md` "No universal runtime value type"). This narrows
+the deletion target only — both backends have identical DMD type info,
+so this is not about capability. If the tree-walking interpreter is
+itself later retired in favour of the VM, its private boxed type dies
+with it, but that is a separate decision not taken here.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -269,8 +290,12 @@ are done; what is still pending, in order:
    interim `displayString`/`Value.toString` scaffolding.
 2. Delete the private reify → `Value` → `toString` scaffolding per
    backend (decision 4) as each gains the formatter.
-3. Once no backend needs `Value` internally, delete the struct and
-   `tests/ut/backends/evaluator/value.d` together.
+3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):
+   once no backend depends on it as a cross-backend type, relocate the
+   tree-walking interpreter's internal boxed representation to an
+   interpreter-package-private type, then delete the shared struct and
+   `tests/ut/backends/evaluator/value.d` together. The interpreter keeps
+   a boxed value internally; only the shared type is deleted.
 
 ## Out of scope
 
