@@ -12,6 +12,7 @@ package enum AssocArrayHook {
     dup,
     keys,
     values,
+    apply2,
 }
 
 // DMD lowers associative array operations to druntime template hooks in
@@ -22,13 +23,20 @@ package bool tryAssocArrayHook(
     out AssocArrayHook hook,
 ) {
     import std.algorithm: startsWith;
+    import std.algorithm.searching: canFind;
     import std.conv: text;
 
-    if (function_ is null || function_.parent is null ||
-        function_.parent.isTemplateInstance is null)
+    if (function_ is null)
         return false;
 
     const name = text(function_.toPrettyChars);
+    if (name.canFind("_d_aaApply2!(")) {
+        hook = AssocArrayHook.apply2;
+        return true;
+    }
+
+    if (function_.parent is null || function_.parent.isTemplateInstance is null)
+        return false;
 
     static struct Hook {
         string prefix;

@@ -562,6 +562,8 @@ public struct Value {
 
                 static if (isIntegral!T || is(T == bool)) {
                     return cast(long) value;
+                } else static if (is(T == EnumValue)) {
+                    return value.value;
                 } else {
                     throw new Exception("Expected integer-compatible scalar.");
                     return 0L;
@@ -578,7 +580,7 @@ public struct Value {
             (value) {
                 alias T = Unqual!(typeof(value));
 
-                static if (isIntegral!T || is(T == bool)) {
+                static if (isIntegral!T || is(T == bool) || is(T == EnumValue)) {
                     return true;
                 } else {
                     return false;
@@ -1031,6 +1033,18 @@ public struct Value {
         );
     }
 
+    public long pointerElementOffset() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Pointer) pointer) => pointer.offset,
+            (_) {
+                throw new Exception("Expected pointer.");
+                return long.init;
+            },
+        );
+    }
+
     private long pointerOffset() const @safe pure {
         import std.sumtype: match;
 
@@ -1248,6 +1262,8 @@ public struct Value {
                     isFloatingPoint!T
                 ) {
                     return cast(real) value;
+                } else static if (is(T == EnumValue)) {
+                    return cast(real) value.value;
                 } else static if (is(T == ImaginaryScalar)) {
                     return value.value;
                 } else static if (is(T == ComplexScalar)) {
@@ -1272,6 +1288,7 @@ public struct Value {
                     isIntegral!T ||
                     is(T == bool) ||
                     isFloatingPoint!T ||
+                    is(T == EnumValue) ||
                     is(T == ImaginaryScalar) ||
                     is(T == ComplexScalar)
                 ) {

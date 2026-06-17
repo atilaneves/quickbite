@@ -34,6 +34,11 @@ private enum LoopControl {
     continue_,
 }
 
+private struct ArrayElementAlias {
+    public imported!"dmd.declaration".VarDeclaration source;
+    public size_t index;
+}
+
 private class InterpretedException: Exception {
     public imported!"quickbite.lang".Value object;
 
@@ -66,6 +71,7 @@ private struct Walker {
     private RuntimeDelegate[size_t] delegates;
     private bool[VarDeclaration] uninitializedLocals;
     private SliceAlias[VarDeclaration] sliceAliases;
+    private ArrayElementAlias[VarDeclaration] arrayElementAliases;
     private AssocArraySlotAlias[VarDeclaration] assocArraySlotAliases;
     private StructArrayFieldAliases[VarDeclaration] structArrayFieldAliases;
     private size_t[VarDeclaration] arrayAllocations;
@@ -1914,6 +1920,10 @@ private struct Walker {
             case values:
                 requireArgumentCount(call, 1);
                 return runExpression((*call.arguments)[0]).assocArrayValues;
+
+            case apply2:
+                requireArgumentCount(call, 2);
+                return runAssocArrayApply2Call(call);
         }
     }
 
@@ -1995,16 +2005,42 @@ private struct Walker {
         return Value(removed);
     }
 
+    private Value runAssocArrayApply2Call(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        const aa = runExpression((*call.arguments)[0]);
+        const keys = aa.assocArrayKeys;
+        const values = aa.assocArrayValues;
+        auto body = functionPointerExpressionFunction((*call.arguments)[1]);
+        const delegate_ = body is null
+            ? runExpression((*call.arguments)[1])
+            : Value.void_;
+
+        foreach (index; 0 .. keys.length) {
+            const arguments = [keys[index], values[index]];
+            const result = body is null
+                ? runDelegateCall(delegate_, arguments, [null, null])
+                : runFunction(body, arguments, [null, null], true);
+            if (result.asLong != 0)
+                return result;
+        }
+
+        return Value(0);
+    }
+
     private Value runFunction(
         imported!"dmd.func".FuncDeclaration function_,
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        in bool captureLocals = false,
     ) {
         Walker child;
         child.runningCalledFunction = true;
         child.currentFunction = function_;
         child.result = Value(false);
-        child.locals = function_.isNested ? locals.dup : datasegLocals;
+        child.locals = (captureLocals || function_.isNested)
+            ? locals.dup
+            : datasegLocals;
         child.localPointers = localPointers.dup;
         child.localPointerIds = localPointerIds.dup;
         child.nextLocalPointerId = nextLocalPointerId;
@@ -2024,10 +2060,20 @@ private struct Walker {
         try {
             child.runStatement(function_.fbody);
         } catch (InterpretedException exception) {
-            writeBackFunctionState(function_, argumentExpressions, child);
+            writeBackFunctionState(
+                function_,
+                argumentExpressions,
+                child,
+                captureLocals,
+            );
             throw exception;
         }
-        writeBackFunctionState(function_, argumentExpressions, child);
+        writeBackFunctionState(
+            function_,
+            argumentExpressions,
+            child,
+            captureLocals,
+        );
         return child.result;
     }
 
@@ -2116,6 +2162,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
+        in bool captureLocals = false,
     ) {
         nextLocalPointerId = child.nextLocalPointerId;
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -2129,7 +2176,7 @@ private struct Walker {
         lastStaticArrayCopySource = child.lastStaticArrayCopySource;
         lastStaticArrayCopySourceValues = child.lastStaticArrayCopySourceValues.dup;
         lastStaticArrayCopyDestructor = child.lastStaticArrayCopyDestructor;
-        writeBackNestedLocals(function_, child);
+        writeBackNestedLocals(function_, child, captureLocals);
         writeBackGlobals(child);
         writeBackLocalPointerTargets(child);
         writeBackRefArguments(function_, argumentExpressions, child);
@@ -2165,8 +2212,9 @@ private struct Walker {
     private void writeBackNestedLocals(
         imported!"dmd.func".FuncDeclaration function_,
         ref Walker child,
+        in bool captureLocals = false,
     ) {
-        if (!function_.isNested)
+        if (!captureLocals && !function_.isNested)
             return;
 
         foreach (variable, value; child.locals)
@@ -2375,15 +2423,31 @@ private struct Walker {
 
         const left = runExpression(equal.e1);
         const right = runExpression(equal.e2);
-        if (left.isNumericScalar && right.isNumericScalar) {
-            if (equal.op == EXP.notEqual)
-                return Value(left.asReal != right.asReal);
-            return Value(left.asReal == right.asReal);
-        }
-
+        const same = equalValues(left, right);
         if (equal.op == EXP.notEqual)
-            return Value(left != right);
-        return Value(left == right);
+            return Value(!same);
+        return Value(same);
+    }
+
+    private bool equalValues(in Value left, in Value right) {
+        if (left.isNumericScalar && right.isNumericScalar)
+            return left.asReal == right.asReal;
+
+        if (left.isArray && right.isArray)
+            return equalArrayValues(left, right);
+
+        return left == right;
+    }
+
+    private bool equalArrayValues(in Value left, in Value right) {
+        if (left.length != right.length)
+            return false;
+
+        foreach (index; 0 .. left.length)
+            if (!equalValues(left[index], right[index]))
+                return false;
+
+        return true;
     }
 
     private bool isScalarCompoundAssignExpression(
@@ -2606,6 +2670,22 @@ private struct Walker {
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
+        if (declarationName(dot.var) == "classinfo")
+            return runClassInfoExpression(dot);
+
+        if (declarationName(dot.var) == "name")
+            if (auto typeid_ = dot.e1.isTypeidExp)
+                return Value(typeInfoName(typeidObjectType(typeid_)));
+
+        if (declarationName(dot.var) == "name")
+            if (auto symbol = dot.e1.isSymOffExp)
+                if (auto type = symbolOffsetTypeInfoType(symbol))
+                    return Value(typeInfoName(type));
+
+        if (declarationName(dot.var) == "name")
+            if (dot.e1.isPtrExp !is null)
+                return runClassInfoNameOwnerExpression(dot.e1);
+
         const receiver = runExpression(dot.e1);
         if (receiver == Value.null_)
             throw new Exception(text(
@@ -2630,6 +2710,37 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private Value runClassInfoExpression(
+        imported!"dmd.expression".DotVarExp classInfo,
+    ) {
+        if (classInfo.e1.isTypeExp is null) {
+            const receiver = runExpression(classInfo.e1);
+            if (receiver.isClassObject)
+                return Value.typeName(receiver.classTypeName);
+        }
+
+        return Value.typeName(typeInfoName(classInfo.e1.type));
+    }
+
+    private Value runClassInfoNameOwnerExpression(
+        imported!"dmd.expression".Expression ownerExpression,
+    ) {
+        const receiver = runExpression(classInfoNameOwnerExpression(ownerExpression));
+        if (receiver.isClassObject)
+            return Value(receiver.classTypeName);
+
+        throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private imported!"dmd.expression".Expression classInfoNameOwnerExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto pointer = expression.isPtrExp)
+            return classInfoNameOwnerExpression(pointer.e1);
+
+        return expression;
     }
 
     private Value runDotIdentifierExpression(
@@ -2721,7 +2832,8 @@ private struct Walker {
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
         if (auto pointer = assign.e1.isPtrExp)
-            return runAssocArraySlotAssignExpression(pointer.e1, assign.e2);
+            if (isAssocArraySlotPointer(pointer.e1))
+                return runAssocArraySlotAssignExpression(pointer.e1, assign.e2);
 
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
@@ -2749,9 +2861,12 @@ private struct Walker {
                 throw new Exception("Unsupported interpreter assignment target.");
 
             locals[variable] = storageValue(variable.type, value);
+            writeThroughArrayElementAlias(variable, locals[variable]);
             uninitializedLocals.remove(variable);
-            sliceAliases.remove(variable);
-            structArrayFieldAliases.remove(variable);
+            if ((variable in arrayElementAliases) is null) {
+                sliceAliases.remove(variable);
+                structArrayFieldAliases.remove(variable);
+            }
             return;
         }
 
@@ -2799,6 +2914,9 @@ private struct Walker {
                 return;
             }
 
+            if (writeThroughArrayPointer(pointer, value))
+                return;
+
             writeLocation(ptr.e1, pointer.withPointerTarget(value));
             return;
         }
@@ -2830,6 +2948,26 @@ private struct Walker {
             return value;
 
         return backendCastValue(value, target);
+    }
+
+    private bool writeThroughArrayPointer(in Value pointer, in Value value) {
+        if (!pointer.isPointer || pointer.pointerAllocation == 0)
+            return false;
+
+        auto variable = pointer.pointerAllocation in arrayAllocationVariables;
+        if (variable is null)
+            return false;
+
+        auto current = *variable in locals;
+        if (current is null)
+            return false;
+
+        locals[*variable] = current.withArrayElement(
+            cast(size_t) pointer.pointerElementOffset,
+            value,
+        );
+        uninitializedLocals.remove(*variable);
+        return true;
     }
 
     private void writeIndexLocation(
@@ -2970,12 +3108,29 @@ private struct Walker {
             throw new Exception("Unsupported interpreter assignment target.");
 
         auto source = alias_.source in locals;
-        if (source is null)
-            throw new Exception("Unsupported interpreter assignment target.");
+        const current = source is null
+            ? defaultLocalValue(alias_.source)
+            : *source;
 
-        const value = runExpression(rhs);
-        locals[alias_.source] = source.withAssocArrayEntry(alias_.key, value);
+        auto function_ = functionPointerExpressionFunction(rhs);
+        const value = function_ is null
+            ? runExpression(rhs)
+            : functionPointerValue(function_);
+        locals[alias_.source] = current.withAssocArrayEntry(alias_.key, value);
+        uninitializedLocals.remove(alias_.source);
         return value;
+    }
+
+    private bool isAssocArraySlotPointer(
+        imported!"dmd.expression".Expression pointer,
+    ) {
+        auto var = pointer.isVarExp;
+        if (var is null)
+            return false;
+
+        auto variable = var.var.isVarDeclaration;
+        return variable !is null &&
+            (variable in assocArraySlotAliases) !is null;
     }
 
     private Value runNestedIndexAssignExpression(
@@ -3347,10 +3502,18 @@ private struct Walker {
         if (literal.elements !is null)
             foreach (index, element; *literal.elements)
                 fields ~= element is null
-                    ? Value.void_
+                    ? structLiteralDefaultFieldValue(literal, index)
                     : structLiteralFieldValue(literal, index, runExpression(element));
 
         return Value.structValue(structLiteralName(literal), fields);
+    }
+
+    private Value structLiteralDefaultFieldValue(
+        imported!"dmd.expression".StructLiteralExp literal,
+        in size_t index,
+    ) {
+        auto field = structLiteralField(literal, index);
+        return field is null ? Value.void_ : defaultValue(field);
     }
 
     private Value structLiteralFieldValue(
@@ -3358,9 +3521,14 @@ private struct Walker {
         in size_t index,
         in Value value,
     ) {
+        import quickbite.frontend.dmd.types: isAssocArrayType;
+
         auto field = structLiteralField(literal, index);
         if (field is null)
             return value;
+
+        if (value == Value.null_ && isAssocArrayType(field.type))
+            return Value.assocArrayValue([], []);
 
         auto staticArray = field.type is null ? null : field.type.toBasetype.isTypeSArray;
         if (staticArray is null || value.isArray)
@@ -3428,14 +3596,30 @@ private struct Walker {
     }
 
     private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
-        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
+        size_t arrayIndex;
+        return runIndexExpression(index, arrayIndex);
+    }
 
+    private Value runIndexExpression(
+        imported!"dmd.expression".IndexExp index,
+        out size_t arrayIndex,
+    ) {
+        import quickbite.frontend.dmd.types:
+            isArrayType,
+            isAssocArrayType,
+            isPointerType;
+
+        if (isAssocArrayType(index.e1.type)) {
+            arrayIndex = 0;
+            return runExpression(index.e1)
+                .assocArrayElement(runExpression(index.e2));
+        }
+
+        // matches CTFE, which formats the index as unsigned
+        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
         const source = runExpression(index.e1);
         if (index.lengthVar !is null)
             locals[index.lengthVar] = Value(source.length);
-
-        // matches CTFE, which formats the index as unsigned
-        const arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
 
         // covers both array-backed pointers and druntime hook results such
         // as `_d_aaGetRvalueX` slot pointers, which DMD dereferences with a
@@ -3453,6 +3637,7 @@ private struct Walker {
                 arrayIndex,
                 source.length,
                 isSliceValue(index.e1),
+                runningCalledFunction,
             ));
         }
 
@@ -4029,15 +4214,30 @@ private struct Walker {
             auto value = runSliceExpression(slice, lower);
             locals[variable] = value;
             uninitializedLocals.remove(variable);
+            arrayElementAliases.remove(variable);
             recordSliceAlias(variable, slice, lower);
             structArrayFieldAliases.remove(variable);
             return value;
         }
 
-        auto value = storageValue(variable.type, runExpression(initializer));
+        auto indexInitializer = initializer.isIndexExp;
+        const isArrayElementAlias = isRefVariable(variable) &&
+            indexInitializer !is null;
+        size_t arrayElementAliasIndex;
+        auto value = storageValue(
+            variable.type,
+            isArrayElementAlias
+                ? runIndexExpression(indexInitializer, arrayElementAliasIndex)
+                : runExpression(initializer),
+        );
         locals[variable] = value;
         uninitializedLocals.remove(variable);
-        sliceAliases.remove(variable);
+        if (isArrayElementAlias)
+            recordArrayElementAlias(variable, indexInitializer, arrayElementAliasIndex);
+        else {
+            arrayElementAliases.remove(variable);
+            sliceAliases.remove(variable);
+        }
         recordStructArrayFieldAliases(variable, initializer);
         recordAssocArraySlotAlias(variable, initializer);
         return value;
@@ -4087,6 +4287,52 @@ private struct Walker {
             structArrayFieldAliases.remove(variable);
         else
             structArrayFieldAliases[variable] = aliases;
+    }
+
+    private void recordArrayElementAlias(
+        VarDeclaration variable,
+        imported!"dmd.expression".IndexExp index,
+        in size_t arrayIndex,
+    ) {
+        auto var = index.e1.isVarExp;
+        if (var is null) {
+            arrayElementAliases.remove(variable);
+            return;
+        }
+
+        auto source = var.var.isVarDeclaration;
+        if (source is null) {
+            arrayElementAliases.remove(variable);
+            return;
+        }
+
+        arrayElementAliases[variable] = ArrayElementAlias(
+            source,
+            arrayIndex,
+        );
+    }
+
+    private void writeThroughArrayElementAlias(
+        VarDeclaration variable,
+        in Value value,
+    ) {
+        auto alias_ = variable in arrayElementAliases;
+        if (alias_ is null)
+            return;
+
+        auto source = alias_.source in locals;
+        if (source is null)
+            throw new Exception("Unsupported interpreter array element alias target.");
+
+        locals[alias_.source] = source.withArrayElement(alias_.index, value);
+        writeThroughSliceAlias(alias_.source, alias_.index, value);
+        uninitializedLocals.remove(alias_.source);
+    }
+
+    private bool isRefVariable(VarDeclaration variable) const {
+        import dmd.astenums: STC;
+
+        return (variable.storage_class & STC.ref_) != STC.none;
     }
 
     private void recordAssocArraySlotAlias(
@@ -4411,6 +4657,27 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
         return classInfoName(classType.sym);
 
     return typeChars(type);
+}
+
+
+private imported!"dmd.mtype".Type typeidObjectType(
+    imported!"dmd.expression".TypeidExp typeid_,
+) {
+    if (auto type = cast(imported!"dmd.mtype".Type) typeid_.obj)
+        return type;
+
+    if (auto expression = cast(imported!"dmd.expression".Expression) typeid_.obj)
+        return expression.type;
+
+    return null;
+}
+
+
+private imported!"dmd.mtype".Type symbolOffsetTypeInfoType(
+    imported!"dmd.expression".SymOffExp symbol,
+) {
+    auto typeInfo = symbol.var.isTypeInfoDeclaration;
+    return typeInfo is null ? null : typeInfo.tinfo;
 }
 
 

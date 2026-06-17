@@ -556,6 +556,69 @@ for wide character values; signal was verified by temporarily mutating the
 `wchar` conversion path, which changed the first displayed result from `"ab"`
 to `"bc"`.
 
+Arrays/structs/exceptions status probe:
+In the current checkout, `tests/ut/backends/runner/ct/arrays.d`,
+`tests/ut/backends/runner/ct/structs.d`, and
+`tests/ut/backends/runner/ct/exceptions.d` already have their current
+oracle-backed backend-matrix tests covered by `Interpreter`. The focused
+exceptions run passed: 26 run, 0 failed.
+
+Cerealed promotion probe:
+All current oracle-backed backend-matrix tests in
+`tests/ut/backends/runner/ct/cerealed.d` were promoted to also run on
+`Interpreter` in branch `interpreter-ct-cerealed-module`. CTFE-only
+characterization blocks stayed CTFE-only; compiled-behaviour diagnostic and
+class-registry blocks now include `Interpreter`, keeping `SystemLinker` as the
+oracle.
+
+Running only the cerealed Interpreter tests with
+`bin/ut $(bin/ut -l | rg
+'^ut\.backends\.runner\.ct\.cerealed\..*Interpreter$')` ran 23 cases: 9
+passed and 14 failed. Passing promoted surface includes struct method array
+append, `ref` cursor advancement, post-increment array indexing, template
+length-prefix writes, bool round trips, float bit reinterpretation, protocol
+unit round trip, and ubyte array round trip.
+
+Failure causes from the first focused run:
+
+- Array equality can report false negatives where both rendered operands are
+  identical, e.g. `[211, 254] != [211, 254]`,
+  `[0, 0, 0, 3, 255, 240, 189, 192] != ...`, and `[8, 13] != [8, 13]`.
+  Failing tests include `bitPackedStructHeaderRoundTrip`,
+  `encodeIntWritesBigEndianBytes`, `exampleFooRoundTripBytes`,
+  `multidimensionalArrayWritesNestedLengths`,
+  `resetReaderRestoresOriginalOrNewBytes`, `roundTripEnumBytes`, and
+  `staticArrayRoundTripOmitsLengthPrefix`.
+- The promoted compiled-oracle bounds diagnostics still report CTFE-style
+  text from the interpreter: `array index N is out of bounds `[0..M]`` instead
+  of `index [N] is out of bounds for array of length M`. Failing tests are
+  the three exhaustion diagnostics.
+- `classSerialisationReadsStaticChildRegistry` fails during static
+  associative-array delegate field initialization with
+  `Unsupported DMD default value`. The slice needs enough interpreter support
+  for the static child-writer registry fixture, not a CTFE characterization.
+- `pointerToIntWritesPointeeBytes` remains a pointer/new/dereference gap in
+  the promoted project-shaped fixture.
+
+Cerealed completion:
+The focused cerealed Interpreter-only run now passes: 23 run, 0 failed. The
+slice added recursive array equality, enum numeric scalar equality, `ref`
+array-element write-through, compiled-style bounds diagnostics while running
+called functions, static delegate and associative-array defaults, static
+class-registry support for stored function literals, classinfo name reads,
+ordinary pointer-element write-through, `_d_aaApply2` associative-array
+iteration, captured-local writeback for lowered foreach delegates, and
+struct-literal associative-array default handling.
+
+Cerealed verification regression:
+The first broad `bin/ut --random` after the cerealed slice exposed
+`arrays.dynamicArray.postIncrementIndex.Interpreter` failing with `2 != 1`.
+DMD lowers assertion operands into compiler temporaries before the `AssertExp`;
+the new `ref` array-element alias recording evaluated the index expression once
+to initialize the temp and a second time to remember the aliased slot. The fix
+records the array index returned by `runIndexExpression` and reuses it when
+installing the alias, so `index++` keeps normal single-evaluation semantics.
+
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in
 `tests/ut/backends/runner/ct/diagnostics.d` were promoted to also run on
@@ -637,7 +700,8 @@ reads/writes. The focused exceptions Interpreter-only run now reports 26 run
 and 9 failed. The former catch-object/type-selection failures now pass,
 including `catchExceptionBindsCaughtObject`,
 `catchSkipsNonMatchingSiblingException`, `catchByBaseReadsDerivedField`,
-`multipleCatchClausesSelectByDynamicType`, and `errorIsNotCaughtByExceptionHandler`.
+`multipleCatchClausesSelectByDynamicType`, and
+`errorIsNotCaughtByExceptionHandler`.
 Remaining failures are callee throw/ref propagation, `try`/`finally` return and
 throw state, one exception chaining expression shape, and the compiled-oracle
 literal `assert(false)` message.
