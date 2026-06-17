@@ -81,6 +81,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     signExtend4to8, // a: destination frame offset, b: source frame offset
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs
@@ -97,6 +98,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     jumpIfFalse, // a: condition frame offset, b: absolute instruction index
     call, // a: function index, b: argument area frame offset, c: destination
     assertTrue, // a: condition frame offset, b: assert diagnostic index
+    assertNonzeroInt4, // a: int frame offset, b: assert diagnostic index
     ret, // a: frame offset of the return value
 }
 

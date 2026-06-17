@@ -100,6 +100,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case bitOrInt4:
+                const ubyte[int.sizeof] bits = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) |
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = bits;
+                ++ip;
+                break;
+
             case addFloat:
                 const ubyte[float.sizeof] sum = floatBytes(
                     floatValue!float(stack, base + instruction.b) +
@@ -228,6 +238,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case assertNonzeroInt4:
+                if (scalarValue!int(stack, base + instruction.a) == 0)
+                    throw new Exception(assertMessage(
+                        program.assertDiagnostics[instruction.b],
+                        stack[base .. $],
+                    ));
+
+                ++ip;
+                break;
+
             case ret:
                 const resultSize =
                     size(program.functions[functionIndex].returnType);
@@ -280,6 +300,14 @@ private string assertMessage(
     in ubyte[] frame,
 ) @safe pure {
     import std.conv: text;
+
+    // A truth assert (`assert(x)`) carries the empty operator and renders the
+    // single operand against the literal `true` it was implicitly compared to.
+    if (diagnostic.operator == "")
+        return text(
+            operandText(frame, diagnostic.lhs, diagnostic.operandType),
+            " != true",
+        );
 
     return text(
         operandText(frame, diagnostic.lhs, diagnostic.operandType),

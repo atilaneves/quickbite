@@ -31,7 +31,7 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AssertExp, BinExp, CallExp, CastExp, Expression,
-        NegExp, RealExp, StringExp;
+        NegExp, OrExp, RealExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -210,6 +210,9 @@ private struct Compiler {
         if (auto add = expression.isAddExp)
             return compileAddExpression(add);
 
+        if (auto or = expression.isOrExp)
+            return compileOrExpression(or);
+
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
 
@@ -333,6 +336,20 @@ private struct Compiler {
             Op.addInt4,
             ScalarType.int_,
             "Unsupported addition in bytecode core: ",
+        );
+    }
+
+    // D's `|` is integer-typed; only the 4-byte int form is needed today.
+    private Operand compileOrExpression(OrExp or) {
+        const lhs = compileExpression(or.e1);
+        const rhs = compileExpression(or.e2);
+        return compileIntBinaryResult(
+            or,
+            lhs,
+            rhs,
+            Op.bitOrInt4,
+            ScalarType.int_,
+            "Unsupported bitwise or in bytecode core: ",
         );
     }
 
@@ -592,12 +609,19 @@ private struct Compiler {
             return false;
 
         auto call = assert_.msg.isCallExp;
-        if (call is null || call.arguments is null ||
-            call.arguments.length != 3)
+        if (call is null || call.arguments is null)
             return false;
 
         auto operator = (*call.arguments)[0].isStringExp;
-        if (operator is null || operatorText(operator) != "==")
+        if (operator is null)
+            return false;
+
+        // `assert(intExpr)` lowers to `_d_assert_fail("", intExpr)`: a single
+        // operand asserted non-zero, rendered "<value> != true" on failure.
+        if (call.arguments.length == 2 && operatorText(operator) == "")
+            return compileNonzeroAssert((*call.arguments)[1]);
+
+        if (call.arguments.length != 3 || operatorText(operator) != "==")
             return false;
 
         // D's integer promotions appear only in the rewritten condition, not
@@ -624,6 +648,29 @@ private struct Compiler {
         _code ~= Instruction(
             Op.assertTrue,
             condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(intExpr)`: throw when the int evaluates to zero; the failure
+    // renders "<value> != true", so the diagnostic carries only the operand.
+    private bool compileNonzeroAssert(Expression expression) {
+        import std.conv: text;
+
+        const operand = compileExpression(expression);
+        if (operand.type != ScalarType.int_)
+            throw new Exception(text(
+                "Unsupported truth assert in bytecode core: ",
+                expressionChars(expression),
+            ));
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic("", operand.offset, operand.offset, operand.type);
+        _code ~= Instruction(
+            Op.assertNonzeroInt4,
+            operand.offset,
             cast(ushort) diagnostic,
         );
         return true;
