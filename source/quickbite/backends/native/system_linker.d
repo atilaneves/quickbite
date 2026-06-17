@@ -4,11 +4,18 @@ module quickbite.backends.native.system_linker;
 private:
 
 
-public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
+public class SystemLinker:
+    imported!"quickbite.backends".Backend,
+    imported!"quickbite.backends.runner".GroupedRunner
+{
+    import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
+    import dmd.func: FuncDeclaration;
 
     private const SystemLinkerInputs _inputs;
+
+    public alias eval = Evaluator.eval;
 
     public this(
         in SystemLinkerInputs inputs = SystemLinkerInputs.init,
@@ -73,6 +80,22 @@ public class SystemLinker: imported!"quickbite.backends.runner".GroupedRunner {
             });
 
         return cases;
+    }
+
+    public override EvalResult eval(FuncDeclaration function_) {
+        import core.runtime: Runtime;
+
+        auto library = compileToSharedLibrary(
+            [function_.getModule],
+            _inputs,
+        );
+        scope(exit) {
+            import core.memory: GC;
+            GC.collect;
+            Runtime.unloadLibrary(library);
+        }
+
+        return evalCompiledFunction(library, function_);
     }
 }
 
@@ -224,6 +247,29 @@ private imported!"quickbite.backends.runner".TestResult runUnitTest(
     }
 
     return result;
+}
+
+private imported!"quickbite.backends.evaluator".EvalResult evalCompiledFunction(
+    void* library,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.backends.native.evaluator: callNativeFunction, evalNativeFunction;
+    import core.sys.posix.dlfcn: dlsym;
+    import dmd.mangle: mangleExact;
+    import std.conv: text;
+    import std.string: fromStringz;
+
+    auto symbol = dlsym(library, mangleExact(function_));
+    if (symbol is null)
+        throw new Exception(text(
+            "eval symbol not found in shared library: ",
+            mangleExact(function_).fromStringz,
+        ));
+
+    return evalNativeFunction(
+        () => callNativeFunction(symbol, function_),
+        function_,
+    );
 }
 
 private __gshared uint _libraryCounter;

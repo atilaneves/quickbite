@@ -13,6 +13,14 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpre
     }
 }
 
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
+    @("literal." ~ backend.stringof)
+    unittest {
+        newBackend!backend.eval("0").should == "0";
+        newBackend!backend.eval("7").should == "7";
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Bytecode, BytecodeNewCore, IR, Interpreter)) {
     @("add.int.0." ~ backend.stringof)
     unittest {

@@ -9,11 +9,18 @@ private:
 // same `.o` files in-process with LLVM's ORC JIT, killing the ~30 ms linker
 // spawn. Object production is shared via native/codegen.d; this backend
 // differs from SystemLinker only after the objects exist on disk.
-public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
+public class LLVMJit:
+    imported!"quickbite.backends".Backend,
+    imported!"quickbite.backends.runner".GroupedRunner
+{
+    import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
     import dmd.dmodule: Module;
+    import dmd.func: FuncDeclaration;
 
     private const LLVMJitInputs _inputs;
+
+    public alias eval = Evaluator.eval;
 
     public this(
         in LLVMJitInputs inputs = LLVMJitInputs.init,
@@ -27,6 +34,11 @@ public class LLVMJit: imported!"quickbite.backends.runner".GroupedRunner {
 
     public override TestResult[] runTests(Module[] modules) {
         return runTestsInChild(modules, _inputs);
+    }
+
+    public override EvalResult eval(FuncDeclaration function_) {
+        auto jit = jitForObjects([function_.getModule], _inputs);
+        return evalCompiledFunction(jit, function_);
     }
 }
 
@@ -416,6 +428,29 @@ private imported!"quickbite.backends.runner".TestResult runUnitTest(
     }
 
     return result;
+}
+
+private imported!"quickbite.backends.evaluator".EvalResult evalCompiledFunction(
+    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.backends.native.evaluator: callNativeFunction, evalNativeFunction;
+    import quickbite.backends.native.llvm_orc:
+        LLVMOrcExecutorAddress,
+        LLVMOrcLLJITLookup;
+    import dmd.mangle: mangleExact;
+    import std.string: fromStringz;
+
+    LLVMOrcExecutorAddress address;
+    throwOnError(
+        LLVMOrcLLJITLookup(jit, &address, mangleExact(function_)),
+        "lookup of " ~ mangleExact(function_).fromStringz.idup,
+    );
+
+    return evalNativeFunction(
+        () => callNativeFunction(cast(void*) address, function_),
+        function_,
+    );
 }
 
 // The child -> parent result frame. The first byte is the kind: 1 means a
