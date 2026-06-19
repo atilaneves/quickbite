@@ -54,6 +54,15 @@ import quickbite.repl_prelude: __quickbiteFormat;
     __quickbiteFormat(3.0L).should == "3.0L";
 }
 
+@("repl.formatter.rendersArrayElementsWithLiteralSuffixesAtCompileTime")
+@safe pure unittest {
+    __quickbiteFormat([1, 2]).should == "[1, 2]";
+    __quickbiteFormat([1u, 2u]).should == "[1u, 2u]";
+    __quickbiteFormat([1L, 2L]).should == "[1L, 2L]";
+    __quickbiteFormat([1.0f, 2.0f]).should == "[1.0f, 2.0f]";
+    __quickbiteFormat(["a"w, "b"w]).should == `["a"w, "b"w]`;
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;

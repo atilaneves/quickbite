@@ -78,6 +78,13 @@ literals, and `wstring`/`dstring` render as string literals with `w`/`d`
 suffixes. This is still a prelude-surface slice only; the interim backend
 `Value` rendering path remains in place.
 
+Progress 2026-06-19: the prelude formatter now owns array element rendering
+for dynamic and static arrays, so aggregate elements carry their own literal
+suffixes (`[1u, 2u]`, `[1L, 2L]`, `["a"w, "b"w`) instead of relying on
+`std.conv.text`'s widened element rendering. This is still a prelude-surface
+slice only; expression cells are not yet synthesized as
+`__quickbiteFormat(expr)`.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
