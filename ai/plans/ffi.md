@@ -1139,6 +1139,17 @@ interop boundary mechanics for native-layout backends.
 
 ## 24. Increment 3: descriptor-driven resident calls (Interpreter)
 
+**Status: Phases 0–3 landed (PR #272).** The hand-enumerated cascade described
+below is deleted; `tryCallResidentNative` now builds an `ffi_cif` from the
+resolved `FuncDeclaration` and marshals each `quickbite.lang.Value` to and from
+raw ABI bytes, via the new `quickbite.backends.libffi` binding (`libs "ffi"` in
+`dub.sdl`, `pragma(lib, "ffi")` in-file). The full `rt/cstdlib.d` suite stays
+green through the new path and `ci.sh` passes. **Phase 4 (§24.5) is the
+remaining slice**: new approved fixtures exercising capability the descriptor
+path already supports (`abs`/`labs`, `toupper`/`tolower`, `strtod`/`atof` float
+returns, wider scalar and by-value-struct shapes). The rest of this section is
+retained as the as-built record of how that path works.
+
 The Interpreter has climbed the §22/§22.2 ladder well past the first rungs:
 `malloc`, `free`, `free(null)`, `atoi`, `strtol` (with `endptr` writeback),
 `div`, `ldiv`, `calloc`, and `realloc` are all green against the
@@ -1177,9 +1188,10 @@ FuncDeclaration -> TypeFunction
 libffi is bound the way the project already binds `libLLVM` (see
 `source/quickbite/backends/native/llvm_orc.d`): a hand-written `extern(C)`
 module declaring only the surface used — `ffi_type`, `ffi_cif`, `ffi_status`,
-`ffi_prep_cif`, `ffi_prep_cif_var`, `ffi_call`, and the predefined
-`ffi_type_*` globals — with `pragma(lib, "ffi")` in-file and `libs "ffi"` in
-`dub.sdl`. No new dub dependency, no libffi dev headers.
+`ffi_prep_cif`, `ffi_call`, and the predefined `ffi_type_*` globals — with
+`pragma(lib, "ffi")` in-file and `libs "ffi"` in `dub.sdl`. No new dub
+dependency, no libffi dev headers. (`ffi_prep_cif_var` is **not** bound: it is
+only needed for variadics, which §24.6 defers.)
 
 ### 24.2 What is preserved exactly
 
