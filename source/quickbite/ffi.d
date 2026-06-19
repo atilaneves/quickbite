@@ -7,6 +7,7 @@ public bool tryCallResidentNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
     out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import core.sys.posix.dlfcn: dlsym;
     version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
@@ -144,6 +145,35 @@ public bool tryCallResidentNative(
         return true;
     }
 
+    // strtol(const char*, const char**, int): parse, returning the value and
+    // writing the unparsed-tail pointer back through the `endptr` out param.
+    if (
+        returnType.ty == TY.Tint64 &&
+        arguments.length == 3 &&
+        parameterType(type, 0).ty == TY.Tpointer &&
+        parameterType(type, 1).ty == TY.Tpointer &&
+        parameterType(type, 2).ty == TY.Tint32
+    ) {
+        alias NativeFunction = extern(C) long function(
+            const(char)*,
+            const(char)**,
+            int,
+        );
+        auto nativeFunction = cast(NativeFunction) symbol;
+
+        const(char)* endptr;
+        result = Value(nativeFunction(
+            residentNativeString(arguments[0]),
+            &endptr,
+            cast(int) arguments[2].asLong,
+        ));
+
+        argumentWritebacks = new Value[](arguments.length);
+        argumentWritebacks[1] =
+            Value.nativePointerValue(cast(void*) endptr);
+        return true;
+    }
+
     return false;
 }
 
@@ -157,6 +187,27 @@ private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
         return cast(const(char)*) value.asNativePointer;
 
     return value.asCharArrayString.toStringz;
+}
+
+// Like nativeString, but backs the C string with a stable C-heap buffer that
+// outlives the call. strtol's `endptr` points into this buffer, so a GC-owned
+// copy could be collected before the backend reads through it. The buffer is
+// intentionally leaked: native allocations are reclaimed at process exit
+// (ffi.md §5).
+private const(char)* residentNativeString(
+    in imported!"quickbite.lang".Value value,
+) {
+    import core.stdc.stdlib: malloc;
+    import core.stdc.string: memcpy;
+
+    if (value.isNativePointer)
+        return cast(const(char)*) value.asNativePointer;
+
+    const chars = value.asCharArrayString;
+    auto buffer = cast(char*) malloc(chars.length + 1);
+    memcpy(buffer, chars.ptr, chars.length);
+    buffer[chars.length] = '\0';
+    return buffer;
 }
 
 private imported!"dmd.mtype".Type parameterType(

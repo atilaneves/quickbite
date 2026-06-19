@@ -77,22 +77,32 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+enum strtolSource = q{
+    unittest {
+        import core.stdc.stdlib: strtol;
+
+        const(char)* endptr;
+        const value = strtol("123xyz".ptr, &endptr, 10);
+
+        assert(value == 123);
+        assert(*endptr == 'x');
+    }
+};
+
+// CTFE cannot call host libc; the Interpreter writes the endptr out
+// parameter back and dereferences the native char pointer.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("strtol.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: strtol;
+        shouldFailNoSource!(backend, "strtol", strtolSource);
+    }
+}
 
-                const(char)* endptr;
-                const value = strtol("123xyz".ptr, &endptr, 10);
-
-                assert(value == 123);
-                assert(*endptr == 'x');
-            }
-        };
-
-        shouldFailNoSource!(backend, "strtol", source);
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("strtol.endptr." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(strtolSource);
     }
 }
 

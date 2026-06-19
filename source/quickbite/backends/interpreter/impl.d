@@ -1333,6 +1333,9 @@ private struct Walker {
         if (isStaticArrayType(pointer.type))
             return staticArrayPointerView(value, pointer.type);
 
+        if (value.isNativePointer)
+            return loadNativePointerElement(pointer.e1.type, value, 0);
+
         if (!value.isLocalPointer)
             return value.pointerTarget;
 
@@ -1533,8 +1536,14 @@ private struct Walker {
 
             if (hasNoAvailableSource(call.f)) {
                 Value result;
-                if (!call.f.needThis && tryCallResidentNative(call.f, arguments, result))
+                Value[] writebacks;
+                if (
+                    !call.f.needThis &&
+                    tryCallResidentNative(call.f, arguments, result, writebacks)
+                ) {
+                    applyNativeWritebacks(writebacks, argumentExpressions);
                     return result;
+                }
 
                 throw new Exception(noAvailableSourceMessage(call.f));
             }
@@ -3627,7 +3636,7 @@ private struct Walker {
     }
 
     // Read a scalar element from native (C heap) memory addressed by a
-    // NativePointer. Limited to byte-addressed `ubyte*` memory for now.
+    // NativePointer. Limited to byte-addressed `ubyte*`/`char*` memory.
     private Value loadNativePointerElement(
         imported!"dmd.mtype".Type pointerType,
         in Value pointer,
@@ -3635,10 +3644,15 @@ private struct Walker {
     ) {
         import dmd.astenums: TY;
 
-        if (pointerType.toBasetype.nextOf.toBasetype.ty != TY.Tuns8)
-            throw new Exception("Unsupported native pointer element type.");
-
-        return Value(readNativeByte(pointer.asNativePointer, index));
+        const elementByte = readNativeByte(pointer.asNativePointer, index);
+        switch (pointerType.toBasetype.nextOf.toBasetype.ty) with (TY) {
+            case Tuns8:
+                return Value(elementByte);
+            case Tchar:
+                return Value(cast(char) elementByte);
+            default:
+                throw new Exception("Unsupported native pointer element type.");
+        }
     }
 
     private void storeNativePointerElement(
@@ -3665,6 +3679,38 @@ private struct Walker {
         in ubyte value,
     ) @trusted {
         (cast(ubyte*) base)[index] = value;
+    }
+
+    // Apply out-parameter writebacks reported by a resident native call (such
+    // as strtol's `char** endptr`) to the `&local` argument expressions.
+    private void applyNativeWritebacks(
+        in Value[] writebacks,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        foreach (index, writeback; writebacks) {
+            if (writeback == Value.void_)
+                continue;
+
+            auto variable = nativeOutParameterVariable(argumentExpressions[index]);
+            if (variable is null)
+                throw new Exception("Unsupported native out-parameter target.");
+
+            locals[variable] = writeback;
+            uninitializedLocals.remove(variable);
+        }
+    }
+
+    private imported!"dmd.declaration".VarDeclaration nativeOutParameterVariable(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        if (auto address = argument.isAddrExp)
+            if (auto var = address.e1.isVarExp)
+                return var.var.isVarDeclaration;
+
+        if (auto symbol = argument.isSymOffExp)
+            return symbol.var.isVarDeclaration;
+
+        return null;
     }
 
     private Value runIndexExpression(
