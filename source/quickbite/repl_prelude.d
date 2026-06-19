@@ -8,10 +8,14 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
 
     alias U = Unqual!T;
 
-    static if (is(U == char)) {
+    static if (is(U == char) || is(U == wchar) || is(U == dchar)) {
         return text("'", value, "'");
     } else static if (is(U == string)) {
         return text(`"`, value, `"`);
+    } else static if (is(U == wstring)) {
+        return text(`"`, value, `"w`);
+    } else static if (is(U == dstring)) {
+        return text(`"`, value, `"d`);
     } else static if (is(U == uint)) {
         return text(value, "u");
     } else static if (is(U == long)) {
