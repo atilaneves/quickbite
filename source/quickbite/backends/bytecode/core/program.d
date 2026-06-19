@@ -107,6 +107,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // bounds checked against the descriptor length.
     indexStore1,
     indexStore4,
+    // Form a sub-slice descriptor sharing the source's backing memory:
+    // a: destination descriptor offset, b: source descriptor offset, c: offset
+    // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
+    // {srcPtr + lo * elemSize, hi - lo}; the element size is fixed by the
+    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    subSlice1,
+    subSlice4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset

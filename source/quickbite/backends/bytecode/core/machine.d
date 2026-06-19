@@ -129,6 +129,23 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case subSlice1, subSlice4:
+                const subElementSize = subSliceElementSize(instruction.op);
+                const lo = scalarValue!size_t(stack, base + instruction.c);
+                const hi = scalarValue!size_t(
+                    stack, base + instruction.c + size_t.sizeof,
+                );
+                const sourcePointer =
+                    scalarValue!size_t(stack, base + instruction.b);
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    sourcePointer + lo * subElementSize,
+                    hi - lo,
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -829,11 +846,35 @@ private void writeSliceDescriptor(
         nativeToLittleEndian(length);
 }
 
+// Write a slice descriptor {ptr, length} at `offset` from an already-computed
+// native pointer (a sub-slice into an existing block), rather than a fresh
+// heap block. The backing memory is rooted by the original block's `heap`
+// entry, so the sub-slice shares and stays alive through that root.
+private void writeSliceDescriptorPointer(
+    ref ubyte[] stack,
+    in size_t offset,
+    in size_t pointer,
+    in size_t length,
+) @safe {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] = nativeToLittleEndian(pointer);
+    stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
+        nativeToLittleEndian(length);
+}
+
 private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
+}
+
+private uint subSliceElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.subSlice1 ? 1 : 4;
 }
 
 // The native address of element `index` within the slice descriptor at

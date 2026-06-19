@@ -617,6 +617,13 @@ private struct Compiler {
             return;
         }
 
+        // `dest = src[lo .. hi]` forms a sub-slice sharing the source's
+        // backing memory, so writes through `dest` propagate to the original.
+        if (auto slice = source.isSliceExp) {
+            compileSliceInto(destination, elementType, slice);
+            return;
+        }
+
         auto literal = source.isArrayLiteralExp;
         if (literal is null)
             throw new Exception(text(
@@ -643,6 +650,54 @@ private struct Compiler {
                 index,
             );
         }
+    }
+
+    // Emit a sub-slice descriptor into frame offset `destination` from a
+    // `SliceExp` over a dynamic-array operand. Lower and upper bounds (default
+    // `0` and `source.length` for the whole-slice form `arr[]`) are compiled
+    // into an adjacent `{lo, hi}` size_t pair; the subSlice opcode reads them
+    // and shares the source's backing memory.
+    private void compileSliceInto(
+        in ushort destination,
+        in ScalarType elementType,
+        SliceExp slice,
+    ) {
+        const descriptor = dynamicArrayDescriptor(slice.e1);
+
+        // Materialise lo and hi into adjacent size_t slots; the opcode reads
+        // the pair from the single `bounds` offset.
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(
+            Op.copy, bounds, lo, cast(ushort) size_t.sizeof,
+        );
+
+        const hi = slice.upr is null
+            ? sliceLengthSlot(descriptor)
+            : compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            subSliceOp(size(elementType)),
+            destination,
+            descriptor.offset,
+            bounds,
+        );
+    }
+
+    // Read the length word of a dynamic-array descriptor into a fresh size_t
+    // slot, for the implicit upper bound of a whole-slice `arr[]`.
+    private ushort sliceLengthSlot(in DynamicArrayLocal descriptor) {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
+        return offset;
     }
 
     private Operand compileCastExpression(CastExp cast_) {
@@ -1988,6 +2043,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.indexStore1 : Op.indexStore4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.subSlice1 : Op.subSlice4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
