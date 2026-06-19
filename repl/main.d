@@ -20,9 +20,20 @@ public int main(string[] args) {
         return 0;
     }
 
+    auto importPaths = options.options.importPaths.dup;
+    if (options.options.dubPkg.length > 0) {
+        import quickbite.dub: dubImportPaths;
+        try
+            importPaths ~= dubImportPaths(options.options.dubPkg);
+        catch (Exception e) {
+            stderr.writeln(errorDiagnostic(e.msg));
+            return 1;
+        }
+    }
+
     auto repl = Repl(
         newReplBackend(options.options.backend),
-        options.options.importPaths,
+        importPaths,
     );
 
     if (options.options.hasFile) {

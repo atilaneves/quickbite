@@ -25,16 +25,16 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     import quickbite.executor: TestSummary;
 
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         runTests(moduleResult.module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        auto moduleResult = parseModule(source, importPaths);
+        auto moduleResult = parseSnippet(source, importPaths);
         runTests(moduleResult.module_);
     }
 
@@ -48,17 +48,17 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
     public override TestSummary runTestSummary(
         in string source,
     ) {
-        import quickbite.frontend.compiler: lowerModule, parseModule;
+        import quickbite.frontend.compiler: lowerModule, parseSnippet;
 
         // Keep the result mutable: the DMD frontend owns mutable Module state.
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         const loweredModule = lowerModule(moduleResult.module_);
         return testSummary(loweredModule);
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
-        import quickbite.frontend.compiler: lowerModule, parseModule;
+        import quickbite.frontend.compiler: lowerModule, parseSnippet;
         import std.string: lastIndexOf;
 
         const lastNl = input.lastIndexOf('\n');
@@ -68,7 +68,7 @@ public final class IrExecutor : imported!"quickbite.executor".Executor {
             "auto f() { " ~ prior ~ "return " ~ last ~ "; }\n" ~
             "unittest { f(); }";
 
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         const loweredModule = lowerModule(moduleResult.module_);
 
         // f is the first (and only) non-test function in the lowered module

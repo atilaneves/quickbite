@@ -10,15 +10,15 @@ private class AssertionFailure : Exception {
 
 public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source).module_);
+        runTests(parseSnippet(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, importPaths).module_);
+        runTests(parseSnippet(source, importPaths).module_);
     }
 
     public override void runTests(imported!"dmd.dmodule".Module module_) {
@@ -34,8 +34,8 @@ public final class BytecodeExecutor : imported!"quickbite.executor".Executor {
     public override imported!"quickbite.executor".TestSummary runTestSummary(
         in string source,
     ) {
-        import quickbite.frontend.compiler: parseModule;
-        return testSummary(parseModule(source).module_);
+        import quickbite.frontend.compiler: parseSnippet;
+        return testSummary(parseSnippet(source).module_);
     }
 
     public override imported!"quickbite.executor".Value eval(in string input) {

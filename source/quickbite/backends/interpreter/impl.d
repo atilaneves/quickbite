@@ -1019,6 +1019,15 @@ private struct Walker {
 
             if (variable in uninitializedLocals) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
+                import quickbite.frontend.dmd.types: isStaticArrayType, isStructType;
+
+                // DMD's void diagnostic is field-granular: reading a whole
+                // void-initialized aggregate (as `S res = void; return res;`
+                // does) materialises a default value; only a still-void scalar
+                // read is reported. Match that so patterns like Phobos
+                // `trustedVoidInit` evaluate up to any real libc call.
+                if (isStructType(variable.type) || isStaticArrayType(variable.type))
+                    return defaultValue(variable);
 
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
@@ -1517,14 +1526,6 @@ private struct Walker {
                 return runAssocArrayHookCall(call, assocArrayHook);
         }
 
-        if (call.f !is null && !call.f.needThis) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
-
-            if (hasNoAvailableSource(call.f))
-                throw new Exception(noAvailableSourceMessage(call.f));
-        }
-
         auto stringForeachApply = call.f is null
             ? callExpressionFunction(call.e1)
             : call.f;
@@ -1576,9 +1577,16 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.ffi: tryCallResidentNative;
 
-            if (hasNoAvailableSource(call.f))
+            if (hasNoAvailableSource(call.f)) {
+                Value result;
+                if (!call.f.needThis && tryCallResidentNative(call.f, arguments, result))
+                    return result;
+
                 throw new Exception(noAvailableSourceMessage(call.f));
+            }
+
             if (call.f.isNested && hasThis)
                 return runMemberFunction(
                     call.f,

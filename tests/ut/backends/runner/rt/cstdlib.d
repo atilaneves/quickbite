@@ -16,9 +16,21 @@ private void shouldFailNoSource
         .shouldThrowWithMessage(noSource!name, file, line);
 }
 
+private void shouldFailUnsupportedInterpreterAssignment
+    (alias backend, string source)
+    (in string file = __FILE__, in size_t line = __LINE__)
+{
+    runBackendSourceFixtureTests!backend(source)
+        .shouldThrowWithMessage(
+            "Unsupported interpreter assignment target.",
+            file,
+            line,
+        );
+}
+
 
 // CTFE should stay pure: no host libc calls.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("malloc.noSource." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -50,7 +62,10 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         shouldFailNoSource!(backend, "free", source);
     }
+}
 
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("atoi.noSource." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -99,13 +114,51 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 }
 
 
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("free.null.voidReturn." ~ backend.stringof)
+    unittest {
+        enum source = q{
+            unittest {
+                import core.stdc.stdlib: free;
+
+                free(null);
+
+                assert(true);
+            }
+        };
+
+        runBackendSourceFixtureTests!backend(source);
+    }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("malloc.pointerRoundTrip." ~ backend.stringof)
+    unittest {
+        enum source = q{
+            unittest {
+                import core.stdc.stdlib: malloc, free;
+
+                auto ptr = malloc(8);
+
+                assert(ptr !is null);
+
+                free(ptr);
+            }
+        };
+
+        runBackendSourceFixtureTests!backend(source);
+    }
+}
+
+
 // Design-driving expected-failure tests for a future host FFI bridge.
 //
 // These only include fixtures that currently reach the extern(C) libc call
 // before failing. Do not add tests that first fail on unrelated frontend /
 // backend gaps such as string-literal pointer lowering, local pointer out
 // params, symbolOffset, array initializers, or callbacks.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -143,6 +196,36 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 
         shouldFailNoSource!(backend, "malloc", source);
     }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
+    unittest {
+        enum source = q{
+            unittest {
+                import core.stdc.stdlib: malloc, free;
+
+                auto ptr = cast(ubyte*) malloc(8);
+                scope(exit) free(ptr);
+
+                assert(ptr !is null);
+
+                ptr[0] = 0x11;
+                ptr[7] = 0xff;
+
+                assert(ptr[0] == 0x11);
+                assert(ptr[7] == 0xff);
+                assert(ptr[7] != 0);
+            }
+        };
+
+        shouldFailUnsupportedInterpreterAssignment!(backend, source);
+    }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
@@ -184,6 +267,10 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 
         shouldFailNoSource!(backend, "realloc", source);
     }
+}
+
+
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     unittest {
@@ -216,6 +303,45 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 
         shouldFailNoSource!(backend, "malloc", source);
     }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
+    unittest {
+        enum source = q{
+            unittest {
+                import core.stdc.stdlib: malloc, realloc, free;
+
+                auto ptr = cast(ubyte*) malloc(4);
+                assert(ptr !is null);
+
+                ptr[0] = 10;
+                ptr[1] = 20;
+                ptr[2] = 30;
+                ptr[3] = 40;
+
+                ptr = cast(ubyte*) realloc(ptr, 8);
+                scope(exit) free(ptr);
+
+                assert(ptr !is null);
+
+                assert(ptr[0] == 10);
+                assert(ptr[1] == 20);
+                assert(ptr[2] == 30);
+                assert(ptr[3] == 40);
+
+                ptr[7] = 80;
+                assert(ptr[7] == 80);
+            }
+        };
+
+        shouldFailUnsupportedInterpreterAssignment!(backend, source);
+    }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {

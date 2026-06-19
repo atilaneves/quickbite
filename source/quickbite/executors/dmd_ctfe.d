@@ -4,23 +4,23 @@ private:
 
 public final class DmdCtfe : imported!"quickbite.executor".Executor {
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source).module_);
+        runTests(parseSnippet(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, importPaths).module_);
+        runTests(parseSnippet(source, importPaths).module_);
     }
 
     public override imported!"quickbite.executor".TestSummary runTestSummary(
         in string source,
     ) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        return testSummary(parseModule(source).module_);
+        return testSummary(parseSnippet(source).module_);
     }
 
     public override void runTests(imported!"dmd.dmodule".Module module_) {
@@ -33,7 +33,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
-        import quickbite.frontend.compiler: parseModule, withCompilerLock;
+        import quickbite.frontend.compiler: parseSnippet, withCompilerLock;
         import dmd.arraytypes: Expressions;
         import dmd.dinterpret: ctfeInterpret;
         import dmd.errors: diagnostics;
@@ -48,7 +48,7 @@ public final class DmdCtfe : imported!"quickbite.executor".Executor {
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "auto f() { " ~ prior ~ "return " ~ last ~ "; }";
 
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         auto module_ = moduleResult.module_;
 
         FuncDeclaration f;

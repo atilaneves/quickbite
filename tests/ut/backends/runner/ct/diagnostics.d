@@ -574,6 +574,39 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     }
 }
 
+// A void-initialized *struct* may be returned whole and then have its fields
+// assigned, matching DMD CTFE (and compiled code). DMD's void diagnostic is
+// field-granular: only reads of still-void scalars/fields are reported, not the
+// whole-aggregate read that `return res;` performs. Mirrors Phobos
+// `trustedVoidInit`, which the interpreter previously rejected before reaching
+// any libc call. Bytecode/BytecodeNewCore/IR do not yet support whole-aggregate
+// void reads, so they are excluded pending their own fix.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("voidInitializedStructReturnedWholeIsUsable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair { int first; int second; }
+
+            Pair voidPair() {
+                Pair res = void;
+                return res;
+            }
+
+            int combine(in int a, in int b) {
+                auto p = voidPair();
+                p.first = a;
+                p.second = b;
+                return p.first + p.second;
+            }
+
+            unittest {
+                assert(combine(20, 22) == 42);
+            }
+        });
+    }
+}
+
 // SystemLinker deliberately excluded: reading a void-initialized scalar is a
 // CTFE-only diagnostic; compiled code just reads whatever is in the slot
 // (ai/plans/dmd-backend.md, slice 3).

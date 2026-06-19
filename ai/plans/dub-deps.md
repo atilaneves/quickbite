@@ -10,16 +10,142 @@ every step beyond the next one is data-directed, not assumed.
 Prefer caches keyed on content/identity at module (or function)
 granularity over a first-class "dependency" concept. Dependencies are
 the modules that usually don't change, so they fall out as the entries
-that never miss. The two places "dependency" is forced to be a real
-concept: delegating to dub-built artifacts (dub owns invalidation), and
-a possible future native dependency image (ffi.md §3-§20, deferred).
+that never miss. This holds for the hot per-edit module cache and for
+the interpreter family, which never links anything.
+
+It does **not** hold for the native family (SystemLinker, LLVMJit). They
+must turn the whole transitive dependency closure into native code and
+link it, exactly as `dub build` does, so for them "dependency" is a
+first-class, unavoidable concept. The native dependency image (one
+`lib<pkg>_dub_deps.so` per package, §"The build model" below) is the
+shared form that concept takes. It is no longer deferred: LLVMJit cannot
+benchmark any real dub package without it.
 
 Caching addresses lowering/compiling only, never execution. Whether
 dependencies "live" as .a/.so libraries or as cached bytecode is per
-backend and to be explored later: SystemLinker has no alternative to
-libraries; for the VM backends FFI and interpreted bytecode must both
-be tried and measured. FFI is needed regardless for `fbody is null`
-leaves (C/C++/Rust, closed source) — see ffi.md §21.
+backend: the native family has no alternative to the dependency image;
+for the VM backends FFI and interpreted bytecode must both be tried and
+measured. FFI is needed regardless for `fbody is null` leaves (C/C++/Rust,
+closed source) — see ffi.md §21.
+
+## The build model: cold dependency image, hot project
+
+There is no single "build a dub project" step. A dub project's build
+decomposes into a **cold** dependency-preparation step, whose output form
+is backend-family-specific, and a **hot** per-edit step over the project,
+whose shape is the same for every backend. Only the project is timed; the
+cold step runs once per `dub.selections.json` change.
+
+```text
+cold (once per dub.selections change):
+  dub build --config=unittest         -> dependency .a's
+  link dependency .a's into one .so   -> lib<pkg>_dub_deps.so   (dlopen once)
+
+hot (every edit), per backend family:
+  SystemLinker: codegen project .o -> dmd -shared against the .so
+  LLVMJit:      codegen project .o -> ORC link, deps resolved from the .so
+  Interpreter:  interpret project + dependency *source*; the .so only
+                serves body-less native leaves
+```
+
+The dependency closure form each family needs:
+
+- **SystemLinker** — deps as native code on a link line. Hot: codegen the
+  project's objects, `dmd -shared` against the `.so`.
+- **LLVMJit** — deps as native code resolvable in-process. Hot: codegen the
+  project's objects, ORC link; deps come from the dlopen'd `.so`.
+- **Interpreter / Bytecode** — deps as D source on the import path, plus
+  native leaves loaded. Hot: interpret/lower the project and dependency
+  source; dlsym the body-less leaves.
+
+### The project is never in the dependency image
+
+The image holds only the transitive **dependencies'** concrete native
+code. The project under test is the volatile part: it is codegen'd or
+interpreted fresh on every edit and resolved *against* the image. Putting
+the project in the image would mean an edit never recompiles it — the
+benchmark would time nothing. This matches PR #215, which already stopped
+prepending the root package's own `bin/lib<name>.a`; `dub describe
+--data=linker-files` lists only dependency archives, never the root's own.
+
+Two consequences hold the line on what the image contains:
+
+- It holds only **concrete** dependency code. A dependency template
+  instantiated with a *project* type (`Decerealiser.value!ProjectType`,
+  `xs.map!(lambda)`) has no body in any dependency `.a`, so it is not in
+  the image; it is codegen'd with the project every edit. This is the
+  existing per-fixture instance-homing problem below, neither fixed nor
+  worsened by the image.
+- Phobos is not bundled. The cold link uses `-defaultlib=libphobos2.so`
+  so phobos stays a `NEEDED` shared dependency, resolved against the
+  host's already-resident phobos at dlopen time (one GC, one DSO
+  registry).
+
+### Cold step: build the dependency image (a link, not codegen)
+
+dub already ran the compiler over every transitive dependency. Collapsing
+its `.a`s into the image is a pure link; Quickbite's DMD-as-library
+codegen path (`emitObjectFilesForLink`) never sees dependency source.
+
+```d
+// Cold path, once per dub.selections change. dub already compiled the
+// dependency objects; this only collapses its .a's into one shared object
+// the hot path resolves against.
+string buildDubDependencyImage(
+    in string packageName,          // "cerealed" -> libcerealed_dub_deps.so
+    in string[] dependencyArchives, // dub describe --data=linker-files
+    in string outDir,
+);  // spawns: dmd -shared -defaultlib=libphobos2.so
+    //   -L=--whole-archive <archives> -L=--no-whole-archive
+    //   -of=<outDir>/lib<packageName>_dub_deps.so
+```
+
+`--whole-archive` is load-bearing: nothing references the deps at this
+link, so without it the linker drops every member and the image is
+near-empty. The fresh project link then resolves against the populated
+image.
+
+### Hot step: codegen the whole project is the existing path
+
+`emitObjectFilesForLink(rootModules, dir, CodegenInputs(archiveImportPaths))`
+already *is* the whole-project codegen API. Its classification does the
+right thing: `archiveImportPathsUnder(importPaths, packageRoot)` splits
+imports so that paths **under the package root are codegen'd fresh** (the
+whole project) and paths **outside are archive imports** (the deps, now
+the one `.so`); `userImportedModules` transitively pulls in every project
+module the roots reach. "Codegen for a whole dub project" is therefore
+only a matter of feeding it the **whole-project root set** — every package
+source file as a root, matching `dmd -unittest source/**/*.d` — instead of
+just the discovered test modules. That root set is exactly what the
+deferred `parseRootModules` produces, so the two open items compose:
+
+```d
+const projectModules = parseRootModules(packageSourceFiles, importPaths);
+const objs = emitObjectFilesForLink(
+    projectModules,
+    dir,
+    CodegenInputs(depImportPaths),   // deps -> resolved from the .so
+);
+```
+
+### Changes to existing types
+
+- `SystemLinkerInputs.linkFiles` carries the single `lib<pkg>_dub_deps.so`
+  instead of the `.a` list. `linkSharedLibrary` then drops the
+  `--start-group`/`--end-group` wrap (one `.so`, transitively resolved),
+  directly shrinking the link inputs `dmd-backend.md` lesson 14 flagged as
+  SystemLinker's dominant cost.
+- LLVMJit gains a session-level step: `dlopen(lib<pkg>_dub_deps.so)` once
+  before any test, so its symbols are in-process and ORC's
+  process-symbol generator resolves them. ORC still links only the fresh
+  project objects — no per-test dependency work. This closes LLVMJit's
+  dependency gap: `llvm-jit.md`'s assumption that "after codegen the only
+  undefined symbols are ones `libphobos2.so` exports" holds only for
+  zero-dependency fixtures; a real package's dependency symbols live in
+  `.a`s absent from the process until the image is dlopen'd.
+- The interpreter family is unchanged on the D side (it interprets project
+  and dependency *source*); the same `.so` is what its body-less native
+  leaves dlsym against, so the image does double duty.
 
 ## Done
 
@@ -41,7 +167,7 @@ instead of codegen'ing dependency modules per run, matching `dub test`.
 
 Bench fixture-skip fix (2026-06-12): module-declared fixtures used to
 be dropped entirely — the per-iteration frontend measurement
-(`parseModuleUncached`) re-parses the fixture, which collides with the
+(`parseSnippetUncached`) re-parses the fixture, which collides with the
 first parse's entry in DMD's package symbol table (dmodule.d, failed
 `dst.insert`; no eviction in the load path), and the single try/catch
 in `prepareFixtureRuns` took the whole fixture with it.
@@ -102,9 +228,62 @@ conflict-skip — DMD sees them loaded both as fixtures and as
 imports-by-name, and they're still exercised via the importing tests).
 Full `bin/ut --random` green.
 
+File-backed fixture parsing (2026-06-17): benchmark fixture preparation
+now parses source files through the frontend's file-backed `parseModule`
+path instead of the in-memory `parseSnippet` path. This removed the old
+cerealed DMD module-table conflicts caused by parsing a module-declared
+source file under a synthetic `snippet_N.d` identity.
+
 This is the right foundation but does **not** by itself land a new
 corpus entry: it moved concepts and unit-threaded *past* the discovery
 failure into distinct downstream blockers (see "Next" item 1).
+
+## Open: parse dub packages as root module sets
+
+The current `--dub` preparation still parses discovered package source
+files one at a time. That is not equivalent to what dub hands to DMD:
+
+```text
+dmd -unittest <all package source files> -I <import paths>
+```
+
+In a real dub unittest build, the package's source and test modules are
+root modules before import traversal can parse any of them as ordinary
+imports. Quickbite's one-file-at-a-time path can instead parse
+`cerealed.range` first, let it import `cerealed.scopebuffer`, and later
+reuse that already-loaded `scopebuffer` module as a fixture.
+
+DMD intentionally skips unittest bodies in non-root imported modules and
+leaves bodyless `UnitTestDeclaration` placeholders. That is why:
+
+```text
+./bin/bench.sh -b ctfe --dub cerealed
+```
+
+can report that `__unittest_L302_C1` has no available source code even
+though `src/cerealed/scopebuffer.d` has a real unittest at that line.
+Running `scopebuffer.d` as a standalone root reaches the expected CTFE
+limitation instead: `realloc` cannot be interpreted at compile time.
+
+Fix this at the frontend boundary, not with package-specific ordering or
+diagnostic workarounds. Add:
+
+```d
+ModuleParseResult[] parseRootModules(
+    in string[] filePaths,
+    in string[] importPaths,
+);
+```
+
+The API should establish every `filePaths` entry as a root before any
+source content is parsed, run the same parse/import/semantic phases over
+that root set, and return modules in input order. It should preserve
+file identity and reject reuse of a previously-loaded non-root module as
+a runnable root fixture.
+
+`--dub` should prepare its grouped benchmark unit through
+`parseRootModules` once. Standalone fixture benchmarks should keep the
+existing `parseModule` path.
 
 ## Open: per-fixture completeness (cross-fixture instance homing)
 
@@ -149,9 +328,32 @@ cheaper alternative that sidesteps the whole problem: validate a dub
 package as one group (matching how it is timed) rather than per fixture
 — but that changes `checkRunnerResults` behaviour and needs sign-off.
 
+Do not prioritize this before `parseRootModules`. A per-fixture link
+model is still useful for standalone fixtures, but a dub package's
+correctness check should first use the same grouped root-set unit that
+will be timed. Otherwise the checker is debugging an artifact of
+Quickbite's preparation model rather than a behaviour dub itself would
+compile.
+
 ## Next, in order
 
-1. Grow the corpus past cerealed. Fixture discovery is now layout-robust
+1. Implement `parseRootModules` and route `--dub` preparation through it.
+   Verify with a package-shaped sandbox test where one root imports
+   another root whose unittest must still have a runnable body. Then run
+   `./bin/bench.sh -b ctfe --dub cerealed` to confirm the misleading
+   bodyless-unittest failure is gone; a CTFE failure on `realloc` is an
+   honest backend limitation and should be reported as such.
+2. Build the cold dependency image (§"The build model"). Add
+   `buildDubDependencyImage` and have the `--dub` cold path link dub's
+   dependency archives into one `lib<pkg>_dub_deps.so`. Point
+   `SystemLinkerInputs.linkFiles` at that single `.so` (drop the
+   group-wrap) and add LLVMJit's session-level `dlopen` of the image.
+   cerealed is a weak test here — its only native leaves are libc
+   (`mkdtemp`/`isatty`), so its image is near-empty and the native
+   backends already link without one; the image's payoff and LLVMJit's
+   need for it only appear on a corpus package with real D dependencies,
+   so land this alongside the first such package (item 3).
+3. Grow the corpus past cerealed. Fixture discovery is now layout-robust
    (Done, 2026-06-15), but discovery was only the first gate; each new
    package hits a distinct downstream blocker, in rough order of effort:
    - **concepts** (closest to a 2nd row): discovery works, but the
@@ -174,13 +376,13 @@ package as one group (matching how it is timed) rather than per fixture
      hardcodes `~/.dub/packages` (ignores `DUB_HOME`) and sorts versions
      lexically (so the git-hash dir wins over 0.6.8) — switch to dub's
      own path resolution when this bites.
-2. Instrument the bench with a per-phase breakdown of the edit cycle:
+4. Instrument the bench with a per-phase breakdown of the edit cycle:
    one-time cold dependency parse+sema (currently in no measurement
    window at all), then per-edit root parse+sema, semantic3 of imports,
    codegen split by project vs dependency source path, link, fork,
    execution. For VM backends: lowering vs execution split, execution
    time attributed by the module the executing function came from.
-3. Pick the next lever from the data, one at a time:
+5. Pick the next lever from the data, one at a time:
    - VM lowering dominates -> in-process bytecode cache keyed on
      function identity (falls out of the warm process; unchanged
      modules keep their AST objects).
@@ -197,9 +399,15 @@ package as one group (matching how it is timed) rather than per fixture
 
 ## Non-resident native dependencies (anticipated, data-gated)
 
-The VM backends execute dependency D *source*, so most dub deps need no
-native loading — they compile transitively like project code. The
-native surface is only the `fbody is null` leaves, in three populations:
+This section is about the **interpreter family's** native leaves. The VM
+backends execute dependency D *source*, so most dub deps need no native
+loading — they compile transitively like project code. The native family
+does not reach these populations the same way: its dependency D code is
+already concrete native code in the dependency image, so populations 2/3
+below become libraries on the **cold image's** link line (the same
+`libs`/`lflags` extraction, fed to `buildDubDependencyImage` instead of to
+a per-run `dlopen`). The leaves discussed here are the interpreter family's
+`fbody is null` surface, in three populations:
 
 1. Resident — libc, druntime, Phobos, already mapped into `bin/ut`;
    resolved by `dlsym(RTLD_DEFAULT, mangleExact(f))` (ffi.md §21/§22).
@@ -236,4 +444,4 @@ binders (bindbc-*, derelict-*-dynamic, gtk-d) declare nothing to dub and
 None of this is built speculatively: it waits for the first corpus
 project that fails to measure because a leaf resolves to a non-resident
 library. Priority stays cerealed (above) -> grow the corpus (Next item
-1) -> native loading only when a measured project demands it.
+3) -> native loading only when a measured project demands it.

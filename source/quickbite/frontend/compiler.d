@@ -28,40 +28,51 @@ shared static ~this() {
     compiler.shutdown;
 }
 
-public ModuleParseResult parseModule(in string source) {
-    return compiler.parseModule(source, []);
+public ModuleParseResult parseModule(in string filePath) {
+    return compiler.parseModule(filePath, []);
 }
 
 public ModuleParseResult parseModule(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModule(source, importPaths);
-}
-
-public ModuleParseResult parseModuleUncached(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModuleUncached(source, importPaths);
-}
-
-public ModuleParseResult parseModuleWithCheckActionContext(in string source) {
-    return compiler.parseModuleWithCheckActionContext(source, []);
-}
-
-public ModuleParseResult parseModuleWithCheckActionContext(
-    in string source,
-    in string[] importPaths,
-) {
-    return compiler.parseModuleWithCheckActionContext(source, importPaths);
-}
-
-public ModuleParseResult parseModuleFileWithCheckActionContext(
     in string filePath,
     in string[] importPaths,
 ) {
-    return compiler.parseModuleFileWithCheckActionContext(filePath, importPaths);
+    return compiler.parseModule(filePath, importPaths);
+}
+
+public ModuleParseResult parseSnippet(in string source) {
+    return compiler.parseSnippet(source, []);
+}
+
+public ModuleParseResult parseSnippet(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippet(source, importPaths);
+}
+
+public ModuleParseResult parseSnippetUncached(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippetUncached(source, importPaths);
+}
+
+public ModuleParseResult parseSnippetWithCheckActionContext(in string source) {
+    return compiler.parseSnippetWithCheckActionContext(source, []);
+}
+
+public ModuleParseResult parseSnippetWithCheckActionContext(
+    in string source,
+    in string[] importPaths,
+) {
+    return compiler.parseSnippetWithCheckActionContext(source, importPaths);
+}
+
+public ModuleParseResult parseModuleWithCheckActionContext(
+    in string filePath,
+    in string[] importPaths,
+) {
+    return compiler.parseModuleWithCheckActionContext(filePath, importPaths);
 }
 
 public void withCompilerLock(scope void delegate() action) {
@@ -91,9 +102,9 @@ final class Compiler {
     private bool initialized;
     private imported!"core.sync.mutex".Mutex mutex;
     private imported!"dmd.dmodule".Module _rod;
-    // Keyed by source content and import paths; prevents re-registering the
-    // same module in DMD's process-global table when multiple executors parse
-    // the same file with the same import context.
+    // Keyed by source content, import paths, and an optional caller-provided
+    // identity salt; prevents re-registering the same root module in DMD's
+    // process-global table.
     private imported!"dmd.dmodule".Module[string] sourceCache;
 
     private this() {
@@ -117,7 +128,7 @@ final class Compiler {
         findImportPaths.each!addImport;
 
         // Prevent DMD from calling exit() when too many cascading errors
-        // accumulate.  parseModule already checks global.errors after
+        // accumulate. The shared parse path already checks global.errors after
         // fullSemantic and throws an Exception, so returning true here is safe.
         // This is intentionally process-global: the correct response to a DMD
         // fatal error in any quickbite test is a thrown Exception, not a
@@ -241,24 +252,49 @@ final class Compiler {
         action();
     }
 
-    ModuleParseResult parseModule(in string source, in string[] importPaths) {
+    ModuleParseResult parseModule(
+        in string filePath,
+        in string[] importPaths,
+    ) {
+        import std.conv: text;
+        import std.file: readText;
+
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        return parseModuleLocked(source, importPaths, null, true);
+        if (auto module_ = parsedModuleForFile(filePath, importPaths)) {
+            ModuleParseResult result;
+            result.module_ = module_;
+            return result;
+        }
+
+        return parseSourceLocked(
+            filePath.readText,
+            importPaths,
+            text("file\0", filePath),
+            true,
+            dmdFileName(filePath, importPaths),
+        );
     }
 
-    ModuleParseResult parseModuleUncached(
+    ModuleParseResult parseSnippet(in string source, in string[] importPaths) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseSourceLocked(source, importPaths, null, true);
+    }
+
+    ModuleParseResult parseSnippetUncached(
         in string source,
         in string[] importPaths,
     ) {
         mutex.lock;
         scope(exit) mutex.unlock;
 
-        return parseModuleLocked(source, importPaths, null, false);
+        return parseSourceLocked(source, importPaths, null, false);
     }
 
-    ModuleParseResult parseModuleWithCheckActionContext(
+    ModuleParseResult parseSnippetWithCheckActionContext(
         in string source,
         in string[] importPaths,
     ) {
@@ -272,10 +308,10 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseModuleLocked(source, importPaths, "checkaction=context", true);
+        return parseSourceLocked(source, importPaths, "checkaction=context", true);
     }
 
-    ModuleParseResult parseModuleFileWithCheckActionContext(
+    ModuleParseResult parseModuleWithCheckActionContext(
         in string filePath,
         in string[] importPaths,
     ) {
@@ -291,7 +327,7 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseModuleLocked(
+        return parseSourceLocked(
             filePath.readText,
             importPaths,
             text("checkaction=context\0", filePath),
@@ -343,7 +379,7 @@ final class Compiler {
         return expression;
     }
 
-    private ModuleParseResult parseModuleLocked(
+    private ModuleParseResult parseSourceLocked(
         in string source,
         in string[] importPaths,
         in string cacheSalt,
@@ -419,6 +455,66 @@ final class Compiler {
 
         return text(source, "\0", importPaths.join("\0"), "\0", cacheSalt);
     }
+
+    private imported!"dmd.dmodule".Module parsedModuleForFile(
+        in string filePath,
+        in string[] importPaths,
+    ) const {
+        import dmd.dmodule: Module;
+
+        foreach (module_; Module.amodules)
+            if (moduleSourceMatches(module_, filePath, importPaths))
+                return module_;
+
+        return null;
+    }
+
+    private bool moduleSourceMatches(
+        imported!"dmd.dmodule".Module module_,
+        in string filePath,
+        in string[] importPaths,
+    ) const {
+        import std.path: absolutePath, buildNormalizedPath;
+
+        const absPath = filePath.absolutePath.buildNormalizedPath;
+        const sourcePath = module_.sourceFileName;
+        if (sourcePath.absolutePath.buildNormalizedPath == absPath)
+            return true;
+
+        foreach (importPath; importPaths) {
+            const candidate = sourcePath
+                .absolutePath(importPath)
+                .buildNormalizedPath;
+            if (candidate == absPath)
+                return true;
+        }
+
+        return false;
+    }
+
+    private string dmdFileName(in string filePath, in string[] importPaths) const {
+        import std.algorithm.searching: startsWith;
+        import std.path: absolutePath, buildNormalizedPath, relativePath;
+
+        const absPath = filePath.absolutePath.buildNormalizedPath;
+        foreach (importPath; importPaths) {
+            const relPath = absPath.relativePath(
+                importPath.absolutePath.buildNormalizedPath,
+            );
+            if (!relPath.startsWith(".."))
+                return relPath;
+        }
+
+        return filePath;
+    }
+}
+
+private string sourceFileName(imported!"dmd.dmodule".Module module_) @trusted {
+    import std.string: fromStringz;
+
+    // DMD owns `srcfile` for the lifetime of the Module; copy the
+    // null-terminated string immediately so no borrowed pointer escapes.
+    return module_.srcfile.toString.fromStringz.idup;
 }
 
 public string diagnosticMessage() {

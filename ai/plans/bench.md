@@ -28,12 +28,15 @@ Important current behaviour:
   --data=source-files`.
 - Discovery keeps in-package source and test modules, excluding only package and
   runner files.
-- `prepareFixtureRuns` parses each file by reading its text and handing DMD a
-  synthetic `snippet_N.d` filename.
-- Some library modules are first loaded by import from their real path and then
-  later parsed as synthetic fixtures, or vice versa. DMD reports module-table
-  conflicts such as `module cerealed.cerealiser from file snippet_4.d conflicts
-  with another module cerealiser from file .../cerealiser.d`.
+- `prepareFixtureRuns` historically parsed each file by reading its text and
+  handing DMD a synthetic `snippet_N.d` filename. File-backed parsing fixed
+  that identity bug, but kept the one-file-at-a-time shape.
+- With one-file-at-a-time parsing, a package module can be loaded first as an
+  import before the benchmark reaches it as a fixture. DMD intentionally skips
+  unittest bodies in non-root imported modules and leaves placeholder
+  `UnitTestDeclaration`s. Reusing that module later gives the backend an AST
+  whose source file has a real unittest body but whose declaration has
+  `fbody is null`.
 - A module can still be usable for post-parse execution even when the frontend
   timing reparse is impossible. Those rows print `unmeasurable (module
   declaration)`.
@@ -68,6 +71,25 @@ outcomes. Failure messages may differ.
 timed row should show the reported pass count so the output proves that the
 backend did not benchmark an empty unit.
 
+## Build Model And What Is Timed
+
+A dub project's build splits into a cold dependency step and a hot
+per-edit step over the project; only the project is timed. The full model
+lives in `dub-deps.md` §"The build model"; the parts that bind this driver:
+
+- **Cold (preparation, untimed).** `dub build --config=unittest` produces
+  dependency archives, which are linked once into a single
+  `lib<pkg>_dub_deps.so`. This is part of preparation, not a benchmark
+  row. The native backends link/resolve the project against this image;
+  the interpreter family uses it only for body-less native leaves.
+- **Hot (timed).** The project under test is compiled or interpreted fresh
+  every edit and resolved against the cold image. This is the only thing a
+  timed row measures.
+
+The cost of building the dependency image belongs in the preparation
+section, never folded into a timed row. If image construction fails, the
+package is a preparation failure (see item 4), not a backend skip.
+
 ## Target Shape
 
 Represent everything as benchmark units:
@@ -76,6 +98,11 @@ Represent everything as benchmark units:
 standalone fixture -> one module
 dub package        -> all prepared package modules
 ```
+
+A benchmark unit is the reporting granularity: **one timed row per unit**,
+so a dub package is exactly one row, never one row per module. This holds
+in every timed section, frontend included (see item 8): the package is
+parsed as one root set and measured as one parse, not module by module.
 
 Then use that same unit for:
 
@@ -90,6 +117,27 @@ and that none of those reported tests failed. A multi-backend run should also
 prove that all timed backends reported the same test results.
 
 ## Work Items
+
+### Current Status
+
+As of 2026-06-17, items 1, 2, and 6 are complete. Benchmark fixture
+preparation now parses source files through the frontend's file-backed
+`parseModule` path instead of the in-memory `parseSnippet` path. This removed
+the old cerealed module-table conflicts during `--dub` preparation, but it
+exposed a deeper abstraction mismatch: a dub package is a multi-root
+compilation unit, while the bench still prepares its modules one at a time.
+
+`./bin/bench.sh -b ctfe --dub cerealed` now demonstrates the mismatch. The
+driver reports that `__unittest_L302_C1` has no available source code, even
+though `src/cerealed/scopebuffer.d` plainly has a unittest at that line. The
+misleading message comes from reusing an import-loaded non-root module whose
+unittest body was skipped by DMD. Running `scopebuffer.d` as a standalone root
+gets the more honest downstream CTFE failure: `realloc` cannot be interpreted.
+
+The fix should not be another cerealed-specific workaround. Add a frontend
+`parseRootModules` API and make `--dub` prepare the package the way `dub test`
+does: establish the discovered package source files as root modules before
+imports are parsed, then return the corresponding `Module[]`.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
 
@@ -174,16 +222,20 @@ report explain the class of failure.
 
 Keep frontend parse+semantic measurement separate from post-parse execution.
 
-Rows marked `unmeasurable (module declaration)` are not backend skips. They mean
-the cached module can be used for post-parse execution, but the uncached
-frontend reparse collides with DMD process-global module state.
+For a dub package this is one measurement of the whole package as a single
+root set (item 8), reported as one row, not a per-module list. The
+`unmeasurable (module declaration)` status was an artifact of the
+one-file-at-a-time path: re-parsing a module already loaded as an import
+collided with DMD process-global module state. Measuring the package as one
+uncached multi-root parse removes that collision, so a dub row should report
+a real frontend number; reserve `unmeasurable` for standalone fixtures that
+still hit the same-FQN reload problem, and annotate it so it never reads as
+a backend skip.
 
-Rename or annotate the section so this distinction is obvious.
+### 6. Investigate File-Backed Fixture Parsing - complete
 
-### 6. Investigate File-Backed Fixture Parsing
-
-The current parser path reads a file and asks DMD to parse it as `snippet_N.d`.
-That is convenient for in-memory snippets but poor for dub source files whose
+The old parser path read a file and asked DMD to parse it as `snippet_N.d`.
+That was convenient for in-memory snippets but poor for dub source files whose
 declared module names also appear in real import paths.
 
 Investigate a file-backed parse path for benchmark fixtures:
@@ -206,24 +258,112 @@ Preserve that direction. The driver may know that `SystemLinker` is the oracle,
 but backend-specific construction policy belongs in the backend factory, not in
 the timing loop. The timing loop should not add implicit oracle backends.
 
+### 8. Parse Dub Packages As Root Module Sets
+
+Add `parseRootModules` to `quickbite.frontend.compiler` and route `--dub`
+benchmark preparation through it.
+
+The API should model the front-end shape of:
+
+```text
+dmd -unittest source/**/*.d -I source
+```
+
+not the current loop over independent `parseModule(file)` calls. The exact
+internal implementation can use DMD's lower-level `Module` API or a temporary
+compiled-import policy, but the public Quickbite contract should be:
+
+```d
+ModuleParseResult[] parseRootModules(
+    in string[] filePaths,
+    in string[] importPaths,
+);
+```
+
+Required behaviour:
+
+- all `filePaths` are established as root modules before any of their imports
+  can parse those same modules as non-root imports;
+- DMD sees real file identity for each module, preserving the file-backed fix
+  from item 6;
+- returned modules follow the input order so benchmark display names stay
+  stable;
+- if a root file was already loaded as a non-root import with bodyless unittest
+  placeholders, fail loudly instead of reusing it as a runnable fixture;
+- dependency modules outside the package remain ordinary imports unless they
+  are explicitly in `filePaths`;
+- standalone fixture parsing keeps using the existing single-file path.
+
+`prepareFixtureRuns` should become two paths:
+
+- standalone fixtures: current `parseModule` path;
+- dub packages: a package/root-set path that calls `parseRootModules` once and
+  builds one grouped `BenchmarkUnit`.
+
+The frontend timing for a dub package is one row, not one per module: the
+package is parsed once as a whole root set through `parseRootModules`, and
+that whole-package parse+semantic is the measured quantity. The measurement
+must not depend on reparsing each root in a way that changes the prepared
+AST. Because the whole-package multi-root parse is itself the uncached
+timing path, it supersedes the per-module `unmeasurable (module
+declaration)` reporting (item 5); that status survives only for standalone
+fixtures.
+
+The first approved test should exercise the frontend API directly with two
+package-shaped modules where one root imports the other. Running the imported
+root's unittest through `Ctfe` must pass, proving that the imported root did not
+receive DMD's bodyless non-root placeholder. A second bench-level test can then
+show that dub package preparation calls the root-set API and preserves grouped
+module order.
+
+Diagnostic cleanup belongs in the same slice or the next one: a bodyless
+`UnitTestDeclaration` should not be reported as if the source file lacks a
+body. If it is a DMD non-root placeholder, report that the module was parsed as
+a non-root import before fixture preparation. Keep "no available source code"
+for real external leaves such as `extern(C)` functions.
+
+### 9. Build And Use The Cold Dependency Image
+
+The `--dub` cold path should build one `lib<pkg>_dub_deps.so` from dub's
+dependency archives (`dub-deps.md` §"The build model") as a preparation
+step, then:
+
+- point `SystemLinkerInputs.linkFiles` at that single `.so` instead of the
+  raw archive list;
+- `dlopen` the image once per session before any LLVMJit timing, so ORC
+  resolves dependency symbols in-process;
+- record the image (path, or build failure) in the preparation section,
+  never as a timed row.
+
+cerealed is a weak exercise of this (its image is near-empty — libc-only
+leaves), so land it with the first corpus package that has real D
+dependencies. Until then the native backends link cerealed without an
+image, as today. This item is the bench-side counterpart of `dub-deps.md`
+Next item 2; keep the construction in the backend/preparation layer, not
+the timing loop (item 7).
+
 ## Proposed Output Shape
 
-Exact formatting is flexible, but a dub run should communicate this information:
+Exact formatting is flexible, but a dub run should communicate this
+information, with one row per package in every section:
 
 ```text
 == preparation ==
-package      discovered  prepared  skipped
-cerealed            35        30        5
+package      discovered  prepared  skipped  dep-image
+cerealed            35        30        5    libcerealed_dub_deps.so
 
 == frontend (parse + semantic only) ==
-fixture                          status
-cerealed.attrs                   unmeasurable (module declaration)
-...
+package      modules  median
+cerealed          30  4.210 ms
 
 == post-parse ==
 unit        backend       modules  tests       check   median
 cerealed    interpreter        30  151/151     pass    9.720 ms
 ```
+
+The frontend section is one row per package — the whole-package root-set
+parse — not a per-module list. The cold dependency-image build is a
+preparation fact (its path, or a build failure), never a timed row.
 
 Avoid a wall of conflict diagnostics before the metadata block. A detailed
 diagnostic can be printed under the preparation row or behind a future verbose
@@ -245,6 +385,15 @@ Useful first tests to propose:
 
 Use fake runners for the first driver tests. Do not require a real dub package
 or per-test process spawning in unit tests.
+
+For item 8, use file-backed sandbox modules rather than a real dub package:
+
+1. `parseRootModules([importer, imported], [importPath])` keeps the imported
+   root's unittest body runnable when `importer` imports it;
+2. the same test should run the imported module through `Ctfe` and see one
+   passing `TestResult`, not a bodyless-unittest diagnostic;
+3. a bench-preparation test can use fake package fixture paths and assert that
+   returned benchmark runs preserve input/display order.
 
 ## Verification
 

@@ -157,6 +157,56 @@ unittest {
     }
 }
 
+@("prepareFixtureRunsUsesFileIdentityForPackageModules")
+unittest {
+    import std.path: buildPath;
+
+    with(immutable Sandbox()) {
+        const importPath = "src";
+        const importedPath = buildPath(importPath, "cerealed", "traits.d");
+        const importerPath = buildPath(importPath, "cerealed", "cerealiser.d");
+
+        writeFile(
+            importedPath,
+            q{
+                module cerealed.traits;
+
+                enum answer = 42;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+        writeFile(
+            importerPath,
+            q{
+                module cerealed.cerealiser;
+
+                import cerealed.traits;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+
+        const runs = prepareFixtureRuns(
+            [
+                inSandboxPath(importerPath),
+                inSandboxPath(importedPath),
+            ],
+            [inSandboxPath(importPath)],
+            0,
+            1,
+        );
+
+        runs.length.should == 2;
+        runs[0].displayName.should == "cerealed.cerealiser";
+        runs[1].displayName.should == "cerealed.traits";
+    }
+}
+
 @("discoverFixturesKeepsInPackageTestModules")
 unittest {
     import std.path: buildPath;
@@ -178,6 +228,25 @@ unittest {
     discoverFixtures(pkgDir, sourceFiles).should == [
         buildPath(pkgDir, "source/acme/widget.d"),
         buildPath(pkgDir, "tests/roundtrip.d"),
+    ];
+}
+
+@("dub.parseDescribeList yields the import paths, dropping blanks and whitespace")
+unittest {
+    import quickbite.dub: parseDescribeList;
+
+    // Shape of `dub describe --data=import-paths --data-list`: the package's own
+    // source path plus its transitive dependency paths, one per line.
+    const output =
+        "/cache/pkgs/cerealed/0.6.8/cerealed/source/\n" ~
+        "  /cache/pkgs/concepts/0.0.7/concepts/source/  \n" ~
+        "\n" ~
+        "/cache/pkgs/unit-threaded/2.1.9/unit-threaded/source/\n";
+
+    parseDescribeList(output).should == [
+        "/cache/pkgs/cerealed/0.6.8/cerealed/source/",
+        "/cache/pkgs/concepts/0.0.7/concepts/source/",
+        "/cache/pkgs/unit-threaded/2.1.9/unit-threaded/source/",
     ];
 }
 
@@ -264,17 +333,17 @@ unittest {
 
 @("results.GroupedUnitChecksAllMemberModules")
 unittest {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
     Runner[string] runners;
     runners["a"] = new IndexedFailureRunner(1);
 
-    auto moduleWithOneTest = parseModule(q{ // Module is a mutable DMD AST node.
+    auto moduleWithOneTest = parseSnippet(q{ // Module is a mutable DMD AST node.
         unittest {
             assert(1 == 1);
         }
     }).module_;
-    auto moduleWithTwoTests = parseModule(q{ // Module is a mutable DMD AST node.
+    auto moduleWithTwoTests = parseSnippet(q{ // Module is a mutable DMD AST node.
         unittest {
             assert(1 == 1);
         }
@@ -311,9 +380,9 @@ private BenchmarkUnit standaloneUnit(in string name, Module module_) {
 }
 
 private Module testModule() {
-    import quickbite.frontend.compiler: parseModule;
+    import quickbite.frontend.compiler: parseSnippet;
 
-    return parseModule(q{
+    return parseSnippet(q{
         unittest {
             assert(1 == 1);
         }

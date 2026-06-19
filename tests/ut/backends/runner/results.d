@@ -2,7 +2,7 @@ module ut.backends.runner.results;
 
 
 import ut.backends;
-import quickbite.frontend.compiler: parseModule;
+import quickbite.frontend.compiler: parseSnippet;
 import std.algorithm: count;
 import std.conv: text;
 import std.path: buildPath;
@@ -88,7 +88,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
             },
             );
 
-            parseModule(source, []).shouldThrowWithMessage(
+            parseSnippet(source, []).shouldThrowWithMessage(
                 "unable to read module `" ~ moduleName ~ "`\n" ~
                 "unable to read module `" ~ moduleName ~ "`\n" ~
                 "undefined identifier `quickbiteRetryAnswer`",
@@ -224,13 +224,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore,
     @("runTests.runsTestsInEachModule." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
-        auto module1 = parseModule(q{
+        auto module1 = parseSnippet(q{
             unittest {
                 assert(1 == 1);
             }
         }).module_;
 
-        auto module2 = parseModule(q{
+        auto module2 = parseSnippet(q{
             unittest {
                 throw new Exception("second module ran");
             }

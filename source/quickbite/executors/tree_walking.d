@@ -15,15 +15,15 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
     private Value returnValue;
 
     public override void runTests(in string source) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source).module_);
+        runTests(parseSnippet(source).module_);
     }
 
     public override void runTests(in string source, in string[] importPaths) {
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
 
-        runTests(parseModule(source, importPaths).module_);
+        runTests(parseSnippet(source, importPaths).module_);
     }
 
     public override void runTests(
@@ -1013,7 +1013,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
 
     public override imported!"quickbite.executor".Value eval(in string input) {
         import quickbite.executor: Value;
-        import quickbite.frontend.compiler: parseModule;
+        import quickbite.frontend.compiler: parseSnippet;
         import dmd.declaration: VarDeclaration;
         import dmd.func: FuncDeclaration;
         import std.string: lastIndexOf;
@@ -1023,7 +1023,7 @@ public final class TreeWalkingExecutor : imported!"quickbite.executor".Executor 
         const last   = lastNl < 0 ? input : input[lastNl + 1 .. $];
         const source = "void f() { " ~ prior ~ "auto __r = " ~ last ~ "; }";
 
-        auto moduleResult = parseModule(source);
+        auto moduleResult = parseSnippet(source);
         auto module_ = moduleResult.module_;
 
         FuncDeclaration f;

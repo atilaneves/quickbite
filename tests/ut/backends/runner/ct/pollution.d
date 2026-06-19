@@ -2,7 +2,7 @@ module ut.backends.runner.ct.pollution;
 
 
 import ut.backends;
-import quickbite.frontend.compiler: parseModuleWithCheckActionContext;
+import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
 
 
 /++
@@ -44,8 +44,8 @@ static foreach (backend; AliasSeq!(Ctfe, SystemLinker, LLVMJit)) {
         };
 
         // B parsed before A compiles; compiled from this stale parse below.
-        auto moduleB = parseModuleWithCheckActionContext(sourceB, []).module_;
-        auto moduleA = parseModuleWithCheckActionContext(sourceA, []).module_;
+        auto moduleB = parseSnippetWithCheckActionContext(sourceB, []).module_;
+        auto moduleA = parseSnippetWithCheckActionContext(sourceA, []).module_;
 
         auto backend_ = newBackend!backend;
 
