@@ -12,6 +12,15 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
+    public this() @safe @nogc nothrow pure {
+    }
+
+    public this(const string[] dependencyImages) {
+        import quickbite.backends.ffi: loadDependencyImages;
+
+        loadDependencyImages(dependencyImages);
+    }
+
     public override EvalResult eval(FuncDeclaration function_) {
         try {
             Walker walker;
@@ -1607,14 +1616,14 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.backends.ffi: tryCallResidentNative;
+            import quickbite.backends.ffi: tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
                 Value result;
                 Value[] writebacks;
                 if (
                     !call.f.needThis &&
-                    tryCallResidentNative(call.f, arguments, result, writebacks)
+                    tryCallNative(call.f, arguments, result, writebacks)
                 ) {
                     applyNativeWritebacks(writebacks, argumentExpressions);
                     return result;
@@ -3868,8 +3877,8 @@ private struct Walker {
         (cast(ubyte*) base)[index] = value;
     }
 
-    // Apply out-parameter writebacks reported by a resident native call (such
-    // as strtol's `char** endptr`) to the `&local` argument expressions.
+    // Apply out-parameter writebacks reported by a native call (such as
+    // strtol's `char** endptr`) to the `&local` argument expressions.
     private void applyNativeWritebacks(
         in Value[] writebacks,
         imported!"dmd.expression".Expression[] argumentExpressions,

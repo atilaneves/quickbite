@@ -3,7 +3,12 @@ module quickbite.backends.ffi;
 private:
 
 
-public bool tryCallResidentNative(
+public void loadDependencyImages(in string[] dependencyImages) {
+    foreach (dependencyImage; dependencyImages)
+        loadDependencyImage(dependencyImage);
+}
+
+public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
     out imported!"quickbite.lang".Value result,
@@ -22,7 +27,7 @@ public bool tryCallResidentNative(
     import dmd.mtype: TypeFunction;
     import std.string: fromStringz;
 
-    if (function_._linkage != LINK.c)
+    if (!isSupportedNativeLinkage(function_._linkage))
         return false;
 
     auto type = cast(TypeFunction) function_.type;
@@ -36,12 +41,35 @@ public bool tryCallResidentNative(
     const symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
     if (symbol is null)
         throw new Exception(
-            "Resident native symbol `" ~
+            "Native symbol `" ~
             fromStringz(mangleExact(function_)).idup ~
             "` is not loaded",
         );
 
     return callViaLibffi(type, symbol, arguments, result, argumentWritebacks);
+}
+
+private void loadDependencyImage(in string dependencyImage) {
+    import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
+    import std.conv: text;
+    import std.string: fromStringz, toStringz;
+
+    if (dlopen(dependencyImage.toStringz, RTLD_NOW | RTLD_GLOBAL) is null) {
+        auto err = dlerror();
+        throw new Exception(text(
+            "failed to load dependency image: ",
+            dependencyImage,
+            err is null ? "" : text(" :: ", err.fromStringz),
+        ));
+    }
+}
+
+private bool isSupportedNativeLinkage(
+    imported!"dmd.astenums".LINK linkage,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK;
+
+    return linkage == LINK.c || linkage == LINK.d;
 }
 
 // Build a libffi call interface from the function signature, marshal the
@@ -233,7 +261,7 @@ private void marshalArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.lang".Value value,
-    in bool resident,
+    in bool stableString,
     ref const(char)*[] keepAlive,
 ) {
     import dmd.astenums: TY;
@@ -263,7 +291,7 @@ private void marshalArgument(
 
         case TY.Tpointer:
             *cast(void**) buffer.ptr =
-                marshalPointerArgument(type, value, resident, keepAlive);
+                marshalPointerArgument(type, value, stableString, keepAlive);
             return;
 
         case TY.Tstruct:
@@ -276,7 +304,7 @@ private void marshalArgument(
                     buffer[field.offset .. field.offset + fieldSize],
                     fieldType,
                     value.structFieldAt(index),
-                    resident,
+                    stableString,
                     keepAlive,
                 );
             }
@@ -290,7 +318,7 @@ private void marshalArgument(
 private void* marshalPointerArgument(
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.lang".Value value,
-    in bool resident,
+    in bool stableString,
     ref const(char)*[] keepAlive,
 ) {
     import dmd.astenums: TY;
@@ -298,8 +326,8 @@ private void* marshalPointerArgument(
     // A `char*`/`const char*` accepts a backend char array; everything else is
     // a raw native pointer (or null).
     if (type.nextOf.toBasetype.ty == TY.Tchar) {
-        const text = resident
-            ? residentNativeString(value)
+        const text = stableString
+            ? stableNativeString(value)
             : nativeString(value);
         keepAlive ~= text;
         return cast(void*) text;
@@ -383,7 +411,7 @@ private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
 // copy could be collected before the backend reads through it. The buffer is
 // intentionally leaked: native allocations are reclaimed at process exit
 // (ffi.md §5).
-private const(char)* residentNativeString(
+private const(char)* stableNativeString(
     in imported!"quickbite.lang".Value value,
 ) {
     import core.stdc.stdlib: malloc;
