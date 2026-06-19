@@ -14,36 +14,85 @@ package enum BytecodeBuiltin: size_t {
 package BytecodeBuiltin bytecodeBuiltin(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.builtin: isBuiltin;
-    import dmd.func: BUILTIN;
+    BytecodeBuiltin builtin;
+    if (tryBytecodeBuiltin(function_, builtin))
+        return builtin;
+
+    throw new Exception("Unsupported bytecode call target.");
+}
+
+package bool tryBytecodeBuiltin(
+    imported!"dmd.func".FuncDeclaration function_,
+    out BytecodeBuiltin builtin,
+    ) {
+        import dmd.builtin: isBuiltin;
+        import dmd.func: BUILTIN;
 
     if (function_ is null)
-        throw new Exception("Unsupported bytecode call target.");
+        return false;
 
     with (BUILTIN) switch (isBuiltin(function_)) {
         case fabs:
-            return BytecodeBuiltin.fabs;
+            builtin = BytecodeBuiltin.fabs;
+            return true;
 
         case isinfinity:
-            return BytecodeBuiltin.isInfinity;
+            builtin = BytecodeBuiltin.isInfinity;
+            return true;
 
         case isnan:
-            return BytecodeBuiltin.isNaN;
+            builtin = BytecodeBuiltin.isNaN;
+            return true;
 
         case pow:
-            return BytecodeBuiltin.pow;
+            builtin = BytecodeBuiltin.pow;
+            return true;
 
         case sqrt:
-            return BytecodeBuiltin.sqrt;
+            builtin = BytecodeBuiltin.sqrt;
+            return true;
 
         default:
             break;
     }
 
-    if (function_.ident !is null && function_.ident.toString == "signbit")
-        return BytecodeBuiltin.signbit;
+    if (isStdMathTraitsFunction(
+            function_,
+            "isInfinity",
+            "_D3std4math6traits__T10isInfinity",
+        )) {
+        builtin = BytecodeBuiltin.isInfinity;
+        return true;
+    }
 
-    throw new Exception("Unsupported bytecode call target.");
+    if (isStdMathTraitsFunction(
+            function_,
+            "isNaN",
+            "_D3std4math6traits__T5isNaN",
+        )) {
+        builtin = BytecodeBuiltin.isNaN;
+        return true;
+    }
+
+    if (function_.ident !is null && function_.ident.toString == "signbit") {
+        builtin = BytecodeBuiltin.signbit;
+        return true;
+    }
+
+    return false;
+}
+
+private bool isStdMathTraitsFunction(
+    imported!"dmd.func".FuncDeclaration function_,
+    in string identifier,
+    in string manglePrefix,
+) {
+    import dmd.mangle: mangleExact;
+    import std.string: fromStringz, startsWith;
+
+    return function_.ident !is null &&
+        function_.ident.toString == identifier &&
+        mangleExact(function_).fromStringz.startsWith(manglePrefix);
 }
 
 package size_t bytecodeBuiltinArgumentCount(
