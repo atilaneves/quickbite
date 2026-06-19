@@ -55,6 +55,12 @@ package(quickbite.backends.bytecode) struct ResultType {
 // into Program.data followed by a uint length.
 package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 
+// Bytes of a dynamic-array slice descriptor laid out in the frame: a native
+// `void* ptr` into VM-owned heap memory followed by a `size_t length`, matching
+// the x86-64 ABI representation of a `T[]`.
+package(quickbite.backends.bytecode) enum sliceDescriptorSize =
+    2 * size_t.sizeof;
+
 package(quickbite.backends.bytecode) uint size(in ResultType type)
     @safe @nogc nothrow pure
 {
@@ -82,6 +88,25 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Copy `c` bytes from the read-only data segment at offset `b` into the
     // inline static-array slot at frame offset `a` (a value-type byte copy).
     loadStaticArray,
+    // Allocate `b * c` bytes of VM-owned writable heap, then write the slice
+    // descriptor {ptr, length} into the frame: a: descriptor offset, b: element
+    // size, c: element count (the length).
+    allocArray,
+    // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
+    nullSlice,
+    // Read the length word of the slice descriptor at frame offset b into the
+    // size_t slot at frame offset a.
+    sliceLength,
+    // Read element `c` (a size_t index in a frame slot) of the slice descriptor
+    // at offset b into the 1- or 4-byte element slot at frame offset a, bounds
+    // checked against the descriptor length.
+    indexLoad1,
+    indexLoad4,
+    // Write the 1- or 4-byte element slot at frame offset a into element `c`
+    // (a size_t index in a frame slot) of the slice descriptor at offset b,
+    // bounds checked against the descriptor length.
+    indexStore1,
+    indexStore4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset

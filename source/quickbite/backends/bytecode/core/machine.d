@@ -16,6 +16,10 @@ package(quickbite.backends.bytecode) ubyte[] run(
     import quickbite.backends.bytecode.core.program: Op, size;
 
     auto stack = new ubyte[](program.functions[0].frameSize);
+    // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
+    // slices here keeps the memory the slice descriptors point at alive; the
+    // descriptors store the raw `block.ptr` as a native pointer.
+    ubyte[][] heap;
     Frame[] frames;
     size_t functionIndex = 0;
     size_t base = 0;
@@ -60,6 +64,68 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ] = program.data[
                     instruction.b .. instruction.b + instruction.c
                 ];
+                ++ip;
+                break;
+
+            case allocArray:
+                // Allocate writable backing memory, root it in `heap`, and
+                // write the descriptor {ptr, length} into the frame slot.
+                auto block = new ubyte[](instruction.b * instruction.c);
+                heap ~= block;
+                writeSliceDescriptor(
+                    stack, base + instruction.a, block, instruction.c,
+                );
+                ++ip;
+                break;
+
+            case nullSlice:
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + 2 * size_t.sizeof
+                ] = 0;
+                ++ip;
+                break;
+
+            case sliceLength:
+                stack[
+                    base + instruction.a .. base + instruction.a + size_t.sizeof
+                ] = stack[
+                    base + instruction.b + size_t.sizeof
+                    .. base + instruction.b + 2 * size_t.sizeof
+                ];
+                ++ip;
+                break;
+
+            case indexLoad1, indexLoad4:
+                const loadSize = elementSize(instruction.op);
+                const loadElement = elementAddress(
+                    stack, base + instruction.b,
+                    scalarValue!size_t(stack, base + instruction.c),
+                    loadSize,
+                );
+                readHeapElement(
+                    stack[
+                        base + instruction.a .. base + instruction.a + loadSize
+                    ],
+                    loadElement,
+                );
+                ++ip;
+                break;
+
+            case indexStore1, indexStore4:
+                const storeSize = elementSize(instruction.op);
+                // Non-const: the heap element is written through this pointer.
+                auto storeElement = elementAddress(
+                    stack, base + instruction.b,
+                    scalarValue!size_t(stack, base + instruction.c),
+                    storeSize,
+                );
+                writeHeapElement(
+                    storeElement,
+                    stack[
+                        base + instruction.a .. base + instruction.a + storeSize
+                    ],
+                );
                 ++ip;
                 break;
 
@@ -745,6 +811,60 @@ private string stringFromSlice(
     const dataOffset = scalarValue!uint(stack, offset);
     const length = scalarValue!uint(stack, offset + uint.sizeof);
     return (cast(const(char)[]) data[dataOffset .. dataOffset + length]).idup;
+}
+
+// Write a slice descriptor {ptr, length} at `offset`: the heap block's native
+// address followed by the element count, each a little-endian size_t.
+private void writeSliceDescriptor(
+    ref ubyte[] stack,
+    in size_t offset,
+    in ubyte[] block,
+    in size_t length,
+) @trusted {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] =
+        nativeToLittleEndian(cast(size_t) block.ptr);
+    stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
+        nativeToLittleEndian(length);
+}
+
+private uint elementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
+}
+
+// The native address of element `index` within the slice descriptor at
+// `descriptorOffset`, bounds checked against the descriptor's length word.
+private ubyte* elementAddress(
+    in ubyte[] stack,
+    in size_t descriptorOffset,
+    in size_t index,
+    in uint elementSize,
+) @trusted {
+    import std.conv: text;
+
+    const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
+    if (index >= length)
+        throw new Exception(text(
+            "index [", index, "] is out of bounds for array of length ",
+            length,
+        ));
+
+    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    return cast(ubyte*) (pointer + index * elementSize);
+}
+
+private void readHeapElement(ubyte[] destination, in ubyte* element)
+    @trusted
+{
+    destination[] = element[0 .. destination.length];
+}
+
+private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {
+    element[0 .. source.length] = source[];
 }
 
 private struct Frame {

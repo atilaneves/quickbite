@@ -32,12 +32,14 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        RefParameter, ResultType, ScalarType, isSigned, size, stringSliceSize;
+        RefParameter, ResultType, ScalarType, isSigned, size,
+        sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, ArrayLiteralExp, AssertExp, AssignExp, BinExp, CallExp,
-        CastExp, CmpExp, DivExp, Expression, IndexExp, LogicalExp, NegExp,
-        NewExp, NotExp, OrExp, RealExp, SliceExp, StringExp;
+        AddAssignExp, ArrayLengthExp, ArrayLiteralExp, AssertExp, AssignExp,
+        BinExp, CallExp, CastExp, CmpExp, DivExp, Expression, IndexExp,
+        LogicalExp, NegExp, NewExp, NotExp, OrExp, PostExp, RealExp, SliceExp,
+        StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -52,6 +54,10 @@ private struct Compiler {
     // Locals whose slot is a static array `T[N]` stored inline in the frame;
     // the value records the slot offset for indexing and block copies.
     private ushort[VarDeclaration] _staticArrayLocals;
+    // Locals whose slot holds a dynamic-array slice descriptor {ptr, length};
+    // the value records the slot offset and the element scalar type, giving the
+    // element size for indexing and heap allocation.
+    private DynamicArrayLocal[VarDeclaration] _dynamicArrayLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -67,6 +73,7 @@ private struct Compiler {
         _locals = null;
         _stringLocals = null;
         _staticArrayLocals = null;
+        _dynamicArrayLocals = null;
 
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
@@ -302,8 +309,17 @@ private struct Compiler {
             return Operand.init;
         }
 
-        if (auto index = expression.isIndexExp)
+        if (auto post = expression.isPostExp)
+            return compilePostIncrement(post);
+
+        if (auto length = expression.isArrayLengthExp)
+            return compileArrayLength(length);
+
+        if (auto index = expression.isIndexExp) {
+            if (auto element = tryDynamicArrayIndex(index))
+                return *element;
             return compileStaticArrayIndex(index);
+        }
 
         throw new Exception(text(
             "Unsupported expression in bytecode core: ",
@@ -318,6 +334,94 @@ private struct Compiler {
     private Operand compileStaticArrayIndex(IndexExp index) {
         const located = locateStaticArrayElement(index);
         return Operand(located.offset, located.type);
+    }
+
+    // `i++` on an integer local: copy the old value to the result slot, then
+    // add `e2` (the increment) to the lvalue's slot. Scoped to integer
+    // local-variable lvalues, matching the compound-assignment path.
+    private Operand compilePostIncrement(PostExp post) {
+        import std.conv: text;
+
+        auto variable = post.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const lvalueType = slot is null
+            ? ScalarType.void_
+            : scalarType(declaration.type);
+        if (slot is null || !isIntegerScalar(lvalueType))
+            throw new Exception(text(
+                "Unsupported post-increment in bytecode core: ",
+                expressionChars(post),
+            ));
+
+        const result = allocate(lvalueType);
+        _code ~= Instruction(
+            Op.copy, result, *slot, cast(ushort) size(lvalueType),
+        );
+
+        const increment = compileExpression(post.e2);
+        const addOp = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_
+                ? Op.addInt8
+                : Op.addInt4;
+        _code ~= Instruction(addOp, *slot, *slot, increment.offset);
+        return Operand(result, lvalueType);
+    }
+
+    // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
+    // slot.
+    private Operand compileArrayLength(ArrayLengthExp length) {
+        const descriptor = dynamicArrayDescriptor(length.e1);
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
+        return Operand(offset, ScalarType.ulong_);
+    }
+
+    // Read element `index` of a dynamic-array local, or null if `index` is not
+    // an access into a known dynamic-array local.
+    private Operand* tryDynamicArrayIndex(IndexExp index) {
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        const elementSize = size(descriptor.elementType);
+        const offset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize),
+            offset,
+            descriptor.offset,
+            indexSlot.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(offset, descriptor.elementType);
+        return result;
+    }
+
+    // The slice descriptor a dynamic-array expression denotes, throwing if it is
+    // not a known dynamic-array local.
+    private DynamicArrayLocal dynamicArrayDescriptor(Expression expression) {
+        import std.conv: text;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(expression);
+        if (descriptor is null)
+            throw new Exception(text(
+                "Unsupported dynamic array access in bytecode core: ",
+                expressionChars(expression),
+            ));
+        return *descriptor;
+    }
+
+    private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
+        Expression expression,
+    ) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return declaration in _dynamicArrayLocals;
+
+        return null;
     }
 
     // A string literal lives in the read-only data segment; the frame slot
@@ -354,6 +458,14 @@ private struct Compiler {
         // its DMD-computed size and alignment; no heap, no slice descriptor.
         if (variable.type.toBasetype.ty == TY.Tsarray) {
             compileStaticArrayDeclaration(variable);
+            return;
+        }
+
+        // A non-string dynamic array `T[]` holds a 16-byte slice descriptor
+        // {ptr, length}; its backing memory lives on the VM-owned heap.
+        if (variable.type.toBasetype.ty == TY.Tarray &&
+            !isStringType(variable.type)) {
+            compileDynamicArrayDeclaration(variable);
             return;
         }
 
@@ -467,6 +579,70 @@ private struct Compiler {
             cast(ushort) dataOffset,
             cast(ushort) totalSize,
         );
+    }
+
+    // A dynamic array `T[]` local holds a 16-byte slice descriptor in the
+    // frame. With no initializer (or a `null` one) it starts as a null slice;
+    // an array literal initializer heap-allocates backing memory and writes the
+    // descriptor.
+    private void compileDynamicArrayDeclaration(VarDeclaration variable) {
+        const elementType = dynamicArrayElementType(variable.type);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _dynamicArrayLocals[variable] =
+            DynamicArrayLocal(offset, elementType);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            _code ~= Instruction(Op.nullSlice, offset);
+            return;
+        }
+
+        compileDynamicArrayInto(
+            offset, elementType, initializerExpression(initializer.exp));
+    }
+
+    // Build a dynamic-array slice descriptor at frame offset `destination`. A
+    // `null` literal yields a null slice; an array literal heap-allocates a
+    // block of `count` elements and stores each element into it.
+    private void compileDynamicArrayInto(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        import std.conv: text;
+
+        if (source.isNullExp) {
+            _code ~= Instruction(Op.nullSlice, destination);
+            return;
+        }
+
+        auto literal = source.isArrayLiteralExp;
+        if (literal is null)
+            throw new Exception(text(
+                "Unsupported dynamic array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        const count = literal.elements is null ? 0 : literal.elements.length;
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            const value = compileExpression((*literal.elements)[elementIndex]);
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value.offset,
+                destination,
+                index,
+            );
+        }
     }
 
     private Operand compileCastExpression(CastExp cast_) {
@@ -740,6 +916,12 @@ private struct Compiler {
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
+        // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
+        // the heap element at `index`.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
+                return *store;
+
         // `arr[i] = rhs` for a static-array element: write the scalar rhs into
         // the element's inline frame offset.
         if (auto index = assign.e1.isIndexExp)
@@ -773,6 +955,32 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
+    // heap element at runtime index `i`. Null if `arr` is not a known
+    // dynamic-array local.
+    private Operand* tryDynamicArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const value = compileExpression(rhs);
+        const indexSlot = compileExpression(index.e2);
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            indexStoreOp(elementSize),
+            value.offset,
+            descriptor.offset,
+            indexSlot.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, descriptor.elementType);
+        return result;
     }
 
     // A located static-array element: its inline frame offset and scalar type.
@@ -1682,6 +1890,24 @@ private struct Compiler {
         return ResultType(scalarType(type), false);
     }
 
+    // The element scalar type of a dynamic array `T[]`.
+    private ScalarType dynamicArrayElementType(Type type) {
+        return scalarType(type.toBasetype.nextOf);
+    }
+
+    // Materialise a compile-time-constant `size_t` index into a frame slot, for
+    // opcodes that take their index from a frame slot.
+    private ushort compileSizeConstant(in size_t value) @safe pure {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.loadConstant,
+            offset,
+            constantIndex(value),
+            cast(ushort) size(ScalarType.ulong_),
+        );
+        return offset;
+    }
+
     private ScalarType scalarType(Type type) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -1741,6 +1967,27 @@ private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isString; // when set, `offset` holds a string-slice descriptor
+}
+
+// A dynamic-array local: its slice-descriptor frame offset and the element
+// scalar type (giving the element size for indexing and allocation).
+private struct DynamicArrayLocal {
+    ushort offset;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.indexLoad1 : Op.indexLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.indexStore1 : Op.indexStore4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
