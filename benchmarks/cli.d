@@ -25,7 +25,7 @@ public immutable string[] defaultBackendNames = [
 public void run(string[] args) {
     import std.file: readText;
     import std.getopt: defaultGetoptPrinter, getopt;
-    import std.stdio: stderr, writefln, writeln;
+    import std.stdio: stderr, write, writefln, writeln;
 
     size_t warmup     = defaultWarmup;
     size_t runs       = defaultRuns;
@@ -88,10 +88,11 @@ public void run(string[] args) {
         if (name !in runners)
             throw new Exception("unknown backend: " ~ name);
 
-    auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
+    auto prepared = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
 
+    PreparationRecord[] preparation;
     BenchmarkUnit[] units;
-    foreach (run; fixtureRuns)
+    foreach (run; prepared.runs) {
         units ~= BenchmarkUnit(
             run.displayName,
             [run],
@@ -99,12 +100,24 @@ public void run(string[] args) {
             run.frontend,
             run.frontendUnmeasurable,
         );
-    if (dubFixtures.length > 0) {
-        try
-            units ~= prepareDubUnit(dubPkg, dubFixtures, importPaths);
-        catch (Exception e)
-            stderr.writefln("skipping %s: %s", dubPkg, e.msg.firstLine);
+        preparation ~= PreparationRecord(run.displayName, 1, 1, "");
     }
+    preparation ~= prepared.failures;
+    if (dubFixtures.length > 0) {
+        try {
+            auto unit = prepareDubUnit(dubPkg, dubFixtures, importPaths);
+            preparation ~= PreparationRecord(
+                dubPkg, dubFixtures.length, unit.members.length, "",
+            );
+            units ~= unit;
+        } catch (Exception e)
+            preparation ~= PreparationRecord(
+                dubPkg, dubFixtures.length, 0, e.msg.firstLine,
+            );
+    }
+
+    if (preparation.length > 0)
+        write(renderPreparationSection(preparation));
 
     TestResult[][string] checkedResults;
     if (skipCheck) {
@@ -377,6 +390,47 @@ public struct BenchmarkRow {
     public Result result;
 }
 
+// One unit's preparation outcome. A failure to prepare is reported here, never
+// as a `skipping ...` line that reads like a backend skip: preparation happens
+// before any backend runs, so a unit that did not prepare was never benchmarked
+// by any backend.
+public struct PreparationRecord {
+    public string name;        // package or fixture display name
+    public size_t discovered;  // modules discovered for the unit
+    public size_t prepared;    // modules that parsed into the unit
+    public string note;        // failure reason, or dep-image/"" on success
+}
+
+public string renderPreparationSection(in PreparationRecord[] records) {
+    import std.array: appender;
+    import std.format: format;
+
+    auto output = appender!string;
+    output.put("== preparation ==\n");
+    output.put(format(
+        "%-32s %10s %9s %8s  %s\n\n",
+        "package", "discovered", "prepared", "skipped", "note",
+    ));
+    foreach (record; records) {
+        const skipped = record.discovered - record.prepared;
+        // prepared == 0 means nothing in the unit parsed, so the unit could not
+        // be prepared at all; spell that out rather than leaving a bare reason.
+        const note = record.prepared == 0
+            ? "not prepared: " ~ record.note
+            : record.note;
+        output.put(format(
+            "%-32s %10d %9d %8d  %s\n",
+            record.name,
+            record.discovered,
+            record.prepared,
+            skipped,
+            note,
+        ));
+    }
+    output.put("\n");
+    return output.data;
+}
+
 DubInfo resolveDubPkg(in string name) {
     import quickbite.dub: dubDescribe;
     import std.process: Config, execute;
@@ -487,7 +541,12 @@ private double ramKiB(in Result result) {
     return result.maxRamBytes / 1024.0;
 }
 
-public BenchmarkRun[] prepareFixtureRuns(
+public struct PreparedFixtures {
+    public BenchmarkRun[] runs;
+    public PreparationRecord[] failures;
+}
+
+public PreparedFixtures prepareFixtureRuns(
     in string[] fixtures,
     in string[] importPaths,
     in size_t warmup,
@@ -495,7 +554,7 @@ public BenchmarkRun[] prepareFixtureRuns(
 ) {
     import std.file: readText;
 
-    BenchmarkRun[] fixtureRuns;
+    PreparedFixtures prepared;
     foreach (path; fixtures) {
         const source      = readText(path);
         const displayName = moduleDisplayName(path, importPaths);
@@ -503,9 +562,14 @@ public BenchmarkRun[] prepareFixtureRuns(
         try {
             module_ = parseModule(path, importPaths).module_;
         } catch (Exception e) {
-            import std.stdio: stderr;
-
-            stderr.writefln("skipping %s: %s", displayName, e.msg);
+            // A fixture that does not parse was never benchmarked by any
+            // backend: record it as a preparation failure, not a backend skip.
+            prepared.failures ~= PreparationRecord(
+                displayName,
+                1,
+                0,
+                e.msg.firstLine,
+            );
             continue;
         }
 
@@ -526,14 +590,14 @@ public BenchmarkRun[] prepareFixtureRuns(
         } catch (Exception e) {
             frontendUnmeasurable = true;
         }
-        fixtureRuns ~= BenchmarkRun(
+        prepared.runs ~= BenchmarkRun(
             displayName,
             module_,
             frontend,
             frontendUnmeasurable,
         );
     }
-    return fixtureRuns;
+    return prepared;
 }
 
 // Prepare a dub package as one grouped benchmark unit. Unlike standalone

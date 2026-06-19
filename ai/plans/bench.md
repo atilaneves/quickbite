@@ -133,9 +133,19 @@ the honest downstream CTFE limitation `realloc cannot be interpreted at
 compile time`. The whole-package parse+semantic is now measured once and
 rendered as a single frontend row per package (item 5), not one per module.
 
-Still open: items 3, 4, 7, and 9 (runnable-unittest counting, the
-preparation section, the cold dependency image), plus item 1/2's remaining
-single-vs-multi-backend check polish where not already covered.
+Item 4 (the preparation section) landed 2026-06-19: `--dub` and standalone
+runs now emit a `== preparation ==` section with per-unit
+discovered/prepared/skipped counts, and a fixture that fails to prepare is
+rendered there as `not prepared: <reason>` instead of a raw
+`skipping <fixture>: ...` line before the report. Item 3's reported
+unittest pass count (the `tests` column, e.g. `156/156`) was already done;
+its leftover is the per-module count columns, now covered by the
+preparation section's prepared/skipped numbers.
+
+Still open: items 7 and 9 (backend-neutrality upkeep, the cold dependency
+image), item 3's remaining in-row declaration count under `--skip-check`,
+plus item 1/2's remaining single-vs-multi-backend check polish where not
+already covered.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
 
@@ -200,7 +210,20 @@ For grouped dub rows, include at least:
 This can be compact. The point is not verbose output; the point is falsifiable
 output.
 
-### 4. Separate Preparation From Backend Skips
+### 4. Separate Preparation From Backend Skips - complete
+
+Done (2026-06-19). `prepareFixtureRuns` now returns `PreparedFixtures`
+(`runs` plus `failures`), so a fixture that fails to parse is captured as a
+`PreparationRecord` instead of a swallowed `stderr.writefln("skipping ...")`.
+`run()` builds one `PreparationRecord` per unit (standalone and dub) and
+prints a `== preparation ==` section before the frontend section via the pure
+`renderPreparationSection`. The section reports per-unit
+discovered/prepared/skipped counts; a unit that did not prepare renders as
+`not prepared: <reason>` so it never reads as a backend skip. Backend check
+skips (`skipping cerealed interpreter: ...`) stay backend status, as intended.
+
+Covered by `renderPreparationSectionReportsFailuresAsPreparationStatus` and
+`prepareFixtureRunsReportsParseFailureAsPreparation`.
 
 Stop printing preparation failures as raw `skipping <fixture>: ...` lines before
 the sections.

@@ -93,7 +93,7 @@ unittest {
         [importPath],
         0,
         1,
-    );
+    ).runs;
 
     assert(runs.length == 2);
     assert(runs[0].displayName == "a");
@@ -128,6 +128,45 @@ unittest {
     "KiB".should.be in report;
 }
 
+@("renderPreparationSectionReportsFailuresAsPreparationStatus")
+unittest {
+    import std.algorithm.searching: canFind;
+
+    // discovered=1, prepared=0 -> a fixture that could not be prepared at all.
+    const report = renderPreparationSection([
+        PreparationRecord("cerealed.cerealiser", 1, 0, "DMD module-table conflict"),
+    ]);
+
+    assert(report.canFind("== preparation =="));
+    assert(report.canFind("cerealed.cerealiser"));
+    assert(report.canFind("not prepared"));
+    assert(report.canFind("DMD module-table conflict"));
+    // A preparation failure must not read like a backend skip.
+    assert(!report.canFind("skipping"));
+}
+
+@("prepareFixtureRunsReportsParseFailureAsPreparation")
+unittest {
+    with(immutable Sandbox()) {
+        writeFile("broken_fixture.d", q{
+            this is not valid D syntax;
+        });
+
+        const prepared = prepareFixtureRuns(
+            [inSandboxPath("broken_fixture.d")],
+            [sandboxPath],
+            0,
+            1,
+        );
+
+        prepared.runs.length.should == 0;
+        prepared.failures.length.should == 1;
+        prepared.failures[0].name.should == "broken_fixture";
+        prepared.failures[0].discovered.should == 1;
+        prepared.failures[0].prepared.should == 0;
+    }
+}
+
 @("moduleDeclarationFixtureIsNotSkipped")
 unittest {
     with(immutable Sandbox()) {
@@ -146,7 +185,7 @@ unittest {
             [sandboxPath],
             0,
             1,
-        );
+        ).runs;
 
         // Fixture must not be dropped even though the timed re-parse
         // collides with the cached module in DMD's global symbol table.
@@ -199,7 +238,7 @@ unittest {
             [inSandboxPath(importPath)],
             0,
             1,
-        );
+        ).runs;
 
         runs.length.should == 2;
         runs[0].displayName.should == "cerealed.cerealiser";
