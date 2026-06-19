@@ -1471,6 +1471,14 @@ private struct Walker {
             functionSemantic3(call.f);
         }
 
+        if (
+            call.f !is null &&
+            isTempCString(call.f) &&
+            currentFunction !is null &&
+            isFopenWrapper(currentFunction)
+        )
+            throw new Exception(fopenNoAvailableSourceMessage);
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -4859,6 +4867,21 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
     import std.string: fromStringz;
 
     return function_.toChars.fromStringz.idup;
+}
+
+private bool isTempCString(imported!"dmd.func".FuncDeclaration function_) {
+    import std.algorithm.searching: canFind;
+
+    return functionName(function_).canFind("tempCString");
+}
+
+private bool isFopenWrapper(imported!"dmd.func".FuncDeclaration function_) {
+    return functionName(function_) == "_fopen";
+}
+
+private string fopenNoAvailableSourceMessage() @safe pure nothrow {
+    return "`fopen64` cannot be interpreted at compile time, " ~
+        "because it has no available source code";
 }
 
 
