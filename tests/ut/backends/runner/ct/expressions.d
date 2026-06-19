@@ -1054,6 +1054,41 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            struct Holder {
+                ubyte[] values;
+            }
+
+            struct Appender {
+                Holder* holder;
+
+                ubyte appendByte(ubyte item) {
+                    holder = new Holder;
+                    holder.values.length = 1;
+                    holder.values = holder.values[0 .. 0];
+                    immutable len = holder.values.length;
+                    auto slice = (() => holder.values.ptr[0 .. len + 1])();
+                    auto itemUnqual = (() => &cast() item)();
+                    emplace(&slice[len], *itemUnqual);
+                    holder.values = slice;
+                    return holder.values[0];
+                }
+            }
+
+            unittest {
+                auto appender = Appender();
+                assert(appender.appendByte(42) == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

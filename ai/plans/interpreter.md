@@ -759,14 +759,45 @@ The full random run reported 2268 run, 0 failed, 5/5 expected failures.
    CTFE, Interpreter, SystemLinker, and LLVMJit.
 
 7. `Error: Unsupported interpreter pointer target.` — after slice 6, the live
-   repro advances to `emplace(&bigData[len], *itemUnqual)` in
-   `std.array.Appender.put`. Next slice should reduce this to a self-contained
-   pointer-to-slice-element write fixture with no cerealed dependency and use
-   `SystemLinker` as the oracle.
+   repro advanced to `emplace(&bigData[len], *itemUnqual)` in
+   `std.array.Appender.put`. FIXED in
+   `cast.arrayFieldPtrSliceElementAddressWritesValue`, a dependency-free
+   reduction in `tests/ut/backends/runner/ct/expressions.d` that runs on CTFE,
+   Interpreter, SystemLinker, and LLVMJit.
 
-Next step: commit the pointer-slice slice, then get approval for the
-pointer-target fixture and repeat the RED→GREEN loop. Run `ci.sh` before the
-PR.
+   Production changes:
+
+   - ordinary `runFunction` child frames seed inherited local pointer targets
+     and dynamic-array-allocation-backed locals before parameter binding;
+   - ordinary function writeback copies local pointer target values and
+     dynamic-array-allocation-backed locals back into the caller;
+   - ordinary and member function writeback preserve a returned local-pointer
+     ID when the returned pointer targets an existing caller local;
+   - ref-argument writeback treats a dynamic-array-backed `*ptr` argument as a
+     writable location, so `emplace(&slice[len], value)` can write through the
+     pointer;
+   - the old static-array-copy source-destructor supplement was removed because
+     seeded pointer targets let DMD's lowered `__ArrayDtor` calls account for
+     the copied arrays directly; keeping both paths double-counted
+     `struct.staticArrayCopyRunsPostblitAndDtors.Interpreter`.
+
+   Verification:
+
+   ```sh
+   ninja bin/ut && bin/ut \
+     ut.backends.runner.ct.structs.struct.staticArrayCopyRunsPostblitAndDtors.Interpreter \
+     ut.backends.runner.ct.expressions.cast.arrayFieldPtrSliceElementAddressWritesValue.Interpreter
+   ```
+
+   Result: 2 run, 0 failed.
+
+   ```sh
+   bin/ut --random
+   ```
+
+   Result with seed `2514968474`: 2288 run, 0 failed, 5/5 expected failures.
+
+Next step: commit the pointer-target slice. Run `ci.sh` before the PR.
 
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in
