@@ -465,6 +465,43 @@ unittest {
     results[0].passed.should == true;
 }
 
+@("results.SkipCheckDisplayCountsRunnableDeclarations")
+unittest {
+    import quickbite.frontend.compiler: parseSnippet;
+
+    auto first = parseSnippet(q{
+        unittest {
+            assert(1 == 1);
+        }
+    }).module_;
+    auto second = parseSnippet(q{
+        unittest {
+            assert(2 == 2);
+        }
+
+        unittest {
+            assert(3 == 3);
+        }
+    }).module_;
+
+    TestResult[][string] checkedResults;
+    checkedResults[pairKey("package", "a")] = [];
+
+    checkedTestsDisplay(
+        checkedResults,
+        BenchmarkUnit(
+            "package",
+            [
+                BenchmarkRun("fixture_a", first),
+                BenchmarkRun("fixture_b", second),
+            ],
+            true,
+        ),
+        "a",
+    )
+        .should == "3 unchecked";
+}
+
 @("results.GroupedUnitChecksAllMemberModules")
 unittest {
     import quickbite.frontend.compiler: parseSnippet;

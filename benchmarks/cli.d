@@ -349,9 +349,9 @@ bool checkedTestsPassing(
     return total > 0 && passed == total;
 }
 
-string checkedTestsDisplay(
+public string checkedTestsDisplay(
     TestResult[][string] checkedResults,
-    in BenchmarkUnit unit,
+    BenchmarkUnit unit,
     in string backendName,
 ) {
     import std.conv: text;
@@ -369,9 +369,18 @@ string checkedTestsDisplay(
     }
 
     if (total == 0)
-        return "0/0";
+        return text(runnableUnittestCount(unit), " unchecked");
 
     return text(passed, "/", total);
+}
+
+private size_t runnableUnittestCount(BenchmarkUnit unit) {
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+
+    size_t count;
+    foreach (member; unit.members)
+        foreachUnitTestDeclaration(member.module_, (_) { ++count; });
+    return count;
 }
 
 public struct DubInfo {

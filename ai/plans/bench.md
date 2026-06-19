@@ -149,8 +149,12 @@ once at backend construction so ORC can resolve dependency symbols from the
 process. The image link uses `cc -shared` with `--whole-archive` because
 `dmd -shared` drops archive-only inputs.
 
-Still open: item 7 backend-neutrality upkeep, item 3's remaining in-row
-declaration count under `--skip-check`, plus item 1/2's remaining
+`--skip-check` declaration-count reporting landed 2026-06-19: unchecked rows
+now print the number of runnable unittest declarations in the prepared unit
+(`3 unchecked`) instead of the fake result count `0/0`. Covered by
+`results.SkipCheckDisplayCountsRunnableDeclarations`.
+
+Still open: item 7 backend-neutrality upkeep, plus item 1/2's remaining
 single-vs-multi-backend check polish where not already covered.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
@@ -197,7 +201,14 @@ For standalone fixtures, the unit has one module. For dub packages, the unit is
 the prepared package module group if the runner supports grouped execution, or
 the existing `runTests(Runner, Module[])` fallback otherwise.
 
-### 3. Count Runnable Unittests
+### 3. Count Runnable Unittests - complete
+
+Done (2026-06-19). Checked rows already print the reported pass count
+(`156/156`). Preparation rows print discovered/prepared/skipped module counts.
+For explicit `--skip-check` runs, where there are intentionally no backend
+`TestResult[]` values, the timed row now counts runnable unittest declarations
+from the prepared benchmark unit and prints `<count> unchecked` instead of
+`0/0`.
 
 Before printing a timed row, compute the number of unittest declarations in the
 unit.
