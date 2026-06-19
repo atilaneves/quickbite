@@ -274,12 +274,19 @@ public string testResultsMismatch(
         const right = rhs[i];
         if (left.name != right.name)
             return text("test ", left.name, " vs ", right.name);
-        if (left.passed != right.passed)
+        if (left.passed != right.passed) {
+            // Exactly one side failed; surface its diagnostic so a disagreement
+            // reports *why* the failing backend diverged, not just that it did.
+            const failure = left.passed ? right : left;
             return text(
                 "test ", left.name, " ",
                 left.passed ? "passes" : "fails", " vs ",
                 right.passed ? "passes" : "fails",
+                failure.message.length > 0
+                    ? text(": ", failure.message.firstLine)
+                    : "",
             );
+        }
     }
 
     return null;
