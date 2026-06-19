@@ -1565,17 +1565,6 @@ private struct Walker {
         )
             return runStringForeachApplyCall(call, stringForeachApply);
 
-        auto calledFunction = call.f is null
-            ? callExpressionFunction(call.e1)
-            : call.f;
-        if (calledFunction !is null && !calledFunction.needThis) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
-
-            if (hasNoAvailableSource(calledFunction))
-                throw new Exception(noAvailableSourceMessage(calledFunction));
-        }
-
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
@@ -1616,6 +1605,24 @@ private struct Walker {
         }
 
         if (call.f !is null) {
+            import quickbite.frontend.dmd.functions:
+                hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.backends.ffi: tryCallResidentNative;
+
+            if (hasNoAvailableSource(call.f)) {
+                Value result;
+                Value[] writebacks;
+                if (
+                    !call.f.needThis &&
+                    tryCallResidentNative(call.f, arguments, result, writebacks)
+                ) {
+                    applyNativeWritebacks(writebacks, argumentExpressions);
+                    return result;
+                }
+
+                throw new Exception(noAvailableSourceMessage(call.f));
+            }
+
             if (call.f.isNested && hasThis)
                 return runMemberFunction(
                     call.f,
