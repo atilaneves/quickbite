@@ -36,10 +36,13 @@ private Runner makeSystemLinker(in BackendEnv env) {
 }
 
 // In-process ORC JIT: reuses SystemLinker's object production but resolves
-// druntime/phobos from the running process, so it ignores env (no archive
-// linking) like Ctfe does. Archive-backed dub packages are out of its scope.
+// druntime/phobos and dub dependency-image symbols from the running process.
 private Runner makeLLVMJit(in BackendEnv env) {
-    return new LLVMJit;
+    return new LLVMJit(
+        env.linkFiles,
+        env.importPaths,
+        env.packageRoot,
+    );
 }
 
 public Runner[string] makeRunners(in BackendEnv env) {
