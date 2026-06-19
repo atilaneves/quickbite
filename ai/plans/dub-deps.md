@@ -304,11 +304,12 @@ unittest runs through `Ctfe`) and `prepareDubUnitParsesRootSetPreservingOrder`
 `bin/bench --dub cerealed -b system-linker` produces a row because a dub
 package is timed as one **grouped** compile (all fixture modules in one
 shared library — every instance is in-link, so nothing is missing). The
-single-backend path also sets `skipCheck`, so correctness is not
-verified there. The unsolved problem is the **per-fixture** path
-(`checkRunnerResults`, used by any multi-backend cross-check): each
-fixture is compiled as its own link, and that exposes a completeness
-gap.
+single-backend path now self-checks before timing; explicit `--skip-check`
+rows state the prepared unit's runnable declaration count instead of a fake
+`0/0` result count. The unsolved problem is the **per-fixture** path
+(`checkRunnerResults`, used by multi-backend cross-checks when a backend
+does not run the grouped unit): each fixture is compiled as its own link,
+and that exposes a completeness gap.
 
 Root cause: DMD homes a template instance on the members of the *first*
 root module that instantiates it (its `minst`); a root module's
