@@ -1107,11 +1107,62 @@ public struct Value {
             (const(Array) array) {
                 auto elements = array.elements.dup;
                 elements[index] = element;
-                return Value.arrayValue(elements);
+                auto allocation = array.allocation.dup;
+                const allocationIndex = array.allocationOffset + index;
+                if (allocationIndex < allocation.length)
+                    allocation[allocationIndex] = element;
+                return Value(Array(
+                    elements,
+                    array.display,
+                    allocation,
+                    array.allocationOffset,
+                ));
             },
             (_) {
                 throw new Exception("Expected array.");
                 return Value.void_;
+            },
+        );
+    }
+
+    public Value arraySlice(in size_t lower, in size_t upper) const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => Value(Array(
+                array.elements[lower .. upper],
+                array.display,
+                array.allocation,
+                array.allocationOffset + lower,
+            )),
+            (_) {
+                throw new Exception("Expected array.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value[] arrayAllocationElements() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.allocation.dup,
+            (_) {
+                throw new Exception("Expected array.");
+                Value[] empty;
+                return empty;
+            },
+        );
+    }
+
+    public size_t arrayAllocationOffset() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(Array) array) => array.allocationOffset,
+            (_) {
+                throw new Exception("Expected array.");
+                return size_t.init;
             },
         );
     }
@@ -1673,6 +1724,8 @@ private struct Undisplayable {
 
 private struct Array {
     public Value[] elements;
+    public Value[] allocation;
+    public size_t allocationOffset;
     public ArrayDisplay display;
 
     public this(
@@ -1680,6 +1733,20 @@ private struct Array {
         in ArrayDisplay display = ArrayDisplay.normal,
     ) @safe pure {
         this.elements = elements.dup;
+        this.allocation = elements.dup;
+        this.allocationOffset = 0;
+        this.display = display;
+    }
+
+    public this(
+        in Value[] elements,
+        in ArrayDisplay display,
+        in Value[] allocation,
+        in size_t allocationOffset = 0,
+    ) @safe pure {
+        this.elements = elements.dup;
+        this.allocation = allocation.dup;
+        this.allocationOffset = allocationOffset;
         this.display = display;
     }
 

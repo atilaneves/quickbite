@@ -998,6 +998,97 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("cast.arrayFieldPointerDereferencesFirstElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                ubyte[] values;
+            }
+
+            ubyte readArrayFieldThroughPointerCast() {
+                auto holder = new Holder;
+                holder.values.length = 1;
+                holder.values[0] = 42;
+                auto pointer = cast(ubyte*) holder.values;
+                return *pointer;
+            }
+
+            unittest {
+                assert(readArrayFieldThroughPointerCast() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("cast.arrayFieldPtrSliceUsesResizedLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                ubyte[] values;
+            }
+
+            struct Appender {
+                Holder* holder;
+
+                ubyte readArrayFieldPointerSlice() {
+                    holder = new Holder;
+                    holder.values.length = 1;
+                    holder.values = holder.values[0 .. 0];
+                    immutable len = holder.values.length;
+                    auto slice = (() => holder.values.ptr[0 .. len + 1])();
+                    slice[len] = 42;
+                    holder.values = slice;
+                    return slice[0];
+                }
+            }
+
+            unittest {
+                auto appender = Appender();
+                assert(appender.readArrayFieldPointerSlice() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            struct Holder {
+                ubyte[] values;
+            }
+
+            struct Appender {
+                Holder* holder;
+
+                ubyte appendByte(ubyte item) {
+                    holder = new Holder;
+                    holder.values.length = 1;
+                    holder.values = holder.values[0 .. 0];
+                    immutable len = holder.values.length;
+                    auto slice = (() => holder.values.ptr[0 .. len + 1])();
+                    auto itemUnqual = (() => &cast() item)();
+                    emplace(&slice[len], *itemUnqual);
+                    holder.values = slice;
+                    return holder.values[0];
+                }
+            }
+
+            unittest {
+                auto appender = Appender();
+                assert(appender.appendByte(42) == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1174,6 +1265,58 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
                 seed += 1;
 
                 assert(readThroughRefPointer(seed) == 42);
+            }
+        });
+    }
+}
+
+// `new S` of a struct with a dynamic-array field passes the field's `null`
+// default initialiser as a positional argument; the interpreter must store it
+// as an empty array so a null array's `.length` is 0 (compiled D:
+// `(new S).arr.length == 0`).  cerealed's Appender (`new Data` then
+// `_data.arr.length`) hits this.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("new.heapStructArrayFieldHasZeroLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            size_t heapStructArrayLength() {
+                auto holder = new Holder;
+                return holder.values.length;
+            }
+
+            unittest {
+                assert(heapStructArrayLength() == 0);
+            }
+        });
+    }
+}
+
+// Resizing a dynamic-array field through a struct pointer
+// (`_data.arr.length = n`) must rebuild the array with default-initialised
+// elements; the lvalue is a field access, not a plain local.  cerealed's
+// Appender.ensureAddable hits this under CTFE-style execution.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
+    @("new.heapStructArrayFieldGrowsByLengthAssign." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            size_t growHeapStructArray() {
+                auto holder = new Holder;
+                holder.values.length = 3;
+                return holder.values.length;
+            }
+
+            unittest {
+                assert(growHeapStructArray() == 3);
             }
         });
     }
