@@ -94,21 +94,35 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
         shouldFailNoSource!(backend, "strtol", source);
     }
+}
 
+enum divSource = q{
+    unittest {
+        import core.stdc.stdlib: div;
+
+        const result = div(7, 3);
+
+        assert(result.quot == 2);
+        assert(result.rem == 1);
+    }
+};
+
+enum ldivSource = q{
+    unittest {
+        import core.stdc.stdlib: ldiv;
+
+        const result = ldiv(10L, 4L);
+
+        assert(result.quot == 2);
+        assert(result.rem == 2);
+    }
+};
+
+// CTFE rejects div: DMD CTFE has no host libc struct-return support.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("div.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: div;
-
-                const result = div(7, 3);
-
-                assert(result.quot == 2);
-                assert(result.rem == 1);
-            }
-        };
-
-        shouldFailNoSource!(backend, "div", source);
+        shouldFailNoSource!(backend, "div", divSource);
     }
 }
 
@@ -332,38 +346,32 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: div;
-
-                const result = div(7, 3);
-
-                assert(result.quot == 2);
-                assert(result.rem == 1);
-            }
-        };
-
-        shouldFailNoSource!(backend, "div", source);
+        shouldFailNoSource!(backend, "div", divSource);
     }
 
     @("ldiv.structReturn.longArgs." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: ldiv;
+        shouldFailNoSource!(backend, "ldiv", ldivSource);
+    }
+}
 
-                const result = ldiv(10L, 4L);
 
-                assert(result.quot == 2);
-                assert(result.rem == 2);
-            }
-        };
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 
-        shouldFailNoSource!(backend, "ldiv", source);
+    @("div.structReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(divSource);
+    }
+
+    @("ldiv.structReturn.longArgs." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(ldivSource);
     }
 }
 

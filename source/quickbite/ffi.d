@@ -104,6 +104,46 @@ public bool tryCallResidentNative(
         return true;
     }
 
+    // div(int, int) / ldiv(long, long): a {quot, rem} struct returned by
+    // value through the SysV ABI, mapped back to a backend struct value.
+    if (
+        returnType.ty == TY.Tstruct &&
+        arguments.length == 2 &&
+        parameterType(type, 0).ty == TY.Tint32 &&
+        parameterType(type, 1).ty == TY.Tint32
+    ) {
+        static struct DivResult { int quot; int rem; }
+        alias NativeFunction = extern(C) DivResult function(int, int);
+        const divided = (cast(NativeFunction) symbol)(
+            cast(int) arguments[0].asLong,
+            cast(int) arguments[1].asLong,
+        );
+        result = Value.structValue(
+            "div_t",
+            [Value(divided.quot), Value(divided.rem)],
+        );
+        return true;
+    }
+
+    if (
+        returnType.ty == TY.Tstruct &&
+        arguments.length == 2 &&
+        parameterType(type, 0).ty == TY.Tint64 &&
+        parameterType(type, 1).ty == TY.Tint64
+    ) {
+        static struct LDivResult { long quot; long rem; }
+        alias NativeFunction = extern(C) LDivResult function(long, long);
+        const divided = (cast(NativeFunction) symbol)(
+            arguments[0].asLong,
+            arguments[1].asLong,
+        );
+        result = Value.structValue(
+            "ldiv_t",
+            [Value(divided.quot), Value(divided.rem)],
+        );
+        return true;
+    }
+
     return false;
 }
 
