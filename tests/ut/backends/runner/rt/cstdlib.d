@@ -16,18 +16,6 @@ private void shouldFailNoSource
         .shouldThrowWithMessage(noSource!name, file, line);
 }
 
-private void shouldFailUnsupportedInterpreterAssignment
-    (alias backend, string source)
-    (in string file = __FILE__, in size_t line = __LINE__)
-{
-    runBackendSourceFixtureTests!backend(source)
-        .shouldThrowWithMessage(
-            "Unsupported interpreter assignment target.",
-            file,
-            line,
-        );
-}
-
 
 // CTFE should stay pure: no host libc calls.
 static foreach (backend; AliasSeq!(Ctfe)) {
@@ -65,51 +53,86 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+enum atoiSource = q{
+    unittest {
+        import core.stdc.stdlib: atoi;
+
+        assert(atoi("12345".ptr) == 12345);
+    }
+};
+
+// CTFE cannot call host libc; the Interpreter marshals the char array.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("atoi.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: atoi;
-
-                assert(atoi("12345".ptr) == 12345);
-            }
-        };
-
-        shouldFailNoSource!(backend, "atoi", source);
+        shouldFailNoSource!(backend, "atoi", atoiSource);
     }
+}
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("atoi.value." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(atoiSource);
+    }
+}
+
+enum strtolSource = q{
+    unittest {
+        import core.stdc.stdlib: strtol;
+
+        const(char)* endptr;
+        const value = strtol("123xyz".ptr, &endptr, 10);
+
+        assert(value == 123);
+        assert(*endptr == 'x');
+    }
+};
+
+// CTFE cannot call host libc; the Interpreter writes the endptr out
+// parameter back and dereferences the native char pointer.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("strtol.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: strtol;
-
-                const(char)* endptr;
-                const value = strtol("123xyz".ptr, &endptr, 10);
-
-                assert(value == 123);
-                assert(*endptr == 'x');
-            }
-        };
-
-        shouldFailNoSource!(backend, "strtol", source);
+        shouldFailNoSource!(backend, "strtol", strtolSource);
     }
+}
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("strtol.endptr." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(strtolSource);
+    }
+}
+
+enum divSource = q{
+    unittest {
+        import core.stdc.stdlib: div;
+
+        const result = div(7, 3);
+
+        assert(result.quot == 2);
+        assert(result.rem == 1);
+    }
+};
+
+enum ldivSource = q{
+    unittest {
+        import core.stdc.stdlib: ldiv;
+
+        const result = ldiv(10L, 4L);
+
+        assert(result.quot == 2);
+        assert(result.rem == 2);
+    }
+};
+
+// CTFE rejects div: DMD CTFE has no host libc struct-return support.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("div.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: div;
-
-                const result = div(7, 3);
-
-                assert(result.quot == 2);
-                assert(result.rem == 1);
-            }
-        };
-
-        shouldFailNoSource!(backend, "div", source);
+        shouldFailNoSource!(backend, "div", divSource);
     }
 }
 
@@ -220,159 +243,145 @@ static foreach (backend; AliasSeq!(Interpreter)) {
             }
         };
 
-        shouldFailUnsupportedInterpreterAssignment!(backend, source);
+        runBackendSourceFixtureTests!backend(source);
     }
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
+enum callocZeroedSource = q{
+    unittest {
+        import core.stdc.stdlib: calloc, free;
+
+        auto ptr = cast(ubyte*) calloc(4, 2);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        foreach (i; 0 .. 8)
+            assert(ptr[i] == 0);
+
+        ptr[7] = 0xaa;
+        assert(ptr[7] == 0xaa);
+    }
+};
+
+enum reallocNullSource = q{
+    unittest {
+        import core.stdc.stdlib: realloc, free;
+
+        auto ptr = cast(ubyte*) realloc(null, 8);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        ptr[7] = 0xaa;
+        assert(ptr[7] == 0xaa);
+    }
+};
+
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: calloc, free;
-
-                auto ptr = cast(ubyte*) calloc(4, 2);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                foreach (i; 0 .. 8)
-                    assert(ptr[i] == 0);
-
-                ptr[7] = 0xaa;
-                assert(ptr[7] == 0xaa);
-            }
-        };
-
-        shouldFailNoSource!(backend, "calloc", source);
+        shouldFailNoSource!(backend, "calloc", callocZeroedSource);
     }
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: realloc, free;
+        shouldFailNoSource!(backend, "realloc", reallocNullSource);
+    }
+}
 
-                auto ptr = cast(ubyte*) realloc(null, 8);
-                scope(exit) free(ptr);
 
-                assert(ptr !is null);
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 
-                ptr[7] = 0xaa;
-                assert(ptr[7] == 0xaa);
-            }
-        };
+    @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(callocZeroedSource);
+    }
 
-        shouldFailNoSource!(backend, "realloc", source);
+    @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(reallocNullSource);
+    }
+}
+
+
+enum reallocGrowSource = q{
+    unittest {
+        import core.stdc.stdlib: malloc, realloc, free;
+
+        auto ptr = cast(ubyte*) malloc(4);
+        assert(ptr !is null);
+
+        ptr[0] = 10;
+        ptr[1] = 20;
+        ptr[2] = 30;
+        ptr[3] = 40;
+
+        ptr = cast(ubyte*) realloc(ptr, 8);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        assert(ptr[0] == 10);
+        assert(ptr[1] == 20);
+        assert(ptr[2] == 30);
+        assert(ptr[3] == 40);
+
+        ptr[7] = 80;
+        assert(ptr[7] == 80);
+    }
+};
+
+// Bytecode/IR fail at the first malloc leaf; the Interpreter reaches realloc.
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
+
+    @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
+    unittest {
+        shouldFailNoSource!(backend, "malloc", reallocGrowSource);
+    }
+}
+
+
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+
+    @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(reallocGrowSource);
     }
 }
 
 
 static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
-    @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
-    unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: malloc, realloc, free;
-
-                auto ptr = cast(ubyte*) malloc(4);
-                assert(ptr !is null);
-
-                ptr[0] = 10;
-                ptr[1] = 20;
-                ptr[2] = 30;
-                ptr[3] = 40;
-
-                ptr = cast(ubyte*) realloc(ptr, 8);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                assert(ptr[0] == 10);
-                assert(ptr[1] == 20);
-                assert(ptr[2] == 30);
-                assert(ptr[3] == 40);
-
-                ptr[7] = 80;
-                assert(ptr[7] == 80);
-            }
-        };
-
-        shouldFailNoSource!(backend, "malloc", source);
-    }
-}
-
-
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
-    unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: malloc, realloc, free;
-
-                auto ptr = cast(ubyte*) malloc(4);
-                assert(ptr !is null);
-
-                ptr[0] = 10;
-                ptr[1] = 20;
-                ptr[2] = 30;
-                ptr[3] = 40;
-
-                ptr = cast(ubyte*) realloc(ptr, 8);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                assert(ptr[0] == 10);
-                assert(ptr[1] == 20);
-                assert(ptr[2] == 30);
-                assert(ptr[3] == 40);
-
-                ptr[7] = 80;
-                assert(ptr[7] == 80);
-            }
-        };
-
-        shouldFailUnsupportedInterpreterAssignment!(backend, source);
-    }
-}
-
-
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
-
     @("div.structReturn." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: div;
-
-                const result = div(7, 3);
-
-                assert(result.quot == 2);
-                assert(result.rem == 1);
-            }
-        };
-
-        shouldFailNoSource!(backend, "div", source);
+        shouldFailNoSource!(backend, "div", divSource);
     }
 
     @("ldiv.structReturn.longArgs." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: ldiv;
+        shouldFailNoSource!(backend, "ldiv", ldivSource);
+    }
+}
 
-                const result = ldiv(10L, 4L);
 
-                assert(result.quot == 2);
-                assert(result.rem == 2);
-            }
-        };
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 
-        shouldFailNoSource!(backend, "ldiv", source);
+    @("div.structReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(divSource);
+    }
+
+    @("ldiv.structReturn.longArgs." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(ldivSource);
     }
 }
 

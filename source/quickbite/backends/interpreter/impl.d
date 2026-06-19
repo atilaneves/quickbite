@@ -1370,6 +1370,9 @@ private struct Walker {
         if (isStaticArrayType(pointer.type))
             return staticArrayPointerView(value, pointer.type);
 
+        if (value.isNativePointer)
+            return loadNativePointerElement(pointer.e1.type, value, 0);
+
         if (!value.isLocalPointer)
             return value.pointerTarget;
 
@@ -1581,8 +1584,14 @@ private struct Walker {
 
             if (hasNoAvailableSource(call.f)) {
                 Value result;
-                if (!call.f.needThis && tryCallResidentNative(call.f, arguments, result))
+                Value[] writebacks;
+                if (
+                    !call.f.needThis &&
+                    tryCallResidentNative(call.f, arguments, result, writebacks)
+                ) {
+                    applyNativeWritebacks(writebacks, argumentExpressions);
                     return result;
+                }
 
                 throw new Exception(noAvailableSourceMessage(call.f));
             }
@@ -3230,8 +3239,16 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        if (isPointerType(index.e1.type))
+        if (isPointerType(index.e1.type)) {
+            const pointer = runExpression(index.e1);
+            if (pointer.isNativePointer) {
+                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+                const value = runExpression(rhs);
+                storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+                return value;
+            }
             return runAssocArraySlotAssignExpression(index.e1, rhs);
+        }
 
         if (auto outer = index.e1.isIndexExp)
             return runNestedIndexAssignExpression(outer, index, rhs);
@@ -3778,6 +3795,84 @@ private struct Walker {
         return runIndexExpression(index, arrayIndex);
     }
 
+    // Read a scalar element from native (C heap) memory addressed by a
+    // NativePointer. Limited to byte-addressed `ubyte*`/`char*` memory.
+    private Value loadNativePointerElement(
+        imported!"dmd.mtype".Type pointerType,
+        in Value pointer,
+        in size_t index,
+    ) {
+        import dmd.astenums: TY;
+
+        const elementByte = readNativeByte(pointer.asNativePointer, index);
+        switch (pointerType.toBasetype.nextOf.toBasetype.ty) with (TY) {
+            case Tuns8:
+                return Value(elementByte);
+            case Tchar:
+                return Value(cast(char) elementByte);
+            default:
+                throw new Exception("Unsupported native pointer element type.");
+        }
+    }
+
+    private void storeNativePointerElement(
+        imported!"dmd.mtype".Type pointerType,
+        in Value pointer,
+        in size_t index,
+        in Value value,
+    ) {
+        import dmd.astenums: TY;
+
+        if (pointerType.toBasetype.nextOf.toBasetype.ty != TY.Tuns8)
+            throw new Exception("Unsupported native pointer element type.");
+
+        writeNativeByte(pointer.asNativePointer, index, cast(ubyte) value.asLong);
+    }
+
+    private static ubyte readNativeByte(void* base, in size_t index) @trusted {
+        return (cast(ubyte*) base)[index];
+    }
+
+    private static void writeNativeByte(
+        void* base,
+        in size_t index,
+        in ubyte value,
+    ) @trusted {
+        (cast(ubyte*) base)[index] = value;
+    }
+
+    // Apply out-parameter writebacks reported by a resident native call (such
+    // as strtol's `char** endptr`) to the `&local` argument expressions.
+    private void applyNativeWritebacks(
+        in Value[] writebacks,
+        imported!"dmd.expression".Expression[] argumentExpressions,
+    ) {
+        foreach (index, writeback; writebacks) {
+            if (writeback == Value.void_)
+                continue;
+
+            auto variable = nativeOutParameterVariable(argumentExpressions[index]);
+            if (variable is null)
+                throw new Exception("Unsupported native out-parameter target.");
+
+            locals[variable] = writeback;
+            uninitializedLocals.remove(variable);
+        }
+    }
+
+    private imported!"dmd.declaration".VarDeclaration nativeOutParameterVariable(
+        imported!"dmd.expression".Expression argument,
+    ) {
+        if (auto address = argument.isAddrExp)
+            if (auto var = address.e1.isVarExp)
+                return var.var.isVarDeclaration;
+
+        if (auto symbol = argument.isSymOffExp)
+            return symbol.var.isVarDeclaration;
+
+        return null;
+    }
+
     private Value runIndexExpression(
         imported!"dmd.expression".IndexExp index,
         out size_t arrayIndex,
@@ -3805,6 +3900,8 @@ private struct Walker {
         if (isPointerType(index.e1.type)) {
             if (source.isLocalPointer)
                 return localPointerTarget(source);
+            if (source.isNativePointer)
+                return loadNativePointerElement(index.e1.type, source, arrayIndex);
             return source.pointerIndex(arrayIndex);
         }
 

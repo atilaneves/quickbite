@@ -780,6 +780,15 @@ public struct Value {
         );
     }
 
+    public bool isNativePointer() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativePointer) pointer) => true,
+            (_) => false,
+        );
+    }
+
     public size_t localPointerId() const @safe pure {
         import std.sumtype: match;
 
