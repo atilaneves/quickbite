@@ -711,16 +711,25 @@ private struct Compiler {
             ? Operand.init
             : Operand(*slot, scalarType(declaration.type));
         const rhs = compileExpression(addAssign.e2);
+        // `++x`/`x += n` on an integer local: 4-byte and 8-byte integer widths
+        // (size_t is ulong on x86-64, so `++len` lands here) share the lvalue's
+        // own slot as the destination. Both sides and the result carry the
+        // lvalue's type.
+        const lvalueType = scalarType(addAssign.type);
+        const addOp = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_
+                ? Op.addInt8
+                : Op.addInt4;
         if (slot is null ||
-            lhs.type != ScalarType.int_ ||
-            rhs.type != ScalarType.int_ ||
-            scalarType(addAssign.type) != ScalarType.int_)
+            lhs.type != rhs.type ||
+            lhs.type != lvalueType ||
+            !isIntegerScalar(lvalueType))
             throw new Exception(text(
                 "Unsupported compound assignment in bytecode core: ",
                 expressionChars(addAssign),
             ));
 
-        _code ~= Instruction(Op.addInt4, lhs.offset, lhs.offset, rhs.offset);
+        _code ~= Instruction(addOp, lhs.offset, lhs.offset, rhs.offset);
         return lhs;
     }
 
@@ -1996,6 +2005,18 @@ private bool isEightByteInteger(
     import quickbite.backends.bytecode.core.program: ScalarType;
 
     return type == ScalarType.long_ || type == ScalarType.ulong_;
+}
+
+// The integer widths the compound-assign `addInt4`/`addInt8` opcodes cover.
+private bool isIntegerScalar(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.int_ ||
+        type == ScalarType.uint_ ||
+        type == ScalarType.long_ ||
+        type == ScalarType.ulong_;
 }
 
 // Lower a float/double literal to the raw bits loadConstant copies: the
