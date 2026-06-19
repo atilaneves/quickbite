@@ -17,10 +17,9 @@ public bool tryCallResidentNative(
     version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
     version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
     version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
-    import dmd.astenums: LINK, TY;
+    import dmd.astenums: LINK, VarArg;
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
-    import quickbite.lang: Value;
     import std.string: fromStringz;
 
     if (function_._linkage != LINK.c)
@@ -30,7 +29,10 @@ public bool tryCallResidentNative(
     if (type is null)
         return false;
 
-    const returnType = type.next.toBasetype;
+    // Variadic libc functions (printf) need ffi_prep_cif_var; deferred.
+    if (type.parameterList.varargs != VarArg.none)
+        return false;
+
     const symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
     if (symbol is null)
         throw new Exception(
@@ -39,142 +41,329 @@ public bool tryCallResidentNative(
             "` is not loaded",
         );
 
-    if (
-        returnType.ty == TY.Tpointer &&
-        arguments.length == 1 &&
-        parameterType(type, 0).ty == TY.Tuns64
-    ) {
-        alias NativeFunction = extern(C) void* function(size_t);
-        auto nativeFunction = cast(NativeFunction) symbol;
-        result = Value.nativePointerValue(nativeFunction(
-            cast(size_t) arguments[0].asLong,
-        ));
-        return true;
+    return callViaLibffi(type, symbol, arguments, result, argumentWritebacks);
+}
+
+// Build a libffi call interface from the function signature, marshal the
+// backend values into raw ABI buffers, perform the call, and marshal the
+// result (and any out-parameter writeback) back into backend values. Returns
+// false for any signature shape not yet modelled, preserving the caller's
+// no-available-source diagnostic.
+private bool callViaLibffi(
+    imported!"dmd.mtype".TypeFunction type,
+    const void* symbol,
+    in imported!"quickbite.lang".Value[] arguments,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
+    import quickbite.backends.libffi:
+        ffi_cif, ffi_type, ffi_status, ffi_prep_cif, ffi_call, FFI_DEFAULT_ABI;
+    import quickbite.lang: Value;
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+    import dmd.typesem: size;
+
+    // Mutable Type: ffiTypeFor and dmd.typesem.size both need a non-const Type.
+    auto returnType = type.next.toBasetype;
+    auto returnFfi = ffiTypeFor(returnType);
+    if (returnFfi is null)
+        return false;
+
+    const nargs = arguments.length;
+    auto parameterTypes = new Type[](nargs);
+    auto argumentFfiTypes = new ffi_type*[](nargs);
+    foreach (index; 0 .. nargs) {
+        parameterTypes[index] = parameterType(type, index);
+        argumentFfiTypes[index] = ffiTypeFor(parameterTypes[index]);
+        if (argumentFfiTypes[index] is null)
+            return false;
     }
 
+    // strtol's `endptr` writes a pointer into its string argument's buffer, so
+    // any string argument of a call with an out-pointer must outlive the call.
+    bool hasOutPointer;
+    foreach (parameter; parameterTypes)
+        if (isOutPointer(parameter))
+            hasOutPointer = true;
+
+    ffi_cif cif;
     if (
-        returnType.ty == TY.Tpointer &&
-        arguments.length == 2 &&
-        parameterType(type, 0).ty == TY.Tuns64 &&
-        parameterType(type, 1).ty == TY.Tuns64
-    ) {
-        alias NativeFunction = extern(C) void* function(size_t, size_t);
-        auto nativeFunction = cast(NativeFunction) symbol;
-        result = Value.nativePointerValue(nativeFunction(
-            cast(size_t) arguments[0].asLong,
-            cast(size_t) arguments[1].asLong,
-        ));
-        return true;
+        ffi_prep_cif(
+            &cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) nargs,
+            returnFfi,
+            argumentFfiTypes.ptr,
+        ) != ffi_status.FFI_OK
+    )
+        return false;
+
+    // libffi fills in struct ffi_type sizes during prep; cross-check against
+    // DMD's computed layout (ffi.md §24.3).
+    if (returnType.ty == TY.Tstruct)
+        assert(returnFfi.size == cast(size_t) size(returnType));
+    foreach (index; 0 .. nargs)
+        if (parameterTypes[index].ty == TY.Tstruct)
+            assert(argumentFfiTypes[index].size ==
+                cast(size_t) size(parameterTypes[index]));
+
+    // C-string buffers marshalled for pointer arguments, pinned across the
+    // call below so the GC cannot reclaim them mid-call.
+    const(char)*[] keepAlive;
+    auto argumentBuffers = new ubyte[][](nargs);
+    auto argumentValues = new void*[](nargs);
+    auto outParameterCells = new void**[](nargs);
+
+    foreach (index; 0 .. nargs) {
+        argumentBuffers[index] = new ubyte[](argumentFfiTypes[index].size);
+
+        if (isOutPointer(parameterTypes[index])) {
+            // Allocate a host cell, pass its address as the out parameter, and
+            // report the written pointer back through argumentWritebacks.
+            auto cell = new void*;
+            outParameterCells[index] = cell;
+            *cast(void**) argumentBuffers[index].ptr = cast(void*) cell;
+        } else {
+            marshalArgument(
+                argumentBuffers[index],
+                parameterTypes[index],
+                arguments[index],
+                hasOutPointer,
+                keepAlive,
+            );
+        }
+
+        argumentValues[index] = argumentBuffers[index].ptr;
     }
 
-    if (
-        returnType.ty == TY.Tpointer &&
-        arguments.length == 2 &&
-        parameterType(type, 0).ty == TY.Tpointer &&
-        parameterType(type, 1).ty == TY.Tuns64
-    ) {
-        alias NativeFunction = extern(C) void* function(void*, size_t);
-        auto nativeFunction = cast(NativeFunction) symbol;
-        result = Value.nativePointerValue(nativeFunction(
-            arguments[0].asNativePointer,
-            cast(size_t) arguments[1].asLong,
-        ));
-        return true;
+    // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
+    // even for narrow returns.
+    const returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    auto returnBuffer = new ubyte[](returnSize);
+
+    // Pin the marshalled C-string buffers so a collection triggered by a D
+    // allocation cannot reclaim them while the native call reads through them.
+    import core.memory: GC;
+    foreach (root; keepAlive)
+        GC.addRoot(root);
+    scope(exit) foreach (root; keepAlive)
+        GC.removeRoot(root);
+
+    alias CFunction = extern(C) void function();
+    ffi_call(
+        &cif,
+        cast(CFunction) symbol,
+        returnBuffer.ptr,
+        argumentValues.ptr,
+    );
+
+    foreach (index; 0 .. nargs) {
+        if (outParameterCells[index] is null)
+            continue;
+        if (argumentWritebacks.length == 0)
+            argumentWritebacks = new Value[](nargs);
+        argumentWritebacks[index] =
+            Value.nativePointerValue(*outParameterCells[index]);
     }
 
-    if (
-        returnType.ty == TY.Tvoid &&
-        arguments.length == 1 &&
-        parameterType(type, 0).ty == TY.Tpointer
-    ) {
-        alias NativeFunction = extern(C) void function(void*);
-        auto nativeFunction = cast(NativeFunction) symbol;
-        nativeFunction(arguments[0].asNativePointer);
-        result = Value.void_;
-        return true;
+    result = unmarshalValue(returnType, returnBuffer);
+    return true;
+}
+
+// Map a DMD basetype to the matching libffi ffi_type, or null if unmodelled.
+private imported!"quickbite.backends.libffi".ffi_type* ffiTypeFor(
+    imported!"dmd.mtype".Type type,
+) {
+    import quickbite.backends.libffi;
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    switch (type.ty) {
+        case TY.Tvoid:                 return &ffi_type_void;
+        case TY.Tbool, TY.Tchar,
+             TY.Tuns8:                 return &ffi_type_uint8;
+        case TY.Tint8:                 return &ffi_type_sint8;
+        case TY.Tuns16, TY.Twchar:     return &ffi_type_uint16;
+        case TY.Tint16:                return &ffi_type_sint16;
+        case TY.Tuns32, TY.Tdchar:     return &ffi_type_uint32;
+        case TY.Tint32:                return &ffi_type_sint32;
+        case TY.Tuns64:                return &ffi_type_uint64;
+        case TY.Tint64:                return &ffi_type_sint64;
+        case TY.Tfloat32:              return &ffi_type_float;
+        case TY.Tfloat64:              return &ffi_type_double;
+        case TY.Tfloat80:              return &ffi_type_longdouble;
+        case TY.Tpointer:              return &ffi_type_pointer;
+        case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
+        default:                       return null;
+    }
+}
+
+// Synthesize a STRUCT ffi_type by walking the struct's fields; libffi computes
+// the laid-out size and alignment during ffi_prep_cif.
+private imported!"quickbite.backends.libffi".ffi_type* ffiStructType(
+    imported!"dmd.mtype".TypeStruct type,
+) {
+    import quickbite.backends.libffi: ffi_type, FFI_TYPE_STRUCT;
+
+    auto sym = type.sym;
+    auto elements = new ffi_type*[](sym.fields.length + 1);
+    foreach (index; 0 .. sym.fields.length) {
+        elements[index] = ffiTypeFor(sym.fields[index].type.toBasetype);
+        if (elements[index] is null)
+            return null;
+    }
+    elements[$ - 1] = null;
+
+    auto result = new ffi_type;
+    result.type = FFI_TYPE_STRUCT;
+    result.elements = elements.ptr;
+    return result;
+}
+
+// A pointer-to-pointer parameter (e.g. strtol's `char** endptr`) is an out
+// slot rather than an in value.
+private bool isOutPointer(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type.ty == TY.Tpointer && type.nextOf.toBasetype.ty == TY.Tpointer;
+}
+
+// Marshal one backend value into a raw ABI buffer sized to its ffi_type.
+private void marshalArgument(
+    ubyte[] buffer,
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.lang".Value value,
+    in bool resident,
+    ref const(char)*[] keepAlive,
+) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+    import dmd.typesem: size;
+
+    switch (type.ty) {
+        case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
+             TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
+             TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64:
+            const scalar = value.asLong;
+            foreach (index; 0 .. buffer.length)
+                buffer[index] = cast(ubyte) (scalar >> (8 * index));
+            return;
+
+        case TY.Tfloat32:
+            *cast(float*) buffer.ptr = cast(float) value.asReal;
+            return;
+
+        case TY.Tfloat64:
+            *cast(double*) buffer.ptr = cast(double) value.asReal;
+            return;
+
+        case TY.Tfloat80:
+            *cast(real*) buffer.ptr = value.asReal;
+            return;
+
+        case TY.Tpointer:
+            *cast(void**) buffer.ptr =
+                marshalPointerArgument(type, value, resident, keepAlive);
+            return;
+
+        case TY.Tstruct:
+            auto sym = (cast(TypeStruct) type).sym;
+            foreach (index; 0 .. sym.fields.length) {
+                auto field = sym.fields[index];
+                auto fieldType = field.type.toBasetype;  // mutable for size()
+                const fieldSize = cast(size_t) size(fieldType);
+                marshalArgument(
+                    buffer[field.offset .. field.offset + fieldSize],
+                    fieldType,
+                    value.structFieldAt(index),
+                    resident,
+                    keepAlive,
+                );
+            }
+            return;
+
+        default:
+            assert(false, "unmarshalled libffi argument type");
+    }
+}
+
+private void* marshalPointerArgument(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.lang".Value value,
+    in bool resident,
+    ref const(char)*[] keepAlive,
+) {
+    import dmd.astenums: TY;
+
+    // A `char*`/`const char*` accepts a backend char array; everything else is
+    // a raw native pointer (or null).
+    if (type.nextOf.toBasetype.ty == TY.Tchar) {
+        const text = resident
+            ? residentNativeString(value)
+            : nativeString(value);
+        keepAlive ~= text;
+        return cast(void*) text;
     }
 
-    if (
-        returnType.ty == TY.Tint32 &&
-        arguments.length == 1 &&
-        parameterType(type, 0).ty == TY.Tpointer
-    ) {
-        alias NativeFunction = extern(C) int function(const(char)*);
-        auto nativeFunction = cast(NativeFunction) symbol;
-        result = Value(nativeFunction(nativeString(arguments[0])));
-        return true;
-    }
+    return value.asNativePointer;
+}
 
-    // div(int, int) / ldiv(long, long): a {quot, rem} struct returned by
-    // value through the SysV ABI, mapped back to a backend struct value.
-    if (
-        returnType.ty == TY.Tstruct &&
-        arguments.length == 2 &&
-        parameterType(type, 0).ty == TY.Tint32 &&
-        parameterType(type, 1).ty == TY.Tint32
-    ) {
-        static struct DivResult { int quot; int rem; }
-        alias NativeFunction = extern(C) DivResult function(int, int);
-        const divided = (cast(NativeFunction) symbol)(
-            cast(int) arguments[0].asLong,
-            cast(int) arguments[1].asLong,
+// Marshal a raw ABI return buffer back into a backend value.
+private imported!"quickbite.lang".Value unmarshalValue(
+    imported!"dmd.mtype".Type type,
+    in ubyte[] buffer,
+) {
+    import quickbite.lang: Value;
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    switch (type.ty) {
+        case TY.Tvoid:     return Value.void_;
+        case TY.Tbool:     return Value(*cast(const bool*) buffer.ptr);
+        case TY.Tchar:     return Value(*cast(const char*) buffer.ptr);
+        case TY.Twchar:    return Value(*cast(const wchar*) buffer.ptr);
+        case TY.Tdchar:    return Value(*cast(const dchar*) buffer.ptr);
+        case TY.Tint8:     return Value(*cast(const byte*) buffer.ptr);
+        case TY.Tuns8:     return Value(*cast(const ubyte*) buffer.ptr);
+        case TY.Tint16:    return Value(*cast(const short*) buffer.ptr);
+        case TY.Tuns16:    return Value(*cast(const ushort*) buffer.ptr);
+        case TY.Tint32:    return Value(*cast(const int*) buffer.ptr);
+        case TY.Tuns32:    return Value(*cast(const uint*) buffer.ptr);
+        case TY.Tint64:    return Value(*cast(const long*) buffer.ptr);
+        case TY.Tuns64:    return Value(*cast(const ulong*) buffer.ptr);
+        case TY.Tfloat32:  return Value(*cast(const float*) buffer.ptr);
+        case TY.Tfloat64:  return Value(*cast(const double*) buffer.ptr);
+        case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
+        case TY.Tpointer:
+            return Value.nativePointerValue(*cast(void**) buffer.ptr);
+        case TY.Tstruct:
+            return unmarshalStruct(cast(TypeStruct) type, buffer);
+        default:
+            assert(false, "unmarshalled libffi return type");
+    }
+}
+
+private imported!"quickbite.lang".Value unmarshalStruct(
+    imported!"dmd.mtype".TypeStruct type,
+    in ubyte[] buffer,
+) {
+    import quickbite.lang: Value;
+    import dmd.typesem: size;
+    import std.string: fromStringz;
+
+    auto sym = type.sym;
+    Value[] fields;
+    foreach (index; 0 .. sym.fields.length) {
+        auto field = sym.fields[index];
+        auto fieldType = field.type.toBasetype;  // mutable for size()
+        const fieldSize = cast(size_t) size(fieldType);
+        fields ~= unmarshalValue(
+            fieldType,
+            buffer[field.offset .. field.offset + fieldSize],
         );
-        result = Value.structValue(
-            "div_t",
-            [Value(divided.quot), Value(divided.rem)],
-        );
-        return true;
     }
 
-    if (
-        returnType.ty == TY.Tstruct &&
-        arguments.length == 2 &&
-        parameterType(type, 0).ty == TY.Tint64 &&
-        parameterType(type, 1).ty == TY.Tint64
-    ) {
-        static struct LDivResult { long quot; long rem; }
-        alias NativeFunction = extern(C) LDivResult function(long, long);
-        const divided = (cast(NativeFunction) symbol)(
-            arguments[0].asLong,
-            arguments[1].asLong,
-        );
-        result = Value.structValue(
-            "ldiv_t",
-            [Value(divided.quot), Value(divided.rem)],
-        );
-        return true;
-    }
-
-    // strtol(const char*, const char**, int): parse, returning the value and
-    // writing the unparsed-tail pointer back through the `endptr` out param.
-    if (
-        returnType.ty == TY.Tint64 &&
-        arguments.length == 3 &&
-        parameterType(type, 0).ty == TY.Tpointer &&
-        parameterType(type, 1).ty == TY.Tpointer &&
-        parameterType(type, 2).ty == TY.Tint32
-    ) {
-        alias NativeFunction = extern(C) long function(
-            const(char)*,
-            const(char)**,
-            int,
-        );
-        auto nativeFunction = cast(NativeFunction) symbol;
-
-        const(char)* endptr;
-        result = Value(nativeFunction(
-            residentNativeString(arguments[0]),
-            &endptr,
-            cast(int) arguments[2].asLong,
-        ));
-
-        argumentWritebacks = new Value[](arguments.length);
-        argumentWritebacks[1] =
-            Value.nativePointerValue(cast(void*) endptr);
-        return true;
-    }
-
-    return false;
+    return Value.structValue(fromStringz(sym.toChars).idup, fields);
 }
 
 // Marshal a backend value into a NUL-terminated C string valid for the
