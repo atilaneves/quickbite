@@ -1016,6 +1016,22 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         repl.submit("free(malloc(42));").should == "";
         repl.submit("good + 1").should == "42";
     }
+
+    @("repl.backend.runtimeOnlyFileOpenReportsNativeBoundary." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("import std;");
+        void openFile() {
+            repl.submit(`auto f = File("/tmp/foo.txt", "w");`);
+        }
+
+        openFile.shouldThrow.msg.should ==
+            "`fopen64` cannot be interpreted at compile time, because it has no available source code\n" ~
+            "`malloc` cannot be interpreted at compile time, because it has no available source code";
+    }
 }
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {

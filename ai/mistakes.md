@@ -214,6 +214,9 @@
   `"expected".should.be in actual` over `actual.canFind("expected").should ==
   true`.
 
+- When pinning an improved diagnostic, assert the expected message directly;
+  do not only assert that the old bad message is absent.
+
 - When summarizing a failing test run through `tail`/`head`, reconcile the
   visible failure lines against the reported failure count before concluding
   which tests passed; truncated output silently drops the first failures.

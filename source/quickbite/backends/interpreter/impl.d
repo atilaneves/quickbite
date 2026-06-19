@@ -6,20 +6,47 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     public alias eval = Evaluator.eval;
 
     public override EvalResult eval(FuncDeclaration function_) {
-        return displayEvalResult(() {
+        try {
             Walker walker;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             walker.runStatement(function_.fbody);
-            return walker.result;
-        }, function_);
+            return EvalResult(displayString(walker.result, function_));
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(
+                interpreterDiagnostic(exception.msg, function_),
+            ));
+        }
     }
+}
+
+private string interpreterDiagnostic(
+    in string message,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    if (!isUnsupportedInterpreterAssignmentDiagnostic(message))
+        return message;
+
+    import quickbite.frontend.dmd.ctfe: ctfeDiagnostic;
+
+    const diagnostic = ctfeDiagnostic(function_);
+    return diagnostic.length == 0 ? message : diagnostic;
+}
+
+private bool isUnsupportedInterpreterAssignmentDiagnostic(
+    in string message,
+) @safe pure {
+    import std.algorithm: startsWith;
+
+    return
+        message == "Unsupported interpreter assignment target." ||
+        message.startsWith("Unsupported interpreter assignment target:");
 }
 
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
