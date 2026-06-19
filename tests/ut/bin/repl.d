@@ -971,9 +971,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
-    @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
+    @("repl.backend.runtimeOnlyCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
 
@@ -993,21 +993,6 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 static foreach (backend; AliasSeq!(Interpreter)) {
 
-    @("repl.backend.runtimeOnlyCellsUseResidentNativeCalls." ~ backend.stringof)
-    unittest {
-        import quickbite.repl: Repl;
-
-        auto repl = Repl(newBackend!backend);
-
-        repl.submit("int good = 41;").should == "";
-        repl.submit("import core.stdc.stdlib;").should == "";
-        repl.submit("free(malloc(42));").should == "";
-        repl.submit("good + 1").should == "42";
-    }
-}
-
-static foreach (backend; AliasSeq!(Interpreter)) {
-
     @("repl.backend.runtimeOnlyFileOpenReportsNativeBoundary." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
@@ -1020,7 +1005,8 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         }
 
         openFile.shouldThrow.msg.should ==
-            "`fopen64` cannot be interpreted at compile time, because it has no available source code";
+            "`fopen64` cannot be interpreted at compile time, because it has no available source code\n" ~
+            "`malloc` cannot be interpreted at compile time, because it has no available source code";
     }
 }
 

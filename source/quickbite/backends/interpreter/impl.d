@@ -6,20 +6,47 @@ private:
 
 public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayString;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration;
 
     public alias eval = Evaluator.eval;
 
     public override EvalResult eval(FuncDeclaration function_) {
-        return displayEvalResult(() {
+        try {
             Walker walker;
             walker.inUnitTest = function_.isUnitTestDeclaration !is null;
             walker.runStatement(function_.fbody);
-            return walker.result;
-        }, function_);
+            return EvalResult(displayString(walker.result, function_));
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(
+                interpreterDiagnostic(exception.msg, function_),
+            ));
+        }
     }
+}
+
+private string interpreterDiagnostic(
+    in string message,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    if (!isUnsupportedInterpreterAssignmentDiagnostic(message))
+        return message;
+
+    import quickbite.frontend.dmd.ctfe: ctfeDiagnostic;
+
+    const diagnostic = ctfeDiagnostic(function_);
+    return diagnostic.length == 0 ? message : diagnostic;
+}
+
+private bool isUnsupportedInterpreterAssignmentDiagnostic(
+    in string message,
+) @safe pure {
+    import std.algorithm: startsWith;
+
+    return
+        message == "Unsupported interpreter assignment target." ||
+        message.startsWith("Unsupported interpreter assignment target:");
 }
 
 private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
@@ -1471,14 +1498,6 @@ private struct Walker {
             functionSemantic3(call.f);
         }
 
-        if (
-            call.f !is null &&
-            isTempCString(call.f) &&
-            currentFunction !is null &&
-            isFopenWrapper(currentFunction)
-        )
-            throw new Exception(fopenNoAvailableSourceMessage);
-
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -1546,6 +1565,17 @@ private struct Walker {
         )
             return runStringForeachApplyCall(call, stringForeachApply);
 
+        auto calledFunction = call.f is null
+            ? callExpressionFunction(call.e1)
+            : call.f;
+        if (calledFunction !is null && !calledFunction.needThis) {
+            import quickbite.frontend.dmd.functions:
+                hasNoAvailableSource, noAvailableSourceMessage;
+
+            if (hasNoAvailableSource(calledFunction))
+                throw new Exception(noAvailableSourceMessage(calledFunction));
+        }
+
         Value[] arguments;
         Expression[] argumentExpressions;
         if (call.arguments !is null) {
@@ -1586,24 +1616,6 @@ private struct Walker {
         }
 
         if (call.f !is null) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.backends.ffi: tryCallResidentNative;
-
-            if (hasNoAvailableSource(call.f)) {
-                Value result;
-                Value[] writebacks;
-                if (
-                    !call.f.needThis &&
-                    tryCallResidentNative(call.f, arguments, result, writebacks)
-                ) {
-                    applyNativeWritebacks(writebacks, argumentExpressions);
-                    return result;
-                }
-
-                throw new Exception(noAvailableSourceMessage(call.f));
-            }
-
             if (call.f.isNested && hasThis)
                 return runMemberFunction(
                     call.f,
@@ -4867,21 +4879,6 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
     import std.string: fromStringz;
 
     return function_.toChars.fromStringz.idup;
-}
-
-private bool isTempCString(imported!"dmd.func".FuncDeclaration function_) {
-    import std.algorithm.searching: canFind;
-
-    return functionName(function_).canFind("tempCString");
-}
-
-private bool isFopenWrapper(imported!"dmd.func".FuncDeclaration function_) {
-    return functionName(function_) == "_fopen";
-}
-
-private string fopenNoAvailableSourceMessage() @safe pure nothrow {
-    return "`fopen64` cannot be interpreted at compile time, " ~
-        "because it has no available source code";
 }
 
 

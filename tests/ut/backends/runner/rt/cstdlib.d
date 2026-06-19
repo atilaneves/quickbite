@@ -16,7 +16,6 @@ private void shouldFailNoSource
         .shouldThrowWithMessage(noSource!name, file, line);
 }
 
-
 // CTFE should stay pure: no host libc calls.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("malloc.noSource." ~ backend.stringof)
@@ -61,15 +60,15 @@ enum atoiSource = q{
     }
 };
 
-// CTFE cannot call host libc; the Interpreter marshals the char array.
-static foreach (backend; AliasSeq!(Ctfe)) {
+// Interpreters do not call host libc.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("atoi.noSource." ~ backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "atoi", atoiSource);
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("atoi.value." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -89,16 +88,15 @@ enum strtolSource = q{
     }
 };
 
-// CTFE cannot call host libc; the Interpreter writes the endptr out
-// parameter back and dereferences the native char pointer.
-static foreach (backend; AliasSeq!(Ctfe)) {
+// Interpreters do not call host libc.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("strtol.noSource." ~ backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "strtol", strtolSource);
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
     @("strtol.endptr." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -137,25 +135,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("free.null.voidReturn." ~ backend.stringof)
-    unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: free;
-
-                free(null);
-
-                assert(true);
-            }
-        };
-
-        runBackendSourceFixtureTests!backend(source);
-    }
-}
-
-
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(SystemLinker)) {
     @("malloc.pointerRoundTrip." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -181,7 +161,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
 // before failing. Do not add tests that first fail on unrelated frontend /
 // backend gaps such as string-literal pointer lowering, local pointer out
 // params, symbolOffset, array initializers, or callbacks.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR, Interpreter)) {
     @("free.null.voidReturn." ~ backend.stringof)
     unittest {
         enum source = q{
@@ -223,27 +203,21 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
 
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
+    @("malloc.pointerRoundTrip." ~ backend.stringof)
     unittest {
         enum source = q{
             unittest {
                 import core.stdc.stdlib: malloc, free;
 
-                auto ptr = cast(ubyte*) malloc(8);
-                scope(exit) free(ptr);
+                auto ptr = malloc(8);
 
                 assert(ptr !is null);
 
-                ptr[0] = 0x11;
-                ptr[7] = 0xff;
-
-                assert(ptr[0] == 0x11);
-                assert(ptr[7] == 0xff);
-                assert(ptr[7] != 0);
+                free(ptr);
             }
         };
 
-        runBackendSourceFixtureTests!backend(source);
+        shouldFailNoSource!(backend, "malloc", source);
     }
 }
 
@@ -279,7 +253,7 @@ enum reallocNullSource = q{
     }
 };
 
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR, Interpreter)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
@@ -293,7 +267,7 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -336,8 +310,7 @@ enum reallocGrowSource = q{
     }
 };
 
-// Bytecode/IR fail at the first malloc leaf; the Interpreter reaches realloc.
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR, Interpreter)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     unittest {
@@ -346,7 +319,7 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -356,7 +329,7 @@ static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
 }
 
 
-static foreach (backend; AliasSeq!(Bytecode, IR)) {
+static foreach (backend; AliasSeq!(Bytecode, IR, Interpreter)) {
 
     @("div.structReturn." ~ backend.stringof)
     unittest {
@@ -370,7 +343,7 @@ static foreach (backend; AliasSeq!(Bytecode, IR)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(SystemLinker, LLVMJit)) {
 
     @("div.structReturn." ~ backend.stringof)
     @Tags(backend.stringof)
