@@ -52,6 +52,17 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case loadStaticArray:
+                // Copy the static array's bytes from the read-only data
+                // segment into its inline frame slot.
+                stack[
+                    base + instruction.a .. base + instruction.a + instruction.c
+                ] = program.data[
+                    instruction.b .. instruction.b + instruction.c
+                ];
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c

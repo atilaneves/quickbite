@@ -79,6 +79,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
     loadStringSlice, // a: destination frame offset, b: data offset, c: length
+    // Copy `c` bytes from the read-only data segment at offset `b` into the
+    // inline static-array slot at frame offset `a` (a value-type byte copy).
+    loadStaticArray,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset

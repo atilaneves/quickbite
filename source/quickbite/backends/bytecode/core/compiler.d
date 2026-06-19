@@ -35,9 +35,9 @@ private struct Compiler {
         RefParameter, ResultType, ScalarType, isSigned, size, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        DivExp, Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
-        StringExp;
+        AddAssignExp, ArrayLiteralExp, AssertExp, AssignExp, BinExp, CallExp,
+        CastExp, CmpExp, DivExp, Expression, IndexExp, LogicalExp, NegExp,
+        NewExp, NotExp, OrExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -49,6 +49,9 @@ private struct Compiler {
     private uint _frameOffset;
     private ushort[VarDeclaration] _locals;
     private bool[VarDeclaration] _stringLocals; // locals holding a string slice
+    // Locals whose slot is a static array `T[N]` stored inline in the frame;
+    // the value records the slot offset for indexing and block copies.
+    private ushort[VarDeclaration] _staticArrayLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -63,6 +66,7 @@ private struct Compiler {
         _code = null;
         _locals = null;
         _stringLocals = null;
+        _staticArrayLocals = null;
 
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
@@ -298,10 +302,22 @@ private struct Compiler {
             return Operand.init;
         }
 
+        if (auto index = expression.isIndexExp)
+            return compileStaticArrayIndex(index);
+
         throw new Exception(text(
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // Read an element of a static array at a compile-time-constant index. The
+    // element lives at `slot + index * elementSize` inside the inline block;
+    // a scalar element is returned directly, a sub-array element yields a
+    // static-array operand for further indexing (`matrix[0][1]`).
+    private Operand compileStaticArrayIndex(IndexExp index) {
+        const located = locateStaticArrayElement(index);
+        return Operand(located.offset, located.type);
     }
 
     // A string literal lives in the read-only data segment; the frame slot
@@ -331,7 +347,15 @@ private struct Compiler {
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
         import std.conv: text;
+
+        // A static array `T[N]` is a value type stored inline in the frame at
+        // its DMD-computed size and alignment; no heap, no slice descriptor.
+        if (variable.type.toBasetype.ty == TY.Tsarray) {
+            compileStaticArrayDeclaration(variable);
+            return;
+        }
 
         // A `string` local holds an 8-byte slice descriptor (data offset and
         // length), not a scalar; allocate the descriptor width and copy the
@@ -359,6 +383,89 @@ private struct Compiler {
             offset,
             operand.offset,
             cast(ushort) slotSize,
+        );
+    }
+
+    // A static array `T[N]` occupies `Type.size()` inline frame bytes at its
+    // DMD-computed alignment. The frame begins zeroed, so default
+    // initialization (`source[] = 0`) emits nothing; a string literal or a
+    // copy from another static array copies the bytes into the inline slot.
+    private void compileStaticArrayDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const totalSize = cast(uint) staticArraySize(variable.type);
+        const offset = allocateBytes(totalSize, staticArrayAlign(variable.type));
+        // A static array is tracked only in `_staticArrayLocals`, not
+        // `_locals`: the scalar VarExp/assignment paths must not treat its
+        // inline block as a scalar slot.
+        _staticArrayLocals[variable] = offset;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(text(
+                "Unsupported initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        // DMD default-initializes a static array local with `variable[] = 0`
+        // (a blit whose target is a whole-array slice). The frame slot is
+        // already zero, so this needs no code.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e1.isSliceExp !is null && blit.e2.isIntegerExp !is null)
+                return;
+
+        auto source = initializerExpression(initializer.exp);
+
+        // `char[N] c = "..."`: copy the literal bytes directly into the inline
+        // slot rather than building a slice descriptor.
+        if (auto string_ = stringLiteralOf(source)) {
+            loadStaticString(offset, totalSize, string_);
+            return;
+        }
+
+        // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
+        // from the source static array's inline slot into the destination's.
+        if (auto sourceOffset = staticArrayOffsetOf(source)) {
+            _code ~= Instruction(
+                Op.copy,
+                offset,
+                *sourceOffset,
+                cast(ushort) totalSize,
+            );
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported static array initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
+    }
+
+    // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
+    // the literal length to match N, so the copy fills the whole slot.
+    private void loadStaticString(
+        in ushort offset,
+        in uint totalSize,
+        StringExp string_,
+    ) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length != totalSize)
+            throw new Exception(text(
+                "Unsupported static char-array literal in bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+
+        _code ~= Instruction(
+            Op.loadStaticArray,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) totalSize,
         );
     }
 
@@ -624,6 +731,18 @@ private struct Compiler {
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
+        // `arr[i] = rhs` for a static-array element: write the scalar rhs into
+        // the element's inline frame offset.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto element = tryStaticArrayElement(index))
+                return compileStaticArrayElementAssign(*element, assign.e2);
+
+        // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
+        // row of a multidimensional static array in place.
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto broadcast = tryStaticArrayBroadcast(slice, assign.e2))
+                return *broadcast;
+
         auto variable = assign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -645,6 +764,206 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    // A located static-array element: its inline frame offset and scalar type.
+    private static struct StaticArrayElement {
+        ushort offset;
+        ScalarType type;
+    }
+
+    // Resolve a static-array element access with compile-time-constant indices
+    // to its inline frame offset, walking the IndexExp chain from a
+    // static-array local. Each level adds `index * Type.size(level.type)` to
+    // the base offset.
+    private StaticArrayElement locateStaticArrayElement(
+        IndexExp index,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        const baseOffset = staticArrayBaseOffset(index.e1);
+        auto indexInteger = index.e2.isIntegerExp;
+        if (indexInteger is null)
+            throw new Exception(text(
+                "Unsupported static array index in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const elementSize = cast(uint) staticArraySize(index.type);
+        const offset = cast(ushort)
+            (baseOffset + indexInteger.toInteger * elementSize);
+        const elementType = index.type.toBasetype.ty == TY.Tsarray
+            ? ScalarType.void_
+            : scalarType(index.type);
+        return StaticArrayElement(offset, elementType);
+    }
+
+    // The inline frame base offset of a static-array sub-expression: either a
+    // static-array local (a VarExp) or a further static-array index.
+    private ushort staticArrayBaseOffset(Expression expression) {
+        import std.conv: text;
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _staticArrayLocals)
+                    return *existing;
+
+        if (auto index = expression.isIndexExp)
+            return locateStaticArrayElement(index).offset;
+
+        throw new Exception(text(
+            "Unsupported static array access in bytecode core: ",
+            expressionChars(expression),
+        ));
+    }
+
+    // Locate a static-array element, or null if `index` is not an access into
+    // a known static-array local (so other index forms fall through).
+    private StaticArrayElement* tryStaticArrayElement(
+        IndexExp index,
+    ) {
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        auto result = new StaticArrayElement;
+        *result = locateStaticArrayElement(index);
+        return result;
+    }
+
+    private bool indexesStaticArray(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return (declaration in _staticArrayLocals) !is null;
+
+        if (auto index = expression.isIndexExp)
+            return indexesStaticArray(index.e1);
+
+        return false;
+    }
+
+    private Operand compileStaticArrayElementAssign(
+        in StaticArrayElement element,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const value = compileExpression(rhs);
+        if (value.type != element.type)
+            throw new Exception(text(
+                "Unsupported static array element assignment in bytecode core: ",
+                expressionChars(rhs),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            element.offset,
+            value.offset,
+            cast(ushort) size(element.type),
+        );
+        return Operand(element.offset, element.type);
+    }
+
+    // `matrix[] = [elem, elem+1]`: the whole-array slice of a multidimensional
+    // static array assigned a row literal whose type matches the array's
+    // element type. Compile the row once into the first row's storage, then
+    // copy it into each remaining row (DMD's block slice-assign broadcast).
+    private Operand* tryStaticArrayBroadcast(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        auto variable = slice.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        auto slot = declaration in _staticArrayLocals;
+        if (slot is null)
+            return null;
+
+        // Only the whole-array form `arr[]` (implicit bounds) is needed.
+        if (slice.lwr !is null || slice.upr !is null)
+            return null;
+
+        auto literal = rhs.isArrayLiteralExp;
+        if (literal is null)
+            return null;
+
+        // The row literal's type must match the array's element type for a
+        // block broadcast; otherwise it is an element-wise assignment.
+        auto elementType = declaration.type.toBasetype.nextOf;
+        if (elementType is null ||
+            rhs.type is null ||
+            !sameType(rhs.type, elementType))
+            return null;
+
+        const rowSize = cast(uint) staticArraySize(elementType);
+        compileStaticArrayLiteral(*slot, elementType, literal);
+
+        const rowCount = cast(uint) (staticArraySize(declaration.type) / rowSize);
+        foreach (row; 1 .. rowCount)
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (*slot + row * rowSize),
+                *slot,
+                cast(ushort) rowSize,
+            );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    // Compile an array literal directly into an inline static-array slot,
+    // writing each element into its `index * elementSize` offset. Only a
+    // one-dimensional literal of scalar elements is needed today.
+    private void compileStaticArrayLiteral(
+        in ushort offset,
+        Type arrayType,
+        ArrayLiteralExp literal,
+    ) {
+        import std.conv: text;
+
+        auto elementType = arrayType.toBasetype.nextOf;
+        const elementScalar = scalarType(elementType);
+        const elementSize = cast(uint) size(elementScalar);
+
+        if (literal.elements is null)
+            throw new Exception(text(
+                "Unsupported static array literal in bytecode core: ",
+                expressionChars(literal),
+            ));
+
+        foreach (elementIndex; 0 .. literal.elements.length) {
+            const value = compileExpression((*literal.elements)[elementIndex]);
+            if (value.type != elementScalar)
+                throw new Exception(text(
+                    "Unsupported static array literal element in bytecode core: ",
+                    expressionChars(literal),
+                ));
+
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (offset + elementIndex * elementSize),
+                value.offset,
+                cast(ushort) elementSize,
+            );
+        }
+    }
+
+    // The inline frame offset of a static-array local denoted by an
+    // expression (through any casts), or null if it is not one.
+    private ushort* staticArrayOffsetOf(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return staticArrayOffsetOf(cast_.e1);
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _staticArrayLocals)
+                    return existing;
+
+        return null;
     }
 
     private Operand compileEqualExpression(Expression expression) {
@@ -1807,4 +2126,32 @@ private string typeChars(imported!"dmd.mtype".Type type) {
     import std.conv: text;
 
     return text(type.toChars);
+}
+
+// The inline byte size and alignment of a static array, taken from DMD's
+// computed layout rather than reconstructed.
+private ulong staticArraySize(imported!"dmd.mtype".Type type) {
+    import dmd.typesem: size;
+    return size(type.toBasetype);
+}
+
+private uint staticArrayAlign(imported!"dmd.mtype".Type type) {
+    return type.toBasetype.alignsize;
+}
+
+// The string literal an expression denotes (through any casts), or null.
+private imported!"dmd.expression".StringExp stringLiteralOf(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto cast_ = expression.isCastExp)
+        return stringLiteralOf(cast_.e1);
+
+    return expression.isStringExp;
+}
+
+private bool sameType(
+    imported!"dmd.mtype".Type lhs,
+    imported!"dmd.mtype".Type rhs,
+) {
+    return lhs.toBasetype.equals(rhs.toBasetype);
 }
