@@ -971,9 +971,9 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
 
-    @("repl.backend.runtimeOnlyCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
+    @("repl.backend.runtimeOnlyCtfeCellsReportDiagnosticsAndPreserveState." ~ backend.stringof)
     unittest {
         import quickbite.repl: Repl;
 
@@ -992,6 +992,18 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 }
 
 static foreach (backend; AliasSeq!(Interpreter)) {
+
+    @("repl.backend.runtimeOnlyCellsUseResidentNativeCalls." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: Repl;
+
+        auto repl = Repl(newBackend!backend);
+
+        repl.submit("int good = 41;").should == "";
+        repl.submit("import core.stdc.stdlib;").should == "";
+        repl.submit("free(malloc(42));").should == "";
+        repl.submit("good + 1").should == "42";
+    }
 
     @("repl.backend.runtimeOnlyFileOpenReportsNativeBoundary." ~ backend.stringof)
     unittest {
