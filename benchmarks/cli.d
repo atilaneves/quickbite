@@ -234,11 +234,13 @@ public TestResult[][string] checkRunnerResults(
 
         string[] resultNames;
         TestResult[][] allResults;
+        bool[] errored;
 
         foreach (name; backendNames) {
             try {
                 allResults ~= runTests(runners[name], modules);
                 resultNames ~= name;
+                errored ~= false;
             } catch (Exception e) {
                 allResults ~= [
                     TestResult(
@@ -249,8 +251,22 @@ public TestResult[][string] checkRunnerResults(
                     ),
                 ];
                 resultNames ~= name;
+                errored ~= true;
             }
         }
+
+        // A backend that threw never ran the benchmark, so it cannot have
+        // "disagreed" with one that did: its fabricated single result would
+        // misreport the crash as "N tests vs 1". Report the error itself. Only
+        // for multi-backend runs: a single backend that errors is recorded as a
+        // failing self-check and skipped, not aborted (see run()).
+        if (resultNames.length > 1)
+            foreach (i, name; resultNames)
+                if (errored[i])
+                    throw new Exception(text(
+                        "backend ", name, " errored on ", unit.displayName,
+                        ": ", allResults[i][0].message,
+                    ));
 
         foreach (i; 1 .. allResults.length) {
             const mismatch = testResultsMismatch(allResults[0], allResults[i]);
