@@ -797,7 +797,19 @@ The full random run reported 2268 run, 0 failed, 5/5 expected failures.
 
    Result with seed `2514968474`: 2288 run, 0 failed, 5/5 expected failures.
 
-Next step: commit the pointer-target slice. Run `ci.sh` before the PR.
+Status: complete on branch `interpreter-appender-array`. The slice was
+committed, merged with `origin/master`, pushed to PR #259, and verified after
+the merge with:
+
+```sh
+ninja bin/ut
+bin/ut --random
+./ci.sh
+```
+
+Post-merge results: `bin/ut --random` seed `3586774980` ran 2294 tests with 0
+failures and 5/5 expected failures; `./ci.sh` seed `1374202653` passed,
+including benchmarks and 15 Python REPL tests.
 
 Diagnostics promotion probe:
 All current CTFE-backed backend-matrix tests in
