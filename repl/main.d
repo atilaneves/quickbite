@@ -115,6 +115,11 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
     import gnu.readline: readline, rl_free;
     import std.string: fromStringz, toStringz;
 
+    const historyPath = historyFilePath;
+    loadHistory(historyPath);
+    scope (exit)
+        saveHistory(historyPath);
+
     Duration lastElapsed;
     while (true) {
         const prompt = replPrompt(lastElapsed);
@@ -142,6 +147,55 @@ private int runInteractiveRepl(ref imported!"quickbite.repl".Repl repl) {
 }
 
 extern (C) private void add_history(const(char)* line);
+
+// Cap on both the in-memory history list and the on-disk file.
+private enum maxHistoryEntries = 1000;
+
+// Where REPL history lives across sessions. QUICKBITE_HISTORY overrides it
+// (handy for tests); otherwise it follows the XDG state directory.
+private string historyFilePath() {
+    import std.path: buildPath;
+    import std.process: environment;
+
+    const override_ = environment.get("QUICKBITE_HISTORY", "");
+    if (override_.length != 0)
+        return override_;
+
+    const stateHome = environment.get("XDG_STATE_HOME", "");
+    const base = stateHome.length != 0
+        ? stateHome
+        : buildPath(environment.get("HOME", ""), ".local", "state");
+    return buildPath(base, "quickbite", "history");
+}
+
+private void loadHistory(in string path) {
+    import std.string: toStringz;
+
+    using_history;
+    stifle_history(maxHistoryEntries);
+    read_history(path.toStringz);
+}
+
+private void saveHistory(in string path) {
+    import std.file: mkdirRecurse;
+    import std.path: dirName;
+    import std.string: toStringz;
+
+    try
+        mkdirRecurse(path.dirName);
+    catch (Exception)
+        return;
+
+    const cPath = path.toStringz;
+    write_history(cPath);
+    history_truncate_file(cPath, maxHistoryEntries);
+}
+
+extern (C) private void using_history();
+extern (C) private void stifle_history(int max);
+extern (C) private int read_history(const(char)* filename);
+extern (C) private int write_history(const(char)* filename);
+extern (C) private int history_truncate_file(const(char)* filename, int lines);
 
 private bool ignoredReplInput(in string input) @safe pure {
     import std.string: startsWith, strip;
