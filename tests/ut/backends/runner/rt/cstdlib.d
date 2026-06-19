@@ -213,118 +213,110 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, IR)) {
+enum callocZeroedSource = q{
+    unittest {
+        import core.stdc.stdlib: calloc, free;
+
+        auto ptr = cast(ubyte*) calloc(4, 2);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        foreach (i; 0 .. 8)
+            assert(ptr[i] == 0);
+
+        ptr[7] = 0xaa;
+        assert(ptr[7] == 0xaa);
+    }
+};
+
+enum reallocNullSource = q{
+    unittest {
+        import core.stdc.stdlib: realloc, free;
+
+        auto ptr = cast(ubyte*) realloc(null, 8);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        ptr[7] = 0xaa;
+        assert(ptr[7] == 0xaa);
+    }
+};
+
+static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: calloc, free;
-
-                auto ptr = cast(ubyte*) calloc(4, 2);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                foreach (i; 0 .. 8)
-                    assert(ptr[i] == 0);
-
-                ptr[7] = 0xaa;
-                assert(ptr[7] == 0xaa);
-            }
-        };
-
-        shouldFailNoSource!(backend, "calloc", source);
+        shouldFailNoSource!(backend, "calloc", callocZeroedSource);
     }
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: realloc, free;
-
-                auto ptr = cast(ubyte*) realloc(null, 8);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                ptr[7] = 0xaa;
-                assert(ptr[7] == 0xaa);
-            }
-        };
-
-        shouldFailNoSource!(backend, "realloc", source);
+        shouldFailNoSource!(backend, "realloc", reallocNullSource);
     }
 }
 
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+
+    @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(callocZeroedSource);
+    }
+
+    @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(reallocNullSource);
+    }
+}
+
+
+enum reallocGrowSource = q{
+    unittest {
+        import core.stdc.stdlib: malloc, realloc, free;
+
+        auto ptr = cast(ubyte*) malloc(4);
+        assert(ptr !is null);
+
+        ptr[0] = 10;
+        ptr[1] = 20;
+        ptr[2] = 30;
+        ptr[3] = 40;
+
+        ptr = cast(ubyte*) realloc(ptr, 8);
+        scope(exit) free(ptr);
+
+        assert(ptr !is null);
+
+        assert(ptr[0] == 10);
+        assert(ptr[1] == 20);
+        assert(ptr[2] == 30);
+        assert(ptr[3] == 40);
+
+        ptr[7] = 80;
+        assert(ptr[7] == 80);
+    }
+};
+
+// Bytecode/IR fail at the first malloc leaf; the Interpreter reaches realloc.
 static foreach (backend; AliasSeq!(Bytecode, IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: malloc, realloc, free;
-
-                auto ptr = cast(ubyte*) malloc(4);
-                assert(ptr !is null);
-
-                ptr[0] = 10;
-                ptr[1] = 20;
-                ptr[2] = 30;
-                ptr[3] = 40;
-
-                ptr = cast(ubyte*) realloc(ptr, 8);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                assert(ptr[0] == 10);
-                assert(ptr[1] == 20);
-                assert(ptr[2] == 30);
-                assert(ptr[3] == 40);
-
-                ptr[7] = 80;
-                assert(ptr[7] == 80);
-            }
-        };
-
-        shouldFailNoSource!(backend, "malloc", source);
+        shouldFailNoSource!(backend, "malloc", reallocGrowSource);
     }
 }
 
 
-static foreach (backend; AliasSeq!(Interpreter)) {
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: malloc, realloc, free;
-
-                auto ptr = cast(ubyte*) malloc(4);
-                assert(ptr !is null);
-
-                ptr[0] = 10;
-                ptr[1] = 20;
-                ptr[2] = 30;
-                ptr[3] = 40;
-
-                ptr = cast(ubyte*) realloc(ptr, 8);
-                scope(exit) free(ptr);
-
-                assert(ptr !is null);
-
-                assert(ptr[0] == 10);
-                assert(ptr[1] == 20);
-                assert(ptr[2] == 30);
-                assert(ptr[3] == 40);
-
-                ptr[7] = 80;
-                assert(ptr[7] == 80);
-            }
-        };
-
-        shouldFailNoSource!(backend, "realloc", source);
+        runBackendSourceFixtureTests!backend(reallocGrowSource);
     }
 }
 

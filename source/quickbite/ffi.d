@@ -52,6 +52,36 @@ public bool tryCallResidentNative(
     }
 
     if (
+        returnType.ty == TY.Tpointer &&
+        arguments.length == 2 &&
+        parameterType(type, 0).ty == TY.Tuns64 &&
+        parameterType(type, 1).ty == TY.Tuns64
+    ) {
+        alias NativeFunction = extern(C) void* function(size_t, size_t);
+        auto nativeFunction = cast(NativeFunction) symbol;
+        result = Value.nativePointerValue(nativeFunction(
+            cast(size_t) arguments[0].asLong,
+            cast(size_t) arguments[1].asLong,
+        ));
+        return true;
+    }
+
+    if (
+        returnType.ty == TY.Tpointer &&
+        arguments.length == 2 &&
+        parameterType(type, 0).ty == TY.Tpointer &&
+        parameterType(type, 1).ty == TY.Tuns64
+    ) {
+        alias NativeFunction = extern(C) void* function(void*, size_t);
+        auto nativeFunction = cast(NativeFunction) symbol;
+        result = Value.nativePointerValue(nativeFunction(
+            arguments[0].asNativePointer,
+            cast(size_t) arguments[1].asLong,
+        ));
+        return true;
+    }
+
+    if (
         returnType.ty == TY.Tvoid &&
         arguments.length == 1 &&
         parameterType(type, 0).ty == TY.Tpointer
