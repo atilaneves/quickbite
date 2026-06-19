@@ -1136,3 +1136,244 @@ disagree, `bytecode.md` wins for that backend. Specifically:
 The §3–§20 dependency-image design is unaffected for boxed-value backends
 and for the cold-path caching story; this amendment narrows only the
 interop boundary mechanics for native-layout backends.
+
+## 24. Increment 3: descriptor-driven resident calls (Interpreter)
+
+The Interpreter has climbed the §22/§22.2 ladder well past the first rungs:
+`malloc`, `free`, `free(null)`, `atoi`, `strtol` (with `endptr` writeback),
+`div`, `ldiv`, `calloc`, and `realloc` are all green against the
+`SystemLinker` oracle. But the chokepoint in `source/quickbite/backends/ffi.d`
+grew the way §22 warned against: `tryCallResidentNative` is a hand-enumerated
+cascade of `(return TY, arg count, arg TYs)` branches, each casting the
+`dlsym` result to a concrete `extern(C)` function alias. Every new libc
+function is a new branch. §21.1 always intended the resolver to be
+**descriptor-driven** — "linkage, symbol name, parameter and return ABI types
+derived from the resolved `FuncDeclaration`" — not malloc-specific. This
+increment makes it so, for the Interpreter.
+
+This is the boxed-value analogue of the libffi CIF mechanism §23 specifies for
+the native-layout backend. The two share an engine (libffi) and the §21.1
+descriptor; they differ only in marshalling endpoint: the native-layout
+backend's memory already *is* the ABI layout, whereas the Interpreter must
+convert each `quickbite.lang.Value` to and from raw ABI bytes.
+
+### 24.1 Engine
+
+libffi (3.x, present system-wide) builds a call interface (`ffi_cif`) from a
+return `ffi_type*` and an array of parameter `ffi_type*`, then performs the
+SysV x86_64 call given raw argument buffers and a return buffer. It does the
+register classification — small-struct-in-registers versus memory, INTEGER
+versus SSE eightbytes — that the cascade was hardcoding per shape.
+
+```text
+FuncDeclaration -> TypeFunction
+  -> build ffi_type* per parameter and for the return (recursively for structs)
+  -> ffi_prep_cif (cached per resolved callable)
+  -> marshal Value[] args -> raw arg buffers
+  -> ffi_call(symbol)
+  -> marshal raw return buffer -> Value
+```
+
+libffi is bound the way the project already binds `libLLVM` (see
+`source/quickbite/backends/native/llvm_orc.d`): a hand-written `extern(C)`
+module declaring only the surface used — `ffi_type`, `ffi_cif`, `ffi_status`,
+`ffi_prep_cif`, `ffi_prep_cif_var`, `ffi_call`, and the predefined
+`ffi_type_*` globals — with `pragma(lib, "ffi")` in-file and `libs "ffi"` in
+`dub.sdl`. No new dub dependency, no libffi dev headers.
+
+### 24.2 What is preserved exactly
+
+The rewrite is confined to the body of `tryCallResidentNative`. Unchanged:
+
+```text
+the single call site (Walker.runCallExpression)
+the gates: hasNoAvailableSource (fbody is null), !needThis, LINK.c only
+symbol resolution: dlsym(RTLD_DEFAULT, mangleExact)
+the "symbol is not loaded" fail-closed throw
+the fall-through to noAvailableSourceMessage when the call is unsupported
+the strtol-style out-parameter writeback (applyNativeWritebacks)
+```
+
+`fabs`/`sqrt`/`pow` and the other DMD builtins keep going through the
+Interpreter's `builtins.d` (`isBuiltin`) path; they never reach this chokepoint
+and are unaffected.
+
+### 24.3 Type-to-ffi_type mapping
+
+A pure mapping from a DMD `Type` (basetype) to an `ffi_type*`, keyed on `TY`:
+
+```text
+scalar TYs    -> predefined ffi_type_* globals (sint32, uint64, double, ...)
+Tbool/Tchar.. -> the matching integer ffi_type
+Tpointer      -> &ffi_type_pointer
+Tvoid         -> &ffi_type_void
+Tenum         -> recurse on toBasetype
+Tstruct       -> synthesize ffi_type{STRUCT, elements} by walking sym.fields
+                 recursively; assert libffi's computed size == DMD structsize
+```
+
+Anything not yet modelled returns false and preserves today's diagnostic:
+`Tarray`, `Tsarray`, `Taarray`, `Tdelegate`, `Tclass`, and variadic
+signatures (`parameterList.varargs != none`).
+
+### 24.4 Marshalling
+
+The boxed-value endpoint, and the real work of this increment.
+
+```text
+Value arg -> raw bytes sized to the ffi_type:
+  integers      asLong truncated to width
+  bool/char     same, by width
+  float/double/real  asReal cast to the ABI float width
+  pointer arg   NativePointer / Null passed straight through
+  char array    -> C string, preserving today's borrow lifetime
+                   (toStringz for call duration; the leaked-malloc
+                   residentNativeString only when the buffer may escape
+                   through a writeback, as strtol's endptr does)
+  out pointer   a pointer-to-pointer parameter (Tpointer whose next is
+                Tpointer, e.g. strtol's char**) is an OUT slot: allocate a
+                host cell, pass &cell, and after the call set
+                argumentWritebacks[i] = nativePointerValue(cell). This is the
+                one rule that keeps strtol green under the rewrite; see §24.7.
+  struct arg    recurse field-by-field (structFieldAt) into the laid-out buffer
+
+raw return bytes -> Value, keyed on the return TY:
+  scalar        the matching Value(...) ctor
+  Tpointer      nativePointerValue
+  Tstruct       structValue(name, fields...) rebuilt via DMD field offsets
+```
+
+The out-pointer rule is type-driven, so the existing call site and writeback
+machinery are reused unchanged: the marshaller only has to populate
+`argumentWritebacks[i]`; `Walker.applyNativeWritebacks` already maps slot `i`
+to the `&local` argument expression. `tryCallResidentNative`'s signature does
+not change.
+
+Two libffi-specific obligations: the return buffer must be at least
+`sizeof(ffi_arg)` (8 bytes) and suitably aligned even for narrow returns; and
+every `toStringz` temporary must be rooted on the D stack across `ffi_call` so
+the GC cannot collect it mid-call.
+
+### 24.5 Staging
+
+Each phase keeps `bin/ut --random` green.
+
+```text
+Phase 0  wire libffi: libs "ffi" + the extern(C) binding module. No behaviour
+         change; validated indirectly by Phase 3.
+Phase 1  Type -> ffi_type* mapper (internal, pure).
+Phase 2  the Value <-> raw-bytes marshaller.
+Phase 3  replace the cascade body with prep_cif + marshal + ffi_call + marshal
+         back, keeping every §24.2 invariant. Acceptance: the entire existing
+         rt/cstdlib.d suite stays green. Behaviour-preserving refactor, so no
+         test is added or changed.
+Phase 4  new capability, each its own oracle-backed fixture (approval required
+         per AGENTS.md): abs/labs (int(int)), toupper/tolower, strtod/atof
+         (float return), wider scalar and by-value-struct shapes.
+```
+
+After this increment, `tryCallResidentNative` accepts any non-variadic
+`extern(C)` call over scalars, pointers, char-strings, and by-value structs.
+A new libc function costs an approved test, not a new code branch.
+
+### 24.6 Explicitly out of scope
+
+```text
+out-params other than the single-level pointer-to-pointer rule in §24.4
+  — scalar out-params (int*) are ambiguous with in-pointers and are deferred;
+  struct-by-ref out and multi-level indirection are deferred
+variadics (printf) — would need ffi_prep_cif_var and per-call cifs
+the §12 exception guard — separate increment, irrelevant for extern(C) libc
+arrays/slices, delegates/callbacks, opaque native handles (§11.3)
+the Bytecode and IR backends — this increment is Interpreter-only; their
+  native-layout path is §23. Their rt/cstdlib.d expected-failures run through
+  a different code path, not this chokepoint, so the refactor cannot affect
+  them.
+```
+
+### 24.7 Implementation handoff
+
+This subsection makes the increment buildable from a cold start, with no
+context beyond the repository. Read `AGENTS.md` and `ai/mistakes.md` first.
+Work in a worktree (`worktrees/ffi-libffi`). Build/test per `AGENTS.md`:
+`dub run reggae --compiler=ldc -- -b ninja` (if `build.ninja` is absent), then
+`ninja bin/ut`, then `bin/ut --random`.
+
+Autonomy boundary: Phases 0–3 are a behaviour-preserving refactor that adds no
+test and changes no test, so they need no approval and can be done end to end.
+Phase 4 adds new fixtures and is gated by the standing `AGENTS.md` test-
+approval rule.
+
+Anchors (symbols are stable; re-grep for current line numbers and re-read
+before editing):
+
+```text
+chokepoint to rewrite   source/quickbite/backends/ffi.d
+                          (tryCallResidentNative; the parameterType helper and
+                           the nativeString/residentNativeString helpers stay)
+sole call site + gates   source/quickbite/backends/interpreter/impl.d
+                          (Walker.runCallExpression, ~1580: hasNoAvailableSource
+                           && !needThis && tryCallResidentNative)
+writeback machinery      same file, applyNativeWritebacks /
+                           nativeOutParameterVariable (~3844) — reuse as-is
+no-source predicate/msg  source/quickbite/frontend/dmd/functions.d
+                          (hasNoAvailableSource, noAvailableSourceMessage)
+Value type               source/quickbite/lang/package.d
+C-binding precedent      source/quickbite/backends/native/llvm_orc.d
+                          (extern(C) + pragma(lib); mirror for libffi)
+link flags               dub.sdl (libs "LLVM" lines; add libs "ffi")
+acceptance test suite    tests/ut/backends/runner/rt/cstdlib.d (must stay green)
+```
+
+libffi binding surface (declare only this; libffi 3.x, /usr/include/ffi.h):
+
+```d
+struct ffi_type {
+    size_t size;
+    ushort alignment;
+    ushort type;
+    ffi_type** elements;   // null-terminated; for STRUCT
+}
+struct ffi_cif { /* opaque; size it from ffi.h or box behind a pointer */ }
+enum ffi_status { FFI_OK = 0, FFI_BAD_TYPEDEF, FFI_BAD_ABI, FFI_BAD_ARGTYPE }
+// FFI_DEFAULT_ABI is 2 (FFI_UNIX64) on x86-64 SysV; confirm against ffi.h.
+extern(C) ffi_status ffi_prep_cif(
+    ffi_cif*, uint abi, uint nargs, ffi_type* rtype, ffi_type** atypes);
+extern(C) void ffi_call(ffi_cif*, void function(), void* rvalue, void** avalue);
+// predefined globals: ffi_type_void/uint8/sint8/.../uint64/sint64/
+//   float/double/longdouble/pointer
+```
+
+Note `ffi_prep_cif` fills in `size`/`alignment` for STRUCT `ffi_type`s it is
+given, so the §24.3 size-vs-`structsize` assert must run after prep, or build
+the struct `ffi_type` and let libffi compute layout then compare.
+
+DMD API the mapper/marshaller needs (all already used in `ffi.d` except the
+struct-field walk):
+
+```text
+TypeFunction    cast(TypeFunction) function_.type; .next.toBasetype (return);
+                .parameterList; .parameterList.varargs (reject if != none)
+parameter type  (*tf.parameterList.parameters)[i].type.toBasetype
+                (the existing parameterType helper)
+symbol name     dmd.mangle.mangleExact(function_)  (already used)
+TY tags         dmd.astenums.TY (Tint32, Tuns64, Tpointer, Tstruct, Tvoid, ...)
+pointer next    (cast(TypePointer) t).nextOf  — to detect char** out-params
+struct fields   (cast(TypeStruct) t).sym.fields → VarDeclaration[]; per field
+                .type (recurse) and .offset (byte offset). Trigger layout via
+                dmd.typesem.size(t) / dmd.dsymbolsem.size before reading.
+```
+
+Value API the marshaller needs (`source/quickbite/lang`, all `@safe pure`
+unless noted):
+
+```text
+in:   asLong, asReal, isNativePointer, asNativePointer (not @safe/pure),
+      asCharArrayString, isStruct, structFieldCount, structFieldAt
+out:  Value(int|long|double|...) ctors, Value.nativePointerValue(void*),
+      Value.void_, Value.structValue(string typeName, Value[] fields)
+```
+
+Done when: `bin/ut --random` is green with the §24.3 reject-list returning
+`false` (preserving the no-source diagnostic), the eight cstdlib functions
+still passing through the new libffi path, and the cascade deleted.
