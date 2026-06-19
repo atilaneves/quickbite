@@ -3073,8 +3073,16 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        if (isPointerType(index.e1.type))
+        if (isPointerType(index.e1.type)) {
+            const pointer = runExpression(index.e1);
+            if (pointer.isNativePointer) {
+                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+                const value = runExpression(rhs);
+                storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+                return value;
+            }
             return runAssocArraySlotAssignExpression(index.e1, rhs);
+        }
 
         if (auto outer = index.e1.isIndexExp)
             return runNestedIndexAssignExpression(outer, index, rhs);
@@ -3618,6 +3626,47 @@ private struct Walker {
         return runIndexExpression(index, arrayIndex);
     }
 
+    // Read a scalar element from native (C heap) memory addressed by a
+    // NativePointer. Limited to byte-addressed `ubyte*` memory for now.
+    private Value loadNativePointerElement(
+        imported!"dmd.mtype".Type pointerType,
+        in Value pointer,
+        in size_t index,
+    ) {
+        import dmd.astenums: TY;
+
+        if (pointerType.toBasetype.nextOf.toBasetype.ty != TY.Tuns8)
+            throw new Exception("Unsupported native pointer element type.");
+
+        return Value(readNativeByte(pointer.asNativePointer, index));
+    }
+
+    private void storeNativePointerElement(
+        imported!"dmd.mtype".Type pointerType,
+        in Value pointer,
+        in size_t index,
+        in Value value,
+    ) {
+        import dmd.astenums: TY;
+
+        if (pointerType.toBasetype.nextOf.toBasetype.ty != TY.Tuns8)
+            throw new Exception("Unsupported native pointer element type.");
+
+        writeNativeByte(pointer.asNativePointer, index, cast(ubyte) value.asLong);
+    }
+
+    private static ubyte readNativeByte(void* base, in size_t index) @trusted {
+        return (cast(ubyte*) base)[index];
+    }
+
+    private static void writeNativeByte(
+        void* base,
+        in size_t index,
+        in ubyte value,
+    ) @trusted {
+        (cast(ubyte*) base)[index] = value;
+    }
+
     private Value runIndexExpression(
         imported!"dmd.expression".IndexExp index,
         out size_t arrayIndex,
@@ -3645,6 +3694,8 @@ private struct Walker {
         if (isPointerType(index.e1.type)) {
             if (source.isLocalPointer)
                 return localPointerTarget(source);
+            if (source.isNativePointer)
+                return loadNativePointerElement(index.e1.type, source, arrayIndex);
             return source.pointerIndex(arrayIndex);
         }
 

@@ -16,18 +16,6 @@ private void shouldFailNoSource
         .shouldThrowWithMessage(noSource!name, file, line);
 }
 
-private void shouldFailUnsupportedInterpreterAssignment
-    (alias backend, string source)
-    (in string file = __FILE__, in size_t line = __LINE__)
-{
-    runBackendSourceFixtureTests!backend(source)
-        .shouldThrowWithMessage(
-            "Unsupported interpreter assignment target.",
-            file,
-            line,
-        );
-}
-
 
 // CTFE should stay pure: no host libc calls.
 static foreach (backend; AliasSeq!(Ctfe)) {
@@ -220,7 +208,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
             }
         };
 
-        shouldFailUnsupportedInterpreterAssignment!(backend, source);
+        runBackendSourceFixtureTests!backend(source);
     }
 }
 
@@ -336,7 +324,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
             }
         };
 
-        shouldFailUnsupportedInterpreterAssignment!(backend, source);
+        shouldFailNoSource!(backend, "realloc", source);
     }
 }
 
