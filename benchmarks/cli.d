@@ -7,6 +7,8 @@ import quickbite.benchmarks: moduleDisplayName;
 import quickbite.frontend.compiler: parseModule, parseSnippetUncached;
 import dmd.dmodule: Module;
 
+public import quickbite.dub: discoverFixtures, findPkgDir;
+
 private:
 
 // Defaults; overridable with -w/--warmup / -r/--runs.
@@ -355,10 +357,8 @@ public struct BenchmarkRow {
 }
 
 DubInfo resolveDubPkg(in string name) {
-    import std.algorithm.iteration: filter, map;
-    import std.array: array;
+    import quickbite.dub: dubDescribe;
     import std.process: Config, execute;
-    import std.string: splitLines, strip;
 
     const pkgDir = findPkgDir(name);
 
@@ -380,145 +380,20 @@ DubInfo resolveDubPkg(in string name) {
     if (buildResult.status != 0)
         throw new Exception("dub build failed for " ~ name ~ ": " ~ buildResult.output);
 
-    // Prefer the unittest config so test-only deps (e.g. unit-threaded) are included.
-    auto importPathResult = execute(
-        ["dub", "describe", "--config=unittest", "--data=import-paths", "--data-list"],
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-    if (importPathResult.status != 0)
-        importPathResult = execute(
-            ["dub", "describe", "--data=import-paths", "--data-list"],
-            null, Config.none, size_t.max,
-            pkgDir,
-        );
-    if (importPathResult.status != 0)
-        throw new Exception("dub describe failed for " ~ name ~ ": " ~ importPathResult.output);
-
-    auto importPaths = importPathResult.output
-        .splitLines
-        .map!(l => l.strip)
-        .filter!(l => l.length > 0)
-        .array;
-
-    auto linkFileResult = execute(
-        ["dub", "describe", "--config=unittest", "--data=linker-files", "--data-list"],
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-    if (linkFileResult.status != 0)
-        linkFileResult = execute(
-            ["dub", "describe", "--data=linker-files", "--data-list"],
-            null, Config.none, size_t.max,
-            pkgDir,
-        );
-    if (linkFileResult.status != 0)
-        throw new Exception("dub describe failed for " ~ name ~ ": " ~ linkFileResult.output);
-
-    auto linkFiles = linkFileResult.output
-        .splitLines
-        .map!(l => l.strip)
-        .filter!(l => l.length > 0)
-        .array;
+    auto importPaths = dubDescribe(pkgDir, "import-paths");
+    auto linkFiles = dubDescribe(pkgDir, "linker-files");
 
     // The fixtures are the modules dub compiles for the unittest config, not a
     // hardcoded tests/ glob: that lets packages keep their tests in source/
     // (no tests/ dir at all) and excludes intentionally-failing example
     // modules dub leaves out of the unittest build.
-    auto sourceFileResult = execute(
-        ["dub", "describe", "--config=unittest", "--data=source-files", "--data-list"],
-        null, Config.none, size_t.max,
-        pkgDir,
-    );
-    if (sourceFileResult.status != 0)
-        sourceFileResult = execute(
-            ["dub", "describe", "--data=source-files", "--data-list"],
-            null, Config.none, size_t.max,
-            pkgDir,
-        );
-    if (sourceFileResult.status != 0)
-        throw new Exception("dub describe failed for " ~ name ~ ": " ~ sourceFileResult.output);
-
-    const sourceFiles = sourceFileResult.output
-        .splitLines
-        .map!(l => l.strip)
-        .filter!(l => l.length > 0)
-        .array;
+    const sourceFiles = dubDescribe(pkgDir, "source-files");
 
     auto fixtures = discoverFixtures(pkgDir, sourceFiles);  // auto: DubInfo needs mutable string[]
     if (fixtures.length == 0)
         throw new Exception("no test fixtures found for " ~ name ~ " in " ~ pkgDir);
 
     return DubInfo(importPaths, linkFiles, pkgDir, fixtures);
-}
-
-// Keep only the package's own modules (under pkgDir, so the generated test
-// runner in the dub cache and dependency sources drop out) that are not
-// non-standalone runner/package files.
-public string[] discoverFixtures(in string pkgDir, in string[] sourceFiles) {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.sorting: sort;
-    import std.array: array;
-    import std.path: baseName, dirSeparator;
-    import std.string: startsWith;
-
-    const prefix = pkgDir ~ dirSeparator;
-    auto fixtures = sourceFiles
-        .filter!(f => f.startsWith(prefix))
-        .filter!(f => !f.baseName.isTestRunnerFile)
-        .map!(f => f.idup)
-        .array;
-    fixtures.sort;
-    return fixtures;
-}
-
-bool isTestRunnerFile(in string basename) {
-    import std.string: endsWith;
-    // Exclude non-standalone files: runner entry points and package modules.
-    return basename == "main.d"
-        || basename == "package.d"
-        || basename.endsWith("_main.d");
-}
-
-string findPkgDir(in string name) {
-    import std.algorithm.iteration: filter, map;
-    import std.algorithm.sorting: sort;
-    import std.array: array;
-    import std.file: dirEntries, exists, SpanMode;
-    import std.path: baseName, buildPath, expandTilde;
-    import std.process: execute;
-    import std.string: startsWith;
-
-    const cache = expandTilde("~/.dub/packages");
-
-    // Handles both cache layouts:
-    //   new: ~/.dub/packages/<name>/<version>/<name>/
-    //   old: ~/.dub/packages/<name>-<version>/<name>/
-    string[] scan() {
-        if (!cache.exists) return [];
-        const newStyle = buildPath(cache, name);
-        if (newStyle.exists)
-            return dirEntries(newStyle, SpanMode.shallow)
-                .filter!(e => e.isDir)
-                .map!(e => buildPath(e.name, name))
-                .filter!(p => p.exists)
-                .array;
-        return dirEntries(cache, SpanMode.shallow)
-            .filter!(e => e.isDir && e.name.baseName.startsWith(name ~ "-"))
-            .map!(e => buildPath(e.name, name))
-            .filter!(p => p.exists)
-            .array;
-    }
-
-    auto found = scan;  // auto: mutable for sort and re-fetch
-    if (found.length == 0) {
-        execute(["dub", "fetch", name]);
-        found = scan;
-    }
-    if (found.length == 0)
-        throw new Exception("could not find package '" ~ name ~ "' in dub cache");
-    found.sort;
-    return found[$ - 1];
 }
 
 void printHeader() {
