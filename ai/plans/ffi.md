@@ -1137,18 +1137,23 @@ The §3–§20 dependency-image design is unaffected for boxed-value backends
 and for the cold-path caching story; this amendment narrows only the
 interop boundary mechanics for native-layout backends.
 
+Scheduling boundary: this section is design context only. Do not treat it as
+the next implementation work from this plan. Until the Interpreter can call
+arbitrary native functions, do not promote Bytecode or IR FFI expected-failure
+fixtures, and do not start the Bytecode native-layout bridge from this plan.
+
 ## 24. Increment 3: descriptor-driven resident calls (Interpreter)
 
-**Status: Phases 0–3 landed (PR #272).** The hand-enumerated cascade described
-below is deleted; `tryCallResidentNative` now builds an `ffi_cif` from the
-resolved `FuncDeclaration` and marshals each `quickbite.lang.Value` to and from
-raw ABI bytes, via the new `quickbite.backends.libffi` binding (`libs "ffi"` in
-`dub.sdl`, `pragma(lib, "ffi")` in-file). The full `rt/cstdlib.d` suite stays
-green through the new path and `ci.sh` passes. **Phase 4 (§24.5) is the
-remaining slice**: new approved fixtures exercising capability the descriptor
-path already supports (`abs`/`labs`, `toupper`/`tolower`, `strtod`/`atof` float
-returns, wider scalar and by-value-struct shapes). The rest of this section is
-retained as the as-built record of how that path works.
+**Status: Phases 0–4 landed (PR #272 and PR #274).** The hand-enumerated
+cascade described below is deleted; `tryCallResidentNative` now builds an
+`ffi_cif` from the resolved `FuncDeclaration` and marshals each
+`quickbite.lang.Value` to and from raw ABI bytes, via the new
+`quickbite.backends.libffi` binding (`libs "ffi"` in `dub.sdl`, `pragma(lib,
+"ffi")` in-file). The full `rt/cstdlib.d` suite stays green through the new
+path and `ci.sh` passes. Phase 4 added oracle-backed fixtures for capability
+the descriptor path already supported (`abs`/`labs`, `toupper`/`tolower`,
+`strtod`/`atof` float returns, wider scalar and by-value-struct shapes). This
+section is retained as the as-built record of how that path works.
 
 The Interpreter has climbed the §22/§22.2 ladder well past the first rungs:
 `malloc`, `free`, `free(null)`, `atoi`, `strtol` (with `endptr` writeback),
@@ -1389,3 +1394,90 @@ out:  Value(int|long|double|...) ctors, Value.nativePointerValue(void*),
 Done when: `bin/ut --random` is green with the §24.3 reject-list returning
 `false` (preserving the no-source diagnostic), the eight cstdlib functions
 still passing through the new libffi path, and the cascade deleted.
+
+## 25. Next PR: arbitrary native functions in the Interpreter
+
+The next FFI work is Interpreter-only. The goal is to move beyond resident
+`extern(C)` libc leaves and make the boxed Interpreter call arbitrary concrete
+native functions whose addresses are available in the host process or the
+prepared dependency image.
+
+Do not use Bytecode or IR as the next slice. Their native bridge remains future
+work, even though §23 records how native-layout backends should eventually cross
+the boundary.
+
+What "arbitrary functions" means for the next increment:
+
+```text
+in scope:
+  non-member native callables resolved from a FuncDeclaration
+  extern(C) and extern(D)
+  resident process symbols and symbols from a prepared dependency image
+  the §24 scalar/pointer/string/by-value-struct signature set
+
+out of scope:
+  member functions needing `this`
+  delegates, callbacks, closures, virtual dispatch, interfaces
+  variadics
+  exceptions crossing the boundary as ordinary backend exceptions
+  generating wrapper source
+  Bytecode/IR/native-layout bridge work
+```
+
+Current blockers in the code:
+
+```text
+source/quickbite/backends/interpreter/impl.d
+  Walker.runCallExpression only tries FFI for `hasNoAvailableSource(call.f)`
+  and `!call.f.needThis`.
+
+source/quickbite/backends/ffi.d
+  tryCallResidentNative rejects every linkage except LINK.c.
+  It resolves only with dlsym(RTLD_DEFAULT, mangleExact(function_)).
+
+source/quickbite/backends/native/llvm_jit.d
+  LLVMJit already loads dependency images with RTLD_GLOBAL. The Interpreter
+  does not yet have an equivalent session-level load step.
+```
+
+The next PR should preserve the §24 libffi descriptor path and extend the
+Interpreter call boundary instead of adding more libc-specific branches:
+
+```text
+resolved FuncDeclaration
+  -> supported callable descriptor
+  -> ensure prepared dependency images are loaded once for the Interpreter
+     session when present
+  -> resolve callable address from resident symbols or the loaded dependency
+     image using the function's DMD mangled name
+  -> marshal quickbite.lang.Value arguments with the existing libffi machinery
+  -> ffi_call
+  -> unmarshal the result
+```
+
+First implementation shape:
+
+```text
+1. Give Interpreter construction or runner inputs access to the same prepared
+   dependency-image paths already passed to LLVMJit for dub packages.
+2. Load those images once per Interpreter instance with RTLD_NOW | RTLD_GLOBAL,
+   mirroring LLVMJit's `loadDependencyImage` helper. Do not unload them during
+   the hot path.
+3. Rename/generalize `tryCallResidentNative` so the public API no longer says
+   "resident" when dependency-image symbols are also valid.
+4. Replace the `LINK.c` gate with a supported-linkage gate for LINK.c and
+   LINK.d. Keep unsupported linkages returning `false` so the existing
+   no-source diagnostic still owns the failure.
+5. Resolve by `mangleExact(function_)`. `extern(C)` keeps the C symbol spelling;
+   `extern(D)` gets the D mangled symbol.
+6. Reuse `callViaLibffi` unchanged where possible. Any new signature support
+   should be driven by a separate approved oracle-backed fixture, not by this
+   plumbing PR.
+```
+
+The first test still needs approval unless it is only promoting an already
+existing oracle-backed backend-matrix fixture. Prefer a narrow fixture that
+proves the Interpreter can call a non-libc function through this generalized
+path; keep `SystemLinker` as the oracle. The slice should not add Bytecode/IR
+expectations, should not implement the native-layout bridge, and should not
+start callback/delegate support.
