@@ -1,4 +1,4 @@
-module quickbite.ffi;
+module quickbite.backends.ffi;
 
 private:
 
