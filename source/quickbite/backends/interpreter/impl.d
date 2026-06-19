@@ -1580,7 +1580,7 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.ffi: tryCallResidentNative;
+            import quickbite.backends.ffi: tryCallResidentNative;
 
             if (hasNoAvailableSource(call.f)) {
                 Value result;
