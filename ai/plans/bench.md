@@ -142,10 +142,16 @@ unittest pass count (the `tests` column, e.g. `156/156`) was already done;
 its leftover is the per-module count columns, now covered by the
 preparation section's prepared/skipped numbers.
 
-Still open: items 7 and 9 (backend-neutrality upkeep, the cold dependency
-image), item 3's remaining in-row declaration count under `--skip-check`,
-plus item 1/2's remaining single-vs-multi-backend check polish where not
-already covered.
+Item 9 (cold dependency image) landed 2026-06-19: `--dub` preparation links
+dub's dependency archives into one `lib<pkg>_dub_deps.so`; `SystemLinker`
+uses that single image on the hot project link, and `LLVMJit` loads the image
+once at backend construction so ORC can resolve dependency symbols from the
+process. The image link uses `cc -shared` with `--whole-archive` because
+`dmd -shared` drops archive-only inputs.
+
+Still open: item 7 backend-neutrality upkeep, item 3's remaining in-row
+declaration count under `--skip-check`, plus item 1/2's remaining
+single-vs-multi-backend check polish where not already covered.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
 
@@ -359,7 +365,21 @@ body. If it is a DMD non-root placeholder, report that the module was parsed as
 a non-root import before fixture preparation. Keep "no available source code"
 for real external leaves such as `extern(C)` functions.
 
-### 9. Build And Use The Cold Dependency Image
+### 9. Build And Use The Cold Dependency Image - complete
+
+Done (2026-06-19). The `--dub` cold path now builds
+`lib<pkg>_dub_deps.so` from dub's dependency archives and passes that single
+image as `linkFiles`. `SystemLinker` appends `.so` link files directly while
+preserving group-wrapped archive lists for non-dub callers. `LLVMJit` receives
+the same dependency image and `dlopen`s it once with `RTLD_GLOBAL` when the
+backend is constructed, before checks or timing.
+
+Covered by `dubInfoUsesDependencyImageInsteadOfRawArchives`. Smoke:
+`./bin/bench.sh -w 0 -r 1 -b system-linker --dub cerealed` reports a
+`156/156` timed row through the image-backed path. The interpreter smoke still
+skips cerealed with `Unsupported interpreter assignment target`, and a mixed
+`interpreter`/`system-linker` run correctly rejects the disagreement before
+timing.
 
 The `--dub` cold path should build one `lib<pkg>_dub_deps.so` from dub's
 dependency archives (`dub-deps.md` §"The build model") as a preparation

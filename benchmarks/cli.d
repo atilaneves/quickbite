@@ -358,12 +358,18 @@ string checkedTestsDisplay(
     return text(passed, "/", total);
 }
 
-struct DubInfo {
+public struct DubInfo {
     string[] importPaths;
     string[] linkFiles;
     string packageRoot;
     string[] fixtures;
 }
+
+public alias DubDependencyImageBuilder = string delegate(
+    in string packageName,
+    in string[] dependencyArchives,
+    in string outDir,
+);
 
 public struct BenchmarkRun {
     public string displayName;
@@ -432,7 +438,7 @@ public string renderPreparationSection(in PreparationRecord[] records) {
 }
 
 DubInfo resolveDubPkg(in string name) {
-    import quickbite.dub: dubDescribe;
+    import quickbite.dub: buildDubDependencyImage, dubDescribe;
     import std.process: Config, execute;
 
     const pkgDir = findPkgDir(name);
@@ -456,7 +462,7 @@ DubInfo resolveDubPkg(in string name) {
         throw new Exception("dub build failed for " ~ name ~ ": " ~ buildResult.output);
 
     auto importPaths = dubDescribe(pkgDir, "import-paths");
-    auto linkFiles = dubDescribe(pkgDir, "linker-files");
+    auto dependencyArchives = dubDescribe(pkgDir, "linker-files");
 
     // The fixtures are the modules dub compiles for the unittest config, not a
     // hardcoded tests/ glob: that lets packages keep their tests in source/
@@ -464,11 +470,47 @@ DubInfo resolveDubPkg(in string name) {
     // modules dub leaves out of the unittest build.
     const sourceFiles = dubDescribe(pkgDir, "source-files");
 
+    return dubInfoFromDescribeData(
+        name,
+        pkgDir,
+        importPaths,
+        dependencyArchives,
+        sourceFiles,
+        (packageName, dependencyArchives, outDir) {
+            return buildDubDependencyImage(
+                packageName,
+                dependencyArchives,
+                outDir,
+            );
+        },
+    );
+}
+
+public DubInfo dubInfoFromDescribeData(
+    in string packageName,
+    in string pkgDir,
+    in string[] importPaths,
+    in string[] dependencyArchives,
+    in string[] sourceFiles,
+    scope DubDependencyImageBuilder buildDependencyImage,
+) {
+    import std.path: buildPath;
+
     auto fixtures = discoverFixtures(pkgDir, sourceFiles);  // auto: DubInfo needs mutable string[]
     if (fixtures.length == 0)
-        throw new Exception("no test fixtures found for " ~ name ~ " in " ~ pkgDir);
+        throw new Exception("no test fixtures found for " ~ packageName ~ " in " ~ pkgDir);
 
-    return DubInfo(importPaths, linkFiles, pkgDir, fixtures);
+    string[] linkFiles;
+    if (dependencyArchives.length != 0)
+        linkFiles = [
+            buildDependencyImage(
+                packageName,
+                dependencyArchives,
+                buildPath(pkgDir, ".quickbite"),
+            ),
+        ];
+
+    return DubInfo(importPaths.dup, linkFiles, pkgDir.idup, fixtures);
 }
 
 void printHeader() {

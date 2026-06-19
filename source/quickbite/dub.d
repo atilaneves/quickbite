@@ -51,6 +51,43 @@ public string[] parseDescribeList(in string output) @safe pure {
         .array;
 }
 
+// Collapse dub-built dependency archives into the native dependency image used
+// by the hot project link. The project itself is not part of this image.
+public string buildDubDependencyImage(
+    in string packageName,
+    in string[] dependencyArchives,
+    in string outDir,
+) {
+    import std.conv: text;
+    import std.file: mkdirRecurse;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    mkdirRecurse(outDir);
+    const imagePath = buildPath(outDir, "lib" ~ packageName ~ "_dub_deps.so");
+    auto command = [ // const fails: appended to below
+        "cc",
+        "-shared",
+        "-o",
+        imagePath,
+        "-Wl,--whole-archive",
+    ];
+    command ~= dependencyArchives
+        ~ "-Wl,--no-whole-archive"
+        ~ "-lphobos2";
+
+    const result = execute(command);
+    if (result.status != 0)
+        throw new Exception(text(
+            "dependency image link failed for ",
+            packageName,
+            ": ",
+            result.output,
+        ));
+
+    return imagePath;
+}
+
 // Keep only the package's own modules (under pkgDir, so the generated test
 // runner in the dub cache and dependency sources drop out) that are not
 // non-standalone runner/package files.

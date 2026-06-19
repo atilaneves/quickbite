@@ -259,6 +259,39 @@ already loaded as a non-root import. `--dub` preparation routes through it
 once via the bench's `prepareDubUnit`; standalone fixtures keep the existing
 `parseModule` path.
 
+## Done: cold dependency image
+
+Done (2026-06-19). `--dub` preparation now builds the native dependency
+image from dub's dependency archives:
+
+```d
+string buildDubDependencyImage(
+    in string packageName,
+    in string[] dependencyArchives,
+    in string outDir,
+);
+```
+
+The image link uses `cc -shared -Wl,--whole-archive ...` rather than
+`dmd -shared`: the D compiler driver reports "no object files to link" for an
+archive-only shared-library link and, when forced with an empty object, still
+drops the archive contents. The C linker path preserves the dependency archive
+members and links against shared phobos with `-lphobos2`.
+
+`SystemLinkerInputs.linkFiles` now receives the single
+`lib<pkg>_dub_deps.so` for dub packages. `SystemLinker` appends all-`.so` link
+files directly, while preserving the old `--start-group`/`--end-group`
+archive handling for explicit non-dub archive callers. `LLVMJit` receives the
+same image and loads it once with `RTLD_GLOBAL` when the backend is
+constructed, before any checks or timing, so ORC's process-symbol generator can
+resolve dependency symbols without per-test dependency work.
+
+Smoke: `./bin/bench.sh -w 0 -r 1 -b system-linker --dub cerealed` reports a
+`156/156` timed row through the image-backed path. The interpreter still skips
+cerealed with `Unsupported interpreter assignment target`, so a mixed
+`interpreter`/`system-linker` run correctly fails the result-agreement check
+before timing.
+
 `./bin/bench.sh -b ctfe --dub cerealed` no longer reports
 `__unittest_L302_C1 ... has no available source code`; it reaches the honest
 CTFE limitation `realloc cannot be interpreted at compile time`. Covered by
@@ -323,16 +356,9 @@ compile.
    module sets". `./bin/bench.sh -b ctfe --dub cerealed` now reports the
    honest `realloc` CTFE limitation instead of the bodyless-unittest
    failure.
-2. Build the cold dependency image (§"The build model"). Add
-   `buildDubDependencyImage` and have the `--dub` cold path link dub's
-   dependency archives into one `lib<pkg>_dub_deps.so`. Point
-   `SystemLinkerInputs.linkFiles` at that single `.so` (drop the
-   group-wrap) and add LLVMJit's session-level `dlopen` of the image.
-   cerealed is a weak test here — its only native leaves are libc
-   (`mkdtemp`/`isatty`), so its image is near-empty and the native
-   backends already link without one; the image's payoff and LLVMJit's
-   need for it only appear on a corpus package with real D dependencies,
-   so land this alongside the first such package (item 3).
+2. Done (2026-06-19). `buildDubDependencyImage` implemented and the `--dub`
+   cold path now links dub's dependency archives into one
+   `lib<pkg>_dub_deps.so`; see §"Done: cold dependency image".
 3. Grow the corpus past cerealed. Fixture discovery is now layout-robust
    (Done, 2026-06-15), but discovery was only the first gate; each new
    package hits a distinct downstream blocker, in rough order of effort:

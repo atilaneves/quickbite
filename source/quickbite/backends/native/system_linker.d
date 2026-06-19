@@ -188,13 +188,29 @@ private void linkSharedLibrary(
         "-L=defs",
         "-of=" ~ libPath,
     ] ~ objPaths;
-    // Group-wrap the prebuilt libraries: references between archives can go
-    // in either direction, and the group makes the linker rescan to fixpoint.
-    if (linkFiles.length != 0)
+    if (linkFiles.length != 0 && allSharedLibraries(linkFiles)) {
+        command ~= linkFiles;
+    } else if (linkFiles.length != 0) {
+        // Group-wrap archive lists: references between archives can go in
+        // either direction, and the group makes the linker rescan to fixpoint.
         command ~= "-L=--start-group" ~ linkFiles ~ "-L=--end-group";
+    }
     const result = execute(command);
     if (result.status != 0)
         throw new Exception(text("link failed: ", result.output));
+}
+
+private bool allSharedLibraries(in string[] linkFiles) @safe pure {
+    foreach (linkFile; linkFiles)
+        if (!linkFile.isSharedLibraryPath)
+            return false;
+    return true;
+}
+
+private bool isSharedLibraryPath(in string linkFile) @safe pure {
+    import std.string: endsWith;
+
+    return linkFile.endsWith(".so");
 }
 
 private void* loadSharedLibrary(in string libPath) {

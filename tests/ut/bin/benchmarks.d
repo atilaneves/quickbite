@@ -340,6 +340,32 @@ unittest {
     ];
 }
 
+@("dubInfoUsesDependencyImageInsteadOfRawArchives")
+unittest {
+    import std.path: buildPath;
+
+    const pkgDir = "/cache/pkgs/acme/1.0.0/acme";
+    const archiveA = buildPath(pkgDir, ".dub/build/libdep_a.a");
+    const archiveB = buildPath(pkgDir, ".dub/build/libdep_b.a");
+    const imagePath = buildPath(pkgDir, ".quickbite/libacme_dub_deps.so");
+
+    auto info = dubInfoFromDescribeData(
+        "acme",
+        pkgDir,
+        [buildPath(pkgDir, "source")],
+        [archiveA, archiveB],
+        [buildPath(pkgDir, "source/acme/package_tests.d")],
+        (packageName, dependencyArchives, outDir) {
+            packageName.should == "acme";
+            dependencyArchives.should == [archiveA, archiveB];
+            outDir.should == buildPath(pkgDir, ".quickbite");
+            return imagePath;
+        },
+    );
+
+    info.linkFiles.should == [imagePath];
+}
+
 @("testResultsMismatch")
 unittest {
     const passing = [TestResult(true, "t0", "loc", null)];

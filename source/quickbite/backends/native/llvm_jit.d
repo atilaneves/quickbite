@@ -28,6 +28,20 @@ public class LLVMJit:
         _inputs = inputs;
     }
 
+    public this(
+        const string[] dependencyImages,
+        const string[] importPaths,
+        in string packageRoot,
+    ) {
+        this(
+            LLVMJitInputs(
+                archiveImportPathsUnder(importPaths, packageRoot),
+                dependencyImages,
+            ),
+        );
+        loadDependencyImages(_inputs.dependencyImages);
+    }
+
     public override TestResult[] runTests(Module module_) {
         return runTests([module_]);
     }
@@ -169,11 +183,55 @@ public struct LLVMJitInputs {
     // Modules under archive import paths are defined by prebuilt libraries and
     // must not be codegen'd again. Whether default imports are traversed for
     // template-instance codegen is derived from the modules themselves by the
-    // shared codegen path, not from a caller flag. There is no `linkFiles`
-    // field as SystemLinker has: ORC resolves druntime/phobos symbols from the
-    // running process, and any archive symbols would have to be loaded into the
-    // JIT separately (not POC scope).
+    // shared codegen path, not from a caller flag.
     public const string[] archiveImportPaths;
+    // Cold dub dependency images are dlopen'd with RTLD_GLOBAL before ORC asks
+    // the process-symbol generator to resolve dependency symbols.
+    public const string[] dependencyImages;
+}
+
+// import paths under the package belong to the project under test and are
+// compiled fresh per run; the rest belong to dependencies, whose code lives in
+// the cold dependency image loaded into the process.
+private string[] archiveImportPathsUnder(in string[] importPaths, in string packageRoot) @safe {
+    import std.algorithm.iteration: filter, map;
+    import std.algorithm.searching: startsWith;
+    import std.array: array;
+    import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+    if (packageRoot.length == 0)
+        return [];
+
+    const root = packageRoot.absolutePath.buildNormalizedPath;
+    bool underPackage(in string path) {
+        const normalised = path.absolutePath.buildNormalizedPath;
+        return normalised == root
+            || normalised.startsWith(root ~ dirSeparator);
+    }
+    return importPaths
+        .filter!(path => !underPackage(path))
+        .map!(path => path.idup)
+        .array;
+}
+
+private void loadDependencyImages(in string[] dependencyImages) {
+    foreach (dependencyImage; dependencyImages)
+        loadDependencyImage(dependencyImage);
+}
+
+private void loadDependencyImage(in string dependencyImage) {
+    import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
+    import std.conv: text;
+    import std.string: fromStringz, toStringz;
+
+    if (dlopen(dependencyImage.toStringz, RTLD_NOW | RTLD_GLOBAL) is null) {
+        auto err = dlerror();
+        throw new Exception(text(
+            "failed to load dependency image: ",
+            dependencyImage,
+            err is null ? "" : text(" :: ", err.fromStringz),
+        ));
+    }
 }
 
 // Emit the objects (shared codegen path, child emits, no link) and stand up an
