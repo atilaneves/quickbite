@@ -71,6 +71,25 @@ outcomes. Failure messages may differ.
 timed row should show the reported pass count so the output proves that the
 backend did not benchmark an empty unit.
 
+## Build Model And What Is Timed
+
+A dub project's build splits into a cold dependency step and a hot
+per-edit step over the project; only the project is timed. The full model
+lives in `dub-deps.md` §"The build model"; the parts that bind this driver:
+
+- **Cold (preparation, untimed).** `dub build --config=unittest` produces
+  dependency archives, which are linked once into a single
+  `lib<pkg>_dub_deps.so`. This is part of preparation, not a benchmark
+  row. The native backends link/resolve the project against this image;
+  the interpreter family uses it only for body-less native leaves.
+- **Hot (timed).** The project under test is compiled or interpreted fresh
+  every edit and resolved against the cold image. This is the only thing a
+  timed row measures.
+
+The cost of building the dependency image belongs in the preparation
+section, never folded into a timed row. If image construction fails, the
+package is a preparation failure (see item 4), not a backend skip.
+
 ## Target Shape
 
 Represent everything as benchmark units:
@@ -79,6 +98,11 @@ Represent everything as benchmark units:
 standalone fixture -> one module
 dub package        -> all prepared package modules
 ```
+
+A benchmark unit is the reporting granularity: **one timed row per unit**,
+so a dub package is exactly one row, never one row per module. This holds
+in every timed section, frontend included (see item 8): the package is
+parsed as one root set and measured as one parse, not module by module.
 
 Then use that same unit for:
 
@@ -198,11 +222,15 @@ report explain the class of failure.
 
 Keep frontend parse+semantic measurement separate from post-parse execution.
 
-Rows marked `unmeasurable (module declaration)` are not backend skips. They mean
-the cached module can be used for post-parse execution, but the uncached
-frontend reparse collides with DMD process-global module state.
-
-Rename or annotate the section so this distinction is obvious.
+For a dub package this is one measurement of the whole package as a single
+root set (item 8), reported as one row, not a per-module list. The
+`unmeasurable (module declaration)` status was an artifact of the
+one-file-at-a-time path: re-parsing a module already loaded as an import
+collided with DMD process-global module state. Measuring the package as one
+uncached multi-root parse removes that collision, so a dub row should report
+a real frontend number; reserve `unmeasurable` for standalone fixtures that
+still hit the same-FQN reload problem, and annotate it so it never reads as
+a backend skip.
 
 ### 6. Investigate File-Backed Fixture Parsing - complete
 
@@ -272,12 +300,14 @@ Required behaviour:
 - dub packages: a package/root-set path that calls `parseRootModules` once and
   builds one grouped `BenchmarkUnit`.
 
-The frontend timing row for dub packages can stay per module, but its
-measurement must not depend on reparsing each root in a way that changes the
-prepared AST. If uncached per-module frontend measurement remains impossible
-because DMD has process-global module state, keep reporting it as
-`unmeasurable (module declaration)` until a true multi-root uncached timing path
-exists.
+The frontend timing for a dub package is one row, not one per module: the
+package is parsed once as a whole root set through `parseRootModules`, and
+that whole-package parse+semantic is the measured quantity. The measurement
+must not depend on reparsing each root in a way that changes the prepared
+AST. Because the whole-package multi-root parse is itself the uncached
+timing path, it supersedes the per-module `unmeasurable (module
+declaration)` reporting (item 5); that status survives only for standalone
+fixtures.
 
 The first approved test should exercise the frontend API directly with two
 package-shaped modules where one root imports the other. Running the imported
@@ -292,24 +322,48 @@ body. If it is a DMD non-root placeholder, report that the module was parsed as
 a non-root import before fixture preparation. Keep "no available source code"
 for real external leaves such as `extern(C)` functions.
 
+### 9. Build And Use The Cold Dependency Image
+
+The `--dub` cold path should build one `lib<pkg>_dub_deps.so` from dub's
+dependency archives (`dub-deps.md` §"The build model") as a preparation
+step, then:
+
+- point `SystemLinkerInputs.linkFiles` at that single `.so` instead of the
+  raw archive list;
+- `dlopen` the image once per session before any LLVMJit timing, so ORC
+  resolves dependency symbols in-process;
+- record the image (path, or build failure) in the preparation section,
+  never as a timed row.
+
+cerealed is a weak exercise of this (its image is near-empty — libc-only
+leaves), so land it with the first corpus package that has real D
+dependencies. Until then the native backends link cerealed without an
+image, as today. This item is the bench-side counterpart of `dub-deps.md`
+Next item 2; keep the construction in the backend/preparation layer, not
+the timing loop (item 7).
+
 ## Proposed Output Shape
 
-Exact formatting is flexible, but a dub run should communicate this information:
+Exact formatting is flexible, but a dub run should communicate this
+information, with one row per package in every section:
 
 ```text
 == preparation ==
-package      discovered  prepared  skipped
-cerealed            35        30        5
+package      discovered  prepared  skipped  dep-image
+cerealed            35        30        5    libcerealed_dub_deps.so
 
 == frontend (parse + semantic only) ==
-fixture                          status
-cerealed.attrs                   unmeasurable (module declaration)
-...
+package      modules  median
+cerealed          30  4.210 ms
 
 == post-parse ==
 unit        backend       modules  tests       check   median
 cerealed    interpreter        30  151/151     pass    9.720 ms
 ```
+
+The frontend section is one row per package — the whole-package root-set
+parse — not a per-module list. The cold dependency-image build is a
+preparation fact (its path, or a build failure), never a timed row.
 
 Avoid a wall of conflict diagnostics before the metadata block. A detailed
 diagnostic can be printed under the preparation row or behind a future verbose
