@@ -93,7 +93,30 @@ public bool tryCallResidentNative(
         return true;
     }
 
+    if (
+        returnType.ty == TY.Tint32 &&
+        arguments.length == 1 &&
+        parameterType(type, 0).ty == TY.Tpointer
+    ) {
+        alias NativeFunction = extern(C) int function(const(char)*);
+        auto nativeFunction = cast(NativeFunction) symbol;
+        result = Value(nativeFunction(nativeString(arguments[0])));
+        return true;
+    }
+
     return false;
+}
+
+// Marshal a backend value into a NUL-terminated C string valid for the
+// duration of the native call. A native pointer is passed straight through;
+// a backend char array is copied into a GC-owned NUL-terminated buffer.
+private const(char)* nativeString(in imported!"quickbite.lang".Value value) {
+    import std.string: toStringz;
+
+    if (value.isNativePointer)
+        return cast(const(char)*) value.asNativePointer;
+
+    return value.asCharArrayString.toStringz;
 }
 
 private imported!"dmd.mtype".Type parameterType(

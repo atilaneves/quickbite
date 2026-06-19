@@ -53,20 +53,31 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 }
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+enum atoiSource = q{
+    unittest {
+        import core.stdc.stdlib: atoi;
+
+        assert(atoi("12345".ptr) == 12345);
+    }
+};
+
+// CTFE cannot call host libc; the Interpreter marshals the char array.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("atoi.noSource." ~ backend.stringof)
     unittest {
-        enum source = q{
-            unittest {
-                import core.stdc.stdlib: atoi;
-
-                assert(atoi("12345".ptr) == 12345);
-            }
-        };
-
-        shouldFailNoSource!(backend, "atoi", source);
+        shouldFailNoSource!(backend, "atoi", atoiSource);
     }
+}
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker, LLVMJit)) {
+    @("atoi.value." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(atoiSource);
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("strtol.noSource." ~ backend.stringof)
     unittest {
         enum source = q{
