@@ -16,6 +16,7 @@ public struct ReplOptions {
     public bool hasCommand;
     public string command;
     public string[] importPaths;
+    public string dubPkg;
     public bool showHelp;
     public bool hasFile;
     public string file;
@@ -47,6 +48,8 @@ public ReplCliResult parseReplArgs(string[] args) {
             "I", "Add import path.", (string _, string val) {
                 result.options.importPaths ~= val;
             },
+            "dub", "Add a dub package's import paths (transitive).",
+                &result.options.dubPkg,
             "b|backend", "Select backend (default: ctfe).", &backendName,
             "l", "Start the REPL after loading file arguments.",
                 &result.options.liveAfterFiles,
@@ -83,8 +86,9 @@ private enum helpText =
     "Options:\n" ~
     "  -c <command>          Run a D expression\n" ~
     "  -I <path>             Add import path\n" ~
-    "  -b, --backend <name>  Select backend (default: ctfe; valid: " ~
-        validBackendNames ~ ")\n" ~
+    "  --dub <name>          Add a dub package's import paths (transitive)\n" ~
+    "  -b, --backend <name>  Select backend (default: ctfe)\n" ~
+    "                        valid: " ~ validBackendNames ~ "\n" ~
     "  -l                   Start the REPL after loading file arguments\n" ~
     "  -h, --help            Show this help\n";
 

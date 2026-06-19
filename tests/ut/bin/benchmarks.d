@@ -231,6 +231,25 @@ unittest {
     ];
 }
 
+@("dub.parseDescribeList yields the import paths, dropping blanks and whitespace")
+unittest {
+    import quickbite.dub: parseDescribeList;
+
+    // Shape of `dub describe --data=import-paths --data-list`: the package's own
+    // source path plus its transitive dependency paths, one per line.
+    const output =
+        "/cache/pkgs/cerealed/0.6.8/cerealed/source/\n" ~
+        "  /cache/pkgs/concepts/0.0.7/concepts/source/  \n" ~
+        "\n" ~
+        "/cache/pkgs/unit-threaded/2.1.9/unit-threaded/source/\n";
+
+    parseDescribeList(output).should == [
+        "/cache/pkgs/cerealed/0.6.8/cerealed/source/",
+        "/cache/pkgs/concepts/0.0.7/concepts/source/",
+        "/cache/pkgs/unit-threaded/2.1.9/unit-threaded/source/",
+    ];
+}
+
 @("testResultsMismatch")
 unittest {
     const passing = [TestResult(true, "t0", "loc", null)];
