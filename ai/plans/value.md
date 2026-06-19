@@ -63,6 +63,15 @@ so this is not about capability. If the tree-walking interpreter is
 itself later retired in favour of the VM, its private boxed type dies
 with it, but that is a separate decision not taken here.
 
+Progress 2026-06-19: the prelude formatter now owns the scalar literal
+suffix cases that were previously only pinned through `Value.toString`:
+`uint`, `long`, `ulong`, `float`, and `real` render as D literals with
+`u`, `L`, `UL`, `f`, and `L` suffixes respectively, and the whole-floating
+decimal-point rule is shared across `float`, `double`, and `real`. This is
+still a prelude-surface slice only: expression cells are not yet synthesized
+as `__quickbiteFormat(expr)`, and the interim backend `Value` rendering
+path remains in place.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for
@@ -285,9 +294,11 @@ All test additions/changes require approval first (AGENTS.md).
 The contract flip (decision 1) and frontend-answered `:t` (decision 5)
 are done; what is still pending, in order:
 
-1. Build the prelude formatter `string __quickbiteFormat(T)(T value)`
-   (decision 3) so backends render by executing D rather than via the
-   interim `displayString`/`Value.toString` scaffolding.
+1. Complete the prelude formatter `string __quickbiteFormat(T)(T value)`
+   (decision 3) beyond the implemented scalar string/character/integer/
+   floating cases, then synthesize expression cells as
+   `__quickbiteFormat(expr)` so backends render by executing D rather than
+   via the interim `displayString`/`Value.toString` scaffolding.
 2. Delete the private reify → `Value` → `toString` scaffolding per
    backend (decision 4) as each gains the formatter.
 3. Remove the *shared* `quickbite.lang.Value` (decision 2026-06-17):

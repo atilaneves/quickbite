@@ -33,6 +33,15 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == "3.0";
 }
 
+@("repl.formatter.rendersScalarLiteralSuffixesAtCompileTime")
+@safe pure unittest {
+    __quickbiteFormat(3u).should == "3u";
+    __quickbiteFormat(3L).should == "3L";
+    __quickbiteFormat(3UL).should == "3UL";
+    __quickbiteFormat(3.0f).should == "3.0f";
+    __quickbiteFormat(3.0L).should == "3.0L";
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;
