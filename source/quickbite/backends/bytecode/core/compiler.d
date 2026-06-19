@@ -202,6 +202,15 @@ private struct Compiler {
         if (auto real_ = expression.isRealExp) {
             const type = scalarType(real_.type);
             const offset = allocate(type);
+            if (type == ScalarType.real_) {
+                _code ~= Instruction(
+                    Op.loadRealConstant,
+                    offset,
+                    realConstantIndex(real_),
+                );
+                return Operand(offset, type);
+            }
+
             _code ~= Instruction(
                 Op.loadConstant,
                 offset,
@@ -454,7 +463,9 @@ private struct Compiler {
         const op = () {
             switch (comparison.op) with (EXP) {
                 case lessThan: return Op.lessThan4;
+                case lessOrEqual: return Op.lessOrEqual4;
                 case greaterThan: return Op.greaterThan4;
+                case greaterOrEqual: return Op.greaterOrEqual4;
                 default:
                     throw new Exception(text(
                         "Unsupported comparison in bytecode core: ",
@@ -542,6 +553,11 @@ private struct Compiler {
             const offset = allocate(ScalarType.double_);
             _code ~= Instruction(Op.negateDouble, offset, source.offset);
             return Operand(offset, ScalarType.double_);
+        }
+        if (source.type == ScalarType.real_) {
+            const offset = allocate(ScalarType.real_);
+            _code ~= Instruction(Op.negateReal, offset, source.offset);
+            return Operand(offset, ScalarType.real_);
         }
 
         throw new Exception(text(
@@ -762,46 +778,213 @@ private struct Compiler {
         ));
     }
 
-    // Recognise the std.math builtins eval needs (fabs, pow) via DMD's own
-    // builtin classification and emit a VM intrinsic instead of a call. The
-    // destination is typed by the call's static return type, so a float
-    // argument yields a float result (kept at 4 bytes, displayed with "f").
+    // Recognise std.math builtins via DMD's own classification and emit a VM
+    // intrinsic instead of a call. The destination is typed by the call's
+    // static return type; pow(double, double), for example, may be real.
     private Operand* compileBuiltinCall(
         CallExp call,
         FuncDeclaration function_,
     ) {
-        import dmd.builtin: isBuiltin;
-        import dmd.func: BUILTIN;
+        import quickbite.backends.bytecode.builtins:
+            BytecodeBuiltin, bytecodeBuiltinArgumentCount,
+            tryBytecodeBuiltin;
+        import std.conv: text;
+
+        BytecodeBuiltin builtin;
+        if (!tryBytecodeBuiltin(function_, builtin))
+            return null;
+
+        if (call.arguments is null ||
+            call.arguments.length != bytecodeBuiltinArgumentCount(builtin))
+            throw new Exception(text(
+                "Unsupported bytecode builtin call arguments: ",
+                expressionChars(call),
+            ));
 
         const resultType = scalarType(callType(call));
-        with (BUILTIN) switch (isBuiltin(function_)) {
+        with (BytecodeBuiltin) final switch (builtin) {
             case fabs:
-                if (resultType != ScalarType.float_)
-                    break;
-                const argument = compileExpression((*call.arguments)[0]);
-                const offset = allocate(ScalarType.float_);
-                _code ~= Instruction(Op.fabsFloat, offset, argument.offset);
-                return new Operand(offset, ScalarType.float_);
+                return heapOperand(compileSameTypeUnaryIntrinsic(
+                    call,
+                    resultType,
+                    Op.fabsFloat,
+                    Op.fabsDouble,
+                    Op.fabsReal,
+                ));
+
+            case isInfinity:
+                return heapOperand(compileUnaryIntrinsic(
+                    call,
+                    ScalarType.bool_,
+                    Op.isInfinityFloat,
+                    Op.isInfinityDouble,
+                    Op.isInfinityReal,
+                ));
+
+            case isNaN:
+                return heapOperand(compileUnaryIntrinsic(
+                    call,
+                    ScalarType.bool_,
+                    Op.isNaNFloat,
+                    Op.isNaNDouble,
+                    Op.isNaNReal,
+                ));
 
             case pow:
-                if (resultType != ScalarType.float_)
-                    break;
-                const base = compileExpression((*call.arguments)[0]);
-                const exponent = compileExpression((*call.arguments)[1]);
-                const offset = allocate(ScalarType.float_);
-                _code ~= Instruction(
-                    Op.powFloat,
-                    offset,
-                    base.offset,
-                    exponent.offset,
-                );
-                return new Operand(offset, ScalarType.float_);
+                return heapOperand(compilePowIntrinsic(call, resultType));
 
-            default:
-                break;
+            case signbit:
+                if (resultType != ScalarType.int_)
+                    throw new Exception(text(
+                        "Unsupported signbit result in bytecode core: ",
+                        expressionChars(call),
+                    ));
+
+                return heapOperand(compileUnaryIntrinsic(
+                    call,
+                    resultType,
+                    Op.signbitFloat,
+                    Op.signbitDouble,
+                    Op.signbitReal,
+                ));
+
+            case sqrt:
+                return heapOperand(compileSameTypeUnaryIntrinsic(
+                    call,
+                    resultType,
+                    Op.sqrtFloat,
+                    Op.sqrtDouble,
+                    Op.sqrtReal,
+                ));
         }
+    }
 
-        return null;
+    private Operand compileSameTypeUnaryIntrinsic(
+        CallExp call,
+        in ScalarType resultType,
+        in Op floatOp,
+        in Op doubleOp,
+        in Op realOp,
+    ) {
+        import std.conv: text;
+
+        const argument = compileExpression((*call.arguments)[0]);
+        if (argument.type != resultType)
+            throw new Exception(text(
+                "Unsupported bytecode builtin return type: ",
+                expressionChars(call),
+            ));
+
+        return emitUnaryIntrinsic(
+            argument,
+            resultType,
+            unaryFloatingOp(argument.type, floatOp, doubleOp, realOp, call),
+        );
+    }
+
+    private Operand compileUnaryIntrinsic(
+        CallExp call,
+        in ScalarType resultType,
+        in Op floatOp,
+        in Op doubleOp,
+        in Op realOp,
+    ) {
+        const argument = compileExpression((*call.arguments)[0]);
+        return emitUnaryIntrinsic(
+            argument,
+            resultType,
+            unaryFloatingOp(argument.type, floatOp, doubleOp, realOp, call),
+        );
+    }
+
+    private Operand emitUnaryIntrinsic(
+        in Operand argument,
+        in ScalarType resultType,
+        in Op op,
+    ) @safe pure {
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, argument.offset);
+        return Operand(offset, resultType);
+    }
+
+    private Operand compilePowIntrinsic(
+        CallExp call,
+        in ScalarType resultType,
+    ) {
+        import std.conv: text;
+
+        const base = compileExpression((*call.arguments)[0]);
+        const exponent = compileExpression((*call.arguments)[1]);
+        if (base.type != exponent.type)
+            throw new Exception(text(
+                "Unsupported pow operands in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const op = powOp(base.type, resultType, call);
+        const offset = allocate(resultType);
+        _code ~= Instruction(op, offset, base.offset, exponent.offset);
+        return Operand(offset, resultType);
+    }
+
+    private Operand* heapOperand(in Operand operand) @safe {
+        auto result = new Operand;
+        *result = operand;
+        return result;
+    }
+
+    private Op unaryFloatingOp(
+        in ScalarType type,
+        in Op floatOp,
+        in Op doubleOp,
+        in Op realOp,
+        CallExp call,
+    ) {
+        import std.conv: text;
+
+        final switch (type) with (ScalarType) {
+            case float_:
+                return floatOp;
+            case double_:
+                return doubleOp;
+            case real_:
+                return realOp;
+            case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_,
+                long_, ulong_, char_, wchar_, dchar_:
+                throw new Exception(text(
+                    "Unsupported bytecode builtin operand: ",
+                    expressionChars(call),
+                ));
+        }
+    }
+
+    private Op powOp(
+        in ScalarType argumentType,
+        in ScalarType resultType,
+        CallExp call,
+    ) {
+        import std.conv: text;
+
+        if (argumentType == ScalarType.float_ &&
+            resultType == ScalarType.float_)
+            return Op.powFloat;
+
+        if (argumentType == ScalarType.double_ &&
+            resultType == ScalarType.double_)
+            return Op.powDouble;
+
+        if (argumentType == ScalarType.double_ &&
+            resultType == ScalarType.real_)
+            return Op.powDoubleToReal;
+
+        if (argumentType == ScalarType.real_ &&
+            resultType == ScalarType.real_)
+            return Op.powReal;
+
+        throw new Exception(text(
+            "Unsupported pow type in bytecode core: ",
+            expressionChars(call),
+        ));
     }
 
     private size_t emitJump() @safe pure {
@@ -1126,6 +1309,15 @@ private struct Compiler {
         return cast(ushort) index;
     }
 
+    private ushort realConstantIndex(RealExp real_) @safe {
+        const index = _program.realConstants.length;
+        if (index > ushort.max)
+            throw new Exception("Too many real constants in bytecode core");
+
+        _program.realConstants ~= realBytes(real_);
+        return cast(ushort) index;
+    }
+
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
         ParameterLayout layout;
         if (function_.parameters is null)
@@ -1197,6 +1389,8 @@ private struct Compiler {
                 return ScalarType.float_;
             case Tfloat64:
                 return ScalarType.double_;
+            case Tfloat80:
+                return ScalarType.real_;
             default:
                 throw new Exception(text(
                     "Unsupported type in bytecode core: ",
@@ -1276,10 +1470,139 @@ private imported!"quickbite.backends.bytecode.core.program".Op equalOp(
     }
 }
 
-// The comparison opcode for a relational `_d_assert_fail` operator. `==`
-// reuses the width-tagged equality opcodes; `!=` and the order relations only
-// need the 4-byte int forms today (the operands the lowered asserts carry),
-// selecting the unsigned `>=` opcode for unsigned operands.
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.equalFloat;
+        case double_: return Op.equalDouble;
+        case real_: return Op.equalReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingNotEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.notEqualFloat;
+        case double_: return Op.notEqualDouble;
+        case real_: return Op.notEqualReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingComparisonOp(
+    in imported!"dmd.tokens".EXP operator,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType
+        operandType,
+) @safe @nogc nothrow pure {
+    import dmd.tokens: EXP;
+
+    switch (operator) with (EXP) {
+        case lessThan: return floatingLessThanOp(operandType);
+        case lessOrEqual: return floatingLessOrEqualOp(operandType);
+        case greaterThan: return floatingGreaterThanOp(operandType);
+        case greaterOrEqual: return floatingGreaterOrEqualOp(operandType);
+        default: assert(0, "Unsupported floating comparison operator.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingLessThanOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.lessThanFloat;
+        case double_: return Op.lessThanDouble;
+        case real_: return Op.lessThanReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingLessOrEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.lessOrEqualFloat;
+        case double_: return Op.lessOrEqualDouble;
+        case real_: return Op.lessOrEqualReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingGreaterThanOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.greaterThanFloat;
+        case double_: return Op.greaterThanDouble;
+        case real_: return Op.greaterThanReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingGreaterOrEqualOp(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op, ScalarType;
+
+    final switch (type) with (ScalarType) {
+        case float_: return Op.greaterOrEqualFloat;
+        case double_: return Op.greaterOrEqualDouble;
+        case real_: return Op.greaterOrEqualReal;
+        case void_, bool_, byte_, ubyte_, short_, ushort_, int_, uint_, long_,
+            ulong_, char_, wchar_, dchar_:
+            assert(0, "Not a floating-point type.");
+    }
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op
+    floatingAssertOp(
+    in string operator,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    switch (operator) {
+        case "==": return floatingEqualOp(type);
+        case "!=": return floatingNotEqualOp(type);
+        case "<": return floatingLessThanOp(type);
+        case "<=": return floatingLessOrEqualOp(type);
+        case ">": return floatingGreaterThanOp(type);
+        case ">=": return floatingGreaterOrEqualOp(type);
+        default: assert(0, "Unsupported floating assert operator.");
+    }
+}
+
+// The comparison opcode for a relational `_d_assert_fail` operator. Floating
+// operands use numeric comparison opcodes, including `real`; integer `==`
+// reuses the width-tagged equality opcodes, and integer `>=` selects the
+// unsigned form for unsigned operands.
 private imported!"quickbite.backends.bytecode.core.program".Op
     comparisonAssertOp(
     in string operator,
@@ -1288,6 +1611,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op
 ) @safe pure {
     import quickbite.backends.bytecode.core.program: Op, ScalarType, isSigned,
         size;
+
+    if (isFloating(operandType))
+        return floatingAssertOp(operator, operandType);
 
     switch (operator) {
         case "==": return equalOp(size(operandType));
@@ -1340,7 +1666,9 @@ private bool isFloating(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: ScalarType;
 
-    return type == ScalarType.float_ || type == ScalarType.double_;
+    return type == ScalarType.float_ ||
+        type == ScalarType.double_ ||
+        type == ScalarType.real_;
 }
 
 private bool isEightByteInteger(
@@ -1377,6 +1705,19 @@ private ulong floatBits(
     return bits;
 }
 
+private ubyte[real.sizeof] realBytes(
+    imported!"dmd.expression".RealExp real_,
+) @safe {
+    union RealBytes {
+        real value;
+        ubyte[real.sizeof] bytes;
+    }
+
+    RealBytes raw;
+    raw.value = cast(real) realValue(real_);
+    return raw.bytes;
+}
+
 private real realValue(imported!"dmd.expression".RealExp real_) @trusted {
     // RealExp.value is a dmd longdouble (real_t); reading it is pure data
     // access with no aliasing, but the dmd field accessor is not @safe.
@@ -1384,17 +1725,19 @@ private real realValue(imported!"dmd.expression".RealExp real_) @trusted {
 }
 
 // DMD has no `isCmpExp`; a CmpExp is a BinExp whose op is a relational
-// operator. Only `<` / `>` are lowered today (the forms `&&` operands use).
+// operator.
 private imported!"dmd.expression".CmpExp comparisonExpression(
     imported!"dmd.expression".Expression expression,
 ) {
     import dmd.expression: CmpExp;
     import dmd.tokens: EXP;
 
-    if (expression.op != EXP.lessThan && expression.op != EXP.greaterThan)
-        return null;
-
-    return cast(CmpExp) expression;
+    switch (expression.op) with (EXP) {
+        case lessThan, lessOrEqual, greaterThan, greaterOrEqual:
+            return cast(CmpExp) expression;
+        default:
+            return null;
+    }
 }
 
 private imported!"dmd.func".FuncDeclaration callFunction(

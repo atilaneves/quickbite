@@ -20,6 +20,7 @@ package(quickbite.backends.bytecode) enum ScalarType: ubyte {
     dchar_,
     float_,
     double_,
+    real_,
 }
 
 package(quickbite.backends.bytecode) uint size(in ScalarType type)
@@ -36,6 +37,8 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
             return 4;
         case long_, ulong_, double_:
             return 8;
+        case real_:
+            return real.sizeof;
     }
 }
 
@@ -65,7 +68,7 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
         case byte_, short_, int_, long_:
             return true;
         case void_, bool_, ubyte_, ushort_, uint_, ulong_,
-            char_, wchar_, dchar_, float_, double_:
+            char_, wchar_, dchar_, float_, double_, real_:
             return false;
     }
 }
@@ -74,6 +77,7 @@ package(quickbite.backends.bytecode) bool isSigned(in ScalarType type)
 // byte offsets, constant pool indices, function indices).
 package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
+    loadRealConstant, // a: destination frame offset, b: real constant index
     loadStringSlice, // a: destination frame offset, b: data offset, c: length
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
@@ -93,14 +97,50 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >=)
     greaterOrEqualUnsigned4,
     notEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (4-byte !=)
+    equalFloat, // a: destination (one boolean byte), b: lhs, c: rhs
+    equalDouble,
+    equalReal,
+    notEqualFloat,
+    notEqualDouble,
+    notEqualReal,
+    lessThanFloat,
+    lessThanDouble,
+    lessThanReal,
+    greaterThanFloat,
+    greaterThanDouble,
+    greaterThanReal,
+    lessOrEqualFloat,
+    lessOrEqualDouble,
+    lessOrEqualReal,
+    greaterOrEqualFloat,
+    greaterOrEqualDouble,
+    greaterOrEqualReal,
     addFloat, // a: destination frame offset, b: lhs, c: rhs
     addDouble, // a: destination frame offset, b: lhs, c: rhs
     subFloat, // a: destination frame offset, b: lhs, c: rhs
     subDouble, // a: destination frame offset, b: lhs, c: rhs
     negateFloat, // a: destination frame offset, b: source
     negateDouble, // a: destination frame offset, b: source
+    negateReal, // a: destination frame offset, b: source
     fabsFloat, // a: destination frame offset, b: source (std.math.fabs)
+    fabsDouble, // a: destination frame offset, b: source (std.math.fabs)
+    fabsReal, // a: destination frame offset, b: source (std.math.fabs)
     powFloat, // a: destination frame offset, b: base, c: exponent (std.math.pow)
+    powDouble, // a: destination frame offset, b: base, c: exponent
+    powDoubleToReal, // a: destination frame offset, b: base, c: exponent
+    powReal, // a: destination frame offset, b: base, c: exponent
+    sqrtFloat, // a: destination frame offset, b: source (std.math.sqrt)
+    sqrtDouble, // a: destination frame offset, b: source (std.math.sqrt)
+    sqrtReal, // a: destination frame offset, b: source (std.math.sqrt)
+    isNaNFloat, // a: destination bool offset, b: source (std.math.isNaN)
+    isNaNDouble, // a: destination bool offset, b: source (std.math.isNaN)
+    isNaNReal, // a: destination bool offset, b: source (std.math.isNaN)
+    isInfinityFloat, // a: destination bool offset, b: source
+    isInfinityDouble, // a: destination bool offset, b: source
+    isInfinityReal, // a: destination bool offset, b: source
+    signbitFloat, // a: destination int offset, b: source (std.math.signbit)
+    signbitDouble, // a: destination int offset, b: source (std.math.signbit)
+    signbitReal, // a: destination int offset, b: source (std.math.signbit)
     equal1, // a: destination (one boolean byte), b: lhs, c: rhs
     equal2,
     equal4,
@@ -157,6 +197,7 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
 package(quickbite.backends.bytecode) struct Program {
     CompiledFunction[] functions; // index 0 is the entry function
     ulong[] constants; // raw bits; loadConstant copies the low `c` bytes
+    ubyte[real.sizeof][] realConstants; // raw bytes for 16-byte real literals
     ubyte[] data; // read-only segment holding string-literal bytes
     AssertDiagnostic[] assertDiagnostics;
 }

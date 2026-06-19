@@ -4,7 +4,7 @@ module ut.backends.runner.ct.math;
 import ut.backends;
 
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimePowDoubleInputs." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -30,7 +30,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -46,7 +46,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimePowDoubleInputsFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -63,7 +63,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -81,7 +81,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -100,7 +100,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedPowAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -119,7 +119,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSqrtInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -134,7 +134,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -149,7 +149,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSqrtInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -164,7 +164,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesDifferentRuntimeSqrtInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -179,7 +179,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -195,7 +195,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesDifferentRuntimeSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -211,7 +211,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonIntegerSqrtInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -226,7 +226,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -242,7 +242,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonIntegerSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -258,7 +258,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonPerfectSqrtInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -275,7 +275,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -292,7 +292,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeNonPerfectSqrtInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -309,7 +309,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsDoubleInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -326,7 +326,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -341,7 +341,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsDoubleInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -356,7 +356,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsPositiveDoubleInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -371,7 +371,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -387,7 +387,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsPositiveDoubleInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -403,7 +403,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsNaNDoubleInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -421,7 +421,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -436,7 +436,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsNaNDoubleInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -451,7 +451,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsInfinityDoubleInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -475,7 +475,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -491,7 +491,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsInfinityDoubleInputFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -507,7 +507,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitDoubleInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -531,7 +531,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -546,7 +546,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitDoubleInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -561,7 +561,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitNanInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -579,7 +579,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -594,7 +594,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitNanInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -609,7 +609,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsic." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -626,7 +626,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -644,7 +644,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedIsNaNAsMathIntrinsicFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -662,7 +662,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("callsUserNamedIsNaNForNanInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -679,7 +679,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.0." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -696,7 +696,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("callsUserNamedIsNaNForNanInputFailureMessage.1." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -713,7 +713,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsics." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -735,7 +735,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.0." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -757,7 +757,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("doesNotTreatUserNamedSqrtOrFabsAsMathIntrinsicsFailureMessage.1." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -783,7 +783,7 @@ static foreach (backend; AliasSeq!(Interpreter, Bytecode, SystemLinker, LLVMJit)
 // ("Unsupported type in bytecode core: float"/"real") and IR (f32/f64
 // valueType assert in compileIntrinsicCall) cannot run float/real
 // intrinsics.
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSqrtFloatInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -798,7 +798,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSqrtRealInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -813,7 +813,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsFloatInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -831,7 +831,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeFabsRealInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -870,7 +870,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimePowRealInputs." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -886,7 +886,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsNaNFloatInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -904,7 +904,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsNaNRealInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -922,7 +922,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsInfinityFloatInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -946,7 +946,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeIsInfinityRealInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -970,7 +970,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitFloatInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -994,7 +994,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LL
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("evaluatesRuntimeSignbitRealInput." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -893,6 +893,16 @@ switch; `Bytecode` still defaults to the old core):
   characterization diagnostics with no `SystemLinker` oracle that require
   class support (slice 9) or test CTFE-only divergence the new core will not
   emulate.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/math.d` blocks,
+  completing `math.d` (module order 7) on the new core. 13 of 56 promoted
+  tests passed unchanged; the remaining 43 were earned in three sequential
+  slices (see the math analysis section): `real` scalar storage/reification,
+  direct `std.math` intrinsic lowering for `fabs`, `pow`, `sqrt`, `isNaN`,
+  `isInfinity`, and `signbit`, and typed floating comparison/assert
+  diagnostics for `float`, `double`, and `real`. The
+  `evaluatesRuntimePowFloatInputs` block was deliberately not promoted
+  because it lacks a `SystemLinker` oracle due to the dmd-as-a-library
+  template-emission issue recorded in `ai/plans/dmd-backend.md`.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -902,20 +912,141 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), and `diagnostics.d` (6) are now complete on the new core (see Rewrite
-Coverage State). Continue with `math.d` (module order 7), promoting one named
-behaviour or one tight failure-message family at a time. The
-float/builtin/string-slice machinery earned for `eval.d`,
+(5), `diagnostics.d` (6), and `math.d` (7) are now complete on the new core
+(see Rewrite Coverage State). Continue with `arrays.d` (module order 8),
+promoting one named behaviour or one tight failure-message family at a time.
+The float/builtin/string-slice machinery earned for `eval.d` and `math.d`,
 logical/comparison/short-circuit machinery earned for `logic.d`, narrow
 throw/result plumbing earned for `results.d`, and the comparison-operator /
 ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d` are now available to the later modules. The `std.math`
-builtin classification (`fabs`/`pow`) already executed for `eval.d` is the
-leading edge of `math.d`'s `sqrt`/`isNaN`/`isInfinity`/`signbit` surface.
+`diagnostics.d` are now available to the later modules. Array and slice
+behaviour should still be earned directly on the typed-frame core, not through
+old-core promotions.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
 directly on the new core per the slice roadmap.
+
+## math.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-backed tests from `tests/ut/backends/runner/ct/math.d`
+have been promoted to include `BytecodeNewCore` in their `AliasSeq` blocks
+and were run in isolation with the full unit-threaded names matching
+`ut.backends.runner.ct.math.*.BytecodeNewCore`. The one
+`evaluatesRuntimePowFloatInputs` block is deliberately not promoted because
+it omits `SystemLinker` for a known dmd-as-a-library/linking issue, so the
+promotion is not oracle-backed under `ai/plans/single-oracle.md`.
+
+The first focused run covered 56 promoted `BytecodeNewCore` tests. 13 pass
+unchanged: all user-defined `pow`, `sqrt`, `fabs`, and `isNaN` shadowing
+tests, plus `evaluatesRuntimeFabsFloatInput`. The remaining 43 failures group
+into three root-cause failure modes.
+
+### Failure mode 1: `real` is not a scalar type in the new core
+
+**Root cause:** `scalarType` maps `float` and `double` but rejects D
+`real` with `Unsupported type in bytecode core: real`. This appears directly
+in all explicit `real` tests and also in the `pow(double, double)` tests:
+D's `std.math.pow` overload used here has a `real` static result before the
+fixture assigns or compares it. The new core therefore fails before it can
+exercise the intrinsic or assertion logic.
+
+**Failing tests (6 directly, plus 3 pow-double tests blocked here):**
+`evaluatesRuntimeSqrtRealInput`, `evaluatesRuntimeFabsRealInput`,
+`evaluatesRuntimePowRealInputs`, `evaluatesRuntimeIsNaNRealInput`,
+`evaluatesRuntimeIsInfinityRealInput`, `evaluatesRuntimeSignbitRealInput`,
+and the three `evaluatesRuntimePowDoubleInputs*` tests.
+
+**Required implementation:** Add `ScalarType.real_` and carry it through
+`program.d`, `compiler.d`, `machine.d`, and `reify.d`: native size/alignment
+(`real.sizeof`), `RealExp` constants, loads/stores, assignments, negation if
+needed by `-real.infinity`/`-real.nan`, result reification, and diagnostic
+rendering. Any equality for `real` must compare numeric `real` values rather
+than raw 16-byte storage, because padding bytes are not part of D's value
+semantics.
+
+### Failure mode 2: math intrinsics fall through to ordinary-call lowering
+
+**Root cause:** `compileBuiltinCall` only emits `fabsFloat` and `powFloat`,
+the small set needed by `eval.d`. For `sqrt` and `fabs(double)`, DMD reports
+a builtin function with no ordinary parameter layout; after the builtin branch
+returns `null`, `compileCall` treats it like a regular function and crashes at
+`layout.offsets[argumentIndex]` with an `ArrayIndexError`. For `isNaN`,
+`isInfinity`, and `signbit`, the new core reaches Phobos implementation
+details instead of treating the call as an intrinsic: representative failures
+are `Unsupported equality in bytecode core: x != x`, `Unsupported declaration
+in bytecode core: alias F = floatTraits!double;`, and `Unsupported variable in
+bytecode core: __ctfe`.
+
+**Failing tests:** all `sqrt` double/float tests, `fabs` double tests,
+`isNaN` double/float tests, `isInfinity` double/float tests, and `signbit`
+double/float tests. The corresponding real tests are also blocked by failure
+mode 1 until `real_` exists.
+
+**Required implementation:** Expand intrinsic lowering for the new core,
+preferably sharing the existing old-core classification rules in
+`quickbite.backends.bytecode.builtins`: recognize DMD builtins for `fabs`,
+`pow`, `sqrt`, `isnan`, and `isinfinity`, and recognize `signbit` by
+identifier as the old core does. Emit typed VM intrinsic opcodes for
+float/double/real unary calls and `pow` calls, with bool/int return opcodes for
+`isNaN`, `isInfinity`, and `signbit`. The compiler must not fall through to
+ordinary-call lowering for a recognized intrinsic shape.
+
+### Failure mode 3: floating comparison asserts still use integer opcodes
+
+**Root cause:** `compileLoweredComparisonAssert` and
+`compileComparisonExpression` route `<`, `<=`, `>`, `>=`, and `!=` through
+the integer comparison opcodes (`lessThan4`, `greaterThan4`, etc.). That was
+enough for `diagnostics.d` and `logic.d`, but `math.d` asserts compare
+floating results, e.g. `sqrt(2.0) > 1.414` and `pow(9.0, 0.5) < 3.001`. Once
+the intrinsic calls compile, these comparisons need typed float/double/real
+semantics and failure-message rendering such as `1.41421 <= 1.415`.
+
+**Failing tests blocked by earlier modes:** non-perfect `sqrt` success and
+failure-message tests, fractional `pow` bounds, and any real equality or
+ordering assertion once `real_` exists.
+
+**Required implementation:** Add typed floating comparison opcodes and
+selection logic for `float_`, `double_`, and `real_`: equality, inequality,
+and ordered comparisons used by lowered assertion context and ordinary
+comparison expressions. Diagnostics should continue to use
+`AssertDiagnostic`/`operandText`, extended for `real_`, so messages match the
+compiled-code oracle.
+
+### Subagent partition (dependency-ordered, sequential)
+
+The implementation work touches the same core files
+(`source/quickbite/backends/bytecode/core/{program,compiler,machine,reify}.d`),
+so subagents should run sequentially in this worktree and build on the prior
+state:
+
+1. **Real scalar plumbing** (failure mode 1). Add `ScalarType.real_` and
+   basic storage/reification/rendering so real-typed expressions can compile.
+2. **Math intrinsic lowering** (failure mode 2). Add direct VM intrinsic
+   lowering/execution for `sqrt`, `fabs`, `pow`, `isNaN`, `isInfinity`, and
+   `signbit` over the scalar types available after step 1.
+3. **Floating comparison asserts** (failure mode 3). Add typed comparison
+   opcodes and assertion-diagnostic selection for float/double/real.
+
+After each subagent, rerun only
+`ut.backends.runner.ct.math.*.BytecodeNewCore`; leave any passing promoted
+tests in place.
+
+**Completed implementation:** The new core now supports D `real` as a native
+scalar (`ScalarType.real_`), including 16-byte literal storage, frame
+copying, negation, reification, and assertion rendering. It recognizes the
+math intrinsics directly rather than falling into Phobos or DMD builtin
+declarations: `fabs`, `pow`, `sqrt`, `isNaN`, `isInfinity`, and `signbit`
+lower to typed VM opcodes for the scalar widths the promoted tests exercise.
+Floating comparisons and lowered assertion-context diagnostics now dispatch
+to numeric `float`, `double`, and `real` comparison opcodes instead of the
+integer comparison family. The focused run passes with 56 tests run and 0
+failures:
+
+```sh
+./bin/ut $(./bin/ut -l | \
+    rg '^ut\\.backends\\.runner\\.ct\\.math\\..*\\.BytecodeNewCore$')
+```
 
 ## results.d Promotion Analysis (BytecodeNewCore)
 

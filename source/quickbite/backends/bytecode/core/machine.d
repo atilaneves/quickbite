@@ -33,6 +33,13 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case loadRealConstant:
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] =
+                    program.realConstants[instruction.b][];
+                ++ip;
+                break;
+
             case loadStringSlice:
                 // Write the slice descriptor: data offset then length, each a
                 // little-endian uint. reify reads it back at the boundary.
@@ -184,6 +191,132 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case equalFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) ==
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case equalDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) ==
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case equalReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) ==
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqualFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) !=
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqualDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) !=
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqualReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) !=
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessThanFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) <
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessThanDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) <
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessThanReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) <
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThanFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) >
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThanDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) >
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThanReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) >
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqualFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) <=
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqualDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) <=
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqualReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) <=
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualFloat:
+                stack[base + instruction.a] =
+                    floatValue!float(stack, base + instruction.b) >=
+                    floatValue!float(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualDouble:
+                stack[base + instruction.a] =
+                    floatValue!double(stack, base + instruction.b) >=
+                    floatValue!double(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualReal:
+                stack[base + instruction.a] =
+                    floatValue!real(stack, base + instruction.b) >=
+                    floatValue!real(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
             case addFloat:
                 const ubyte[float.sizeof] sum = floatBytes(
                     floatValue!float(stack, base + instruction.b) +
@@ -242,6 +375,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case negateReal:
+                const ubyte[real.sizeof] negated = floatBytes(
+                    -floatValue!real(stack, base + instruction.b),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = negated;
+                ++ip;
+                break;
+
             case fabsFloat:
                 import std.math: fabs;
                 const ubyte[float.sizeof] result = floatBytes(
@@ -249,6 +391,26 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a
                     .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
+            case fabsDouble:
+                import std.math: fabs;
+                const ubyte[double.sizeof] result = floatBytes(
+                    fabs(floatValue!double(stack, base + instruction.b)),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = result;
+                ++ip;
+                break;
+
+            case fabsReal:
+                import std.math: fabs;
+                const ubyte[real.sizeof] result = floatBytes(
+                    fabs(floatValue!real(stack, base + instruction.b)),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = result;
                 ++ip;
                 break;
 
@@ -262,6 +424,153 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ));
                 stack[base + instruction.a
                     .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
+            case powDouble:
+                import std.math: pow;
+                const ubyte[double.sizeof] result = floatBytes(cast(double) pow(
+                    floatValue!double(stack, base + instruction.b),
+                    floatValue!double(stack, base + instruction.c),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = result;
+                ++ip;
+                break;
+
+            case powDoubleToReal:
+                import std.math: pow;
+                const ubyte[real.sizeof] result = floatBytes(cast(real) pow(
+                    floatValue!double(stack, base + instruction.b),
+                    floatValue!double(stack, base + instruction.c),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = result;
+                ++ip;
+                break;
+
+            case powReal:
+                import std.math: pow;
+                const ubyte[real.sizeof] result = floatBytes(pow(
+                    floatValue!real(stack, base + instruction.b),
+                    floatValue!real(stack, base + instruction.c),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = result;
+                ++ip;
+                break;
+
+            case sqrtFloat:
+                import std.math: sqrt;
+                const ubyte[float.sizeof] result = floatBytes(cast(float) sqrt(
+                    floatValue!float(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = result;
+                ++ip;
+                break;
+
+            case sqrtDouble:
+                import std.math: sqrt;
+                const ubyte[double.sizeof] result = floatBytes(cast(double) sqrt(
+                    floatValue!double(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = result;
+                ++ip;
+                break;
+
+            case sqrtReal:
+                import std.math: sqrt;
+                const ubyte[real.sizeof] result = floatBytes(sqrt(
+                    floatValue!real(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + real.sizeof] = result;
+                ++ip;
+                break;
+
+            case isNaNFloat:
+                import std.math: isNaN;
+                stack[base + instruction.a] =
+                    isNaN(floatValue!float(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case isNaNDouble:
+                import std.math: isNaN;
+                stack[base + instruction.a] =
+                    isNaN(floatValue!double(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case isNaNReal:
+                import std.math: isNaN;
+                stack[base + instruction.a] =
+                    isNaN(floatValue!real(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case isInfinityFloat:
+                import std.math: isInfinity;
+                stack[base + instruction.a] =
+                    isInfinity(floatValue!float(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case isInfinityDouble:
+                import std.math: isInfinity;
+                stack[base + instruction.a] =
+                    isInfinity(floatValue!double(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case isInfinityReal:
+                import std.math: isInfinity;
+                stack[base + instruction.a] =
+                    isInfinity(floatValue!real(stack, base + instruction.b))
+                        ? 1
+                        : 0;
+                ++ip;
+                break;
+
+            case signbitFloat:
+                import std.math: signbit;
+                const ubyte[int.sizeof] result = scalarBytes(cast(int) signbit(
+                    floatValue!float(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + int.sizeof] = result;
+                ++ip;
+                break;
+
+            case signbitDouble:
+                import std.math: signbit;
+                const ubyte[int.sizeof] result = scalarBytes(cast(int) signbit(
+                    floatValue!double(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + int.sizeof] = result;
+                ++ip;
+                break;
+
+            case signbitReal:
+                import std.math: signbit;
+                const ubyte[int.sizeof] result = scalarBytes(cast(int) signbit(
+                    floatValue!real(stack, base + instruction.b),
+                ));
+                stack[base + instruction.a
+                    .. base + instruction.a + int.sizeof] = result;
                 ++ip;
                 break;
 
@@ -523,6 +832,8 @@ private string operandText(
             return text(floatValue!float(frame, offset));
         case double_:
             return text(floatValue!double(frame, offset));
+        case real_:
+            return text(floatValue!real(frame, offset));
         case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
             wchar_, dchar_:
             break;
@@ -578,16 +889,48 @@ private T floatValue(T)(
     in ubyte[] stack,
     in size_t offset,
 ) @safe @nogc nothrow pure
-if (is(T == float) || is(T == double)) {
-    import std.bitmanip: littleEndianToNative;
+if (is(T == float) || is(T == double) || is(T == real)) {
+    static if (is(T == real))
+        return realFromBytes(stack[offset .. offset + T.sizeof]);
+    else {
+        import std.bitmanip: littleEndianToNative;
 
-    ubyte[T.sizeof] raw = stack[offset .. offset + T.sizeof];
-    return littleEndianToNative!T(raw);
+        ubyte[T.sizeof] raw = stack[offset .. offset + T.sizeof];
+        return littleEndianToNative!T(raw);
+    }
 }
 
 private ubyte[T.sizeof] floatBytes(T)(in T value) @safe @nogc nothrow pure
-if (is(T == float) || is(T == double)) {
-    import std.bitmanip: nativeToLittleEndian;
+if (is(T == float) || is(T == double) || is(T == real)) {
+    static if (is(T == real))
+        return realToBytes(value);
+    else {
+        import std.bitmanip: nativeToLittleEndian;
 
-    return nativeToLittleEndian(value);
+        return nativeToLittleEndian(value);
+    }
+}
+
+private real realFromBytes(in ubyte[] bytes) @safe @nogc nothrow pure {
+    union RealBytes {
+        real value;
+        ubyte[real.sizeof] bytes;
+    }
+
+    RealBytes raw;
+    raw.bytes[] = bytes[0 .. real.sizeof];
+    return raw.value;
+}
+
+private ubyte[real.sizeof] realToBytes(in real value)
+    @safe @nogc nothrow pure
+{
+    union RealBytes {
+        real value;
+        ubyte[real.sizeof] bytes;
+    }
+
+    RealBytes raw;
+    raw.value = value;
+    return raw.bytes;
 }

@@ -60,12 +60,25 @@ private imported!"quickbite.lang".Value reifyScalar(
             return Value(scalar!float(bytes));
         case double_:
             return Value(scalar!double(bytes));
+        case real_:
+            return Value(scalar!real(bytes));
     }
 }
 
 private T scalar(T)(in ubyte[] bytes) @safe pure {
-    import std.bitmanip: littleEndianToNative;
+    static if (is(T == real)) {
+        union RealBytes {
+            real value;
+            ubyte[real.sizeof] bytes;
+        }
 
-    const ubyte[T.sizeof] raw = bytes[0 .. T.sizeof];
-    return littleEndianToNative!T(raw);
+        RealBytes raw;
+        raw.bytes[] = bytes[0 .. real.sizeof];
+        return raw.value;
+    } else {
+        import std.bitmanip: littleEndianToNative;
+
+        const ubyte[T.sizeof] raw = bytes[0 .. T.sizeof];
+        return littleEndianToNative!T(raw);
+    }
 }
