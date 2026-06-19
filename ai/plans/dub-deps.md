@@ -238,35 +238,9 @@ This is the right foundation but does **not** by itself land a new
 corpus entry: it moved concepts and unit-threaded *past* the discovery
 failure into distinct downstream blockers (see "Next" item 1).
 
-## Open: parse dub packages as root module sets
+## Done: parse dub packages as root module sets
 
-The current `--dub` preparation still parses discovered package source
-files one at a time. That is not equivalent to what dub hands to DMD:
-
-```text
-dmd -unittest <all package source files> -I <import paths>
-```
-
-In a real dub unittest build, the package's source and test modules are
-root modules before import traversal can parse any of them as ordinary
-imports. Quickbite's one-file-at-a-time path can instead parse
-`cerealed.range` first, let it import `cerealed.scopebuffer`, and later
-reuse that already-loaded `scopebuffer` module as a fixture.
-
-DMD intentionally skips unittest bodies in non-root imported modules and
-leaves bodyless `UnitTestDeclaration` placeholders. That is why:
-
-```text
-./bin/bench.sh -b ctfe --dub cerealed
-```
-
-can report that `__unittest_L302_C1` has no available source code even
-though `src/cerealed/scopebuffer.d` has a real unittest at that line.
-Running `scopebuffer.d` as a standalone root reaches the expected CTFE
-limitation instead: `realloc` cannot be interpreted at compile time.
-
-Fix this at the frontend boundary, not with package-specific ordering or
-diagnostic workarounds. Add:
+Done (2026-06-19). `quickbite.frontend.compiler` now exposes:
 
 ```d
 ModuleParseResult[] parseRootModules(
@@ -275,15 +249,22 @@ ModuleParseResult[] parseRootModules(
 );
 ```
 
-The API should establish every `filePaths` entry as a root before any
-source content is parsed, run the same parse/import/semantic phases over
-that root set, and return modules in input order. It should preserve
-file identity and reject reuse of a previously-loaded non-root module as
-a runnable root fixture.
+It establishes every `filePaths` entry as a root (via the file-backed
+`dmd.frontend.parseModule`, whose `importedFrom = self` makes
+`mod.isRoot()` true at parse time, so unittest bodies are retained) before
+running the shared `importAll → dsymbolSemantic → semantic2 → semantic3`
+phases across the whole set, the way dmd drives `-unittest <files>`. It
+returns modules in input order and throws loudly if a `filePaths` entry was
+already loaded as a non-root import. `--dub` preparation routes through it
+once via the bench's `prepareDubUnit`; standalone fixtures keep the existing
+`parseModule` path.
 
-`--dub` should prepare its grouped benchmark unit through
-`parseRootModules` once. Standalone fixture benchmarks should keep the
-existing `parseModule` path.
+`./bin/bench.sh -b ctfe --dub cerealed` no longer reports
+`__unittest_L302_C1 ... has no available source code`; it reaches the honest
+CTFE limitation `realloc cannot be interpreted at compile time`. Covered by
+`parseRootModules.importedRootKeepsRunnableUnittestBody` (the imported root's
+unittest runs through `Ctfe`) and `prepareDubUnitParsesRootSetPreservingOrder`
+(grouped unit preserves input order).
 
 ## Open: per-fixture completeness (cross-fixture instance homing)
 
@@ -337,12 +318,11 @@ compile.
 
 ## Next, in order
 
-1. Implement `parseRootModules` and route `--dub` preparation through it.
-   Verify with a package-shaped sandbox test where one root imports
-   another root whose unittest must still have a runnable body. Then run
-   `./bin/bench.sh -b ctfe --dub cerealed` to confirm the misleading
-   bodyless-unittest failure is gone; a CTFE failure on `realloc` is an
-   honest backend limitation and should be reported as such.
+1. Done (2026-06-19). `parseRootModules` implemented and `--dub`
+   preparation routed through it; see §"Done: parse dub packages as root
+   module sets". `./bin/bench.sh -b ctfe --dub cerealed` now reports the
+   honest `realloc` CTFE limitation instead of the bodyless-unittest
+   failure.
 2. Build the cold dependency image (§"The build model"). Add
    `buildDubDependencyImage` and have the `--dub` cold path link dub's
    dependency archives into one `lib<pkg>_dub_deps.so`. Point
