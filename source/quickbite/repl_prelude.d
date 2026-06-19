@@ -4,7 +4,7 @@ private:
 
 public string __quickbiteFormat(T)(in T value) @safe pure {
     import std.conv: text;
-    import std.traits: Unqual;
+    import std.traits: isDynamicArray, isStaticArray, Unqual;
 
     alias U = Unqual!T;
 
@@ -16,6 +16,8 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
         return text(`"`, value, `"w`);
     } else static if (is(U == dstring)) {
         return text(`"`, value, `"d`);
+    } else static if (isDynamicArray!U || isStaticArray!U) {
+        return arrayDisplay(value);
     } else static if (is(U == uint)) {
         return text(value, "u");
     } else static if (is(U == long)) {
@@ -31,6 +33,17 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
     } else {
         return text(value);
     }
+}
+
+private string arrayDisplay(T)(in T value) @safe pure {
+    string rendered = "[";
+    foreach (index, element; value) {
+        if (index != 0)
+            rendered ~= ", ";
+        rendered ~= __quickbiteFormat(element);
+    }
+    rendered ~= "]";
+    return rendered;
 }
 
 private string floatingDisplay(T)(in T value) @safe pure {
