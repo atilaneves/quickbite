@@ -396,6 +396,24 @@ unittest {
         .shouldThrow;
 }
 
+@("results.MultiBackendReportsErroredBackendNotFakeCount")
+unittest {
+    Runner[string] runners;
+    runners["good"]   = new FixedVerdictRunner(null);
+    runners["crashy"] = new ThrowingRunner("JIT child died (signal 11)");
+
+    // A backend that crashed never ran the benchmark, so it must be reported as
+    // errored, not as a fabricated one-result "disagreement" (the old "N vs 1").
+    checkRunnerResults(
+        runners,
+        ["good", "crashy"],
+        [standaloneUnit("fixture", testModule)],
+    )
+        .shouldThrowWithMessage(
+            "backend crashy errored on fixture: JIT child died (signal 11)",
+        );
+}
+
 @("results.SingleBackendSelfCheckRecordsFailure")
 unittest {
     Runner[string] runners;
@@ -533,6 +551,20 @@ private final class FixedVerdictRunner: Runner {
         });
 
         return results;
+    }
+}
+
+// A test double whose runTests throws, standing in for a backend that crashes
+// (e.g. the JIT child dying) before it can return any results.
+private final class ThrowingRunner: Runner {
+    private string _message;
+
+    this(string message) {
+        _message = message;
+    }
+
+    public override TestResult[] runTests(Module module_) {
+        throw new Exception(_message);
     }
 }
 
