@@ -39,6 +39,17 @@ public ModuleParseResult parseModule(
     return compiler.parseModule(filePath, importPaths);
 }
 
+// Parse a set of files as root modules, modelling `dmd -unittest <files>
+// -I<paths>`: every file is established as a root before any import traversal,
+// so a module imported by a sibling root keeps its unittest bodies instead of
+// becoming a bodyless non-root placeholder. Results follow input order.
+public ModuleParseResult[] parseRootModules(
+    in string[] filePaths,
+    in string[] importPaths,
+) {
+    return compiler.parseRootModules(filePaths, importPaths);
+}
+
 public ModuleParseResult parseSnippet(in string source) {
     return compiler.parseSnippet(source, []);
 }
@@ -275,6 +286,93 @@ final class Compiler {
             true,
             dmdFileName(filePath, importPaths),
         );
+    }
+
+    ModuleParseResult[] parseRootModules(
+        in string[] filePaths,
+        in string[] importPaths,
+    ) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+
+        return parseRootModulesLocked(filePaths, importPaths);
+    }
+
+    private ModuleParseResult[] parseRootModulesLocked(
+        in string[] filePaths,
+        in string[] importPaths,
+    ) {
+        import dmd.dmodule: Module;
+        import dmd.dsymbolsem:
+            dsymbolSemantic,
+            importAll,
+            runDeferredSemantic,
+            runDeferredSemantic2,
+            runDeferredSemantic3;
+        import dmd.frontend: addImport, dmdParseModule = parseModule;
+        import dmd.globals: global;
+        import dmd.semantic2: semantic2;
+        import dmd.semantic3: semantic3;
+        import std.file: readText;
+
+        const originalPathLength = global.path.length;
+        scope(exit) global.path.setDim(originalPathLength);
+        foreach (importPath; importPaths)
+            addImport(importPath);
+
+        resetErrors;
+
+        auto captured = capturedStderr;
+        scope(failure) captured.discard;
+
+        // Establish every file as a root before any import traversal. Parsing a
+        // file through dmdParseModule sets its importedFrom to itself, so its
+        // unittest bodies are retained; registering all roots first means a
+        // sibling root's import resolves to the already-loaded root rather than
+        // a fresh non-root parse with bodyless unittest placeholders.
+        Module[] modules;
+        foreach (filePath; filePaths) {
+            if (auto existing = parsedModuleForFile(filePath, importPaths)) {
+                if (!existing.isRoot)
+                    throw new Exception(
+                        "module " ~ filePath ~ " was parsed as a non-root "
+                        ~ "import before root-set preparation",
+                    );
+                modules ~= existing;
+                continue;
+            }
+
+            auto result = dmdParseModule(
+                dmdFileName(filePath, importPaths),
+                filePath.readText,
+            );
+            if (result.diagnostics.hasErrors)
+                throw new Exception(diagnosticMessage);
+            modules ~= result.module_;
+        }
+
+        // Drive the shared semantic phases over the whole root set the way dmd
+        // drives `-unittest <files>`: each phase runs across all roots before
+        // the next begins.
+        foreach (m; modules) m.importAll(null);
+        foreach (m; modules) m.dsymbolSemantic(null);
+        runDeferredSemantic;
+        foreach (m; modules) m.semantic2(null);
+        runDeferredSemantic2;
+        foreach (m; modules) m.semantic3(null);
+        runDeferredSemantic3;
+        if (global.errors != 0)
+            throw new Exception(diagnosticMessage);
+
+        captured.replay;
+
+        ModuleParseResult[] results;
+        foreach (m; modules) {
+            ModuleParseResult result;
+            result.module_ = m;
+            results ~= result;
+        }
+        return results;
     }
 
     ModuleParseResult parseSnippet(in string source, in string[] importPaths) {

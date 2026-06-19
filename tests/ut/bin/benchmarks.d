@@ -207,6 +207,57 @@ unittest {
     }
 }
 
+@("prepareDubUnitParsesRootSetPreservingOrder")
+unittest {
+    import std.path: buildPath;
+
+    with(immutable Sandbox()) {
+        // A package whose importer root imports a leaf root. The dub unit is
+        // prepared through the root-set API as one grouped unit, and its
+        // members follow input order (not sorted: "root" sorts after "leaf").
+        const importPath = "src";
+        const leafPath = buildPath(importPath, "benchpkg", "leaf.d");
+        const rootPath = buildPath(importPath, "benchpkg", "root.d");
+
+        writeFile(
+            leafPath,
+            q{
+                module benchpkg.leaf;
+
+                enum answer = 42;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+        writeFile(
+            rootPath,
+            q{
+                module benchpkg.root;
+
+                import benchpkg.leaf;
+
+                unittest {
+                    assert(answer == 42);
+                }
+            },
+        );
+
+        const unit = prepareDubUnit(
+            "benchpkg",
+            [inSandboxPath(rootPath), inSandboxPath(leafPath)],
+            [inSandboxPath(importPath)],
+        );
+
+        unit.displayName.should == "benchpkg";
+        unit.grouped.should == true;
+        unit.members.length.should == 2;
+        unit.members[0].displayName.should == "benchpkg.root";
+        unit.members[1].displayName.should == "benchpkg.leaf";
+    }
+}
+
 @("discoverFixturesKeepsInPackageTestModules")
 unittest {
     import std.path: buildPath;

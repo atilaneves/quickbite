@@ -82,3 +82,53 @@ unittest {
     const message = collectExceptionMsg!Exception(parseSnippet(source, []));
     message.canFind("quickbite_test_missing_module_xyzzy").should == true;
 }
+
+
+@("parseRootModules.importedRootKeepsRunnableUnittestBody")
+unittest {
+    import quickbite.frontend.compiler: parseRootModules;
+    import quickbite.backends.ctfe: Ctfe;
+    import std.path: buildPath;
+
+    with(immutable Sandbox()) {
+        // Two package-shaped roots where the importer imports the imported.
+        // Parsed one file at a time, the importer pulls `imported` in as a
+        // non-root import first, and DMD drops its unittest body (leaving a
+        // bodyless placeholder). Establishing both as roots before any import
+        // traversal keeps the imported root's unittest body runnable.
+        const importPath = "src";
+        const importedPath = buildPath(importPath, "qb_root_imported.d");
+        const importerPath = buildPath(importPath, "qb_root_importer.d");
+
+        writeFile(importedPath, q{
+            module qb_root_imported;
+            int qbRootAnswer() { return 42; }
+            unittest {
+                assert(qbRootAnswer == 42);
+            }
+        });
+        writeFile(importerPath, q{
+            module qb_root_importer;
+            import qb_root_imported;
+            unittest {
+                assert(qbRootAnswer == 42);
+            }
+        });
+
+        // Importer first: the order that loads `imported` as a non-root import
+        // before it is reached as a root in the one-file-at-a-time path.
+        auto results = parseRootModules(
+            [inSandboxPath(importerPath), inSandboxPath(importedPath)],
+            [inSandboxPath(importPath)],
+        );
+
+        results.length.should == 2;
+
+        // The imported root (second in input order) must run its unittest, not
+        // report a bodyless-unittest diagnostic.
+        auto runner = new Ctfe;
+        const importedResults = runner.runTests(results[1].module_);
+        importedResults.length.should == 1;
+        importedResults[0].passed.should == true;
+    }
+}

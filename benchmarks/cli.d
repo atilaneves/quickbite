@@ -89,13 +89,22 @@ public void run(string[] args) {
             throw new Exception("unknown backend: " ~ name);
 
     auto fixtureRuns = prepareFixtureRuns(fixtures, importPaths, warmup, runs);
-    auto dubRuns = prepareFixtureRuns(dubFixtures, importPaths, warmup, runs);
 
     BenchmarkUnit[] units;
     foreach (run; fixtureRuns)
-        units ~= BenchmarkUnit(run.displayName, [run], false);
-    if (dubRuns.length > 0)
-        units ~= BenchmarkUnit(dubPkg, dubRuns, true);
+        units ~= BenchmarkUnit(
+            run.displayName,
+            [run],
+            false,
+            run.frontend,
+            run.frontendUnmeasurable,
+        );
+    if (dubFixtures.length > 0) {
+        try
+            units ~= prepareDubUnit(dubPkg, dubFixtures, importPaths);
+        catch (Exception e)
+            stderr.writefln("skipping %s: %s", dubPkg, e.msg.firstLine);
+    }
 
     TestResult[][string] checkedResults;
     if (skipCheck) {
@@ -121,19 +130,19 @@ public void run(string[] args) {
             }
     }
 
-    if (fixtureRuns.length > 0 || dubRuns.length > 0) {
+    if (units.length > 0) {
         writeln("== frontend (parse + semantic) ==");
         printHeader;
-        foreach (run; fixtureRuns ~ dubRuns) {
-            if (run.frontendUnmeasurable)
+        foreach (unit; units) {
+            if (unit.frontendUnmeasurable)
                 writefln(
                     "%-32s %-14s %-10s unmeasurable (module declaration)",
-                    run.displayName,
+                    unit.displayName,
                     "frontend",
                     "n/a",
                 );
             else
-                printRow(run.displayName, "frontend", "n/a", run.frontend);
+                printRow(unit.displayName, "frontend", "n/a", unit.frontend);
         }
         writeln;
     }
@@ -347,6 +356,11 @@ public struct BenchmarkUnit {
     public string displayName;
     public BenchmarkRun[] members;   // 1 for a standalone fixture, N for a dub package
     public bool grouped;             // a dub package reports under one name across N modules
+    // The frontend (parse + semantic) measurement for the whole unit: a
+    // standalone fixture's own re-parse, or a dub package's single whole-package
+    // root-set parse. One frontend row per unit, never per module.
+    public Result frontend;
+    public bool frontendUnmeasurable;
 }
 
 public struct BenchmarkRow {
@@ -513,6 +527,42 @@ public BenchmarkRun[] prepareFixtureRuns(
         );
     }
     return fixtureRuns;
+}
+
+// Prepare a dub package as one grouped benchmark unit. Unlike standalone
+// fixtures (parsed one file at a time), the package is parsed as a single root
+// set through `parseRootModules`, so a module imported by a sibling fixture
+// keeps its unittest bodies instead of becoming a bodyless non-root
+// placeholder. Members follow input order so display names stay stable.
+public BenchmarkUnit prepareDubUnit(
+    in string packageName,
+    in string[] fixtures,
+    in string[] importPaths,
+) {
+    import quickbite.frontend.compiler: parseRootModules;
+    import core.time: MonoTime;
+
+    const start   = MonoTime.currTime;
+    auto results  = parseRootModules(fixtures, importPaths);
+    const elapsed = MonoTime.currTime - start;
+
+    BenchmarkRun[] members;
+    foreach (i, result; results)
+        members ~= BenchmarkRun(
+            moduleDisplayName(fixtures[i], importPaths),
+            result.module_,
+        );
+
+    // Re-parsing the package would collide with the modules just registered in
+    // DMD's process-global symbol table, so the single preparation parse is the
+    // frontend measurement: one whole-package sample, not a warmup/run loop.
+    return BenchmarkUnit(
+        packageName,
+        members,
+        true,
+        Result(elapsed, elapsed, 0.0, 0),
+        false,
+    );
 }
 
 bool isOptimisedBuild() {

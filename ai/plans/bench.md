@@ -120,24 +120,22 @@ prove that all timed backends reported the same test results.
 
 ### Current Status
 
-As of 2026-06-17, items 1, 2, and 6 are complete. Benchmark fixture
-preparation now parses source files through the frontend's file-backed
-`parseModule` path instead of the in-memory `parseSnippet` path. This removed
-the old cerealed module-table conflicts during `--dub` preparation, but it
-exposed a deeper abstraction mismatch: a dub package is a multi-root
-compilation unit, while the bench still prepares its modules one at a time.
+As of 2026-06-19, items 1, 2, 6, and 8 are complete, and item 5's dub
+half landed with item 8. The frontend now has a `parseRootModules` API and
+`--dub` preparation routes through it: the package is parsed as one root
+module set the way `dub test` drives DMD, so a module imported by a sibling
+fixture keeps its unittest bodies instead of becoming a bodyless non-root
+placeholder.
 
-`./bin/bench.sh -b ctfe --dub cerealed` now demonstrates the mismatch. The
-driver reports that `__unittest_L302_C1` has no available source code, even
-though `src/cerealed/scopebuffer.d` plainly has a unittest at that line. The
-misleading message comes from reusing an import-loaded non-root module whose
-unittest body was skipped by DMD. Running `scopebuffer.d` as a standalone root
-gets the more honest downstream CTFE failure: `realloc` cannot be interpreted.
+`./bin/bench.sh -b ctfe --dub cerealed` confirms the fix: the misleading
+`__unittest_L302_C1 ... has no available source code` is gone, replaced by
+the honest downstream CTFE limitation `realloc cannot be interpreted at
+compile time`. The whole-package parse+semantic is now measured once and
+rendered as a single frontend row per package (item 5), not one per module.
 
-The fix should not be another cerealed-specific workaround. Add a frontend
-`parseRootModules` API and make `--dub` prepare the package the way `dub test`
-does: establish the discovered package source files as root modules before
-imports are parsed, then return the corresponding `Module[]`.
+Still open: items 3, 4, 7, and 9 (runnable-unittest counting, the
+preparation section, the cold dependency image), plus item 1/2's remaining
+single-vs-multi-backend check polish where not already covered.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
 
@@ -218,7 +216,13 @@ cerealed.cerealiser       not prepared   DMD module-table conflict
 Keep the full diagnostic available somewhere useful, but make the one-line
 report explain the class of failure.
 
-### 5. Make Frontend Measurement Status Explicit
+### 5. Make Frontend Measurement Status Explicit - dub half complete
+
+Done for dub (2026-06-19, with item 8): a dub package is measured as one
+whole-package root-set parse and reported as a single frontend row, so the
+per-module `unmeasurable (module declaration)` status no longer appears for
+`--dub` runs. It survives only for standalone module-declared fixtures, which
+still hit the same-FQN reparse collision.
 
 Keep frontend parse+semantic measurement separate from post-parse execution.
 
@@ -258,7 +262,17 @@ Preserve that direction. The driver may know that `SystemLinker` is the oracle,
 but backend-specific construction policy belongs in the backend factory, not in
 the timing loop. The timing loop should not add implicit oracle backends.
 
-### 8. Parse Dub Packages As Root Module Sets
+### 8. Parse Dub Packages As Root Module Sets - complete
+
+Done (2026-06-19). `parseRootModules` lives in
+`quickbite.frontend.compiler` and `--dub` preparation routes through it via
+the bench's `prepareDubUnit`. The whole-package parse+semantic is timed once
+(re-parsing would collide with the just-registered modules in DMD's
+process-global symbol table) and rendered as a single grouped frontend row.
+Covered by `parseRootModules.importedRootKeepsRunnableUnittestBody`
+(frontend, imported root runs through `Ctfe`) and
+`prepareDubUnitParsesRootSetPreservingOrder` (bench, grouped order
+preserved).
 
 Add `parseRootModules` to `quickbite.frontend.compiler` and route `--dub`
 benchmark preparation through it.
