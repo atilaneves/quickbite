@@ -72,6 +72,12 @@ still a prelude-surface slice only: expression cells are not yet synthesized
 as `__quickbiteFormat(expr)`, and the interim backend `Value` rendering
 path remains in place.
 
+Progress 2026-06-19: the prelude formatter now owns the character-width and
+string-width display rules: `char`/`wchar`/`dchar` render as character
+literals, and `wstring`/`dstring` render as string literals with `w`/`d`
+suffixes. This is still a prelude-surface slice only; the interim backend
+`Value` rendering path remains in place.
+
 ## Audit findings (June 2026)
 
 - At audit time the REPL used `Value`'s structure only for

@@ -19,11 +19,23 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == "'a'";
 }
 
+@("repl.formatter.rendersWideCharactersAsCharacterLiteralsAtCompileTime")
+@safe pure unittest {
+    __quickbiteFormat(cast(wchar) 'a').should == "'a'";
+    __quickbiteFormat(cast(dchar) 'a').should == "'a'";
+}
+
 @("repl.formatter.rendersStringLiteralAtCompileTime")
 @safe pure unittest {
     enum actual = __quickbiteFormat("quickbite");
 
     actual.should == `"quickbite"`;
+}
+
+@("repl.formatter.rendersWideStringLiteralSuffixesAtCompileTime")
+@safe pure unittest {
+    __quickbiteFormat("wide"w).should == `"wide"w`;
+    __quickbiteFormat("wide"d).should == `"wide"d`;
 }
 
 @("repl.formatter.rendersWholeDoubleWithDecimalPointAtCompileTime")
