@@ -180,6 +180,11 @@ private struct Compiler {
             return;
         }
 
+        if (auto for_ = statement.isForStatement) {
+            compileForStatement(for_);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             compileThrow(throw_);
             return;
@@ -208,6 +213,30 @@ private struct Compiler {
             compileStatement(if_.elsebody);
 
         patchJump(endJump);
+    }
+
+    // A `for (init; condition; increment) body` loop, the lowering of `foreach`
+    // over a dynamic array. Compile the init once, then loop: test the condition
+    // and exit when false, run the body, run the increment, and jump back.
+    private void compileForStatement(
+        imported!"dmd.statement".ForStatement for_,
+    ) {
+        if (for_._init !is null)
+            compileStatement(for_._init);
+
+        const conditionIndex = _code.length;
+        const exitJump = for_.condition is null
+            ? size_t.max
+            : emitJumpIfFalse(compileExpression(for_.condition));
+
+        if (for_._body !is null)
+            compileStatement(for_._body);
+        if (for_.increment !is null)
+            compileExpression(for_.increment);
+
+        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+        if (exitJump != size_t.max)
+            patchJump(exitJump);
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
@@ -552,6 +581,17 @@ private struct Compiler {
         // slot and treat it as a (scalar-element) dynamic array.
         if (auto index = expression.isIndexExp)
             return innerArrayDescriptor(index);
+
+        // An array-returning call (`m.keys` / `m.values`): materialise its
+        // 16-byte slice-descriptor result into a fresh slot.
+        if (expression.isCallExp !is null && isDynamicArrayArgument(expression)) {
+            const elementType = dynamicArrayElementType(expression.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileDynamicArrayInto(offset, elementType, expression);
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(offset, elementType);
+            return result;
+        }
 
         return null;
     }
@@ -1575,6 +1615,20 @@ private struct Compiler {
             isPointerType(comparison.e2.type))
             return compilePointerComparison(comparison);
 
+        const lhs = compileExpression(comparison.e1);
+        const rhs = compileExpression(comparison.e2);
+
+        // 8-byte unsigned comparison (`size_t`/`ulong`, e.g. a `foreach` index
+        // against `.length`): use the unsigned 8-byte relation opcodes.
+        if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_) {
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                unsignedComparisonOp8(comparison.op),
+                offset, lhs.offset, rhs.offset,
+            );
+            return Operand(offset, ScalarType.bool_);
+        }
+
         const op = () {
             switch (comparison.op) with (EXP) {
                 case lessThan: return Op.lessThan4;
@@ -1589,8 +1643,6 @@ private struct Compiler {
             }
         }();
 
-        const lhs = compileExpression(comparison.e1);
-        const rhs = compileExpression(comparison.e2);
         return compileIntBinaryResult(
             comparison,
             lhs,
@@ -3942,6 +3994,24 @@ private imported!"quickbite.backends.bytecode.core.program".Op
                 ? Op.greaterOrEqual4
                 : Op.greaterOrEqualUnsigned4;
         default: assert(0, "Unsupported comparison-assert operator.");
+    }
+}
+
+// The 8-byte unsigned relational opcode for a `size_t`/`ulong` comparison
+// (e.g. a `foreach` index against `.length`).
+private imported!"quickbite.backends.bytecode.core.program".Op
+    unsignedComparisonOp8(
+        in imported!"dmd.tokens".EXP op,
+    ) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    import dmd.tokens: EXP;
+
+    switch (op) with (EXP) {
+        case lessThan: return Op.lessThanUnsigned8;
+        case lessOrEqual: return Op.lessOrEqualUnsigned8;
+        case greaterThan: return Op.greaterThanUnsigned8;
+        case greaterOrEqual: return Op.greaterOrEqualUnsigned8;
+        default: assert(0, "Unsupported unsigned 8-byte comparison operator.");
     }
 }
 
