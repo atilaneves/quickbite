@@ -122,6 +122,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // indexLoad/indexStore split.
     sliceCopy1,
     sliceCopy4,
+    // Compare the two slice descriptors at frame offsets b and c, writing one
+    // boolean byte to frame offset a: true iff their lengths and all element
+    // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
+    sliceEqual1,
+    sliceEqual4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
@@ -235,6 +240,9 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     ushort lhs;
     ushort rhs;
     ScalarType operandType;
+    // When set, lhs/rhs are slice-descriptor offsets and operandType is the
+    // element type; the operands render as `[e0, e1, ...]`.
+    bool isArray;
 }
 
 package(quickbite.backends.bytecode) struct Program {

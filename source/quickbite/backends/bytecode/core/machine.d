@@ -156,6 +156,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case sliceEqual1, sliceEqual4:
+                stack[base + instruction.a] = slicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    sliceCopyElementSize(instruction.op),
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -891,7 +901,27 @@ private uint sliceCopyElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.sliceCopy1 ? 1 : 4;
+    return op == Op.sliceCopy1 || op == Op.sliceEqual1 ? 1 : 4;
+}
+
+// True iff the two slice descriptors hold the same length and identical element
+// bytes.
+private bool slicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in uint elementSize,
+) @trusted {
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const byteCount = leftLength * elementSize;
+    return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
+        (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
 // Copy the source slice's elements into the destination slice's backing
@@ -994,7 +1024,7 @@ private string assertMessage(
     in imported!"quickbite.backends.bytecode.core.program".AssertDiagnostic
         diagnostic,
     in ubyte[] frame,
-) @safe pure {
+) @safe {
     import std.conv: text;
 
     // A truth assert (`assert(x)`) carries the empty operator and renders the
@@ -1013,6 +1043,15 @@ private string assertMessage(
             " == true",
         );
 
+    if (diagnostic.isArray)
+        return text(
+            arrayOperandText(frame, diagnostic.lhs, diagnostic.operandType),
+            " ",
+            invertedOperator(diagnostic.operator),
+            " ",
+            arrayOperandText(frame, diagnostic.rhs, diagnostic.operandType),
+        );
+
     return text(
         operandText(frame, diagnostic.lhs, diagnostic.operandType),
         " ",
@@ -1020,6 +1059,35 @@ private string assertMessage(
         " ",
         operandText(frame, diagnostic.rhs, diagnostic.operandType),
     );
+}
+
+// Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
+// descriptor at `offset` and formatting each element by its scalar type.
+private string arrayOperandText(
+    in ubyte[] frame,
+    in size_t offset,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType
+        elementType,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: size;
+    import std.array: appender;
+    import std.conv: text;
+
+    const pointer = scalarValue!size_t(frame, offset);
+    const length = scalarValue!size_t(frame, offset + size_t.sizeof);
+    const elementSize = size(elementType);
+    const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
+
+    auto result = appender("[");
+    foreach (index; 0 .. length) {
+        if (index != 0)
+            result ~= ", ";
+        result ~= operandText(
+            elements, index * elementSize, elementType,
+        );
+    }
+    result ~= "]";
+    return result[];
 }
 
 private string invertedOperator(in string operator) @safe @nogc nothrow pure {

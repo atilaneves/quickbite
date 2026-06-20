@@ -1897,6 +1897,13 @@ private struct Compiler {
                 return false;
         }
 
+        // `assert(a[] == b[])` over dynamic-array operands compares the slices
+        // element-wise and renders each operand as `[e0, e1, ...]` on failure.
+        if (op == "==" || op == "!=")
+            if (tryArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
         // D's integer promotions appear only in the rewritten condition, not
         // in the _d_assert_fail operands; replicate them so mixed-width
         // operands compare and render at the comparison width.
@@ -1918,6 +1925,57 @@ private struct Compiler {
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
             AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(a[] == b[])` / `assert(a[] != b[])` over dynamic-array operands:
+    // build a slice descriptor for each operand, compare them element-wise, and
+    // assert the result; on failure each operand renders as `[e0, e1, ...]`.
+    // Null if either operand is not a dynamic-array slice.
+    private bool tryArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        auto lhsSlice = lhs.isSliceExp;
+        auto rhsSlice = rhs.isSliceExp;
+        if (lhsSlice is null || rhsSlice is null)
+            return false;
+
+        auto lhsDescriptor = dynamicArrayDescriptorOrNull(lhsSlice.e1);
+        auto rhsDescriptor = dynamicArrayDescriptorOrNull(rhsSlice.e1);
+        if (lhsDescriptor is null || rhsDescriptor is null)
+            return false;
+
+        const elementType = lhsDescriptor.elementType;
+        const lhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(lhsOffset, elementType, lhsSlice);
+        const rhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(rhsOffset, elementType, rhsSlice);
+
+        const equal = allocateBytes(1, 1);
+        _code ~= Instruction(
+            sliceEqualOp(size(elementType)),
+            equal,
+            lhsOffset,
+            rhsOffset,
+        );
+
+        // `==` holds when the slices are equal; `!=` holds when negated.
+        ushort condition = equal;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, equal);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -2160,6 +2218,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.sliceCopy1 : Op.sliceCopy4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.sliceEqual1 : Op.sliceEqual4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
