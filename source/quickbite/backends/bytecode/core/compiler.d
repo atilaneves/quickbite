@@ -61,6 +61,8 @@ private struct Compiler {
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
+    private ResultType _currentReturnType; // result type of the function whose
+                                           // body is currently being compiled
 
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
@@ -75,12 +77,29 @@ private struct Compiler {
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
 
+        import dmd.astenums: TY;
+
+        _currentReturnType = _program.functions[index].returnType;
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
         if (function_.parameters !is null)
-            foreach (parameterIndex; 0 .. function_.parameters.length)
-                _locals[(*function_.parameters)[parameterIndex]] =
-                    layout.offsets[parameterIndex];
+            foreach (parameterIndex; 0 .. function_.parameters.length) {
+                auto parameter = (*function_.parameters)[parameterIndex];
+                const offset = layout.offsets[parameterIndex];
+
+                // A non-string dynamic-array parameter is a slice descriptor,
+                // tracked like a dynamic-array local rather than a scalar slot.
+                if (parameter.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(parameter.type))
+                {
+                    _dynamicArrayLocals[parameter] = DynamicArrayLocal(
+                        offset, dynamicArrayElementType(parameter.type),
+                    );
+                    continue;
+                }
+
+                _locals[parameter] = offset;
+            }
 
         compileStatement(function_.fbody);
         // The fall-through return of a void body; unreachable after an
@@ -133,6 +152,14 @@ private struct Compiler {
         }
 
         if (auto return_ = statement.isReturnStatement) {
+            if (_currentReturnType.isArray) {
+                const descriptor = arrayDescriptorOffset(
+                    _currentReturnType.elementType, return_.exp,
+                );
+                _code ~= Instruction(Op.ret, descriptor);
+                return;
+            }
+
             const operand = compileExpression(return_.exp);
             _code ~= Instruction(Op.ret, operand.offset);
             return;
@@ -381,22 +408,59 @@ private struct Compiler {
     // Read element `index` of a dynamic-array local, or null if `index` is not
     // an access into a known dynamic-array local.
     private Operand* tryDynamicArrayIndex(IndexExp index) {
+        // `makeArray(...)[i]`: the indexed expression is an array-valued call,
+        // not a known local. Materialise its descriptor into a fresh slot and
+        // index that.
+        if (auto descriptorOffset = indexedArrayDescriptor(index.e1))
+            return loadDynamicArrayElement(
+                descriptorOffset.offset, descriptorOffset.elementType, index.e2,
+            );
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null)
             return null;
 
-        const indexSlot = compileExpression(index.e2);
-        const elementSize = size(descriptor.elementType);
+        return loadDynamicArrayElement(
+            descriptor.offset, descriptor.elementType, index.e2,
+        );
+    }
+
+    // The slice descriptor for an array-valued expression that is not a known
+    // dynamic-array local (today, an array-returning call), materialised into a
+    // fresh frame slot; null otherwise.
+    private DynamicArrayLocal* indexedArrayDescriptor(Expression expression) {
+        if (dynamicArrayDescriptorOrNull(expression) !is null)
+            return null;
+
+        if (!isDynamicArrayArgument(expression))
+            return null;
+
+        const elementType = dynamicArrayElementType(expression.type);
+        const offset = arrayDescriptorOffset(elementType, expression);
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(offset, elementType);
+        return result;
+    }
+
+    // Read element `indexExpr` of the dynamic-array descriptor at frame offset
+    // `descriptorOffset`, returning the loaded scalar element.
+    private Operand* loadDynamicArrayElement(
+        in ushort descriptorOffset,
+        in ScalarType elementType,
+        Expression indexExpr,
+    ) {
+        const indexSlot = compileExpression(indexExpr);
+        const elementSize = size(elementType);
         const offset = allocateBytes(elementSize, elementSize);
         _code ~= Instruction(
             indexLoadOp(elementSize),
             offset,
-            descriptor.offset,
+            descriptorOffset,
             indexSlot.offset,
         );
 
         auto result = new Operand;
-        *result = Operand(offset, descriptor.elementType);
+        *result = Operand(offset, elementType);
         return result;
     }
 
@@ -624,6 +688,19 @@ private struct Compiler {
             return;
         }
 
+        // `dest = makeArray(...)` copies the call's 16-byte slice-descriptor
+        // result into the destination slot; the backing memory is shared.
+        if (auto call = source.isCallExp) {
+            const result = compileCall(call);
+            _code ~= Instruction(
+                Op.copy,
+                destination,
+                result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
         auto literal = source.isArrayLiteralExp;
         if (literal is null)
             throw new Exception(text(
@@ -650,6 +727,22 @@ private struct Compiler {
                 index,
             );
         }
+    }
+
+    // The frame offset of a 16-byte slice descriptor denoting the value of an
+    // array-valued expression: a dynamic-array local's slot is returned in
+    // place; any other form (slice, literal, call, null) is materialised into a
+    // fresh descriptor slot.
+    private ushort arrayDescriptorOffset(
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        if (auto descriptor = dynamicArrayDescriptorOrNull(source))
+            return descriptor.offset;
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileDynamicArrayInto(offset, elementType, source);
+        return offset;
     }
 
     // Emit a sub-slice descriptor into frame offset `destination` from a
@@ -1437,8 +1530,24 @@ private struct Compiler {
                     continue;
                 }
 
-                const operand =
-                    compileExpression((*call.arguments)[argumentIndex]);
+                // A non-string dynamic-array argument copies a 16-byte slice
+                // descriptor into the argument area; the backing memory is
+                // shared with the caller.
+                auto argument = (*call.arguments)[argumentIndex];
+                if (isDynamicArrayArgument(argument)) {
+                    const descriptor = arrayDescriptorOffset(
+                        dynamicArrayElementType(argument.type), argument,
+                    );
+                    _code ~= Instruction(
+                        Op.copy,
+                        slot,
+                        descriptor,
+                        cast(ushort) sliceDescriptorSize,
+                    );
+                    continue;
+                }
+
+                const operand = compileExpression(argument);
                 _code ~= Instruction(
                     Op.copy,
                     slot,
@@ -1449,7 +1558,8 @@ private struct Compiler {
 
         const returnType = _program.functions[index].returnType;
         const destination =
-            (!returnType.isString && returnType.scalar == ScalarType.void_)
+            (!returnType.isString && !returnType.isArray &&
+                returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
@@ -2075,8 +2185,25 @@ private struct Compiler {
         if (function_.parameters is null)
             return layout;
 
+        import dmd.astenums: TY;
+
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
+
+            // A non-string dynamic-array `T[]` parameter is passed by value as
+            // a 16-byte slice descriptor; the backing memory is shared through
+            // the descriptor's pointer.
+            if (parameter.type.toBasetype.ty == TY.Tarray &&
+                !isStringType(parameter.type))
+            {
+                enum descriptorAlign = cast(uint) size_t.sizeof;
+                layout.blockSize =
+                    (layout.blockSize + descriptorAlign - 1) & ~(descriptorAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += sliceDescriptorSize;
+                continue;
+            }
 
             // A scalar `ref` parameter has a frame slot sized for the
             // referenced value, just like a value parameter; the difference is
@@ -2100,8 +2227,21 @@ private struct Compiler {
     // case is non-scalar today (the leading edge of arrays); everything else
     // routes through the scalar path.
     private ResultType resultType(Type type) {
+        import dmd.astenums: TY;
+
         if (isStringType(type))
             return ResultType(ScalarType.void_, true);
+
+        // A non-string dynamic array `T[]` result is a 16-byte slice
+        // descriptor; `elementType` gives the element size for indexing the
+        // returned descriptor.
+        if (type.toBasetype.ty == TY.Tarray)
+            return ResultType(
+                ScalarType.void_,
+                false,
+                true,
+                dynamicArrayElementType(type),
+            );
 
         return ResultType(scalarType(type), false);
     }
@@ -2476,6 +2616,18 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
         default:
             return false;
     }
+}
+
+// A non-string dynamic-array `T[]` call argument, passed by value as a 16-byte
+// slice descriptor.
+private bool isDynamicArrayArgument(
+    imported!"dmd.expression".Expression argument,
+) {
+    import dmd.astenums: TY;
+
+    return argument.type !is null &&
+        argument.type.toBasetype.ty == TY.Tarray &&
+        !isStringType(argument.type);
 }
 
 private bool isFloating(
