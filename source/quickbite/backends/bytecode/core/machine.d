@@ -166,6 +166,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case appendElement1, appendElement4:
+                heap ~= appendElement(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    appendElementSize(instruction.op),
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -902,6 +912,39 @@ private uint sliceCopyElementSize(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return op == Op.sliceCopy1 || op == Op.sliceEqual1 ? 1 : 4;
+}
+
+private uint appendElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.appendElement1 ? 1 : 4;
+}
+
+// Append the element at `elementOffset` to the slice descriptor at
+// `descriptorOffset`, reallocating its backing memory. A fresh block of
+// `(length + 1)` elements is allocated, the existing elements copied in, and the
+// new element written at the end; the descriptor is overwritten with the new
+// {ptr, length + 1}. Returns the new block so the caller can root it in `heap`.
+// Reallocating rather than growing in place matches compiled D: a slice into the
+// old block keeps pointing at the untouched original.
+private ubyte[] appendElement(
+    ref ubyte[] stack,
+    in size_t descriptorOffset,
+    in size_t elementOffset,
+    in uint elementSize,
+) @trusted {
+    const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
+    const pointer = scalarValue!size_t(stack, descriptorOffset);
+
+    auto block = new ubyte[]((length + 1) * elementSize);
+    const source = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
+    block[0 .. length * elementSize] = source[];
+    block[length * elementSize .. (length + 1) * elementSize] =
+        stack[elementOffset .. elementOffset + elementSize];
+
+    writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
+    return block;
 }
 
 // True iff the two slice descriptors hold the same length and identical element

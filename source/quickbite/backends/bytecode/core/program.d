@@ -132,6 +132,15 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
     sliceEqual1,
     sliceEqual4,
+    // Append the element at frame offset b to the dynamic-array slice descriptor
+    // at frame offset a: allocate a fresh heap block of (length + 1) elements,
+    // copy the existing elements, write the new element, root the block, and
+    // overwrite the descriptor with {newPtr, length + 1}. Reallocating (rather
+    // than growing in place) matches compiled D, so a slice of an array is not
+    // corrupted by appending to a neighbour. The element size is fixed by the
+    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    appendElement1,
+    appendElement4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset

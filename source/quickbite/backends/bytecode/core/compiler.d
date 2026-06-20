@@ -37,9 +37,9 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, ArrayLengthExp, ArrayLiteralExp, AssertExp, AssignExp,
-        BinExp, CallExp, CastExp, CmpExp, DivExp, Expression, IndexExp,
-        LogicalExp, NegExp, NewExp, NotExp, OrExp, PostExp, RealExp, SliceExp,
-        StringExp;
+        BinExp, CallExp, CastExp, CatElemAssignExp, CmpExp, DivExp, Expression,
+        IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp, PostExp, RealExp,
+        SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -324,6 +324,13 @@ private struct Compiler {
 
         if (auto assign = expression.isAssignExp)
             return compileAssignExpression(assign);
+
+        // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
+        // `concatenateElemAssign`); detect by op, not name. Whole-array
+        // `arr ~= other` (op `concatenateAssign`) is a different node and is
+        // not handled here.
+        if (auto append = expression.isCatElemAssignExp)
+            return compileAppendElement(append);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -1109,6 +1116,22 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    // `arr ~= x` (append element): reallocate `arr`'s backing memory with the
+    // new element appended and overwrite its descriptor. The lvalue must be a
+    // known dynamic-array local (or ref parameter); the appended descriptor
+    // yields the array as the expression result.
+    private Operand compileAppendElement(CatElemAssignExp append) {
+        const descriptor = dynamicArrayDescriptor(append.e1);
+        const value = compileExpression(append.e2);
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            appendElementOp(elementSize),
+            descriptor.offset,
+            value.offset,
+        );
+        return Operand(descriptor.offset, descriptor.elementType);
     }
 
     // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
@@ -2365,6 +2388,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.sliceEqual1 : Op.sliceEqual4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.appendElement1 : Op.appendElement4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
