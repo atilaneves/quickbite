@@ -230,13 +230,14 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort c;
 }
 
-// A scalar pass-by-reference parameter: its slot in the callee frame holds the
-// referenced value, but the matching word in the caller's argument area holds
-// the caller-frame offset of the argument. The machine dereferences that
-// offset on entry and writes the slot back to it on return.
+// A pass-by-reference parameter: its slot in the callee frame holds the
+// referenced value (a scalar, or a 16-byte slice descriptor for a `ref T[]`),
+// but the matching word in the caller's argument area holds the caller-frame
+// offset of the argument. The machine dereferences that offset on entry and
+// writes the slot back to it on return.
 package(quickbite.backends.bytecode) struct RefParameter {
     ushort offset; // the parameter's frame offset (also its argument-area word)
-    ScalarType type; // the referenced scalar's type, giving the value's size
+    uint valueSize; // bytes of the referenced value, copied in and written back
 }
 
 package(quickbite.backends.bytecode) struct CompiledFunction {

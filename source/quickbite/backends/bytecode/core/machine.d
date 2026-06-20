@@ -740,7 +740,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 // return, then replace the slot with the referenced value.
                 RefWriteback[] refWritebacks;
                 foreach (refParameter; callee.refParameters) {
-                    const valueSize = size(refParameter.type);
+                    const valueSize = refParameter.valueSize;
                     const callerOffset = base + scalarValue!uint(
                         stack, calleeBase + refParameter.offset,
                     );

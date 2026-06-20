@@ -1589,15 +1589,20 @@ private struct Compiler {
         return Operand(destination, returnType.scalar, returnType.isString);
     }
 
-    // The caller-frame offset of a scalar `ref` argument: the slot of the
-    // local being passed by reference. Only a plain local lvalue is supported.
+    // The caller-frame offset of a `ref` argument: the slot of the local being
+    // passed by reference, whether a scalar local or a dynamic-array local
+    // (whose slot holds a 16-byte slice descriptor). Only a plain local lvalue
+    // is supported.
     private ushort referenceOffset(Expression argument) {
         import std.conv: text;
 
         if (auto variable = argument.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
+            if (auto declaration = variable.var.isVarDeclaration) {
                 if (auto existing = declaration in _locals)
                     return *existing;
+                if (auto existing = declaration in _dynamicArrayLocals)
+                    return existing.offset;
+            }
 
         throw new Exception(text(
             "Unsupported ref argument in bytecode core: ",
@@ -2213,9 +2218,11 @@ private struct Compiler {
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
 
-            // A non-string dynamic-array `T[]` parameter is passed by value as
-            // a 16-byte slice descriptor; the backing memory is shared through
-            // the descriptor's pointer.
+            // A non-string dynamic-array `T[]` parameter holds a 16-byte slice
+            // descriptor in the callee frame. By value the caller copies the
+            // descriptor in; a `ref T[]` instead passes the caller-frame offset
+            // and writes the (possibly reallocated) descriptor back on return,
+            // so an append inside the callee is visible to the caller.
             if (parameter.type.toBasetype.ty == TY.Tarray &&
                 !isStringType(parameter.type))
             {
@@ -2223,7 +2230,11 @@ private struct Compiler {
                 layout.blockSize =
                     (layout.blockSize + descriptorAlign - 1) & ~(descriptorAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, sliceDescriptorSize,
+                    );
                 layout.blockSize += sliceDescriptorSize;
                 continue;
             }
@@ -2239,7 +2250,7 @@ private struct Compiler {
             layout.isReference ~= parameter.isReference;
             if (parameter.isReference)
                 layout.refParameters ~=
-                    RefParameter(cast(ushort) layout.blockSize, type);
+                    RefParameter(cast(ushort) layout.blockSize, size(type));
             layout.blockSize += size(type);
         }
 
