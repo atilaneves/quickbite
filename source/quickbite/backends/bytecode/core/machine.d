@@ -373,6 +373,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case mulInt4:
+                const ubyte[int.sizeof] product4 = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) *
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = product4;
+                ++ip;
+                break;
+
             case mulInt8:
                 const ubyte[long.sizeof] product8 = scalarBytes(
                     scalarValue!long(stack, base + instruction.b) *

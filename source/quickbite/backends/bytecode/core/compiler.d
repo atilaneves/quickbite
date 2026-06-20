@@ -38,8 +38,8 @@ private struct Compiler {
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp, AssertExp,
         AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
-        DivExp, Expression, IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp,
-        PostExp, PtrExp, RealExp, SliceExp, StringExp;
+        DivExp, Expression, IndexExp, LogicalExp, MulExp, NegExp, NewExp,
+        NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -318,6 +318,9 @@ private struct Compiler {
 
         if (auto or = expression.isOrExp)
             return compileOrExpression(or);
+
+        if (auto multiply = expression.isMulExp)
+            return compileMultiplyExpression(multiply);
 
         if (auto divide = expression.isDivExp)
             return compileDivideExpression(divide);
@@ -1287,15 +1290,18 @@ private struct Compiler {
         );
     }
 
-    // `p + n` / `n + p`: scale the integer operand by the pointed-at element
-    // size and add it to the raw pointer value, yielding a pointer operand.
+    // `p + n` / `n + p`: add the integer operand to the raw pointer value,
+    // yielding a pointer operand. DMD pre-scales the integer operand to a byte
+    // offset (`p + n` arrives as `p + n * elementSize`), so no scaling here.
     private Operand compilePointerAdd(BinExp add) {
         const pointerFirst = isPointerType(add.e1.type);
         const pointer =
             compileExpression(pointerFirst ? add.e1 : add.e2);
         const offset = compileExpression(pointerFirst ? add.e2 : add.e1);
-        return offsetPointer(
-            pointer.offset, pointer.pointerElement, offset.offset,
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.addInt8, result, pointer.offset, offset.offset);
+        return Operand(
+            result, ScalarType.ulong_, false, true, pointer.pointerElement,
         );
     }
 
@@ -1316,6 +1322,28 @@ private struct Compiler {
     // D's `/` on int is signed integer division. Only the 4-byte int form is
     // needed today (it appears as the never-executed RHS of a short-circuited
     // `&&`); a runtime divide-by-zero would fault, matching compiled code.
+    // Integer multiplication. Pointer arithmetic scales its integer operand
+    // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
+    // one that matters here; the 4-byte form mirrors `addInt4`.
+    private Operand compileMultiplyExpression(MulExp multiply) {
+        import std.conv: text;
+
+        const lhs = compileExpression(multiply.e1);
+        const rhs = compileExpression(multiply.e2);
+        if (isEightByteInteger(lhs.type) &&
+            isEightByteInteger(rhs.type))
+            return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
+
+        return compileIntBinaryResult(
+            multiply,
+            lhs,
+            rhs,
+            Op.mulInt4,
+            ScalarType.int_,
+            "Unsupported multiplication in bytecode core: ",
+        );
+    }
+
     private Operand compileDivideExpression(DivExp divide) {
         // `p - q`: DMD lowers it to `(byteDistance) / elementStride`, a MinExp
         // of two pointers wrapped in a DivExp by the stride. The byte distance
@@ -1337,16 +1365,16 @@ private struct Compiler {
         );
     }
 
-    // `p - n`: subtract `n * elementSize` from the raw pointer value, yielding a
-    // pointer operand over the same element type.
+    // `p - n`: subtract the integer operand from the raw pointer value, yielding
+    // a pointer operand over the same element type. DMD pre-scales the integer
+    // operand to a byte offset (`p - n` arrives as `p - n * elementSize`).
     private Operand compilePointerSubtractInteger(BinExp subtract) {
         const pointer = compileExpression(subtract.e1);
         const offset = compileExpression(subtract.e2);
-        const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const stride = compileSizeConstant(size(pointer.pointerElement));
-        _code ~= Instruction(Op.mulInt8, scaled, offset.offset, stride);
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.subInt8, result, pointer.offset, scaled);
+        _code ~= Instruction(
+            Op.subInt8, result, pointer.offset, offset.offset,
+        );
         return Operand(
             result, ScalarType.ulong_, false, true, pointer.pointerElement,
         );

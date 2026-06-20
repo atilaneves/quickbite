@@ -221,6 +221,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    mulInt4, // a: destination frame offset, b: lhs, c: rhs (4-byte integer)
     mulInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
     divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
     subInt4, // a: destination frame offset, b: lhs, c: rhs
