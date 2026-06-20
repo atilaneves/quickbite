@@ -2399,8 +2399,25 @@ private struct Compiler {
     }
 
     private Operand compileEqualExpression(Expression expression) {
+        import dmd.astenums: TY;
+        import dmd.tokens: EXP;
+
         auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(equal !is null);
+
+        // `m1 == m2` / `m1 != m2` for associative arrays: compare entry sets via
+        // the VM-owned maps. DMD keeps the EqualExp (with an unused lowering to
+        // `_d_aaEqual`), so match the operand type here.
+        if (equal.e1.type.toBasetype.ty == TY.Taarray) {
+            const left = assocArrayHandleOffset(equal.e1);
+            const right = assocArrayHandleOffset(equal.e2);
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(Op.aaEqual, offset, left, right);
+            if (equal.op == EXP.notEqual)
+                _code ~= Instruction(Op.notBool, offset, offset);
+            return Operand(offset, ScalarType.bool_);
+        }
+
         return compileIntBinaryExpression(
             equal,
             Op.equal4,
@@ -3196,6 +3213,13 @@ private struct Compiler {
                 return false;
         }
 
+        // `assert(m1 == m2)` over associative-array operands compares entry sets
+        // via the VM-owned maps.
+        if (op == "==" || op == "!=")
+            if (tryAssocArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
         // `assert(a[] == b[])` over dynamic-array operands compares the slices
         // element-wise and renders each operand as `[e0, e1, ...]` on failure.
         if (op == "==" || op == "!=")
@@ -3307,6 +3331,42 @@ private struct Compiler {
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
             AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(m1 == m2)` / `assert(m1 != m2)` over associative arrays: compare
+    // entry sets via the VM-owned maps. False unless both operands are AA-typed.
+    private bool tryAssocArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        if (lhs.type.toBasetype.ty != TY.Taarray ||
+            rhs.type.toBasetype.ty != TY.Taarray)
+            return false;
+
+        const left = assocArrayHandleOffset(lhs);
+        const right = assocArrayHandleOffset(rhs);
+        const equal = allocateBytes(1, 1);
+        _code ~= Instruction(Op.aaEqual, equal, left, right);
+
+        // `==` holds when the maps are equal; `!=` holds when negated.
+        ushort condition = equal;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, equal);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic(op, equal, equal, ScalarType.bool_);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
