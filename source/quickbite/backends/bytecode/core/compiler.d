@@ -37,9 +37,9 @@ private struct Compiler {
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, ArrayLengthExp, ArrayLiteralExp, AssertExp, AssignExp,
-        BinExp, CallExp, CastExp, CatElemAssignExp, CmpExp, DivExp, Expression,
-        IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp, PostExp, RealExp,
-        SliceExp, StringExp;
+        BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp, DivExp,
+        Expression, IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp,
+        PostExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -695,6 +695,13 @@ private struct Compiler {
             return;
         }
 
+        // `dest = a ~ b` (concatenation): build a fresh heap block holding both
+        // operands' elements, leaving the originals untouched.
+        if (auto cat = source.isCatExp) {
+            compileCatInto(destination, elementType, cat);
+            return;
+        }
+
         // `dest = makeArray(...)` copies the call's 16-byte slice-descriptor
         // result into the destination slot; the backing memory is shared.
         if (auto call = source.isCallExp) {
@@ -790,6 +797,51 @@ private struct Compiler {
             descriptor.offset,
             bounds,
         );
+    }
+
+    // `dest = a ~ b` (concatenation): materialise each operand into a slice
+    // descriptor sharing existing backing memory, then emit a concat that
+    // allocates a fresh block holding both in order. An operand of element type
+    // (`x ~ arr` / `arr ~ x`) is wrapped into a one-element descriptor first.
+    private void compileCatInto(
+        in ushort destination,
+        in ScalarType elementType,
+        CatExp cat,
+    ) {
+        const left = catOperandDescriptor(elementType, cat.e1);
+        const right = catOperandDescriptor(elementType, cat.e2);
+        _code ~= Instruction(
+            concatArraysOp(size(elementType)),
+            destination,
+            left,
+            right,
+        );
+    }
+
+    // A 16-byte slice descriptor for one side of a concatenation: an array
+    // operand uses its existing descriptor (materialised if needed); an element
+    // operand (`x ~ arr`) is stored into a fresh one-element heap block.
+    private ushort catOperandDescriptor(
+        in ScalarType elementType,
+        Expression operand,
+    ) {
+        import dmd.astenums: TY;
+
+        if (operand.type !is null &&
+            operand.type.toBasetype.ty == TY.Tarray)
+            return arrayDescriptorOffset(elementType, operand);
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray, offset, cast(ushort) elementSize, 1,
+        );
+        const value = compileExpression(operand);
+        const index = compileSizeConstant(0);
+        _code ~= Instruction(
+            indexStoreOp(elementSize), value.offset, offset, index,
+        );
+        return offset;
     }
 
     // Read the length word of a dynamic-array descriptor into a fresh size_t
@@ -2406,6 +2458,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.appendElement1 : Op.appendElement4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.concatArrays1 : Op.concatArrays4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {

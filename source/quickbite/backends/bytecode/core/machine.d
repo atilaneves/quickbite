@@ -176,6 +176,17 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case concatArrays1, concatArrays4:
+                heap ~= concatArrays(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    base + instruction.c,
+                    concatElementSize(instruction.op),
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -919,6 +930,44 @@ private uint appendElementSize(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return op == Op.appendElement1 ? 1 : 4;
+}
+
+private uint concatElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.concatArrays1 ? 1 : 4;
+}
+
+// Concatenate the slice descriptors at `leftOffset` and `rightOffset` into a
+// fresh heap block of `len(left) + len(right)` elements, copying both operands'
+// elements in order, and write the descriptor {newPtr, total} at
+// `descriptorOffset`. Returns the new block so the caller can root it in `heap`.
+// Both operands are copied, leaving the originals untouched.
+private ubyte[] concatArrays(
+    ref ubyte[] stack,
+    in size_t descriptorOffset,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in uint elementSize,
+) @trusted {
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftBytes = leftLength * elementSize;
+    const rightBytes = rightLength * elementSize;
+
+    auto block = new ubyte[](leftBytes + rightBytes);
+    block[0 .. leftBytes] =
+        (cast(const(ubyte)*) leftPointer)[0 .. leftBytes];
+    block[leftBytes .. leftBytes + rightBytes] =
+        (cast(const(ubyte)*) rightPointer)[0 .. rightBytes];
+
+    writeSliceDescriptor(
+        stack, descriptorOffset, block, leftLength + rightLength,
+    );
+    return block;
 }
 
 // Append the element at `elementOffset` to the slice descriptor at
