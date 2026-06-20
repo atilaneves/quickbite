@@ -97,6 +97,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // descriptor {ptr, length} into the frame: a: descriptor offset, b: element
     // size, c: element count (the length).
     allocArray,
+    // Allocate `b * length` bytes of zero-filled VM-owned writable heap, where
+    // `length` is a size_t read from frame offset c, then write the slice
+    // descriptor {ptr, length} into the frame at offset a (a: descriptor offset,
+    // b: element size, c: frame offset of the size_t length). Backs
+    // `new T[](runtimeLength)`.
+    allocArrayDynamic,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
     // Read the length word of the slice descriptor at frame offset b into the

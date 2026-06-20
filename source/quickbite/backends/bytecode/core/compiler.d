@@ -688,6 +688,13 @@ private struct Compiler {
             return;
         }
 
+        // `dest = new T[](length)`: heap-allocate a default-filled block of
+        // `length` (a runtime size_t) elements.
+        if (auto new_ = source.isNewExp) {
+            compileNewArrayInto(destination, elementType, new_);
+            return;
+        }
+
         // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
         // a fresh heap block, so mutating either side leaves the other intact.
         if (auto duplicate = tryArrayDuplication(source)) {
@@ -748,6 +755,31 @@ private struct Compiler {
                 index,
             );
         }
+    }
+
+    // `dest = new T[](length)`: evaluate the runtime length into a size_t slot
+    // and allocate a default-filled heap block of that many elements, writing
+    // the descriptor to `destination`. The length is `new_.arguments[0]`.
+    private void compileNewArrayInto(
+        in ushort destination,
+        in ScalarType elementType,
+        NewExp new_,
+    ) {
+        import std.conv: text;
+
+        if (new_.arguments is null || new_.arguments.length != 1)
+            throw new Exception(text(
+                "Unsupported new array in bytecode core: ",
+                expressionChars(new_),
+            ));
+
+        const length = compileExpression((*new_.arguments)[0]);
+        _code ~= Instruction(
+            Op.allocArrayDynamic,
+            destination,
+            cast(ushort) size(elementType),
+            length.offset,
+        );
     }
 
     // The frame offset of a 16-byte slice descriptor denoting the value of an

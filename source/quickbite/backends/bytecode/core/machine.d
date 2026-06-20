@@ -78,6 +78,21 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case allocArrayDynamic:
+                // The length is a runtime size_t in a frame slot; allocate a
+                // fresh zero-filled block of that many elements, root it, and
+                // write the descriptor.
+                const dynamicLength =
+                    scalarValue!size_t(stack, base + instruction.c);
+                auto dynamicBlock =
+                    new ubyte[](instruction.b * dynamicLength);
+                heap ~= dynamicBlock;
+                writeSliceDescriptor(
+                    stack, base + instruction.a, dynamicBlock, dynamicLength,
+                );
+                ++ip;
+                break;
+
             case nullSlice:
                 stack[
                     base + instruction.a
