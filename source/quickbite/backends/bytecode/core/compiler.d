@@ -1411,6 +1411,12 @@ private struct Compiler {
         import dmd.tokens: EXP;
         import std.conv: text;
 
+        // Pointer relations `p < q` etc. compare raw `size_t` pointer values as
+        // unsigned, matching compiled pointer code.
+        if (isPointerType(comparison.e1.type) ||
+            isPointerType(comparison.e2.type))
+            return compilePointerComparison(comparison);
+
         const op = () {
             switch (comparison.op) with (EXP) {
                 case lessThan: return Op.lessThan4;
@@ -1435,6 +1441,35 @@ private struct Compiler {
             ScalarType.bool_,
             "Unsupported comparison in bytecode core: ",
         );
+    }
+
+    // `p < q`, `p <= q`, `p > q`, `p >= q`: compare raw `size_t` pointer values
+    // as unsigned, yielding a bool.
+    private Operand compilePointerComparison(CmpExp comparison) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const op = () {
+            switch (comparison.op) with (EXP) {
+                case lessThan: return "<";
+                case lessOrEqual: return "<=";
+                case greaterThan: return ">";
+                case greaterOrEqual: return ">=";
+                default:
+                    throw new Exception(text(
+                        "Unsupported comparison in bytecode core: ",
+                        expressionChars(comparison),
+                    ));
+            }
+        }();
+
+        const lhs = compileExpression(comparison.e1);
+        const rhs = compileExpression(comparison.e2);
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            pointerComparisonOp(op), offset, lhs.offset, rhs.offset,
+        );
+        return Operand(offset, ScalarType.bool_);
     }
 
     // `&&` / `||` short-circuit through jumps and write a bool result into one
