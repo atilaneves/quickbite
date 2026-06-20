@@ -199,6 +199,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // compiled D. The element size is fixed by the opcode (1 or 4 bytes).
     pointerLoad1,
     pointerLoad4,
+    // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
+    // elementSize]`, where the raw `size_t` pointer value is at frame offset b
+    // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
+    // `p[i] = v` through a pointer into VM-owned memory; unchecked, like compiled
+    // D. The element size is fixed by the opcode (1 or 4 bytes).
+    pointerStore1,
+    pointerStore4,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs

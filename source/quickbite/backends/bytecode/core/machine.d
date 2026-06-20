@@ -286,6 +286,22 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case pointerStore1, pointerStore4:
+                const pointerStoreSize = pointerElementSize(instruction.op);
+                const pointerStoreAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        pointerStoreSize;
+                writeHeapElement(
+                    cast(ubyte*) pointerStoreAddress,
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + pointerStoreSize
+                    ],
+                );
+                ++ip;
+                break;
+
             case pointerSlice1, pointerSlice4:
                 const pointerSliceSize = pointerElementSize(instruction.op);
                 const sliceLo = scalarValue!size_t(stack, base + instruction.c);
@@ -1205,7 +1221,8 @@ private uint pointerElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.pointerLoad1 || op == Op.pointerSlice1 ? 1 : 4;
+    return op == Op.pointerLoad1 || op == Op.pointerSlice1 ||
+        op == Op.pointerStore1 ? 1 : 4;
 }
 
 private uint subSliceElementSize(

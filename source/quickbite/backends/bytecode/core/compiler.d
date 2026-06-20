@@ -861,6 +861,12 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        // `int[int] m;` (or `m = null`): an empty map.
+        if (source.isNullExp !is null) {
+            _code ~= Instruction(Op.aaNew, destination);
+            return;
+        }
+
         // `dest = src.dup`: the `object.dup` hook yields a fresh handle; copy it
         // into the destination slot.
         if (source.isCallExp !is null) {
@@ -1843,6 +1849,23 @@ private struct Compiler {
         if (auto length = assign.e1.isArrayLengthExp)
             return compileArrayLengthAssign(length, assign.e2);
 
+        // `m[k] = v` for an associative array: insert or overwrite the entry in
+        // the VM-owned map.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryAssocArrayElementAssign(index, assign.e2))
+                return *store;
+
+        // `p[i] = rhs` through a pointer (`m[k] = v` lowers to a write through
+        // the `_d_aaGetY` slot pointer): write the scalar rhs at `p + i`.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryPointerElementAssign(index, assign.e2))
+                return *store;
+
+        // `*p = rhs` through a pointer.
+        if (auto deref = assign.e1.isPtrExp)
+            if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
+                return *store;
+
         // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
         // the heap element at `index`.
         if (auto index = assign.e1.isIndexExp)
@@ -1978,6 +2001,78 @@ private struct Compiler {
             DynamicArrayLocal(inner, outer.elementType),
         );
         return result;
+    }
+
+    // `m[k] = v` for an associative array: insert or overwrite the entry in the
+    // VM-owned map. Null if `index.e1` is not a known AA local.
+    private Operand* tryAssocArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto variable = index.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null || declaration !in _assocArrayLocals)
+            return null;
+
+        const handle = (declaration in _locals);
+        const key = compileExpression(index.e2);
+        const value = compileExpression(rhs);
+        _code ~= Instruction(
+            Op.aaInsert, *handle, key.offset, value.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, value.type);
+        return result;
+    }
+
+    // `p[i] = rhs` through a pointer: write the scalar rhs at `p + i * size`.
+    // Null if `p` is not a pointer.
+    private Operand* tryPointerElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        if (!isPointerType(index.e1.type))
+            return null;
+
+        const pointer = compileExpression(index.e1);
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = storeThroughPointer(pointer, indexSlot.offset, rhs);
+        return result;
+    }
+
+    // `*p = rhs` through a pointer (`p + 0`). Null if `p` is not a pointer.
+    private Operand* tryPointerDereferenceAssign(
+        PtrExp deref,
+        Expression rhs,
+    ) {
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return null;
+
+        auto result = new Operand;
+        *result = storeThroughPointer(pointer, compileSizeConstant(0), rhs);
+        return result;
+    }
+
+    // Write the rhs scalar to `[pointer + index * size]`, the shared store for
+    // `*p = v` and `p[i] = v`.
+    private Operand storeThroughPointer(
+        in Operand pointer,
+        in ushort indexSlot,
+        Expression rhs,
+    ) {
+        const value = compileExpression(rhs);
+        const elementSize = size(pointer.pointerElement);
+        _code ~= Instruction(
+            pointerStoreOp(elementSize),
+            value.offset,
+            pointer.offset,
+            indexSlot,
+        );
+        return Operand(value.offset, pointer.pointerElement);
     }
 
     // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
@@ -3511,6 +3606,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.pointerLoad1 : Op.pointerLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerStore1 : Op.pointerStore4;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
