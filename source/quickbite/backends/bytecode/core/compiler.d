@@ -36,10 +36,11 @@ private struct Compiler {
         sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp, AssertExp,
+        AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
+        AssocArrayLiteralExp, AssertExp,
         AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
-        DivExp, Expression, IndexExp, LogicalExp, MulExp, NegExp, NewExp,
-        NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp, StringExp;
+        CondExp, DivExp, Expression, IndexExp, LogicalExp, MulExp, NegExp,
+        NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -62,6 +63,9 @@ private struct Compiler {
     // records the pointed-at element scalar, giving the stride for arithmetic,
     // indexing, dereference, and slicing.
     private ScalarType[VarDeclaration] _pointerLocals;
+    // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
+    // a 1-based index into the machine's VM-owned map table, 0 until created.
+    private bool[VarDeclaration] _assocArrayLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -81,6 +85,7 @@ private struct Compiler {
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
         _pointerLocals = null;
+        _assocArrayLocals = null;
 
         import dmd.astenums: TY;
 
@@ -310,6 +315,21 @@ private struct Compiler {
             return compileExpression(comma.e2);
         }
 
+        // A `null` pointer literal (the `(bounds, null)` false branch of `m[k]`):
+        // an 8-byte zero pointer slot. The throw in the comma's first operand
+        // aborts before this is read.
+        if (expression.isNullExp !is null) {
+            const offset =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.loadConstant, offset, constantIndex(0),
+                cast(ushort) size_t.sizeof,
+            );
+            return Operand(
+                offset, ScalarType.ulong_, false, true, ScalarType.int_,
+            );
+        }
+
         if (auto cast_ = expression.isCastExp)
             return compileCastExpression(cast_);
 
@@ -352,6 +372,12 @@ private struct Compiler {
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
+
+        // `c ? t : f`: DMD's `m[k]` lowering produces `slot ? slot : (bounds,
+        // null)`, a pointer-valued conditional whose false branch raises "Range
+        // violation". Compile it as a branch writing one slot on both paths.
+        if (auto conditional = expression.isCondExp)
+            return compileConditionalExpression(conditional);
 
         if (auto call = expression.isCallExp)
             return compileCall(call);
@@ -582,6 +608,30 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_, true);
     }
 
+    // Write a compile-time string into the read-only data segment and emit the
+    // slice descriptor, returning the descriptor's frame offset. Used for
+    // synthesised diagnostic messages (`throwString`).
+    private ushort compileStringLiteralBytes(in string text_) {
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) text_;
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ", text_,
+            ));
+        _program.data ~= bytes;
+
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(
+            Op.loadStringSlice,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) bytes.length,
+        );
+        return offset;
+    }
+
     private void compileVariableDeclaration(VarDeclaration variable) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -598,6 +648,13 @@ private struct Compiler {
         if (variable.type.toBasetype.ty == TY.Tarray &&
             !isStringType(variable.type)) {
             compileDynamicArrayDeclaration(variable);
+            return;
+        }
+
+        // An associative array `T[K]` holds an 8-byte handle into the machine's
+        // VM-owned map table; `int[int]` is the only form the core lowers.
+        if (variable.type.toBasetype.ty == TY.Taarray) {
+            compileAssocArrayDeclaration(variable);
             return;
         }
 
@@ -774,6 +831,62 @@ private struct Compiler {
         compileDynamicArrayInto(
             offset, elementType, initializerExpression(initializer.exp),
             elementIsArray);
+    }
+
+    // An associative array `int[int]` local holds an 8-byte handle into the
+    // machine's VM-owned map table. Create a fresh map and, for a literal
+    // initializer, insert each entry (later duplicate keys overwrite earlier).
+    private void compileAssocArrayDeclaration(VarDeclaration variable) {
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _locals[variable] = offset;
+        _assocArrayLocals[variable] = true;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            _code ~= Instruction(Op.aaNew, offset);
+            return;
+        }
+
+        compileAssocArrayInto(
+            offset, initializerExpression(initializer.exp),
+        );
+    }
+
+    // Build an associative-array handle at frame offset `destination`: a fresh
+    // map populated from a `[k: v, ...]` literal (or a `.dup` of another map).
+    private void compileAssocArrayInto(
+        in ushort destination,
+        Expression source,
+    ) {
+        import std.conv: text;
+
+        // `dest = src.dup`: the `object.dup` hook yields a fresh handle; copy it
+        // into the destination slot.
+        if (source.isCallExp !is null) {
+            const handle = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy, destination, handle.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            return;
+        }
+
+        auto literal = source.isAssocArrayLiteralExp;
+        if (literal is null)
+            throw new Exception(text(
+                "Unsupported associative array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        _code ~= Instruction(Op.aaNew, destination);
+        foreach (index; 0 .. literal.keys.length) {
+            const key = compileExpression((*literal.keys)[index]);
+            const value = compileExpression((*literal.values)[index]);
+            _code ~= Instruction(
+                Op.aaInsert, destination, key.offset, value.offset,
+            );
+        }
     }
 
     // Build a dynamic-array slice descriptor at frame offset `destination`. A
@@ -1511,6 +1624,58 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
+    // `c ? t : f`: evaluate `c`, branch, and write whichever branch's value into
+    // a single result slot. Used for DMD's `m[k]` lowering, whose conditional is
+    // pointer-valued (the value's slot, or a null after a bounds throw); the
+    // result width and pointer metadata come from the true branch.
+    private Operand compileConditionalExpression(
+        imported!"dmd.expression".CondExp conditional,
+    ) {
+        const condition = compileBoolCondition(conditional.econd);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+
+        const falseJump = emitJumpIfFalse(condition);
+        const whenTrue = compileExpression(conditional.e1);
+        _code ~= Instruction(
+            Op.copy, result, whenTrue.offset, cast(ushort) size_t.sizeof,
+        );
+        const endJump = emitJump;
+
+        patchJump(falseJump);
+        const whenFalse = compileExpression(conditional.e2);
+        _code ~= Instruction(
+            Op.copy, result, whenFalse.offset, cast(ushort) size_t.sizeof,
+        );
+        patchJump(endJump);
+
+        return Operand(
+            result,
+            whenTrue.type,
+            whenTrue.isString,
+            whenTrue.isPointer,
+            whenTrue.pointerElement,
+        );
+    }
+
+    // Normalise an expression to a one-byte bool condition. A pointer condition
+    // (`slot ? ...`) is non-null iff its 8-byte value is non-zero, so compare it
+    // to a zero constant rather than testing a single byte.
+    private Operand compileBoolCondition(Expression expression) {
+        const operand = compileExpression(expression);
+        if (!operand.isPointer)
+            return operand;
+
+        const zero =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.loadConstant, zero, constantIndex(0),
+            cast(ushort) size_t.sizeof,
+        );
+        const result = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.notEqual8, result, operand.offset, zero);
+        return Operand(result, ScalarType.bool_);
+    }
+
     // `&&` / `||` short-circuit through jumps and write a bool result into one
     // slot on both paths. `&&`: if lhs is false the result is 0 and rhs is
     // never evaluated; otherwise the result is rhs normalised to bool. `||`:
@@ -2207,6 +2372,18 @@ private struct Compiler {
         if (function_ !is null && isArrayOpAddAssign(function_))
             return compileArrayOpAddAssign(call);
 
+        if (function_ !is null) {
+            const hook = assocArrayHook(function_);
+            if (hook != AssocArrayHook.none)
+                return compileAssocArrayHook(call, hook);
+        }
+
+        // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
+        // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
+        // means the key was absent, so raise the plain "Range violation".
+        if (function_ !is null && isArrayBoundsCall(function_))
+            return compileRangeViolation;
+
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
@@ -2275,6 +2452,146 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // Emit a throw of the plain "Range violation" message and yield a null
+    // pointer operand, so the `m[k]` lowering's `(_d_arraybounds(...), null)`
+    // false branch type-checks (the throw aborts before the null is used).
+    private Operand compileRangeViolation() {
+        const message = compileStringLiteralBytes("Range violation");
+        _code ~= Instruction(Op.throwString, message);
+        const offset =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        return Operand(
+            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+        );
+    }
+
+    // An associative-array hook call: operate on the VM-owned map referenced by
+    // the AA handle local. Each hook carries the AA as its first argument (a
+    // VarExp, or `&aa`/`*aa` around one), and the key/value as later arguments.
+    private Operand compileAssocArrayHook(
+        CallExp call,
+        in AssocArrayHook hook,
+    ) {
+        import std.conv: text;
+
+        const handle = assocArrayHandleOffset((*call.arguments)[0]);
+
+        with (AssocArrayHook) final switch (hook) {
+            case none:
+                throw new Exception("Unreachable AA hook.");
+
+            case length: {
+                const offset = allocate(ScalarType.ulong_);
+                _code ~= Instruction(Op.aaLength, offset, handle);
+                return Operand(offset, ScalarType.ulong_);
+            }
+
+            case getRvalue: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.aaGetRvalue, offset, handle, key.offset,
+                );
+                return Operand(
+                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                );
+            }
+
+            case getLvalue:
+                return compileAssocArrayGetLvalue(call, handle);
+
+            case in_: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
+                return Operand(
+                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                );
+            }
+
+            case remove: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocate(ScalarType.bool_);
+                _code ~= Instruction(Op.aaRemove, offset, handle, key.offset);
+                return Operand(offset, ScalarType.bool_);
+            }
+
+            case equal: {
+                const right = assocArrayHandleOffset((*call.arguments)[1]);
+                const offset = allocate(ScalarType.bool_);
+                _code ~= Instruction(Op.aaEqual, offset, handle, right);
+                return Operand(offset, ScalarType.bool_);
+            }
+
+            case dup: {
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.aaDup, offset, handle);
+                return Operand(offset, ScalarType.ulong_);
+            }
+
+            case keys:
+                return compileAssocArraySlice(Op.aaKeys, handle);
+
+            case values:
+                return compileAssocArraySlice(Op.aaValues, handle);
+        }
+    }
+
+    // `m.keys` / `m.values`: a fresh `int[]` slice descriptor holding a copy of
+    // the map's keys / values, rooted on the VM-owned heap.
+    private Operand compileAssocArraySlice(in Op op, in ushort handle) {
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(op, offset, handle);
+        return Operand(offset, ScalarType.int_);
+    }
+
+    // `m[k] = v` lowers to `_d_aaGetY(&m, k)` returning a slot pointer, written
+    // through by the surrounding assignment. The core inserts directly and
+    // yields a pointer to the (freshly inserted) value's slot so the write lands.
+    private Operand compileAssocArrayGetLvalue(
+        CallExp call,
+        in ushort handle,
+    ) {
+        const key = compileExpression((*call.arguments)[1]);
+        const offset =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.aaInsert, handle, key.offset, key.offset);
+        _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
+        return Operand(
+            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+        );
+    }
+
+    // The frame offset of an associative-array handle for `expression`: an AA
+    // local VarExp, possibly wrapped in `&aa` (AddrExp) or `*aa` (PtrExp) by the
+    // hook lowering.
+    private ushort assocArrayHandleOffset(Expression expression) {
+        import std.conv: text;
+
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+
+        if (auto variable = inner.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _assocArrayLocals)
+                    if (auto slot = declaration in _locals)
+                        return *slot;
+
+        throw new Exception(text(
+            "Unsupported associative array operand in bytecode core: ",
+            expressionChars(expression),
+        ));
     }
 
     // `dest[] = a[] + b[]`: the druntime arrayOp call carries three slice
@@ -3492,6 +3809,68 @@ private string normalisedPointerOperator(in string operator)
         case "!is": return "!=";
         default: return operator;
     }
+}
+
+// DMD lowers associative-array operations to druntime template hooks in
+// `core.internal.newaa` and `object`; the core intercepts them at the call site
+// and operates on its VM-owned map table instead of executing the hook bodies.
+private enum AssocArrayHook {
+    none,
+    length,
+    getRvalue,
+    getLvalue,
+    in_,
+    remove,
+    equal,
+    dup,
+    keys,
+    values,
+}
+
+private AssocArrayHook assocArrayHook(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null || function_.parent is null ||
+        function_.parent.isTemplateInstance is null)
+        return AssocArrayHook.none;
+
+    const name = text(function_.toPrettyChars);
+    static immutable hooks = [
+        Hook("core.internal.newaa._d_aaLen!(", AssocArrayHook.length),
+        Hook("core.internal.newaa._d_aaGetRvalueX!(", AssocArrayHook.getRvalue),
+        Hook("core.internal.newaa._d_aaGetY!(", AssocArrayHook.getLvalue),
+        Hook("core.internal.newaa._d_aaIn!(", AssocArrayHook.in_),
+        Hook("core.internal.newaa._d_aaDel!(", AssocArrayHook.remove),
+        Hook("core.internal.newaa._d_aaEqual!(", AssocArrayHook.equal),
+        Hook("object.dup!(", AssocArrayHook.dup),
+        Hook("object.keys!(", AssocArrayHook.keys),
+        Hook("object.values!(", AssocArrayHook.values),
+    ];
+
+    foreach (candidate; hooks)
+        if (name.startsWith(candidate.prefix))
+            return candidate.hook;
+
+    return AssocArrayHook.none;
+}
+
+private struct Hook {
+    string prefix;
+    AssocArrayHook hook;
+}
+
+// The druntime `_d_arraybounds*` bounds-failure helper, the false branch of
+// DMD's `m[k]` lowering. Matched by name; reaching it means a missing key.
+private bool isArrayBoundsCall(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+
+    return function_.ident !is null &&
+        function_.ident.toString.startsWith("_d_arraybounds");
 }
 
 // True for the druntime `core.internal.array.operations.arrayOp` template

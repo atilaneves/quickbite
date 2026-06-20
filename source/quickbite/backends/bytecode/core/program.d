@@ -297,6 +297,31 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
     haltUnittest,
+    // Associative-array hooks operating on VM-owned `int[int]` maps. A `T[K]`
+    // local's 8-byte slot holds a `size_t` handle: a 1-based index into the
+    // machine's map table, or 0 for a not-yet-created (empty) map. The map table
+    // is rooted by the machine, keeping every entry's keys/values alive.
+    aaNew, // a: handle slot; create a fresh empty map and write its handle
+    aaLength, // a: size_t result, b: handle slot; entry count (0 if handle 0)
+    // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
+    // map on first insert into an empty (handle-0) local, writing the handle back.
+    aaInsert,
+    // a: size_t pointer result, b: handle slot, c: key slot; the address of the
+    // value for the key (into VM-owned memory) or 0 when the key is absent. Both
+    // the `m[k]` rvalue read and `k in m` lower to this: DMD's `m[k]` lowering
+    // wraps it in a null check that raises "Range violation" on a missing key.
+    aaGetRvalue,
+    aaIn,
+    // a: bool result, b: handle slot, c: key slot; remove the key, result true
+    // iff it was present.
+    aaRemove,
+    // a: bool result, b: handle slot, c: handle slot; entry-set equality.
+    aaEqual,
+    aaDup, // a: handle slot result, b: handle slot; an independent copy
+    // a: 16-byte slice-descriptor result, b: handle slot; a fresh heap block (an
+    // `int[]`) holding a copy of the map's keys / values.
+    aaKeys,
+    aaValues,
     throwString, // a: frame offset of a string-slice descriptor
     ret, // a: frame offset of the return value
 }

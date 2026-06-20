@@ -21,6 +21,10 @@ package(quickbite.backends.bytecode) ubyte[] run(
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
     ubyte[][] heap;
+    // VM-owned `int[int]` maps backing associative-array locals. A local's
+    // 8-byte slot holds a 1-based index into this table (0 meaning a not-yet-
+    // created empty map); the table roots every map's keys and values.
+    AssocArray[] maps;
     Frame[] frames;
     size_t functionIndex = 0;
     size_t base = 0;
@@ -1013,6 +1017,94 @@ package(quickbite.backends.bytecode) ubyte[] run(
             case haltUnittest:
                 throw new Exception("unittest failure");
 
+            case aaNew:
+                maps ~= AssocArray.init;
+                writeScalar!size_t(stack, base + instruction.a, maps.length);
+                ++ip;
+                break;
+
+            case aaLength: {
+                const handle = scalarValue!size_t(stack, base + instruction.b);
+                const count = handle == 0 ? 0 : maps[handle - 1].keys.length;
+                writeScalar!size_t(stack, base + instruction.a, count);
+                ++ip;
+                break;
+            }
+
+            case aaInsert: {
+                auto handle = scalarValue!size_t(stack, base + instruction.a);
+                if (handle == 0) {
+                    maps ~= AssocArray.init;
+                    handle = maps.length;
+                    writeScalar!size_t(stack, base + instruction.a, handle);
+                }
+                maps[handle - 1].insert(
+                    scalarValue!int(stack, base + instruction.b),
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                ++ip;
+                break;
+            }
+
+            case aaGetRvalue, aaIn: {
+                const handle = scalarValue!size_t(stack, base + instruction.b);
+                const key = scalarValue!int(stack, base + instruction.c);
+                auto slot = handle == 0 ? null : maps[handle - 1].find(key);
+                writeScalar!size_t(
+                    stack, base + instruction.a, cast(size_t) slot,
+                );
+                ++ip;
+                break;
+            }
+
+            case aaRemove: {
+                const handle = scalarValue!size_t(stack, base + instruction.b);
+                const key = scalarValue!int(stack, base + instruction.c);
+                const removed = handle != 0 && maps[handle - 1].remove(key);
+                writeScalar!bool(stack, base + instruction.a, removed);
+                ++ip;
+                break;
+            }
+
+            case aaEqual: {
+                const left = scalarValue!size_t(stack, base + instruction.b);
+                const right = scalarValue!size_t(stack, base + instruction.c);
+                const equal = assocArrayEqual(
+                    left == 0 ? AssocArray.init : maps[left - 1],
+                    right == 0 ? AssocArray.init : maps[right - 1],
+                );
+                writeScalar!bool(stack, base + instruction.a, equal);
+                ++ip;
+                break;
+            }
+
+            case aaDup: {
+                const handle = scalarValue!size_t(stack, base + instruction.b);
+                maps ~= handle == 0
+                    ? AssocArray.init : maps[handle - 1].dup;
+                writeScalar!size_t(stack, base + instruction.a, maps.length);
+                ++ip;
+                break;
+            }
+
+            case aaKeys, aaValues: {
+                const handle = scalarValue!size_t(stack, base + instruction.b);
+                const elements = handle == 0
+                    ? null
+                    : (instruction.op == aaKeys
+                        ? maps[handle - 1].keys
+                        : maps[handle - 1].values);
+                auto block = new ubyte[](elements.length * int.sizeof);
+                foreach (index, element; elements)
+                    writeScalar!int(block, index * int.sizeof, element);
+                heap ~= block;
+                writeSliceDescriptor(
+                    stack, base + instruction.a, block, elements.length,
+                );
+                ++ip;
+                break;
+            }
+
             case throwString:
                 throw new Exception(stringFromSlice(
                     stack,
@@ -1550,6 +1642,77 @@ private T scalarValue(T)(
         raw |= cast(ulong) stack[offset + i] << (8 * i);
 
     return cast(T) raw;
+}
+
+// Write the low `T.sizeof` bytes of `value` little-endian into `stack` at
+// `offset`. `bool` writes a single 0/1 byte.
+private void writeScalar(T)(
+    ref ubyte[] stack,
+    in size_t offset,
+    in T value,
+) @safe @nogc nothrow pure {
+    static if (is(T == bool)) {
+        stack[offset] = value ? 1 : 0;
+    } else {
+        const raw = cast(ulong) value;
+        foreach (i; 0 .. T.sizeof)
+            stack[offset + i] = cast(ubyte) (raw >> (8 * i));
+    }
+}
+
+// A VM-owned `int[int]` map, stored as parallel insertion-ordered keys and
+// values. Insertion order does not match druntime's hash order, but the tests
+// only sum keys/values and compare entry sets, so order is immaterial.
+private struct AssocArray {
+    int[] keys;
+    int[] values;
+
+    // The address of the value stored for `key`, or null when absent. Held
+    // pointers stay valid until the next insert reallocates `values`.
+    int* find(in int key) @trusted @nogc nothrow pure {
+        foreach (index, existing; keys)
+            if (existing == key)
+                return &values[index];
+        return null;
+    }
+
+    void insert(in int key, in int value) @safe nothrow pure {
+        if (auto slot = find(key)) {
+            *slot = value;
+            return;
+        }
+        keys ~= key;
+        values ~= value;
+    }
+
+    bool remove(in int key) @safe nothrow pure {
+        foreach (index, existing; keys)
+            if (existing == key) {
+                keys = keys[0 .. index] ~ keys[index + 1 .. $];
+                values = values[0 .. index] ~ values[index + 1 .. $];
+                return true;
+            }
+        return false;
+    }
+
+    AssocArray dup() @safe nothrow pure const {
+        return AssocArray(keys.dup, values.dup);
+    }
+}
+
+// Entry-set equality: equal counts and, for every key in `left`, an equal value
+// in `right`. Order-independent, matching `int[int]` `==`.
+private bool assocArrayEqual(in AssocArray left, in AssocArray right)
+    @trusted @nogc nothrow pure
+{
+    if (left.keys.length != right.keys.length)
+        return false;
+    foreach (index, key; left.keys) {
+        auto slot = (cast() right).find(key);
+        if (slot is null || *slot != left.values[index])
+            return false;
+    }
+    return true;
 }
 
 // Floating values are reinterpreted, not numerically converted: their bytes
