@@ -104,6 +104,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
     // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
     allocArrayDynamic,
+    // Allocate a two-dimensional array `new T[][](rows, cols)`: an outer block of
+    // `rows` 16-byte slice descriptors, each pointing at a fresh inner block of
+    // `cols` default-filled `T` elements. a: outer descriptor offset; b: packs
+    // the inner element's default-init fill byte (high 8 bits) and element size
+    // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
+    // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
+    allocArray2D,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
     // Read the length word of the slice descriptor at frame offset b into the
@@ -114,6 +121,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // checked against the descriptor length.
     indexLoad1,
     indexLoad4,
+    // Read a 16-byte slice-descriptor element (`int[][]`'s element) at size_t
+    // index `c` of the outer descriptor at offset b into the descriptor slot at
+    // frame offset a, bounds checked against the outer length.
+    indexLoad16,
     // Write the 1- or 4-byte element slot at frame offset a into element `c`
     // (a size_t index in a frame slot) of the slice descriptor at offset b,
     // bounds checked against the descriptor length.

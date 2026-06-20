@@ -415,6 +415,14 @@ private struct Compiler {
     // Read element `index` of a dynamic-array local, or null if `index` is not
     // an access into a known dynamic-array local.
     private Operand* tryDynamicArrayIndex(IndexExp index) {
+        // `outer[i][j]` / `local[i]`: the indexed expression is (or materialises
+        // to) a known dynamic-array descriptor. This also handles `outer[i]` of
+        // an array-of-arrays, whose inner descriptor is materialised here.
+        if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1))
+            return loadDynamicArrayElement(
+                descriptor.offset, descriptor.elementType, index.e2,
+            );
+
         // `makeArray(...)[i]`: the indexed expression is an array-valued call,
         // not a known local. Materialise its descriptor into a fresh slot and
         // index that.
@@ -423,13 +431,7 @@ private struct Compiler {
                 descriptorOffset.offset, descriptorOffset.elementType, index.e2,
             );
 
-        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
-        if (descriptor is null)
-            return null;
-
-        return loadDynamicArrayElement(
-            descriptor.offset, descriptor.elementType, index.e2,
-        );
+        return null;
     }
 
     // The slice descriptor for an array-valued expression that is not a known
@@ -491,6 +493,38 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 return declaration in _dynamicArrayLocals;
+
+        // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
+        // yields an inner array. Materialise the inner descriptor into a fresh
+        // slot and treat it as a (scalar-element) dynamic array.
+        if (auto index = expression.isIndexExp)
+            return innerArrayDescriptor(index);
+
+        return null;
+    }
+
+    // `outer[i]` of an array-of-arrays local: load the 16-byte inner descriptor
+    // at index `i` into a fresh slot and return a DynamicArrayLocal over it; null
+    // if `outer` is not an array-of-arrays local.
+    private DynamicArrayLocal* innerArrayDescriptor(IndexExp index) {
+        if (auto variable = index.e1.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto outer = declaration in _dynamicArrayLocals)
+                    if (outer.elementIsArray) {
+                        const indexSlot = compileExpression(index.e2);
+                        const offset = allocateBytes(
+                            sliceDescriptorSize, size_t.sizeof,
+                        );
+                        _code ~= Instruction(
+                            Op.indexLoad16,
+                            offset,
+                            outer.offset,
+                            indexSlot.offset,
+                        );
+                        auto result = new DynamicArrayLocal;
+                        *result = DynamicArrayLocal(offset, outer.elementType);
+                        return result;
+                    }
 
         return null;
     }
@@ -658,9 +692,10 @@ private struct Compiler {
     // descriptor.
     private void compileDynamicArrayDeclaration(VarDeclaration variable) {
         const elementType = dynamicArrayElementType(variable.type);
+        const elementIsArray = dynamicArrayElementIsArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _dynamicArrayLocals[variable] =
-            DynamicArrayLocal(offset, elementType);
+            DynamicArrayLocal(offset, elementType, elementIsArray);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -670,7 +705,8 @@ private struct Compiler {
         }
 
         compileDynamicArrayInto(
-            offset, elementType, initializerExpression(initializer.exp));
+            offset, elementType, initializerExpression(initializer.exp),
+            elementIsArray);
     }
 
     // Build a dynamic-array slice descriptor at frame offset `destination`. A
@@ -680,6 +716,7 @@ private struct Compiler {
         in ushort destination,
         in ScalarType elementType,
         Expression source,
+        in bool elementIsArray = false,
     ) {
         import std.conv: text;
 
@@ -688,10 +725,11 @@ private struct Compiler {
             return;
         }
 
-        // `dest = new T[](length)`: heap-allocate a default-filled block of
-        // `length` (a runtime size_t) elements.
+        // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
+        // default-filled block of `length` (a runtime size_t) elements; the
+        // multidimensional form also fills each element with a fresh inner array.
         if (auto new_ = source.isNewExp) {
-            compileNewArrayInto(destination, elementType, new_);
+            compileNewArrayInto(destination, elementType, new_, elementIsArray);
             return;
         }
 
@@ -764,8 +802,41 @@ private struct Compiler {
         in ushort destination,
         in ScalarType elementType,
         NewExp new_,
+        in bool elementIsArray = false,
     ) {
         import std.conv: text;
+
+        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`; build
+        // an outer array of `rows` inner arrays, each of `cols` elements.
+        if (elementIsArray) {
+            if (new_.arguments is null || new_.arguments.length != 2)
+                throw new Exception(text(
+                    "Unsupported new array in bytecode core: ",
+                    expressionChars(new_),
+                ));
+
+            // Materialise rows and cols into an adjacent size_t pair the opcode
+            // reads from a single offset.
+            const dimensions = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+            const rows = compileExpression((*new_.arguments)[0]);
+            _code ~= Instruction(
+                Op.copy, dimensions, rows.offset, cast(ushort) size_t.sizeof,
+            );
+            const cols = compileExpression((*new_.arguments)[1]);
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (dimensions + size_t.sizeof),
+                cols.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.allocArray2D,
+                destination,
+                packedFill(elementType),
+                dimensions,
+            );
+            return;
+        }
 
         if (new_.arguments is null || new_.arguments.length != 1)
             throw new Exception(text(
@@ -2433,9 +2504,24 @@ private struct Compiler {
         return ResultType(scalarType(type), false);
     }
 
-    // The element scalar type of a dynamic array `T[]`.
+    // The element scalar type of a dynamic array `T[]`. For an array-of-arrays
+    // (`int[][]`) the element is itself a `T[]`; return its inner element scalar
+    // (`int`), the type used to size and index the innermost elements.
     private ScalarType dynamicArrayElementType(Type type) {
-        return scalarType(type.toBasetype.nextOf);
+        import dmd.astenums: TY;
+
+        auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tarray)
+            return scalarType(element.toBasetype.nextOf);
+        return scalarType(element);
+    }
+
+    // True when a dynamic array's element is itself a dynamic array (`int[][]`):
+    // each element is a 16-byte slice descriptor rather than a scalar.
+    private bool dynamicArrayElementIsArray(Type type) {
+        import dmd.astenums: TY;
+
+        return type.toBasetype.nextOf.toBasetype.ty == TY.Tarray;
     }
 
     // Materialise a compile-time-constant `size_t` index into a frame slot, for
@@ -2513,10 +2599,14 @@ private struct Operand {
 }
 
 // A dynamic-array local: its slice-descriptor frame offset and the element
-// scalar type (giving the element size for indexing and allocation).
+// type. `elementType` is the element scalar (for an array-of-arrays it is the
+// innermost element scalar); when `elementIsArray` is set the element is itself
+// a 16-byte slice descriptor (`int[][]`), so the outer element size is
+// `sliceDescriptorSize` and indexing yields an inner descriptor.
 private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
+    bool elementIsArray;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(

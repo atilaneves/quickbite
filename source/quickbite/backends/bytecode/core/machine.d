@@ -13,7 +13,8 @@ package(quickbite.backends.bytecode) ubyte[] run(
     ref imported!"quickbite.backends.bytecode.core.program".Program program,
     scope CompileFunction compileFunction,
 ) {
-    import quickbite.backends.bytecode.core.program: Op, size;
+    import quickbite.backends.bytecode.core.program:
+        Op, size, sliceDescriptorSize;
 
     auto stack = new ubyte[](program.functions[0].frameSize);
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
@@ -98,6 +99,33 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case allocArray2D:
+                // {rows, cols} live in an adjacent size_t pair at frame offset c;
+                // operand b packs the inner element's fill byte and size. Build
+                // the outer block of `rows` descriptors, each pointing at a fresh
+                // inner block of `cols` filled elements; root every block.
+                const rows = scalarValue!size_t(stack, base + instruction.c);
+                const cols = scalarValue!size_t(
+                    stack, base + instruction.c + size_t.sizeof,
+                );
+                const innerElementSize = instruction.b & 0xff;
+                const innerFill = cast(ubyte) (instruction.b >> 8);
+                auto outerBlock = new ubyte[](rows * sliceDescriptorSize);
+                heap ~= outerBlock;
+                foreach (row; 0 .. rows) {
+                    auto innerBlock = new ubyte[](innerElementSize * cols);
+                    innerBlock[] = innerFill;
+                    heap ~= innerBlock;
+                    writeSliceDescriptor(
+                        outerBlock, row * sliceDescriptorSize, innerBlock, cols,
+                    );
+                }
+                writeSliceDescriptor(
+                    stack, base + instruction.a, outerBlock, rows,
+                );
+                ++ip;
+                break;
+
             case nullSlice:
                 stack[
                     base + instruction.a
@@ -116,7 +144,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case indexLoad1, indexLoad4:
+            case indexLoad1, indexLoad4, indexLoad16:
                 const loadSize = elementSize(instruction.op);
                 const loadElement = elementAddress(
                     stack, base + instruction.b,
@@ -947,7 +975,9 @@ private void writeSliceDescriptorPointer(
 private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
+    import quickbite.backends.bytecode.core.program: Op, sliceDescriptorSize;
+    if (op == Op.indexLoad16)
+        return sliceDescriptorSize;
     return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
 }
 
