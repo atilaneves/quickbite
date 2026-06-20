@@ -322,6 +322,12 @@ private struct Compiler {
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
 
+        // `arr.length = n` (and other lowered assignments) arrive as a
+        // LoweredAssignExp, whose op is not `EXP.assign`, so isAssignExp misses
+        // it; it is still an AssignExp with the original lvalue in e1.
+        if (auto lowered = expression.isLoweredAssignExp)
+            return compileAssignExpression(lowered);
+
         if (auto assign = expression.isAssignExp)
             return compileAssignExpression(assign);
 
@@ -1324,6 +1330,12 @@ private struct Compiler {
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
+        // `arr.length = n`: resize the array in place, preserving existing
+        // elements and zero-filling growth. Detected by the ArrayLengthExp
+        // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
+        if (auto length = assign.e1.isArrayLengthExp)
+            return compileArrayLengthAssign(length, assign.e2);
+
         // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
         // the heap element at `index`.
         if (auto index = assign.e1.isIndexExp)
@@ -1375,6 +1387,24 @@ private struct Compiler {
     // new element appended and overwrite its descriptor. The lvalue must be a
     // known dynamic-array local (or ref parameter); the appended descriptor
     // yields the array as the expression result.
+    // `arr.length = n`: resize `arr` in place. The descriptor is reallocated to
+    // `n` elements, existing elements preserved, and growth filled with the
+    // element's default-init byte. Yields the new length as the result.
+    private Operand compileArrayLengthAssign(
+        ArrayLengthExp length,
+        Expression newLength,
+    ) {
+        const descriptor = dynamicArrayDescriptor(length.e1);
+        const lengthSlot = compileExpression(newLength);
+        _code ~= Instruction(
+            Op.setArrayLength,
+            descriptor.offset,
+            packedFill(descriptor.elementType),
+            lengthSlot.offset,
+        );
+        return Operand(lengthSlot.offset, ScalarType.ulong_);
+    }
+
     private Operand compileAppendElement(CatElemAssignExp append) {
         // `outer[i] ~= x` for an array-of-arrays element: the inner descriptor is
         // materialised into a fresh slot, so the reallocated descriptor must be

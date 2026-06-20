@@ -111,6 +111,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
     // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
     allocArray2D,
+    // Resize the dynamic array whose descriptor is at frame offset a to the
+    // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
+    // block, copy the `min(oldLength, newLength)` existing elements, fill any
+    // growth with the element's default-init byte, root the block, and overwrite
+    // the descriptor with {newPtr, newLength}. Operand b packs the fill byte
+    // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
+    setArrayLength,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
     // Read the length word of the slice descriptor at frame offset b into the

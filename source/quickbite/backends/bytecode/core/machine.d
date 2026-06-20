@@ -126,6 +126,17 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case setArrayLength:
+                heap ~= resizeArray(
+                    stack,
+                    base + instruction.a,
+                    instruction.b & 0xff,
+                    cast(ubyte) (instruction.b >> 8),
+                    scalarValue!size_t(stack, base + instruction.c),
+                );
+                ++ip;
+                break;
+
             case nullSlice:
                 stack[
                     base + instruction.a
@@ -1091,6 +1102,32 @@ private ubyte[] appendElement(
         stack[elementOffset .. elementOffset + elementSize];
 
     writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
+    return block;
+}
+
+// Resize the dynamic array at `descriptorOffset` to `newLength` elements
+// (`arr.length = n`). A fresh block is allocated, the `min(oldLength, newLength)`
+// existing elements copied in, and any growth filled with the element's
+// default-init byte; the descriptor is overwritten with {newPtr, newLength}.
+// Returns the new block so the caller can root it in `heap`.
+private ubyte[] resizeArray(
+    ref ubyte[] stack,
+    in size_t descriptorOffset,
+    in uint elementSize,
+    in ubyte fill,
+    in size_t newLength,
+) @trusted {
+    import std.algorithm.comparison: min;
+
+    const oldLength = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
+    const pointer = scalarValue!size_t(stack, descriptorOffset);
+
+    auto block = new ubyte[](newLength * elementSize);
+    block[] = fill;
+    const keptBytes = min(oldLength, newLength) * elementSize;
+    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
+
+    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
     return block;
 }
 
