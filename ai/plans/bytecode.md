@@ -903,6 +903,16 @@ switch; `Bytecode` still defaults to the old core):
   `evaluatesRuntimePowFloatInputs` block was deliberately not promoted
   because it lacks a `SystemLinker` oracle due to the dmd-as-a-library
   template-emission issue recorded in `ai/plans/dmd-backend.md`.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/arrays.d` blocks,
+  completing `arrays.d` (module order 8) on the new core (53/53 promoted,
+  see the arrays analysis section). This is the native-layout memory model
+  realised: dynamic arrays as `{ptr, length}` slice descriptors over GC-heap
+  blocks with real element addresses, static-array inline storage, slices and
+  pointers with true write-through aliasing (the cases a snapshot model cannot
+  pass), append/concat/`dup`/`new`/resize/element-wise ops, and `int[int]`
+  associative arrays via druntime-hook call-site interception against a
+  VM-owned map table. The 5 `Ctfe, Interpreter`-only CTFE-divergence blocks
+  remain unpromoted (no `SystemLinker` oracle).
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -912,16 +922,18 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), and `math.d` (7) are now complete on the new core
-(see Rewrite Coverage State). Continue with `arrays.d` (module order 8),
-promoting one named behaviour or one tight failure-message family at a time.
-The float/builtin/string-slice machinery earned for `eval.d` and `math.d`,
-logical/comparison/short-circuit machinery earned for `logic.d`, narrow
-throw/result plumbing earned for `results.d`, and the comparison-operator /
+(5), `diagnostics.d` (6), `math.d` (7), and `arrays.d` (8) are now complete on
+the new core (see Rewrite Coverage State). Continue with `structs.d` (module
+order 9), promoting one named behaviour or one tight failure-message family at
+a time. The float/builtin/string-slice machinery earned for `eval.d` and
+`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
+narrow throw/result plumbing earned for `results.d`, the comparison-operator /
 ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d` are now available to the later modules. Array and slice
-behaviour should still be earned directly on the typed-frame core, not through
-old-core promotions.
+`diagnostics.d`, and the native-layout array/slice/pointer/AA machinery earned
+for `arrays.d` are now available to the later modules. Struct behaviour should
+still be earned directly on the typed-frame core, not through old-core
+promotions; the DMD field-offset/native-layout discipline used for arrays is
+the same authority structs need.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
@@ -2218,3 +2230,26 @@ Note: the blocks listed as out-of-scope above are the `Ctfe,
 Interpreter`-only instantiations; the `BytecodeNewCore, SystemLinker,
 LLVMJit` instantiations of the same fixture are already promoted and
 are included in the failing-test counts above.
+
+**Completed implementation:** All 53 promoted `arrays.d` tests pass on
+`BytecodeNewCore` (focused run `53 test(s) run, 0 failed`; full suite green
+under `--random`). The new core now models dynamic arrays as native
+`{void* ptr, size_t length}` slice descriptors (16 bytes) in frame memory
+backed by GC heap blocks rooted in the machine's `heap` table, with element
+addresses computed as real `ptr + index*elemSize` so slice/pointer aliasing
+and write-through are real memory by construction. Earned in dependency-ordered
+sub-slices, each committed green: static-array inline storage; `size_t`
+compound assignment; dynamic-array descriptor + literals + index + `.length`;
+sub-slicing + aliasing + bounds diagnostics; slice range-assignment + overlap
+(`"Range violation"`) + array `==` operand rendering; array returns,
+parameters, and call-result indexing; element append `~=` (reallocating, with
+`ref T[]` writeback); concat `~` and `.dup`/`.idup`; `new T[](n)`,
+multidimensional `new`, jagged rows, `.length =` resize, and element-wise
+`dest[] = a[] + b[]`; `.ptr`/`&arr[i]`, deref, pointer arithmetic (DMD
+pre-scales the integer operand), pointer indexing/slicing, and pointer
+comparisons/relations; and associative arrays (`int[int]`) via call-site
+interception of the druntime AA hooks (`_d_aaGetY`, `_d_aaGetRvalueX`,
+`_d_aaIn`, `_d_aaDel`, `_d_aaLen`, `_d_aaEqual`, `object.dup`/`keys`/`values`)
+against a VM-owned map table referenced by an 8-byte handle. The 5 `Ctfe,
+Interpreter`-only CTFE-divergence blocks remain unpromoted (no `SystemLinker`
+oracle).
