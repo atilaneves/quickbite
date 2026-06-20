@@ -4851,10 +4851,14 @@ private string structLiteralName(
 }
 
 
+// @trusted: under `-boundscheck=off` (the optimised benchmark build) dmd's
+// `Array.opIndex` is `@system` — it returns `data.ptr[i]` with no bounds check,
+// so it is only `@safe`-inferred when bounds checks are on. The guard above
+// validates `index` against `fields.length`, so the access is in bounds.
 private imported!"dmd.declaration".VarDeclaration structLiteralField(
     imported!"dmd.expression".StructLiteralExp literal,
     in size_t index,
-) @safe {
+) @trusted {
     if (literal.sd is null || index >= literal.sd.fields.length)
         return null;
 
