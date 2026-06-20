@@ -777,9 +777,17 @@ private struct Compiler {
         _code ~= Instruction(
             Op.allocArrayDynamic,
             destination,
-            cast(ushort) size(elementType),
+            packedFill(elementType),
             length.offset,
         );
+    }
+
+    // Pack the element type's default-init fill byte (high 8 bits) and element
+    // size (low 8 bits) for `allocArrayDynamic`. `char.init` is 0xFF; every
+    // other element type the core lowers default-inits to all-zero bytes.
+    private ushort packedFill(in ScalarType elementType) @safe pure {
+        const fill = elementType == ScalarType.char_ ? 0xff : 0x00;
+        return cast(ushort) ((fill << 8) | size(elementType));
     }
 
     // The frame offset of a 16-byte slice descriptor denoting the value of an
@@ -1113,10 +1121,14 @@ private struct Compiler {
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
 
-        throw new Exception(text(
+        return compileIntBinaryResult(
+            subtract,
+            lhs,
+            rhs,
+            Op.subInt4,
+            ScalarType.int_,
             "Unsupported subtraction in bytecode core: ",
-            expressionChars(subtract),
-        ));
+        );
     }
 
     private Operand compileNegateExpression(NegExp negate) {

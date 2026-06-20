@@ -79,13 +79,18 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case allocArrayDynamic:
-                // The length is a runtime size_t in a frame slot; allocate a
-                // fresh zero-filled block of that many elements, root it, and
-                // write the descriptor.
+                // The length is a runtime size_t in a frame slot; operand b packs
+                // the default-init fill byte (high 8 bits) and the element size
+                // (low 8 bits). Allocate a fresh block of that many elements,
+                // fill it with the default byte, root it, and write the
+                // descriptor.
                 const dynamicLength =
                     scalarValue!size_t(stack, base + instruction.c);
+                const dynamicElementSize = instruction.b & 0xff;
+                const dynamicFill = cast(ubyte) (instruction.b >> 8);
                 auto dynamicBlock =
-                    new ubyte[](instruction.b * dynamicLength);
+                    new ubyte[](dynamicElementSize * dynamicLength);
+                dynamicBlock[] = dynamicFill;
                 heap ~= dynamicBlock;
                 writeSliceDescriptor(
                     stack, base + instruction.a, dynamicBlock, dynamicLength,
@@ -274,6 +279,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = sum;
+                ++ip;
+                break;
+
+            case subInt4:
+                const ubyte[int.sizeof] difference = scalarBytes(
+                    scalarValue!int(stack, base + instruction.b) -
+                    scalarValue!int(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = difference;
                 ++ip;
                 break;
 

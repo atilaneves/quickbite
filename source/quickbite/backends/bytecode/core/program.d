@@ -97,11 +97,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // descriptor {ptr, length} into the frame: a: descriptor offset, b: element
     // size, c: element count (the length).
     allocArray,
-    // Allocate `b * length` bytes of zero-filled VM-owned writable heap, where
-    // `length` is a size_t read from frame offset c, then write the slice
-    // descriptor {ptr, length} into the frame at offset a (a: descriptor offset,
-    // b: element size, c: frame offset of the size_t length). Backs
-    // `new T[](runtimeLength)`.
+    // Allocate `elementSize * length` bytes of VM-owned writable heap, filled
+    // with the element type's default-init byte, where `length` is a size_t read
+    // from frame offset c, then write the slice descriptor {ptr, length} into the
+    // frame at offset a. Operand b packs the fill byte in its high 8 bits and the
+    // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
+    // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
     allocArrayDynamic,
     // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
     nullSlice,
@@ -169,6 +170,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
