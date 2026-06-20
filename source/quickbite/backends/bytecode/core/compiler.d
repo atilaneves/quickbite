@@ -983,6 +983,15 @@ private struct Compiler {
         in ScalarType elementType,
         SliceExp slice,
     ) {
+        // `p[lo .. hi]` over a pointer: build the descriptor directly from the
+        // raw pointer value and the {lo, hi} element bounds, sharing the heap
+        // block `p` points into. The upper bound is always present for a pointer
+        // slice (DMD requires it).
+        if (isPointerType(slice.e1.type)) {
+            compilePointerSliceInto(destination, slice);
+            return;
+        }
+
         const descriptor = dynamicArrayDescriptor(slice.e1);
 
         // Materialise lo and hi into adjacent size_t slots; the opcode reads
@@ -1009,6 +1018,36 @@ private struct Compiler {
             subSliceOp(size(elementType)),
             destination,
             descriptor.offset,
+            bounds,
+        );
+    }
+
+    // `p[lo .. hi]` over a pointer: write a slice descriptor
+    // {p + lo * elementSize, hi - lo} at `destination`, sharing the heap block
+    // `p` addresses. lo and hi are element indices (not pre-scaled), compiled
+    // into an adjacent {lo, hi} size_t pair the pointerSlice opcode reads.
+    private void compilePointerSliceInto(
+        in ushort destination,
+        SliceExp slice,
+    ) {
+        const pointer = compileExpression(slice.e1);
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(Op.copy, bounds, lo, cast(ushort) size_t.sizeof);
+        const hi = compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            pointerSliceOp(size(pointer.pointerElement)),
+            destination,
+            pointer.offset,
             bounds,
         );
     }
