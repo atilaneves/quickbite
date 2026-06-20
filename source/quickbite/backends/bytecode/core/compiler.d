@@ -32,12 +32,15 @@ private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
         AssertDiagnostic, CompiledFunction, Instruction, Op, Program,
-        RefParameter, ResultType, ScalarType, isSigned, size, stringSliceSize;
+        RefParameter, ResultType, ScalarType, isSigned, size,
+        sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, AssertExp, AssignExp, BinExp, CallExp, CastExp, CmpExp,
-        DivExp, Expression, LogicalExp, NegExp, NewExp, NotExp, OrExp, RealExp,
-        StringExp;
+        AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
+        AssocArrayLiteralExp, AssertExp,
+        AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
+        CondExp, DivExp, Expression, IndexExp, LogicalExp, MulExp, NegExp,
+        NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -49,9 +52,25 @@ private struct Compiler {
     private uint _frameOffset;
     private ushort[VarDeclaration] _locals;
     private bool[VarDeclaration] _stringLocals; // locals holding a string slice
+    // Locals whose slot is a static array `T[N]` stored inline in the frame;
+    // the value records the slot offset for indexing and block copies.
+    private ushort[VarDeclaration] _staticArrayLocals;
+    // Locals whose slot holds a dynamic-array slice descriptor {ptr, length};
+    // the value records the slot offset and the element scalar type, giving the
+    // element size for indexing and heap allocation.
+    private DynamicArrayLocal[VarDeclaration] _dynamicArrayLocals;
+    // Locals whose slot holds a raw `size_t` pointer value (`T* p`); the value
+    // records the pointed-at element scalar, giving the stride for arithmetic,
+    // indexing, dereference, and slicing.
+    private ScalarType[VarDeclaration] _pointerLocals;
+    // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
+    // a 1-based index into the machine's VM-owned map table, 0 until created.
+    private bool[VarDeclaration] _assocArrayLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
+    private ResultType _currentReturnType; // result type of the function whose
+                                           // body is currently being compiled
 
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
@@ -63,13 +82,34 @@ private struct Compiler {
         _code = null;
         _locals = null;
         _stringLocals = null;
+        _staticArrayLocals = null;
+        _dynamicArrayLocals = null;
+        _pointerLocals = null;
+        _assocArrayLocals = null;
 
+        import dmd.astenums: TY;
+
+        _currentReturnType = _program.functions[index].returnType;
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
         if (function_.parameters !is null)
-            foreach (parameterIndex; 0 .. function_.parameters.length)
-                _locals[(*function_.parameters)[parameterIndex]] =
-                    layout.offsets[parameterIndex];
+            foreach (parameterIndex; 0 .. function_.parameters.length) {
+                auto parameter = (*function_.parameters)[parameterIndex];
+                const offset = layout.offsets[parameterIndex];
+
+                // A non-string dynamic-array parameter is a slice descriptor,
+                // tracked like a dynamic-array local rather than a scalar slot.
+                if (parameter.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(parameter.type))
+                {
+                    _dynamicArrayLocals[parameter] = DynamicArrayLocal(
+                        offset, dynamicArrayElementType(parameter.type),
+                    );
+                    continue;
+                }
+
+                _locals[parameter] = offset;
+            }
 
         compileStatement(function_.fbody);
         // The fall-through return of a void body; unreachable after an
@@ -122,6 +162,14 @@ private struct Compiler {
         }
 
         if (auto return_ = statement.isReturnStatement) {
+            if (_currentReturnType.isArray) {
+                const descriptor = arrayDescriptorOffset(
+                    _currentReturnType.elementType, return_.exp,
+                );
+                _code ~= Instruction(Op.ret, descriptor);
+                return;
+            }
+
             const operand = compileExpression(return_.exp);
             _code ~= Instruction(Op.ret, operand.offset);
             return;
@@ -129,6 +177,11 @@ private struct Compiler {
 
         if (auto if_ = statement.isIfStatement) {
             compileIfStatement(if_);
+            return;
+        }
+
+        if (auto for_ = statement.isForStatement) {
+            compileForStatement(for_);
             return;
         }
 
@@ -160,6 +213,30 @@ private struct Compiler {
             compileStatement(if_.elsebody);
 
         patchJump(endJump);
+    }
+
+    // A `for (init; condition; increment) body` loop, the lowering of `foreach`
+    // over a dynamic array. Compile the init once, then loop: test the condition
+    // and exit when false, run the body, run the increment, and jump back.
+    private void compileForStatement(
+        imported!"dmd.statement".ForStatement for_,
+    ) {
+        if (for_._init !is null)
+            compileStatement(for_._init);
+
+        const conditionIndex = _code.length;
+        const exitJump = for_.condition is null
+            ? size_t.max
+            : emitJumpIfFalse(compileExpression(for_.condition));
+
+        if (for_._body !is null)
+            compileStatement(for_._body);
+        if (for_.increment !is null)
+            compileExpression(for_.increment);
+
+        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+        if (exitJump != size_t.max)
+            patchJump(exitJump);
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
@@ -237,6 +314,10 @@ private struct Compiler {
                 if (auto existing = declaration in _locals) {
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
+                    if (auto element = declaration in _pointerLocals)
+                        return Operand(
+                            *existing, ScalarType.ulong_, false, true, *element,
+                        );
                     return Operand(*existing, scalarType(declaration.type));
                 }
 
@@ -263,6 +344,21 @@ private struct Compiler {
             return compileExpression(comma.e2);
         }
 
+        // A `null` pointer literal (the `(bounds, null)` false branch of `m[k]`):
+        // an 8-byte zero pointer slot. The throw in the comma's first operand
+        // aborts before this is read.
+        if (expression.isNullExp !is null) {
+            const offset =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.loadConstant, offset, constantIndex(0),
+                cast(ushort) size_t.sizeof,
+            );
+            return Operand(
+                offset, ScalarType.ulong_, false, true, ScalarType.int_,
+            );
+        }
+
         if (auto cast_ = expression.isCastExp)
             return compileCastExpression(cast_);
 
@@ -271,6 +367,9 @@ private struct Compiler {
 
         if (auto or = expression.isOrExp)
             return compileOrExpression(or);
+
+        if (auto multiply = expression.isMulExp)
+            return compileMultiplyExpression(multiply);
 
         if (auto divide = expression.isDivExp)
             return compileDivideExpression(divide);
@@ -284,11 +383,30 @@ private struct Compiler {
         if (auto addAssign = expression.isAddAssignExp)
             return compileAddAssignExpression(addAssign);
 
+        // `arr.length = n` (and other lowered assignments) arrive as a
+        // LoweredAssignExp, whose op is not `EXP.assign`, so isAssignExp misses
+        // it; it is still an AssignExp with the original lvalue in e1.
+        if (auto lowered = expression.isLoweredAssignExp)
+            return compileAssignExpression(lowered);
+
         if (auto assign = expression.isAssignExp)
             return compileAssignExpression(assign);
 
+        // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
+        // `concatenateElemAssign`); detect by op, not name. Whole-array
+        // `arr ~= other` (op `concatenateAssign`) is a different node and is
+        // not handled here.
+        if (auto append = expression.isCatElemAssignExp)
+            return compileAppendElement(append);
+
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
+
+        // `c ? t : f`: DMD's `m[k]` lowering produces `slot ? slot : (bounds,
+        // null)`, a pointer-valued conditional whose false branch raises "Range
+        // violation". Compile it as a branch writing one slot on both paths.
+        if (auto conditional = expression.isCondExp)
+            return compileConditionalExpression(conditional);
 
         if (auto call = expression.isCallExp)
             return compileCall(call);
@@ -298,10 +416,210 @@ private struct Compiler {
             return Operand.init;
         }
 
+        if (auto post = expression.isPostExp)
+            return compilePostIncrement(post);
+
+        if (auto length = expression.isArrayLengthExp)
+            return compileArrayLength(length);
+
+        if (auto address = expression.isAddrExp)
+            if (auto pointer = tryAddressOfElement(address))
+                return *pointer;
+
+        if (auto deref = expression.isPtrExp)
+            return compilePointerDereference(deref);
+
+        if (auto index = expression.isIndexExp) {
+            if (auto element = tryPointerIndex(index))
+                return *element;
+            if (auto element = tryDynamicArrayIndex(index))
+                return *element;
+            return compileStaticArrayIndex(index);
+        }
+
         throw new Exception(text(
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // Read an element of a static array at a compile-time-constant index. The
+    // element lives at `slot + index * elementSize` inside the inline block;
+    // a scalar element is returned directly, a sub-array element yields a
+    // static-array operand for further indexing (`matrix[0][1]`).
+    private Operand compileStaticArrayIndex(IndexExp index) {
+        const located = locateStaticArrayElement(index);
+        return Operand(located.offset, located.type);
+    }
+
+    // `i++` on an integer local: copy the old value to the result slot, then
+    // add `e2` (the increment) to the lvalue's slot. Scoped to integer
+    // local-variable lvalues, matching the compound-assignment path.
+    private Operand compilePostIncrement(PostExp post) {
+        import std.conv: text;
+
+        auto variable = post.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto slot = declaration is null ? null : declaration in _locals;
+        const lvalueType = slot is null
+            ? ScalarType.void_
+            : scalarType(declaration.type);
+        if (slot is null || !isIntegerScalar(lvalueType))
+            throw new Exception(text(
+                "Unsupported post-increment in bytecode core: ",
+                expressionChars(post),
+            ));
+
+        const result = allocate(lvalueType);
+        _code ~= Instruction(
+            Op.copy, result, *slot, cast(ushort) size(lvalueType),
+        );
+
+        const increment = compileExpression(post.e2);
+        const addOp = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_
+                ? Op.addInt8
+                : Op.addInt4;
+        _code ~= Instruction(addOp, *slot, *slot, increment.offset);
+        return Operand(result, lvalueType);
+    }
+
+    // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
+    // slot.
+    private Operand compileArrayLength(ArrayLengthExp length) {
+        const descriptor = dynamicArrayDescriptor(length.e1);
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
+        return Operand(offset, ScalarType.ulong_);
+    }
+
+    // Read element `index` of a dynamic-array local, or null if `index` is not
+    // an access into a known dynamic-array local.
+    private Operand* tryDynamicArrayIndex(IndexExp index) {
+        // `outer[i][j]` / `local[i]`: the indexed expression is (or materialises
+        // to) a known dynamic-array descriptor. This also handles `outer[i]` of
+        // an array-of-arrays, whose inner descriptor is materialised here.
+        if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1))
+            return loadDynamicArrayElement(
+                descriptor.offset, descriptor.elementType, index.e2,
+            );
+
+        // `makeArray(...)[i]`: the indexed expression is an array-valued call,
+        // not a known local. Materialise its descriptor into a fresh slot and
+        // index that.
+        if (auto descriptorOffset = indexedArrayDescriptor(index.e1))
+            return loadDynamicArrayElement(
+                descriptorOffset.offset, descriptorOffset.elementType, index.e2,
+            );
+
+        return null;
+    }
+
+    // The slice descriptor for an array-valued expression that is not a known
+    // dynamic-array local (today, an array-returning call), materialised into a
+    // fresh frame slot; null otherwise.
+    private DynamicArrayLocal* indexedArrayDescriptor(Expression expression) {
+        if (dynamicArrayDescriptorOrNull(expression) !is null)
+            return null;
+
+        if (!isDynamicArrayArgument(expression))
+            return null;
+
+        const elementType = dynamicArrayElementType(expression.type);
+        const offset = arrayDescriptorOffset(elementType, expression);
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(offset, elementType);
+        return result;
+    }
+
+    // Read element `indexExpr` of the dynamic-array descriptor at frame offset
+    // `descriptorOffset`, returning the loaded scalar element.
+    private Operand* loadDynamicArrayElement(
+        in ushort descriptorOffset,
+        in ScalarType elementType,
+        Expression indexExpr,
+    ) {
+        const indexSlot = compileExpression(indexExpr);
+        const elementSize = size(elementType);
+        const offset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize),
+            offset,
+            descriptorOffset,
+            indexSlot.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(offset, elementType);
+        return result;
+    }
+
+    // The slice descriptor a dynamic-array expression denotes, throwing if it is
+    // not a known dynamic-array local.
+    private DynamicArrayLocal dynamicArrayDescriptor(Expression expression) {
+        import std.conv: text;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(expression);
+        if (descriptor is null)
+            throw new Exception(text(
+                "Unsupported dynamic array access in bytecode core: ",
+                expressionChars(expression),
+            ));
+        return *descriptor;
+    }
+
+    private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
+        Expression expression,
+    ) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return declaration in _dynamicArrayLocals;
+
+        // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
+        // yields an inner array. Materialise the inner descriptor into a fresh
+        // slot and treat it as a (scalar-element) dynamic array.
+        if (auto index = expression.isIndexExp)
+            return innerArrayDescriptor(index);
+
+        // An array-returning call (`m.keys` / `m.values`): materialise its
+        // 16-byte slice-descriptor result into a fresh slot.
+        if (expression.isCallExp !is null && isDynamicArrayArgument(expression)) {
+            const elementType = dynamicArrayElementType(expression.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileDynamicArrayInto(offset, elementType, expression);
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(offset, elementType);
+            return result;
+        }
+
+        return null;
+    }
+
+    // `outer[i]` of an array-of-arrays local: load the 16-byte inner descriptor
+    // at index `i` into a fresh slot and return a DynamicArrayLocal over it; null
+    // if `outer` is not an array-of-arrays local.
+    private DynamicArrayLocal* innerArrayDescriptor(IndexExp index) {
+        if (auto variable = index.e1.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto outer = declaration in _dynamicArrayLocals)
+                    if (outer.elementIsArray) {
+                        const indexSlot = compileExpression(index.e2);
+                        const offset = allocateBytes(
+                            sliceDescriptorSize, size_t.sizeof,
+                        );
+                        _code ~= Instruction(
+                            Op.indexLoad16,
+                            offset,
+                            outer.offset,
+                            indexSlot.offset,
+                        );
+                        auto result = new DynamicArrayLocal;
+                        *result = DynamicArrayLocal(offset, outer.elementType);
+                        return result;
+                    }
+
+        return null;
     }
 
     // A string literal lives in the read-only data segment; the frame slot
@@ -330,8 +648,63 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_, true);
     }
 
-    private void compileVariableDeclaration(VarDeclaration variable) {
+    // Write a compile-time string into the read-only data segment and emit the
+    // slice descriptor, returning the descriptor's frame offset. Used for
+    // synthesised diagnostic messages (`throwString`).
+    private ushort compileStringLiteralBytes(in string text_) {
         import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) text_;
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length > ushort.max)
+            throw new Exception(text(
+                "String literal too large for bytecode core: ", text_,
+            ));
+        _program.data ~= bytes;
+
+        const offset = allocateBytes(stringSliceSize, 4);
+        _code ~= Instruction(
+            Op.loadStringSlice,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) bytes.length,
+        );
+        return offset;
+    }
+
+    private void compileVariableDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        // A static array `T[N]` is a value type stored inline in the frame at
+        // its DMD-computed size and alignment; no heap, no slice descriptor.
+        if (variable.type.toBasetype.ty == TY.Tsarray) {
+            compileStaticArrayDeclaration(variable);
+            return;
+        }
+
+        // A non-string dynamic array `T[]` holds a 16-byte slice descriptor
+        // {ptr, length}; its backing memory lives on the VM-owned heap.
+        if (variable.type.toBasetype.ty == TY.Tarray &&
+            !isStringType(variable.type)) {
+            compileDynamicArrayDeclaration(variable);
+            return;
+        }
+
+        // An associative array `T[K]` holds an 8-byte handle into the machine's
+        // VM-owned map table; `int[int]` is the only form the core lowers.
+        if (variable.type.toBasetype.ty == TY.Taarray) {
+            compileAssocArrayDeclaration(variable);
+            return;
+        }
+
+        // A pointer local `T* p` holds a raw `size_t` address into VM-owned
+        // heap; allocate an 8-byte slot, compile the pointer-valued initializer,
+        // and copy its address word in.
+        if (isPointerType(variable.type)) {
+            compilePointerDeclaration(variable);
+            return;
+        }
 
         // A `string` local holds an 8-byte slice descriptor (data offset and
         // length), not a scalar; allocate the descriptor width and copy the
@@ -362,8 +735,592 @@ private struct Compiler {
         );
     }
 
+    // A pointer local `T* p` holds a raw `size_t` address in an 8-byte frame
+    // slot. The initializer is a pointer-valued expression (`arr.ptr`,
+    // `&arr[i]`, `p + n`, ...); copy its address word into the slot and record
+    // the pointed-at element scalar for later stride and dereference.
+    private void compilePointerDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(text(
+                "Unsupported initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        const pointer =
+            compileExpression(initializerExpression(initializer.exp));
+        if (!pointer.isPointer)
+            throw new Exception(text(
+                "Unsupported pointer initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        _locals[variable] = offset;
+        _pointerLocals[variable] = pointer.pointerElement;
+        _code ~= Instruction(
+            Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
+        );
+    }
+
+    // A static array `T[N]` occupies `Type.size()` inline frame bytes at its
+    // DMD-computed alignment. The frame begins zeroed, so default
+    // initialization (`source[] = 0`) emits nothing; a string literal or a
+    // copy from another static array copies the bytes into the inline slot.
+    private void compileStaticArrayDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const totalSize = cast(uint) staticArraySize(variable.type);
+        const offset = allocateBytes(totalSize, staticArrayAlign(variable.type));
+        // A static array is tracked only in `_staticArrayLocals`, not
+        // `_locals`: the scalar VarExp/assignment paths must not treat its
+        // inline block as a scalar slot.
+        _staticArrayLocals[variable] = offset;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(text(
+                "Unsupported initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        // DMD default-initializes a static array local with `variable[] = 0`
+        // (a blit whose target is a whole-array slice). The frame slot is
+        // already zero, so this needs no code.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e1.isSliceExp !is null && blit.e2.isIntegerExp !is null)
+                return;
+
+        auto source = initializerExpression(initializer.exp);
+
+        // `char[N] c = "..."`: copy the literal bytes directly into the inline
+        // slot rather than building a slice descriptor.
+        if (auto string_ = stringLiteralOf(source)) {
+            loadStaticString(offset, totalSize, string_);
+            return;
+        }
+
+        // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
+        // from the source static array's inline slot into the destination's.
+        if (auto sourceOffset = staticArrayOffsetOf(source)) {
+            _code ~= Instruction(
+                Op.copy,
+                offset,
+                *sourceOffset,
+                cast(ushort) totalSize,
+            );
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported static array initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
+    }
+
+    // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
+    // the literal length to match N, so the copy fills the whole slot.
+    private void loadStaticString(
+        in ushort offset,
+        in uint totalSize,
+        StringExp string_,
+    ) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+        import std.conv: text;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const dataOffset = _program.data.length;
+        if (dataOffset > ushort.max || bytes.length != totalSize)
+            throw new Exception(text(
+                "Unsupported static char-array literal in bytecode core: ",
+                expressionChars(string_),
+            ));
+        _program.data ~= bytes;
+
+        _code ~= Instruction(
+            Op.loadStaticArray,
+            offset,
+            cast(ushort) dataOffset,
+            cast(ushort) totalSize,
+        );
+    }
+
+    // A dynamic array `T[]` local holds a 16-byte slice descriptor in the
+    // frame. With no initializer (or a `null` one) it starts as a null slice;
+    // an array literal initializer heap-allocates backing memory and writes the
+    // descriptor.
+    private void compileDynamicArrayDeclaration(VarDeclaration variable) {
+        const elementType = dynamicArrayElementType(variable.type);
+        const elementIsArray = dynamicArrayElementIsArray(variable.type);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _dynamicArrayLocals[variable] =
+            DynamicArrayLocal(offset, elementType, elementIsArray);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            _code ~= Instruction(Op.nullSlice, offset);
+            return;
+        }
+
+        compileDynamicArrayInto(
+            offset, elementType, initializerExpression(initializer.exp),
+            elementIsArray);
+    }
+
+    // An associative array `int[int]` local holds an 8-byte handle into the
+    // machine's VM-owned map table. Create a fresh map and, for a literal
+    // initializer, insert each entry (later duplicate keys overwrite earlier).
+    private void compileAssocArrayDeclaration(VarDeclaration variable) {
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _locals[variable] = offset;
+        _assocArrayLocals[variable] = true;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null) {
+            _code ~= Instruction(Op.aaNew, offset);
+            return;
+        }
+
+        compileAssocArrayInto(
+            offset, initializerExpression(initializer.exp),
+        );
+    }
+
+    // Build an associative-array handle at frame offset `destination`: a fresh
+    // map populated from a `[k: v, ...]` literal (or a `.dup` of another map).
+    private void compileAssocArrayInto(
+        in ushort destination,
+        Expression source,
+    ) {
+        import std.conv: text;
+
+        // `int[int] m;` (or `m = null`): an empty map.
+        if (source.isNullExp !is null) {
+            _code ~= Instruction(Op.aaNew, destination);
+            return;
+        }
+
+        // `dest = src.dup`: the `object.dup` hook yields a fresh handle; copy it
+        // into the destination slot.
+        if (source.isCallExp !is null) {
+            const handle = compileExpression(source);
+            _code ~= Instruction(
+                Op.copy, destination, handle.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            return;
+        }
+
+        auto literal = source.isAssocArrayLiteralExp;
+        if (literal is null)
+            throw new Exception(text(
+                "Unsupported associative array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        _code ~= Instruction(Op.aaNew, destination);
+        foreach (index; 0 .. literal.keys.length) {
+            const key = compileExpression((*literal.keys)[index]);
+            const value = compileExpression((*literal.values)[index]);
+            _code ~= Instruction(
+                Op.aaInsert, destination, key.offset, value.offset,
+            );
+        }
+    }
+
+    // Build a dynamic-array slice descriptor at frame offset `destination`. A
+    // `null` literal yields a null slice; an array literal heap-allocates a
+    // block of `count` elements and stores each element into it.
+    private void compileDynamicArrayInto(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+        in bool elementIsArray = false,
+    ) {
+        import std.conv: text;
+
+        if (source.isNullExp) {
+            _code ~= Instruction(Op.nullSlice, destination);
+            return;
+        }
+
+        // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
+        // default-filled block of `length` (a runtime size_t) elements; the
+        // multidimensional form also fills each element with a fresh inner array.
+        if (auto new_ = source.isNewExp) {
+            compileNewArrayInto(destination, elementType, new_, elementIsArray);
+            return;
+        }
+
+        // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
+        // a fresh heap block, so mutating either side leaves the other intact.
+        if (auto duplicate = tryArrayDuplication(source)) {
+            compileArrayDuplication(destination, elementType, duplicate);
+            return;
+        }
+
+        // `dest = src[lo .. hi]` forms a sub-slice sharing the source's
+        // backing memory, so writes through `dest` propagate to the original.
+        if (auto slice = source.isSliceExp) {
+            compileSliceInto(destination, elementType, slice);
+            return;
+        }
+
+        // `dest = a ~ b` (concatenation): build a fresh heap block holding both
+        // operands' elements, leaving the originals untouched.
+        if (auto cat = source.isCatExp) {
+            compileCatInto(destination, elementType, cat);
+            return;
+        }
+
+        // `dest = makeArray(...)` copies the call's 16-byte slice-descriptor
+        // result into the destination slot; the backing memory is shared.
+        if (auto call = source.isCallExp) {
+            const result = compileCall(call);
+            _code ~= Instruction(
+                Op.copy,
+                destination,
+                result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
+        auto literal = source.isArrayLiteralExp;
+        if (literal is null)
+            throw new Exception(text(
+                "Unsupported dynamic array initializer in bytecode core: ",
+                expressionChars(source),
+            ));
+
+        const count = literal.elements is null ? 0 : literal.elements.length;
+
+        // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
+        // array, stored as a 16-byte descriptor. Build each inner array into a
+        // fresh descriptor slot and store it into the outer block.
+        if (elementIsArray) {
+            _code ~= Instruction(
+                Op.allocArray,
+                destination,
+                cast(ushort) sliceDescriptorSize,
+                cast(ushort) count,
+            );
+
+            foreach (elementIndex; 0 .. count) {
+                const inner =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                compileDynamicArrayInto(
+                    inner, elementType, (*literal.elements)[elementIndex],
+                );
+                const index = compileSizeConstant(elementIndex);
+                _code ~= Instruction(
+                    Op.indexStore16,
+                    inner,
+                    destination,
+                    index,
+                );
+            }
+            return;
+        }
+
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            const value = compileExpression((*literal.elements)[elementIndex]);
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value.offset,
+                destination,
+                index,
+            );
+        }
+    }
+
+    // `dest = new T[](length)`: evaluate the runtime length into a size_t slot
+    // and allocate a default-filled heap block of that many elements, writing
+    // the descriptor to `destination`. The length is `new_.arguments[0]`.
+    private void compileNewArrayInto(
+        in ushort destination,
+        in ScalarType elementType,
+        NewExp new_,
+        in bool elementIsArray = false,
+    ) {
+        import std.conv: text;
+
+        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`; build
+        // an outer array of `rows` inner arrays, each of `cols` elements.
+        if (elementIsArray) {
+            if (new_.arguments is null || new_.arguments.length != 2)
+                throw new Exception(text(
+                    "Unsupported new array in bytecode core: ",
+                    expressionChars(new_),
+                ));
+
+            // Materialise rows and cols into an adjacent size_t pair the opcode
+            // reads from a single offset.
+            const dimensions = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+            const rows = compileExpression((*new_.arguments)[0]);
+            _code ~= Instruction(
+                Op.copy, dimensions, rows.offset, cast(ushort) size_t.sizeof,
+            );
+            const cols = compileExpression((*new_.arguments)[1]);
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (dimensions + size_t.sizeof),
+                cols.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.allocArray2D,
+                destination,
+                packedFill(elementType),
+                dimensions,
+            );
+            return;
+        }
+
+        if (new_.arguments is null || new_.arguments.length != 1)
+            throw new Exception(text(
+                "Unsupported new array in bytecode core: ",
+                expressionChars(new_),
+            ));
+
+        const length = compileExpression((*new_.arguments)[0]);
+        _code ~= Instruction(
+            Op.allocArrayDynamic,
+            destination,
+            packedFill(elementType),
+            length.offset,
+        );
+    }
+
+    // Pack the element type's default-init fill byte (high 8 bits) and element
+    // size (low 8 bits) for `allocArrayDynamic`. `char.init` is 0xFF; every
+    // other element type the core lowers default-inits to all-zero bytes.
+    private ushort packedFill(in ScalarType elementType) @safe pure {
+        const fill = elementType == ScalarType.char_ ? 0xff : 0x00;
+        return cast(ushort) ((fill << 8) | size(elementType));
+    }
+
+    // The frame offset of a 16-byte slice descriptor denoting the value of an
+    // array-valued expression: a dynamic-array local's slot is returned in
+    // place; any other form (slice, literal, call, null) is materialised into a
+    // fresh descriptor slot.
+    private ushort arrayDescriptorOffset(
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        if (auto descriptor = dynamicArrayDescriptorOrNull(source))
+            return descriptor.offset;
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileDynamicArrayInto(offset, elementType, source);
+        return offset;
+    }
+
+    // Emit a sub-slice descriptor into frame offset `destination` from a
+    // `SliceExp` over a dynamic-array operand. Lower and upper bounds (default
+    // `0` and `source.length` for the whole-slice form `arr[]`) are compiled
+    // into an adjacent `{lo, hi}` size_t pair; the subSlice opcode reads them
+    // and shares the source's backing memory.
+    private void compileSliceInto(
+        in ushort destination,
+        in ScalarType elementType,
+        SliceExp slice,
+    ) {
+        // `p[lo .. hi]` over a pointer: build the descriptor directly from the
+        // raw pointer value and the {lo, hi} element bounds, sharing the heap
+        // block `p` points into. The upper bound is always present for a pointer
+        // slice (DMD requires it).
+        if (isPointerType(slice.e1.type)) {
+            compilePointerSliceInto(destination, slice);
+            return;
+        }
+
+        const descriptor = dynamicArrayDescriptor(slice.e1);
+
+        // Materialise lo and hi into adjacent size_t slots; the opcode reads
+        // the pair from the single `bounds` offset.
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(
+            Op.copy, bounds, lo, cast(ushort) size_t.sizeof,
+        );
+
+        const hi = slice.upr is null
+            ? sliceLengthSlot(descriptor)
+            : compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            subSliceOp(size(elementType)),
+            destination,
+            descriptor.offset,
+            bounds,
+        );
+    }
+
+    // `p[lo .. hi]` over a pointer: write a slice descriptor
+    // {p + lo * elementSize, hi - lo} at `destination`, sharing the heap block
+    // `p` addresses. lo and hi are element indices (not pre-scaled), compiled
+    // into an adjacent {lo, hi} size_t pair the pointerSlice opcode reads.
+    private void compilePointerSliceInto(
+        in ushort destination,
+        SliceExp slice,
+    ) {
+        const pointer = compileExpression(slice.e1);
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(Op.copy, bounds, lo, cast(ushort) size_t.sizeof);
+        const hi = compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        _code ~= Instruction(
+            pointerSliceOp(size(pointer.pointerElement)),
+            destination,
+            pointer.offset,
+            bounds,
+        );
+    }
+
+    // `dest = a ~ b` (concatenation): materialise each operand into a slice
+    // descriptor sharing existing backing memory, then emit a concat that
+    // allocates a fresh block holding both in order. An operand of element type
+    // (`x ~ arr` / `arr ~ x`) is wrapped into a one-element descriptor first.
+    private void compileCatInto(
+        in ushort destination,
+        in ScalarType elementType,
+        CatExp cat,
+    ) {
+        const left = catOperandDescriptor(elementType, cat.e1);
+        const right = catOperandDescriptor(elementType, cat.e2);
+        _code ~= Instruction(
+            concatArraysOp(size(elementType)),
+            destination,
+            left,
+            right,
+        );
+    }
+
+    // A 16-byte slice descriptor for one side of a concatenation: an array
+    // operand uses its existing descriptor (materialised if needed); an element
+    // operand (`x ~ arr`) is stored into a fresh one-element heap block.
+    private ushort catOperandDescriptor(
+        in ScalarType elementType,
+        Expression operand,
+    ) {
+        import dmd.astenums: TY;
+
+        if (operand.type !is null &&
+            operand.type.toBasetype.ty == TY.Tarray)
+            return arrayDescriptorOffset(elementType, operand);
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray, offset, cast(ushort) elementSize, 1,
+        );
+        const value = compileExpression(operand);
+        const index = compileSizeConstant(0);
+        _code ~= Instruction(
+            indexStoreOp(elementSize), value.offset, offset, index,
+        );
+        return offset;
+    }
+
+    // The array operand of an `arr.dup` / `arr.idup` call, or null if `source`
+    // is not such a call. Both resolve to an `object.dup`/`object.idup`
+    // template CallExp whose callee identifier is `dup`/`idup` and whose single
+    // argument is the (cast-wrapped) source array; the AA `.dup` is a distinct
+    // `object.dup!(...)` instantiation and is not matched here.
+    private Expression tryArrayDuplication(Expression source) {
+        auto call = source.isCallExp;
+        if (call is null ||
+            call.arguments is null ||
+            call.arguments.length != 1)
+            return null;
+
+        auto function_ = callFunction(call);
+        if (function_ is null || function_.ident is null)
+            return null;
+
+        const name = function_.ident.toString;
+        if (name != "dup" && name != "idup")
+            return null;
+
+        auto argument = (*call.arguments)[0];
+        if (!isDynamicArrayArgument(argument))
+            return null;
+
+        return argument;
+    }
+
+    // `dest = arr.dup` / `dest = arr.idup`: materialise the source array's
+    // descriptor and emit an opcode that allocates a fresh heap block, copies
+    // every element into it, and writes the new descriptor to `destination`.
+    private void compileArrayDuplication(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        // The dup argument is the source array wrapped in an
+        // implicit-const cast; unwrap it so a known dynamic-array local reuses
+        // its descriptor in place rather than failing the cast.
+        auto array = source;
+        while (auto cast_ = array.isCastExp)
+            array = cast_.e1;
+
+        const sourceDescriptor = arrayDescriptorOffset(elementType, array);
+        _code ~= Instruction(
+            dupArrayOp(size(elementType)),
+            destination,
+            sourceDescriptor,
+        );
+    }
+
+    // Read the length word of a dynamic-array descriptor into a fresh size_t
+    // slot, for the implicit upper bound of a whole-slice `arr[]`.
+    private ushort sliceLengthSlot(in DynamicArrayLocal descriptor) {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
+        return offset;
+    }
+
     private Operand compileCastExpression(CastExp cast_) {
         import std.conv: text;
+
+        // `arr.ptr` arrives as a CastExp of the array to `T*`; yield the
+        // descriptor's pointer word as a raw `size_t` address.
+        if (isPointerType(cast_.to))
+            return compileArrayPointer(cast_);
 
         const source = compileExpression(cast_.e1);
         const target = scalarType(cast_.to);
@@ -396,9 +1353,116 @@ private struct Compiler {
         return extend(source, target);
     }
 
+    // `arr.ptr`: copy the descriptor's pointer word (the address of element 0)
+    // into a fresh `size_t` slot, yielding a pointer operand over the element
+    // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
+    private Operand compileArrayPointer(CastExp cast_) {
+        const descriptor = dynamicArrayDescriptor(cast_.e1);
+        return pointerToElement(
+            descriptor.offset, descriptor.elementType, compileSizeConstant(0),
+        );
+    }
+
+    // `&arr[i]`: the address of element `i`, i.e. `descriptor.ptr + i * size`,
+    // yielding a pointer operand over the element type. Null if the indexed
+    // operand is not a known dynamic-array descriptor.
+    private Operand* tryAddressOfElement(AddrExp address) {
+        auto index = address.e1.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = pointerToElement(
+            descriptor.offset, descriptor.elementType, indexSlot.offset,
+        );
+        return result;
+    }
+
+    // A pointer operand holding `descriptor.ptr + index * elementSize`: read the
+    // descriptor's pointer word, scale the index by the element size, and add.
+    private Operand pointerToElement(
+        in ushort descriptorOffset,
+        in ScalarType elementType,
+        in ushort indexSlot,
+    ) {
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, pointer, descriptorOffset, cast(ushort) size_t.sizeof,
+        );
+        return offsetPointer(pointer, elementType, indexSlot);
+    }
+
+    // Advance the `size_t` pointer at `pointerOffset` by `index * elementSize`
+    // into a fresh pointer slot, the shared scaling for `&arr[i]`, `p + n`, and
+    // `n + p`.
+    private Operand offsetPointer(
+        in ushort pointerOffset,
+        in ScalarType elementType,
+        in ushort indexSlot,
+    ) {
+        const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const stride = compileSizeConstant(size(elementType));
+        _code ~= Instruction(Op.mulInt8, scaled, indexSlot, stride);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);
+        return Operand(result, ScalarType.ulong_, false, true, elementType);
+    }
+
+    // `*p`: read the element the pointer addresses (index 0), yielding a scalar
+    // operand of the pointed-at element type.
+    private Operand compilePointerDereference(PtrExp deref) {
+        import std.conv: text;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            throw new Exception(text(
+                "Unsupported pointer dereference in bytecode core: ",
+                expressionChars(deref),
+            ));
+
+        return loadThroughPointer(pointer, compileSizeConstant(0));
+    }
+
+    // `p[i]`: read the element at `p + i` through a pointer, yielding a scalar
+    // operand of the pointed-at element type. Null if `p` is not a pointer.
+    private Operand* tryPointerIndex(IndexExp index) {
+        if (!isPointerType(index.e1.type))
+            return null;
+
+        const pointer = compileExpression(index.e1);
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = loadThroughPointer(pointer, indexSlot.offset);
+        return result;
+    }
+
+    // Read `size(elementType)` bytes from `[pointer + index * size]` into a
+    // fresh element slot, the shared loader for `*p` and `p[i]`.
+    private Operand loadThroughPointer(
+        in Operand pointer,
+        in ushort indexSlot,
+    ) {
+        const elementSize = size(pointer.pointerElement);
+        const offset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            pointerLoadOp(elementSize), offset, pointer.offset, indexSlot,
+        );
+        return Operand(offset, pointer.pointerElement);
+    }
+
     private Operand compileAddExpression(Expression expression) {
         auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(add !is null);
+
+        // Pointer arithmetic `p + n` / `n + p`: advance the pointer operand by
+        // the integer operand scaled by the element size.
+        if (isPointerType(add.e1.type) || isPointerType(add.e2.type))
+            return compilePointerAdd(add);
 
         const lhs = compileExpression(add.e1);
         const rhs = compileExpression(add.e2);
@@ -424,6 +1488,21 @@ private struct Compiler {
         );
     }
 
+    // `p + n` / `n + p`: add the integer operand to the raw pointer value,
+    // yielding a pointer operand. DMD pre-scales the integer operand to a byte
+    // offset (`p + n` arrives as `p + n * elementSize`), so no scaling here.
+    private Operand compilePointerAdd(BinExp add) {
+        const pointerFirst = isPointerType(add.e1.type);
+        const pointer =
+            compileExpression(pointerFirst ? add.e1 : add.e2);
+        const offset = compileExpression(pointerFirst ? add.e2 : add.e1);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.addInt8, result, pointer.offset, offset.offset);
+        return Operand(
+            result, ScalarType.ulong_, false, true, pointer.pointerElement,
+        );
+    }
+
     // D's `|` is integer-typed; only the 4-byte int form is needed today.
     private Operand compileOrExpression(OrExp or) {
         const lhs = compileExpression(or.e1);
@@ -441,7 +1520,37 @@ private struct Compiler {
     // D's `/` on int is signed integer division. Only the 4-byte int form is
     // needed today (it appears as the never-executed RHS of a short-circuited
     // `&&`); a runtime divide-by-zero would fault, matching compiled code.
+    // Integer multiplication. Pointer arithmetic scales its integer operand
+    // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
+    // one that matters here; the 4-byte form mirrors `addInt4`.
+    private Operand compileMultiplyExpression(MulExp multiply) {
+        import std.conv: text;
+
+        const lhs = compileExpression(multiply.e1);
+        const rhs = compileExpression(multiply.e2);
+        if (isEightByteInteger(lhs.type) &&
+            isEightByteInteger(rhs.type))
+            return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
+
+        return compileIntBinaryResult(
+            multiply,
+            lhs,
+            rhs,
+            Op.mulInt4,
+            ScalarType.int_,
+            "Unsupported multiplication in bytecode core: ",
+        );
+    }
+
     private Operand compileDivideExpression(DivExp divide) {
+        // `p - q`: DMD lowers it to `(byteDistance) / elementStride`, a MinExp
+        // of two pointers wrapped in a DivExp by the stride. The byte distance
+        // and stride are signed 8-byte (`ptrdiff_t`); divide them at that width.
+        if (auto difference = divide.e1.isMinExp)
+            if (isPointerType(difference.e1.type) &&
+                isPointerType(difference.e2.type))
+                return compilePointerDifference(divide, difference);
+
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
         return compileIntBinaryResult(
@@ -454,11 +1563,71 @@ private struct Compiler {
         );
     }
 
+    // `p - n`: subtract the integer operand from the raw pointer value, yielding
+    // a pointer operand over the same element type. DMD pre-scales the integer
+    // operand to a byte offset (`p - n` arrives as `p - n * elementSize`).
+    private Operand compilePointerSubtractInteger(BinExp subtract) {
+        const pointer = compileExpression(subtract.e1);
+        const offset = compileExpression(subtract.e2);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.subInt8, result, pointer.offset, offset.offset,
+        );
+        return Operand(
+            result, ScalarType.ulong_, false, true, pointer.pointerElement,
+        );
+    }
+
+    // The raw byte distance `p - q` between two pointers as a signed 8-byte
+    // value; `p - q` wraps this in a DivExp by the element stride.
+    private Operand compilePointerDifferenceBytes(BinExp subtract) {
+        const lhs = compileExpression(subtract.e1);
+        const rhs = compileExpression(subtract.e2);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.subInt8, result, lhs.offset, rhs.offset);
+        return Operand(result, ScalarType.long_);
+    }
+
+    // `p - q`: divide the signed byte distance by the element stride to yield
+    // the `ptrdiff_t` element count.
+    private Operand compilePointerDifference(
+        DivExp divide,
+        BinExp difference,
+    ) {
+        const bytes = compilePointerDifferenceBytes(difference);
+        const stride = compileExpression(divide.e2);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.divInt8, result, bytes.offset, stride.offset,
+        );
+        return Operand(result, ScalarType.long_);
+    }
+
     // Integer `<` / `>`; both yield a bool. One opcode per operator, not per
     // operand type. Only the forms `&&` operands produce are needed today.
     private Operand compileComparisonExpression(CmpExp comparison) {
         import dmd.tokens: EXP;
         import std.conv: text;
+
+        // Pointer relations `p < q` etc. compare raw `size_t` pointer values as
+        // unsigned, matching compiled pointer code.
+        if (isPointerType(comparison.e1.type) ||
+            isPointerType(comparison.e2.type))
+            return compilePointerComparison(comparison);
+
+        const lhs = compileExpression(comparison.e1);
+        const rhs = compileExpression(comparison.e2);
+
+        // 8-byte unsigned comparison (`size_t`/`ulong`, e.g. a `foreach` index
+        // against `.length`): use the unsigned 8-byte relation opcodes.
+        if (lhs.type == ScalarType.ulong_ && rhs.type == ScalarType.ulong_) {
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                unsignedComparisonOp8(comparison.op),
+                offset, lhs.offset, rhs.offset,
+            );
+            return Operand(offset, ScalarType.bool_);
+        }
 
         const op = () {
             switch (comparison.op) with (EXP) {
@@ -474,8 +1643,6 @@ private struct Compiler {
             }
         }();
 
-        const lhs = compileExpression(comparison.e1);
-        const rhs = compileExpression(comparison.e2);
         return compileIntBinaryResult(
             comparison,
             lhs,
@@ -484,6 +1651,87 @@ private struct Compiler {
             ScalarType.bool_,
             "Unsupported comparison in bytecode core: ",
         );
+    }
+
+    // `p < q`, `p <= q`, `p > q`, `p >= q`: compare raw `size_t` pointer values
+    // as unsigned, yielding a bool.
+    private Operand compilePointerComparison(CmpExp comparison) {
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        const op = () {
+            switch (comparison.op) with (EXP) {
+                case lessThan: return "<";
+                case lessOrEqual: return "<=";
+                case greaterThan: return ">";
+                case greaterOrEqual: return ">=";
+                default:
+                    throw new Exception(text(
+                        "Unsupported comparison in bytecode core: ",
+                        expressionChars(comparison),
+                    ));
+            }
+        }();
+
+        const lhs = compileExpression(comparison.e1);
+        const rhs = compileExpression(comparison.e2);
+        const offset = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            pointerComparisonOp(op), offset, lhs.offset, rhs.offset,
+        );
+        return Operand(offset, ScalarType.bool_);
+    }
+
+    // `c ? t : f`: evaluate `c`, branch, and write whichever branch's value into
+    // a single result slot. Used for DMD's `m[k]` lowering, whose conditional is
+    // pointer-valued (the value's slot, or a null after a bounds throw); the
+    // result width and pointer metadata come from the true branch.
+    private Operand compileConditionalExpression(
+        imported!"dmd.expression".CondExp conditional,
+    ) {
+        const condition = compileBoolCondition(conditional.econd);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+
+        const falseJump = emitJumpIfFalse(condition);
+        const whenTrue = compileExpression(conditional.e1);
+        _code ~= Instruction(
+            Op.copy, result, whenTrue.offset, cast(ushort) size_t.sizeof,
+        );
+        const endJump = emitJump;
+
+        patchJump(falseJump);
+        const whenFalse = compileExpression(conditional.e2);
+        _code ~= Instruction(
+            Op.copy, result, whenFalse.offset, cast(ushort) size_t.sizeof,
+        );
+        patchJump(endJump);
+
+        return Operand(
+            result,
+            whenTrue.type,
+            whenTrue.isString,
+            whenTrue.isPointer,
+            whenTrue.pointerElement,
+        );
+    }
+
+    // Normalise an expression to a one-byte bool condition. A pointer condition
+    // (`slot ? ...`) is non-null iff its 8-byte value is non-zero, so compare it
+    // to a zero constant rather than testing a single byte.
+    private Operand compileBoolCondition(Expression expression) {
+        const operand = compileExpression(expression);
+        if (!operand.isPointer)
+            return operand;
+
+        const zero =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.loadConstant, zero, constantIndex(0),
+            cast(ushort) size_t.sizeof,
+        );
+        const result = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.notEqual8, result, operand.offset, zero);
+        return Operand(result, ScalarType.bool_);
     }
 
     // `&&` / `||` short-circuit through jumps and write a bool result into one
@@ -527,6 +1775,16 @@ private struct Compiler {
     private Operand compileSubtractExpression(BinExp subtract) {
         import std.conv: text;
 
+        // Pointer arithmetic `p - n`: step the pointer back by the integer
+        // operand scaled by the element size, yielding a pointer operand.
+        if (isPointerType(subtract.e1.type) && !isPointerType(subtract.e2.type))
+            return compilePointerSubtractInteger(subtract);
+
+        // Raw `p - q` between two pointers: the byte distance, which `p - q`
+        // wraps in a DivExp by the element stride to yield the element count.
+        if (isPointerType(subtract.e1.type) && isPointerType(subtract.e2.type))
+            return compilePointerDifferenceBytes(subtract);
+
         const lhs = compileExpression(subtract.e1);
         const rhs = compileExpression(subtract.e2);
         if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
@@ -534,10 +1792,14 @@ private struct Compiler {
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
 
-        throw new Exception(text(
+        return compileIntBinaryResult(
+            subtract,
+            lhs,
+            rhs,
+            Op.subInt4,
+            ScalarType.int_,
             "Unsupported subtraction in bytecode core: ",
-            expressionChars(subtract),
-        ));
+        );
     }
 
     private Operand compileNegateExpression(NegExp negate) {
@@ -604,16 +1866,25 @@ private struct Compiler {
             ? Operand.init
             : Operand(*slot, scalarType(declaration.type));
         const rhs = compileExpression(addAssign.e2);
+        // `++x`/`x += n` on an integer local: 4-byte and 8-byte integer widths
+        // (size_t is ulong on x86-64, so `++len` lands here) share the lvalue's
+        // own slot as the destination. Both sides and the result carry the
+        // lvalue's type.
+        const lvalueType = scalarType(addAssign.type);
+        const addOp = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_
+                ? Op.addInt8
+                : Op.addInt4;
         if (slot is null ||
-            lhs.type != ScalarType.int_ ||
-            rhs.type != ScalarType.int_ ||
-            scalarType(addAssign.type) != ScalarType.int_)
+            lhs.type != rhs.type ||
+            lhs.type != lvalueType ||
+            !isIntegerScalar(lvalueType))
             throw new Exception(text(
                 "Unsupported compound assignment in bytecode core: ",
                 expressionChars(addAssign),
             ));
 
-        _code ~= Instruction(Op.addInt4, lhs.offset, lhs.offset, rhs.offset);
+        _code ~= Instruction(addOp, lhs.offset, lhs.offset, rhs.offset);
         return lhs;
     }
 
@@ -623,6 +1894,53 @@ private struct Compiler {
     // lvalues with a matching scalar type; anything else is unsupported.
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
+
+        // `arr.length = n`: resize the array in place, preserving existing
+        // elements and zero-filling growth. Detected by the ArrayLengthExp
+        // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
+        if (auto length = assign.e1.isArrayLengthExp)
+            return compileArrayLengthAssign(length, assign.e2);
+
+        // `m[k] = v` for an associative array: insert or overwrite the entry in
+        // the VM-owned map.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryAssocArrayElementAssign(index, assign.e2))
+                return *store;
+
+        // `p[i] = rhs` through a pointer (`m[k] = v` lowers to a write through
+        // the `_d_aaGetY` slot pointer): write the scalar rhs at `p + i`.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryPointerElementAssign(index, assign.e2))
+                return *store;
+
+        // `*p = rhs` through a pointer.
+        if (auto deref = assign.e1.isPtrExp)
+            if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
+                return *store;
+
+        // `arr[i] = rhs` for a dynamic-array element: write the scalar rhs into
+        // the heap element at `index`.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryDynamicArrayElementAssign(index, assign.e2))
+                return *store;
+
+        // `arr[i] = rhs` for a static-array element: write the scalar rhs into
+        // the element's inline frame offset.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto element = tryStaticArrayElement(index))
+                return compileStaticArrayElementAssign(*element, assign.e2);
+
+        // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
+        // row of a multidimensional static array in place.
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto broadcast = tryStaticArrayBroadcast(slice, assign.e2))
+                return *broadcast;
+
+        // `arr[lo .. hi] = rhs` for a dynamic array: copy the rhs elements into
+        // the existing backing memory (write-through to the original array).
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto copy = tryDynamicArraySliceAssign(slice, assign.e2))
+                return *copy;
 
         auto variable = assign.e1.isVarExp;
         auto declaration =
@@ -647,9 +1965,511 @@ private struct Compiler {
         return Operand(*slot, type);
     }
 
+    // `arr ~= x` (append element): reallocate `arr`'s backing memory with the
+    // new element appended and overwrite its descriptor. The lvalue must be a
+    // known dynamic-array local (or ref parameter); the appended descriptor
+    // yields the array as the expression result.
+    // `arr.length = n`: resize `arr` in place. The descriptor is reallocated to
+    // `n` elements, existing elements preserved, and growth filled with the
+    // element's default-init byte. Yields the new length as the result.
+    private Operand compileArrayLengthAssign(
+        ArrayLengthExp length,
+        Expression newLength,
+    ) {
+        const descriptor = dynamicArrayDescriptor(length.e1);
+        const lengthSlot = compileExpression(newLength);
+        _code ~= Instruction(
+            Op.setArrayLength,
+            descriptor.offset,
+            packedFill(descriptor.elementType),
+            lengthSlot.offset,
+        );
+        return Operand(lengthSlot.offset, ScalarType.ulong_);
+    }
+
+    private Operand compileAppendElement(CatElemAssignExp append) {
+        // `outer[i] ~= x` for an array-of-arrays element: the inner descriptor is
+        // materialised into a fresh slot, so the reallocated descriptor must be
+        // written back into the outer block's element `i`. Other rows keep their
+        // own backing memory untouched.
+        if (auto outerElement = outerArrayElement(append.e1)) {
+            const value = compileExpression(append.e2);
+            const elementSize = size(outerElement.inner.elementType);
+            _code ~= Instruction(
+                appendElementOp(elementSize),
+                outerElement.inner.offset,
+                value.offset,
+            );
+            _code ~= Instruction(
+                Op.indexStore16,
+                outerElement.inner.offset,
+                outerElement.outerOffset,
+                outerElement.indexSlot,
+            );
+            return Operand(
+                outerElement.inner.offset, outerElement.inner.elementType,
+            );
+        }
+
+        const descriptor = dynamicArrayDescriptor(append.e1);
+        const value = compileExpression(append.e2);
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            appendElementOp(elementSize),
+            descriptor.offset,
+            value.offset,
+        );
+        return Operand(descriptor.offset, descriptor.elementType);
+    }
+
+    // An `outer[i]` access into an array-of-arrays local: the outer descriptor
+    // offset, the index slot, and the inner descriptor materialised into a fresh
+    // slot. Null if `expression` is not such an access. Used to write a
+    // reallocated inner descriptor back into the outer block.
+    private OuterArrayElement* outerArrayElement(Expression expression) {
+        auto index = expression.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto variable = index.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto outer = declaration is null
+            ? null
+            : declaration in _dynamicArrayLocals;
+        if (outer is null || !outer.elementIsArray)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.indexLoad16, inner, outer.offset, indexSlot.offset,
+        );
+
+        auto result = new OuterArrayElement;
+        *result = OuterArrayElement(
+            outer.offset,
+            indexSlot.offset,
+            DynamicArrayLocal(inner, outer.elementType),
+        );
+        return result;
+    }
+
+    // `m[k] = v` for an associative array: insert or overwrite the entry in the
+    // VM-owned map. Null if `index.e1` is not a known AA local.
+    private Operand* tryAssocArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto variable = index.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null || declaration !in _assocArrayLocals)
+            return null;
+
+        const handle = (declaration in _locals);
+        const key = compileExpression(index.e2);
+        const value = compileExpression(rhs);
+        _code ~= Instruction(
+            Op.aaInsert, *handle, key.offset, value.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, value.type);
+        return result;
+    }
+
+    // `p[i] = rhs` through a pointer: write the scalar rhs at `p + i * size`.
+    // Null if `p` is not a pointer.
+    private Operand* tryPointerElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        if (!isPointerType(index.e1.type))
+            return null;
+
+        const pointer = compileExpression(index.e1);
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = storeThroughPointer(pointer, indexSlot.offset, rhs);
+        return result;
+    }
+
+    // `*p = rhs` through a pointer (`p + 0`). Null if `p` is not a pointer.
+    private Operand* tryPointerDereferenceAssign(
+        PtrExp deref,
+        Expression rhs,
+    ) {
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return null;
+
+        auto result = new Operand;
+        *result = storeThroughPointer(pointer, compileSizeConstant(0), rhs);
+        return result;
+    }
+
+    // Write the rhs scalar to `[pointer + index * size]`, the shared store for
+    // `*p = v` and `p[i] = v`.
+    private Operand storeThroughPointer(
+        in Operand pointer,
+        in ushort indexSlot,
+        Expression rhs,
+    ) {
+        const value = compileExpression(rhs);
+        const elementSize = size(pointer.pointerElement);
+        _code ~= Instruction(
+            pointerStoreOp(elementSize),
+            value.offset,
+            pointer.offset,
+            indexSlot,
+        );
+        return Operand(value.offset, pointer.pointerElement);
+    }
+
+    // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
+    // heap element at runtime index `i`. Null if `arr` is not a known
+    // dynamic-array local.
+    private Operand* tryDynamicArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const value = compileExpression(rhs);
+        const indexSlot = compileExpression(index.e2);
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            indexStoreOp(elementSize),
+            value.offset,
+            descriptor.offset,
+            indexSlot.offset,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, descriptor.elementType);
+        return result;
+    }
+
+    // A located static-array element: its inline frame offset and scalar type.
+    private static struct StaticArrayElement {
+        ushort offset;
+        ScalarType type;
+    }
+
+    // Resolve a static-array element access with compile-time-constant indices
+    // to its inline frame offset, walking the IndexExp chain from a
+    // static-array local. Each level adds `index * Type.size(level.type)` to
+    // the base offset.
+    private StaticArrayElement locateStaticArrayElement(
+        IndexExp index,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        const baseOffset = staticArrayBaseOffset(index.e1);
+        auto indexInteger = index.e2.isIntegerExp;
+        if (indexInteger is null)
+            throw new Exception(text(
+                "Unsupported static array index in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const elementSize = cast(uint) staticArraySize(index.type);
+        const offset = cast(ushort)
+            (baseOffset + indexInteger.toInteger * elementSize);
+        const elementType = index.type.toBasetype.ty == TY.Tsarray
+            ? ScalarType.void_
+            : scalarType(index.type);
+        return StaticArrayElement(offset, elementType);
+    }
+
+    // The inline frame base offset of a static-array sub-expression: either a
+    // static-array local (a VarExp) or a further static-array index.
+    private ushort staticArrayBaseOffset(Expression expression) {
+        import std.conv: text;
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _staticArrayLocals)
+                    return *existing;
+
+        if (auto index = expression.isIndexExp)
+            return locateStaticArrayElement(index).offset;
+
+        throw new Exception(text(
+            "Unsupported static array access in bytecode core: ",
+            expressionChars(expression),
+        ));
+    }
+
+    // Locate a static-array element, or null if `index` is not an access into
+    // a known static-array local (so other index forms fall through).
+    private StaticArrayElement* tryStaticArrayElement(
+        IndexExp index,
+    ) {
+        if (!indexesStaticArray(index.e1))
+            return null;
+
+        auto result = new StaticArrayElement;
+        *result = locateStaticArrayElement(index);
+        return result;
+    }
+
+    private bool indexesStaticArray(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                return (declaration in _staticArrayLocals) !is null;
+
+        if (auto index = expression.isIndexExp)
+            return indexesStaticArray(index.e1);
+
+        return false;
+    }
+
+    private Operand compileStaticArrayElementAssign(
+        in StaticArrayElement element,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const value = compileExpression(rhs);
+        if (value.type != element.type)
+            throw new Exception(text(
+                "Unsupported static array element assignment in bytecode core: ",
+                expressionChars(rhs),
+            ));
+
+        _code ~= Instruction(
+            Op.copy,
+            element.offset,
+            value.offset,
+            cast(ushort) size(element.type),
+        );
+        return Operand(element.offset, element.type);
+    }
+
+    // `matrix[] = [elem, elem+1]`: the whole-array slice of a multidimensional
+    // static array assigned a row literal whose type matches the array's
+    // element type. Compile the row once into the first row's storage, then
+    // copy it into each remaining row (DMD's block slice-assign broadcast).
+    private Operand* tryStaticArrayBroadcast(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        auto variable = slice.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        auto slot = declaration in _staticArrayLocals;
+        if (slot is null)
+            return null;
+
+        // Only the whole-array form `arr[]` (implicit bounds) is needed.
+        if (slice.lwr !is null || slice.upr !is null)
+            return null;
+
+        auto literal = rhs.isArrayLiteralExp;
+        if (literal is null)
+            return null;
+
+        // The row literal's type must match the array's element type for a
+        // block broadcast; otherwise it is an element-wise assignment.
+        auto elementType = declaration.type.toBasetype.nextOf;
+        if (elementType is null ||
+            rhs.type is null ||
+            !sameType(rhs.type, elementType))
+            return null;
+
+        const rowSize = cast(uint) staticArraySize(elementType);
+        compileStaticArrayLiteral(*slot, elementType, literal);
+
+        const rowCount = cast(uint) (staticArraySize(declaration.type) / rowSize);
+        foreach (row; 1 .. rowCount)
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (*slot + row * rowSize),
+                *slot,
+                cast(ushort) rowSize,
+            );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    // `arr[lo .. hi] = rhs` for a dynamic-array local: form the destination
+    // sub-slice descriptor sharing `arr`'s backing memory, materialise the rhs
+    // into a source descriptor, and emit a write-through element copy. Null if
+    // the slice target is not a known dynamic-array local.
+    private Operand* tryDynamicArraySliceAssign(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
+        if (descriptor is null)
+            return null;
+
+        const elementType = descriptor.elementType;
+        const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(destination, elementType, slice);
+
+        const source = compileSourceSlice(elementType, rhs);
+        _code ~= Instruction(
+            sliceCopyOp(size(elementType)),
+            destination,
+            source,
+        );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    // Materialise the right-hand side of a dynamic-array slice assignment into a
+    // slice descriptor slot. A `SliceExp` shares the source's backing memory; an
+    // array or string literal heap-allocates a fresh block holding its elements.
+    private ushort compileSourceSlice(
+        in ScalarType elementType,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+
+        if (auto slice = rhs.isSliceExp) {
+            compileSliceInto(offset, elementType, slice);
+            return offset;
+        }
+
+        if (auto string_ = stringLiteralOf(rhs)) {
+            compileStringElementSlice(offset, elementType, string_);
+            return offset;
+        }
+
+        if (rhs.isArrayLiteralExp !is null) {
+            compileDynamicArrayInto(offset, elementType, rhs);
+            return offset;
+        }
+
+        throw new Exception(text(
+            "Unsupported slice-assignment source in bytecode core: ",
+            expressionChars(rhs),
+        ));
+    }
+
+    // Heap-allocate a block of `string_`'s characters and store each into it,
+    // leaving a slice descriptor at `offset`. The element size is fixed by the
+    // destination element type (1 for char, matching the indexStore split).
+    private void compileStringElementSlice(
+        in ushort offset,
+        in ScalarType elementType,
+        StringExp string_,
+    ) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray,
+            offset,
+            cast(ushort) elementSize,
+            cast(ushort) bytes.length,
+        );
+
+        foreach (elementIndex, byteValue; bytes) {
+            const value = allocate(elementType);
+            _code ~= Instruction(
+                Op.loadConstant,
+                value,
+                constantIndex(byteValue),
+                cast(ushort) elementSize,
+            );
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                offset,
+                index,
+            );
+        }
+    }
+
+    // Compile an array literal directly into an inline static-array slot,
+    // writing each element into its `index * elementSize` offset. Only a
+    // one-dimensional literal of scalar elements is needed today.
+    private void compileStaticArrayLiteral(
+        in ushort offset,
+        Type arrayType,
+        ArrayLiteralExp literal,
+    ) {
+        import std.conv: text;
+
+        auto elementType = arrayType.toBasetype.nextOf;
+        const elementScalar = scalarType(elementType);
+        const elementSize = cast(uint) size(elementScalar);
+
+        if (literal.elements is null)
+            throw new Exception(text(
+                "Unsupported static array literal in bytecode core: ",
+                expressionChars(literal),
+            ));
+
+        foreach (elementIndex; 0 .. literal.elements.length) {
+            const value = compileExpression((*literal.elements)[elementIndex]);
+            if (value.type != elementScalar)
+                throw new Exception(text(
+                    "Unsupported static array literal element in bytecode core: ",
+                    expressionChars(literal),
+                ));
+
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (offset + elementIndex * elementSize),
+                value.offset,
+                cast(ushort) elementSize,
+            );
+        }
+    }
+
+    // The inline frame offset of a static-array local denoted by an
+    // expression (through any casts), or null if it is not one.
+    private ushort* staticArrayOffsetOf(Expression expression) {
+        if (auto cast_ = expression.isCastExp)
+            return staticArrayOffsetOf(cast_.e1);
+
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _staticArrayLocals)
+                    return existing;
+
+        return null;
+    }
+
     private Operand compileEqualExpression(Expression expression) {
+        import dmd.astenums: TY;
+        import dmd.tokens: EXP;
+
         auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(equal !is null);
+
+        // `m1 == m2` / `m1 != m2` for associative arrays: compare entry sets via
+        // the VM-owned maps. DMD keeps the EqualExp (with an unused lowering to
+        // `_d_aaEqual`), so match the operand type here.
+        if (equal.e1.type.toBasetype.ty == TY.Taarray) {
+            const left = assocArrayHandleOffset(equal.e1);
+            const right = assocArrayHandleOffset(equal.e2);
+            const offset = allocate(ScalarType.bool_);
+            _code ~= Instruction(Op.aaEqual, offset, left, right);
+            if (equal.op == EXP.notEqual)
+                _code ~= Instruction(Op.notBool, offset, offset);
+            return Operand(offset, ScalarType.bool_);
+        }
+
         return compileIntBinaryExpression(
             equal,
             Op.equal4,
@@ -709,6 +2529,25 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+
+        // `dest[] = a[] + b[]` lowers to a druntime arrayOp template call;
+        // intercept it at the call site and emit element-wise semantics rather
+        // than compiling the druntime body.
+        if (function_ !is null && isArrayOpAddAssign(function_))
+            return compileArrayOpAddAssign(call);
+
+        if (function_ !is null) {
+            const hook = assocArrayHook(function_);
+            if (hook != AssocArrayHook.none)
+                return compileAssocArrayHook(call, hook);
+        }
+
+        // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
+        // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
+        // means the key was absent, so raise the plain "Range violation".
+        if (function_ !is null && isArrayBoundsCall(function_))
+            return compileRangeViolation;
+
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
@@ -743,8 +2582,24 @@ private struct Compiler {
                     continue;
                 }
 
-                const operand =
-                    compileExpression((*call.arguments)[argumentIndex]);
+                // A non-string dynamic-array argument copies a 16-byte slice
+                // descriptor into the argument area; the backing memory is
+                // shared with the caller.
+                auto argument = (*call.arguments)[argumentIndex];
+                if (isDynamicArrayArgument(argument)) {
+                    const descriptor = arrayDescriptorOffset(
+                        dynamicArrayElementType(argument.type), argument,
+                    );
+                    _code ~= Instruction(
+                        Op.copy,
+                        slot,
+                        descriptor,
+                        cast(ushort) sliceDescriptorSize,
+                    );
+                    continue;
+                }
+
+                const operand = compileExpression(argument);
                 _code ~= Instruction(
                     Op.copy,
                     slot,
@@ -755,22 +2610,220 @@ private struct Compiler {
 
         const returnType = _program.functions[index].returnType;
         const destination =
-            (!returnType.isString && returnType.scalar == ScalarType.void_)
+            (!returnType.isString && !returnType.isArray &&
+                returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
     }
 
-    // The caller-frame offset of a scalar `ref` argument: the slot of the
-    // local being passed by reference. Only a plain local lvalue is supported.
+    // Emit a throw of the plain "Range violation" message and yield a null
+    // pointer operand, so the `m[k]` lowering's `(_d_arraybounds(...), null)`
+    // false branch type-checks (the throw aborts before the null is used).
+    private Operand compileRangeViolation() {
+        const message = compileStringLiteralBytes("Range violation");
+        _code ~= Instruction(Op.throwString, message);
+        const offset =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        return Operand(
+            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+        );
+    }
+
+    // An associative-array hook call: operate on the VM-owned map referenced by
+    // the AA handle local. Each hook carries the AA as its first argument (a
+    // VarExp, or `&aa`/`*aa` around one), and the key/value as later arguments.
+    private Operand compileAssocArrayHook(
+        CallExp call,
+        in AssocArrayHook hook,
+    ) {
+        import std.conv: text;
+
+        const handle = assocArrayHandleOffset((*call.arguments)[0]);
+
+        with (AssocArrayHook) final switch (hook) {
+            case none:
+                throw new Exception("Unreachable AA hook.");
+
+            case length: {
+                const offset = allocate(ScalarType.ulong_);
+                _code ~= Instruction(Op.aaLength, offset, handle);
+                return Operand(offset, ScalarType.ulong_);
+            }
+
+            case getRvalue: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.aaGetRvalue, offset, handle, key.offset,
+                );
+                return Operand(
+                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                );
+            }
+
+            case getLvalue:
+                return compileAssocArrayGetLvalue(call, handle);
+
+            case in_: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
+                return Operand(
+                    offset, ScalarType.ulong_, false, true, ScalarType.int_,
+                );
+            }
+
+            case remove: {
+                const key = compileExpression((*call.arguments)[1]);
+                const offset = allocate(ScalarType.bool_);
+                _code ~= Instruction(Op.aaRemove, offset, handle, key.offset);
+                return Operand(offset, ScalarType.bool_);
+            }
+
+            case equal: {
+                const right = assocArrayHandleOffset((*call.arguments)[1]);
+                const offset = allocate(ScalarType.bool_);
+                _code ~= Instruction(Op.aaEqual, offset, handle, right);
+                return Operand(offset, ScalarType.bool_);
+            }
+
+            case dup: {
+                const offset = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.aaDup, offset, handle);
+                return Operand(offset, ScalarType.ulong_);
+            }
+
+            case keys:
+                return compileAssocArraySlice(Op.aaKeys, handle);
+
+            case values:
+                return compileAssocArraySlice(Op.aaValues, handle);
+        }
+    }
+
+    // `m.keys` / `m.values`: a fresh `int[]` slice descriptor holding a copy of
+    // the map's keys / values, rooted on the VM-owned heap.
+    private Operand compileAssocArraySlice(in Op op, in ushort handle) {
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(op, offset, handle);
+        return Operand(offset, ScalarType.int_);
+    }
+
+    // `m[k] = v` lowers to `_d_aaGetY(&m, k)` returning a slot pointer, written
+    // through by the surrounding assignment. The core inserts directly and
+    // yields a pointer to the (freshly inserted) value's slot so the write lands.
+    private Operand compileAssocArrayGetLvalue(
+        CallExp call,
+        in ushort handle,
+    ) {
+        const key = compileExpression((*call.arguments)[1]);
+        const offset =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.aaInsert, handle, key.offset, key.offset);
+        _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
+        return Operand(
+            offset, ScalarType.ulong_, false, true, ScalarType.int_,
+        );
+    }
+
+    // The frame offset of an associative-array handle for `expression`: an AA
+    // local VarExp, possibly wrapped in `&aa` (AddrExp) or `*aa` (PtrExp) by the
+    // hook lowering.
+    private ushort assocArrayHandleOffset(Expression expression) {
+        import std.conv: text;
+
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+
+        if (auto variable = inner.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _assocArrayLocals)
+                    if (auto slot = declaration in _locals)
+                        return *slot;
+
+        throw new Exception(text(
+            "Unsupported associative array operand in bytecode core: ",
+            expressionChars(expression),
+        ));
+    }
+
+    // `dest[] = a[] + b[]`: the druntime arrayOp call carries three slice
+    // operands. Materialise each into a slice descriptor (the destination shares
+    // its backing memory so the sums write through), then emit an element-wise
+    // add-assign over the three descriptors.
+    private Operand compileArrayOpAddAssign(CallExp call) {
+        import std.conv: text;
+
+        if (call.arguments is null || call.arguments.length != 3)
+            throw new Exception(text(
+                "Unsupported array operation in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto destination = (*call.arguments)[0].isSliceExp;
+        if (destination is null)
+            throw new Exception(text(
+                "Unsupported array operation in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const elementType =
+            dynamicArrayDescriptor(destination.e1).elementType;
+        const destinationSlice = arrayOpSlice(elementType, (*call.arguments)[0]);
+        const leftSlice = arrayOpSlice(elementType, (*call.arguments)[1]);
+        const rightSlice = arrayOpSlice(elementType, (*call.arguments)[2]);
+        _code ~= Instruction(
+            Op.arrayAddAssign4, destinationSlice, leftSlice, rightSlice,
+        );
+        return Operand.init;
+    }
+
+    // Materialise one operand of an element-wise array operation into a slice
+    // descriptor sharing its source's backing memory. Only the slice form is
+    // needed (the lowering wraps each operand in a `[]`).
+    private ushort arrayOpSlice(
+        in ScalarType elementType,
+        Expression operand,
+    ) {
+        import std.conv: text;
+
+        auto slice = operand.isSliceExp;
+        if (slice is null)
+            throw new Exception(text(
+                "Unsupported array operation operand in bytecode core: ",
+                expressionChars(operand),
+            ));
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(offset, elementType, slice);
+        return offset;
+    }
+
+    // The caller-frame offset of a `ref` argument: the slot of the local being
+    // passed by reference, whether a scalar local or a dynamic-array local
+    // (whose slot holds a 16-byte slice descriptor). Only a plain local lvalue
+    // is supported.
     private ushort referenceOffset(Expression argument) {
         import std.conv: text;
 
         if (auto variable = argument.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
+            if (auto declaration = variable.var.isVarDeclaration) {
                 if (auto existing = declaration in _locals)
                     return *existing;
+                if (auto existing = declaration in _dynamicArrayLocals)
+                    return existing.offset;
+            }
 
         throw new Exception(text(
             "Unsupported ref argument in bytecode core: ",
@@ -1196,12 +3249,35 @@ private struct Compiler {
             return false;
 
         const op = operatorText(operator);
+
+        // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
+        // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
+        if (isPointerType((*call.arguments)[1].type) ||
+            isPointerType((*call.arguments)[2].type))
+            return compilePointerComparisonAssert(
+                op, (*call.arguments)[1], (*call.arguments)[2],
+            );
+
         switch (op) {
             case "==", "!=", "<", "<=", ">", ">=":
                 break;
             default:
                 return false;
         }
+
+        // `assert(m1 == m2)` over associative-array operands compares entry sets
+        // via the VM-owned maps.
+        if (op == "==" || op == "!=")
+            if (tryAssocArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
+        // `assert(a[] == b[])` over dynamic-array operands compares the slices
+        // element-wise and renders each operand as `[e0, e1, ...]` on failure.
+        if (op == "==" || op == "!=")
+            if (tryArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
 
         // D's integer promotions appear only in the rewritten condition, not
         // in the _d_assert_fail operands; replicate them so mixed-width
@@ -1224,6 +3300,125 @@ private struct Compiler {
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
             AssertDiagnostic(op, lhs.offset, rhs.offset, lhs.type);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(p == q)`, `assert(p is q)`, `assert(p < q)`, ... over pointer
+    // operands: compile both raw `size_t` pointer values and assert their
+    // comparison. `is`/`!is` (identity) compare the same raw addresses as
+    // `==`/`!=`; relations compare unsigned, as compiled pointer code does.
+    private bool compilePointerComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const lhsPointer = compileExpression(lhs);
+        const rhsPointer = compileExpression(rhs);
+        const condition = allocateBytes(1, 1);
+        _code ~= Instruction(
+            pointerComparisonOp(op),
+            condition,
+            lhsPointer.offset,
+            rhsPointer.offset,
+        );
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            normalisedPointerOperator(op),
+            lhsPointer.offset,
+            rhsPointer.offset,
+            ScalarType.ulong_,
+        );
+        _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
+        return true;
+    }
+
+    // `assert(a[] == b[])` / `assert(a[] != b[])` over dynamic-array operands:
+    // build a slice descriptor for each operand, compare them element-wise, and
+    // assert the result; on failure each operand renders as `[e0, e1, ...]`.
+    // Null if either operand is not a dynamic-array slice.
+    private bool tryArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        auto lhsSlice = lhs.isSliceExp;
+        auto rhsSlice = rhs.isSliceExp;
+        if (lhsSlice is null || rhsSlice is null)
+            return false;
+
+        auto lhsDescriptor = dynamicArrayDescriptorOrNull(lhsSlice.e1);
+        auto rhsDescriptor = dynamicArrayDescriptorOrNull(rhsSlice.e1);
+        if (lhsDescriptor is null || rhsDescriptor is null)
+            return false;
+
+        const elementType = lhsDescriptor.elementType;
+        const lhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(lhsOffset, elementType, lhsSlice);
+        const rhsOffset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(rhsOffset, elementType, rhsSlice);
+
+        const equal = allocateBytes(1, 1);
+        _code ~= Instruction(
+            sliceEqualOp(size(elementType)),
+            equal,
+            lhsOffset,
+            rhsOffset,
+        );
+
+        // `==` holds when the slices are equal; `!=` holds when negated.
+        ushort condition = equal;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, equal);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(m1 == m2)` / `assert(m1 != m2)` over associative arrays: compare
+    // entry sets via the VM-owned maps. False unless both operands are AA-typed.
+    private bool tryAssocArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        if (lhs.type.toBasetype.ty != TY.Taarray ||
+            rhs.type.toBasetype.ty != TY.Taarray)
+            return false;
+
+        const left = assocArrayHandleOffset(lhs);
+        const right = assocArrayHandleOffset(rhs);
+        const equal = allocateBytes(1, 1);
+        _code ~= Instruction(Op.aaEqual, equal, left, right);
+
+        // `==` holds when the maps are equal; `!=` holds when negated.
+        ushort condition = equal;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, equal);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~=
+            AssertDiagnostic(op, equal, equal, ScalarType.bool_);
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -1323,8 +3518,31 @@ private struct Compiler {
         if (function_.parameters is null)
             return layout;
 
+        import dmd.astenums: TY;
+
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
+
+            // A non-string dynamic-array `T[]` parameter holds a 16-byte slice
+            // descriptor in the callee frame. By value the caller copies the
+            // descriptor in; a `ref T[]` instead passes the caller-frame offset
+            // and writes the (possibly reallocated) descriptor back on return,
+            // so an append inside the callee is visible to the caller.
+            if (parameter.type.toBasetype.ty == TY.Tarray &&
+                !isStringType(parameter.type))
+            {
+                enum descriptorAlign = cast(uint) size_t.sizeof;
+                layout.blockSize =
+                    (layout.blockSize + descriptorAlign - 1) & ~(descriptorAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, sliceDescriptorSize,
+                    );
+                layout.blockSize += sliceDescriptorSize;
+                continue;
+            }
 
             // A scalar `ref` parameter has a frame slot sized for the
             // referenced value, just like a value parameter; the difference is
@@ -1337,7 +3555,7 @@ private struct Compiler {
             layout.isReference ~= parameter.isReference;
             if (parameter.isReference)
                 layout.refParameters ~=
-                    RefParameter(cast(ushort) layout.blockSize, type);
+                    RefParameter(cast(ushort) layout.blockSize, size(type));
             layout.blockSize += size(type);
         }
 
@@ -1348,10 +3566,56 @@ private struct Compiler {
     // case is non-scalar today (the leading edge of arrays); everything else
     // routes through the scalar path.
     private ResultType resultType(Type type) {
+        import dmd.astenums: TY;
+
         if (isStringType(type))
             return ResultType(ScalarType.void_, true);
 
+        // A non-string dynamic array `T[]` result is a 16-byte slice
+        // descriptor; `elementType` gives the element size for indexing the
+        // returned descriptor.
+        if (type.toBasetype.ty == TY.Tarray)
+            return ResultType(
+                ScalarType.void_,
+                false,
+                true,
+                dynamicArrayElementType(type),
+            );
+
         return ResultType(scalarType(type), false);
+    }
+
+    // The element scalar type of a dynamic array `T[]`. For an array-of-arrays
+    // (`int[][]`) the element is itself a `T[]`; return its inner element scalar
+    // (`int`), the type used to size and index the innermost elements.
+    private ScalarType dynamicArrayElementType(Type type) {
+        import dmd.astenums: TY;
+
+        auto element = type.toBasetype.nextOf;
+        if (element.toBasetype.ty == TY.Tarray)
+            return scalarType(element.toBasetype.nextOf);
+        return scalarType(element);
+    }
+
+    // True when a dynamic array's element is itself a dynamic array (`int[][]`):
+    // each element is a 16-byte slice descriptor rather than a scalar.
+    private bool dynamicArrayElementIsArray(Type type) {
+        import dmd.astenums: TY;
+
+        return type.toBasetype.nextOf.toBasetype.ty == TY.Tarray;
+    }
+
+    // Materialise a compile-time-constant `size_t` index into a frame slot, for
+    // opcodes that take their index from a frame slot.
+    private ushort compileSizeConstant(in size_t value) @safe pure {
+        const offset = allocate(ScalarType.ulong_);
+        _code ~= Instruction(
+            Op.loadConstant,
+            offset,
+            constantIndex(value),
+            cast(ushort) size(ScalarType.ulong_),
+        );
+        return offset;
     }
 
     private ScalarType scalarType(Type type) {
@@ -1413,6 +3677,110 @@ private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isString; // when set, `offset` holds a string-slice descriptor
+    // When set, `offset` holds a raw `size_t` pointer value (8 bytes) into
+    // VM-owned heap memory; `pointerElement` is the pointed-at element scalar,
+    // giving the stride for arithmetic, indexing, dereference, and slicing.
+    bool isPointer;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType
+        pointerElement;
+}
+
+// A dynamic-array local: its slice-descriptor frame offset and the element
+// type. `elementType` is the element scalar (for an array-of-arrays it is the
+// innermost element scalar); when `elementIsArray` is set the element is itself
+// a 16-byte slice descriptor (`int[][]`), so the outer element size is
+// `sliceDescriptorSize` and indexing yields an inner descriptor.
+private struct DynamicArrayLocal {
+    ushort offset;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
+    bool elementIsArray;
+}
+
+// An `outer[i]` element of an array-of-arrays local: the outer descriptor's
+// frame offset, the slot holding the index `i`, and the inner descriptor loaded
+// into a fresh slot. Reallocating the inner array (an append) must write the new
+// inner descriptor back into the outer block at index `i`.
+private struct OuterArrayElement {
+    ushort outerOffset;
+    ushort indexSlot;
+    DynamicArrayLocal inner;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.indexLoad1 : Op.indexLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerLoad1 : Op.pointerLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerStore1 : Op.pointerStore4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerSlice1 : Op.pointerSlice4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.indexStore1 : Op.indexStore4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.subSlice1 : Op.subSlice4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.sliceCopy1 : Op.sliceCopy4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.sliceEqual1 : Op.sliceEqual4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.appendElement1 : Op.appendElement4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.concatArrays1 : Op.concatArrays4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.dupArray1 : Op.dupArray4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
@@ -1629,6 +3997,150 @@ private imported!"quickbite.backends.bytecode.core.program".Op
     }
 }
 
+// The 8-byte unsigned relational opcode for a `size_t`/`ulong` comparison
+// (e.g. a `foreach` index against `.length`).
+private imported!"quickbite.backends.bytecode.core.program".Op
+    unsignedComparisonOp8(
+        in imported!"dmd.tokens".EXP op,
+    ) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    import dmd.tokens: EXP;
+
+    switch (op) with (EXP) {
+        case lessThan: return Op.lessThanUnsigned8;
+        case lessOrEqual: return Op.lessOrEqualUnsigned8;
+        case greaterThan: return Op.greaterThanUnsigned8;
+        case greaterOrEqual: return Op.greaterOrEqualUnsigned8;
+        default: assert(0, "Unsupported unsigned 8-byte comparison operator.");
+    }
+}
+
+// The comparison opcode for a pointer relation: identity and equality compare
+// the raw 8-byte addresses, relations compare them as unsigned `size_t`.
+private imported!"quickbite.backends.bytecode.core.program".Op
+    pointerComparisonOp(in string operator) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+
+    switch (operator) {
+        case "==", "is": return Op.equal8;
+        case "!=", "!is": return Op.notEqual8;
+        case "<": return Op.lessThanUnsigned8;
+        case "<=": return Op.lessOrEqualUnsigned8;
+        case ">": return Op.greaterThanUnsigned8;
+        case ">=": return Op.greaterOrEqualUnsigned8;
+        default: assert(0, "Unsupported pointer comparison operator.");
+    }
+}
+
+// The relational operator a pointer comparison renders in a failure message:
+// identity `is`/`!is` render as `==`/`!=`, which `invertedOperator` understands.
+private string normalisedPointerOperator(in string operator)
+    @safe @nogc nothrow pure {
+    switch (operator) {
+        case "is": return "==";
+        case "!is": return "!=";
+        default: return operator;
+    }
+}
+
+// DMD lowers associative-array operations to druntime template hooks in
+// `core.internal.newaa` and `object`; the core intercepts them at the call site
+// and operates on its VM-owned map table instead of executing the hook bodies.
+private enum AssocArrayHook {
+    none,
+    length,
+    getRvalue,
+    getLvalue,
+    in_,
+    remove,
+    equal,
+    dup,
+    keys,
+    values,
+}
+
+private AssocArrayHook assocArrayHook(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null || function_.parent is null ||
+        function_.parent.isTemplateInstance is null)
+        return AssocArrayHook.none;
+
+    const name = text(function_.toPrettyChars);
+    static immutable hooks = [
+        Hook("core.internal.newaa._d_aaLen!(", AssocArrayHook.length),
+        Hook("core.internal.newaa._d_aaGetRvalueX!(", AssocArrayHook.getRvalue),
+        Hook("core.internal.newaa._d_aaGetY!(", AssocArrayHook.getLvalue),
+        Hook("core.internal.newaa._d_aaIn!(", AssocArrayHook.in_),
+        Hook("core.internal.newaa._d_aaDel!(", AssocArrayHook.remove),
+        Hook("core.internal.newaa._d_aaEqual!(", AssocArrayHook.equal),
+        Hook("object.dup!(", AssocArrayHook.dup),
+        Hook("object.keys!(", AssocArrayHook.keys),
+        Hook("object.values!(", AssocArrayHook.values),
+    ];
+
+    foreach (candidate; hooks)
+        if (name.startsWith(candidate.prefix))
+            return candidate.hook;
+
+    return AssocArrayHook.none;
+}
+
+private struct Hook {
+    string prefix;
+    AssocArrayHook hook;
+}
+
+// The druntime `_d_arraybounds*` bounds-failure helper, the false branch of
+// DMD's `m[k]` lowering. Matched by name; reaching it means a missing key.
+private bool isArrayBoundsCall(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+
+    return function_.ident !is null &&
+        function_.ident.toString.startsWith("_d_arraybounds");
+}
+
+// True for the druntime `core.internal.array.operations.arrayOp` template
+// instantiated with `["+", "="]`, the lowering of `dest[] = a[] + b[]`. Matched
+// by pretty name prefix and the template value arguments, like the interpreter.
+private bool isArrayOpAddAssign(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.dtemplate: isExpression;
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    auto instance = function_.parent is null
+        ? null
+        : function_.parent.isTemplateInstance;
+    if (instance is null || instance.tiargs is null)
+        return false;
+
+    if (!text(function_.toPrettyChars)
+            .startsWith("core.internal.array.operations.arrayOp!("))
+        return false;
+
+    string[] operators;
+    foreach (argument; *instance.tiargs) {
+        auto expression = isExpression(argument);
+        if (expression is null)
+            continue;
+
+        auto literal = expression.isStringExp;
+        if (literal is null)
+            return false;
+
+        operators ~= operatorText(literal);
+    }
+
+    return operators == ["+", "="];
+}
+
 // A `_d_assert_fail` lowering: a `CallExp` carrying a leading operator
 // `StringExp` and the asserted operands. The explicit-message branch defers
 // these to compileLoweredComparisonAssert.
@@ -1653,12 +4165,37 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
     if (element is null)
         return false;
 
+    // Only an immutable char element is a `string`/`wstring`/`dstring`; a
+    // mutable `char[]` is an ordinary dynamic array with heap-backed storage.
+    if (!element.isImmutable)
+        return false;
+
     switch (element.toBasetype.ty) with (TY) {
         case Tchar, Twchar, Tdchar:
             return true;
         default:
             return false;
     }
+}
+
+// A non-string dynamic-array `T[]` call argument, passed by value as a 16-byte
+// slice descriptor.
+private bool isDynamicArrayArgument(
+    imported!"dmd.expression".Expression argument,
+) {
+    import dmd.astenums: TY;
+
+    return argument.type !is null &&
+        argument.type.toBasetype.ty == TY.Tarray &&
+        !isStringType(argument.type);
+}
+
+// True when `type` is a raw pointer `T*` (not a function pointer or delegate);
+// these flow through frame slots as a `size_t` address into VM-owned heap.
+private bool isPointerType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tpointer;
 }
 
 private bool isFloating(
@@ -1677,6 +4214,18 @@ private bool isEightByteInteger(
     import quickbite.backends.bytecode.core.program: ScalarType;
 
     return type == ScalarType.long_ || type == ScalarType.ulong_;
+}
+
+// The integer widths the compound-assign `addInt4`/`addInt8` opcodes cover.
+private bool isIntegerScalar(
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: ScalarType;
+
+    return type == ScalarType.int_ ||
+        type == ScalarType.uint_ ||
+        type == ScalarType.long_ ||
+        type == ScalarType.ulong_;
 }
 
 // Lower a float/double literal to the raw bits loadConstant copies: the
@@ -1807,4 +4356,32 @@ private string typeChars(imported!"dmd.mtype".Type type) {
     import std.conv: text;
 
     return text(type.toChars);
+}
+
+// The inline byte size and alignment of a static array, taken from DMD's
+// computed layout rather than reconstructed.
+private ulong staticArraySize(imported!"dmd.mtype".Type type) {
+    import dmd.typesem: size;
+    return size(type.toBasetype);
+}
+
+private uint staticArrayAlign(imported!"dmd.mtype".Type type) {
+    return type.toBasetype.alignsize;
+}
+
+// The string literal an expression denotes (through any casts), or null.
+private imported!"dmd.expression".StringExp stringLiteralOf(
+    imported!"dmd.expression".Expression expression,
+) {
+    if (auto cast_ = expression.isCastExp)
+        return stringLiteralOf(cast_.e1);
+
+    return expression.isStringExp;
+}
+
+private bool sameType(
+    imported!"dmd.mtype".Type lhs,
+    imported!"dmd.mtype".Type rhs,
+) {
+    return lhs.toBasetype.equals(rhs.toBasetype);
 }

@@ -42,22 +42,33 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     }
 }
 
-// The static type of a function result. Today either a scalar or a string;
-// the array slice is the leading edge of the future array subsystem, so its
-// own tag rather than overloading ScalarType. A string result is a slice
-// descriptor (byte offset and length into Program.data).
+// The static type of a function result: a scalar, a string, or a dynamic
+// array. A string result is a slice descriptor (byte offset and length into
+// Program.data); a dynamic-array result is a 16-byte {ptr, length} descriptor
+// (its backing memory stays alive through the machine's `heap` root), with
+// `elementType` giving the element scalar.
 package(quickbite.backends.bytecode) struct ResultType {
     ScalarType scalar;
     bool isString;
+    bool isArray;
+    ScalarType elementType;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
 // into Program.data followed by a uint length.
 package(quickbite.backends.bytecode) enum stringSliceSize = 8;
 
+// Bytes of a dynamic-array slice descriptor laid out in the frame: a native
+// `void* ptr` into VM-owned heap memory followed by a `size_t length`, matching
+// the x86-64 ABI representation of a `T[]`.
+package(quickbite.backends.bytecode) enum sliceDescriptorSize =
+    2 * size_t.sizeof;
+
 package(quickbite.backends.bytecode) uint size(in ResultType type)
     @safe @nogc nothrow pure
 {
+    if (type.isArray)
+        return sliceDescriptorSize;
     return type.isString ? stringSliceSize : size(type.scalar);
 }
 
@@ -79,6 +90,136 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     loadConstant, // a: destination frame offset, b: constant index, c: size
     loadRealConstant, // a: destination frame offset, b: real constant index
     loadStringSlice, // a: destination frame offset, b: data offset, c: length
+    // Copy `c` bytes from the read-only data segment at offset `b` into the
+    // inline static-array slot at frame offset `a` (a value-type byte copy).
+    loadStaticArray,
+    // Allocate `b * c` bytes of VM-owned writable heap, then write the slice
+    // descriptor {ptr, length} into the frame: a: descriptor offset, b: element
+    // size, c: element count (the length).
+    allocArray,
+    // Allocate `elementSize * length` bytes of VM-owned writable heap, filled
+    // with the element type's default-init byte, where `length` is a size_t read
+    // from frame offset c, then write the slice descriptor {ptr, length} into the
+    // frame at offset a. Operand b packs the fill byte in its high 8 bits and the
+    // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
+    // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
+    allocArrayDynamic,
+    // Allocate a two-dimensional array `new T[][](rows, cols)`: an outer block of
+    // `rows` 16-byte slice descriptors, each pointing at a fresh inner block of
+    // `cols` default-filled `T` elements. a: outer descriptor offset; b: packs
+    // the inner element's default-init fill byte (high 8 bits) and element size
+    // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
+    // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
+    allocArray2D,
+    // Resize the dynamic array whose descriptor is at frame offset a to the
+    // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
+    // block, copy the `min(oldLength, newLength)` existing elements, fill any
+    // growth with the element's default-init byte, root the block, and overwrite
+    // the descriptor with {newPtr, newLength}. Operand b packs the fill byte
+    // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
+    setArrayLength,
+    // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
+    nullSlice,
+    // Read the length word of the slice descriptor at frame offset b into the
+    // size_t slot at frame offset a.
+    sliceLength,
+    // Read element `c` (a size_t index in a frame slot) of the slice descriptor
+    // at offset b into the 1- or 4-byte element slot at frame offset a, bounds
+    // checked against the descriptor length.
+    indexLoad1,
+    indexLoad4,
+    // Read a 16-byte slice-descriptor element (`int[][]`'s element) at size_t
+    // index `c` of the outer descriptor at offset b into the descriptor slot at
+    // frame offset a, bounds checked against the outer length.
+    indexLoad16,
+    // Write the 1- or 4-byte element slot at frame offset a into element `c`
+    // (a size_t index in a frame slot) of the slice descriptor at offset b,
+    // bounds checked against the descriptor length.
+    indexStore1,
+    indexStore4,
+    // Write the 16-byte slice descriptor at frame offset a into element `c` (a
+    // size_t index in a frame slot) of the outer descriptor at offset b, bounds
+    // checked against the outer length. Backs storing an inner array into an
+    // array-of-arrays element.
+    indexStore16,
+    // Form a sub-slice descriptor sharing the source's backing memory:
+    // a: destination descriptor offset, b: source descriptor offset, c: offset
+    // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
+    // {srcPtr + lo * elemSize, hi - lo}; the element size is fixed by the
+    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    subSlice1,
+    subSlice4,
+    // Copy elements from the source slice descriptor at frame offset b into the
+    // destination slice descriptor at frame offset a, write-through to the
+    // destination's backing memory. The two lengths must match; overlapping
+    // backing ranges abort with the plain "Range violation" message. The
+    // element size is fixed by the opcode (1 or 4 bytes), matching the
+    // indexLoad/indexStore split.
+    sliceCopy1,
+    sliceCopy4,
+    // Compare the two slice descriptors at frame offsets b and c, writing one
+    // boolean byte to frame offset a: true iff their lengths and all element
+    // bytes are equal. The element size is fixed by the opcode (1 or 4 bytes).
+    sliceEqual1,
+    sliceEqual4,
+    // Append the element at frame offset b to the dynamic-array slice descriptor
+    // at frame offset a: allocate a fresh heap block of (length + 1) elements,
+    // copy the existing elements, write the new element, root the block, and
+    // overwrite the descriptor with {newPtr, length + 1}. Reallocating (rather
+    // than growing in place) matches compiled D, so a slice of an array is not
+    // corrupted by appending to a neighbour. The element size is fixed by the
+    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    appendElement1,
+    appendElement4,
+    // Concatenate the two slice descriptors at frame offsets b and c into a
+    // fresh heap block holding all of b's elements followed by all of c's, then
+    // write the descriptor {newPtr, len(b) + len(c)} to frame offset a. The
+    // block is rooted in `heap`. Both operands are copied, so the originals are
+    // untouched (`a ~ b` makes a NEW array). The element size is fixed by the
+    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    concatArrays1,
+    concatArrays4,
+    // Duplicate the slice descriptor at frame offset b into a fresh heap block
+    // holding an independent copy of all its elements, then write the
+    // descriptor {newPtr, length} to frame offset a. The block is rooted in
+    // `heap`. Mutating either array leaves the other intact (`arr.dup` /
+    // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
+    dupArray1,
+    dupArray4,
+    // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
+    // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
+    // integer elements and write the sum through the destination's backing
+    // memory. All three lengths must match. Backs the druntime arrayOp ["+","="]
+    // lowering.
+    arrayAddAssign4,
+    // Read the element at `[pointer + index * elementSize]` into the 1- or
+    // 4-byte slot at frame offset a, where the raw `size_t` pointer value is at
+    // frame offset b and the `size_t` index at frame offset c. Backs `*p` (index
+    // 0) and `p[i]` through a pointer into VM-owned heap memory; unchecked, like
+    // compiled D. The element size is fixed by the opcode (1 or 4 bytes).
+    pointerLoad1,
+    pointerLoad4,
+    // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
+    // elementSize]`, where the raw `size_t` pointer value is at frame offset b
+    // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
+    // `p[i] = v` through a pointer into VM-owned memory; unchecked, like compiled
+    // D. The element size is fixed by the opcode (1 or 4 bytes).
+    pointerStore1,
+    pointerStore4,
+    // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
+    // offset a from the raw `size_t` pointer value at frame offset b and an
+    // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
+    // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
+    // element size is fixed by the opcode (1 or 4 bytes).
+    pointerSlice1,
+    pointerSlice4,
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned 8-byte
+    // comparison). Back raw pointer-value relations `p < q`, `p <= q`, `p > q`,
+    // `p >= q`, which compare as `size_t`.
+    lessThanUnsigned8,
+    lessOrEqualUnsigned8,
+    greaterThanUnsigned8,
+    greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
@@ -86,6 +227,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    mulInt4, // a: destination frame offset, b: lhs, c: rhs (4-byte integer)
+    mulInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
+    subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
@@ -97,6 +243,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >=)
     greaterOrEqualUnsigned4,
     notEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (4-byte !=)
+    notEqual8, // a: destination (one boolean byte), b: lhs, c: rhs (8-byte !=)
     equalFloat, // a: destination (one boolean byte), b: lhs, c: rhs
     equalDouble,
     equalReal,
@@ -157,6 +304,31 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
     haltUnittest,
+    // Associative-array hooks operating on VM-owned `int[int]` maps. A `T[K]`
+    // local's 8-byte slot holds a `size_t` handle: a 1-based index into the
+    // machine's map table, or 0 for a not-yet-created (empty) map. The map table
+    // is rooted by the machine, keeping every entry's keys/values alive.
+    aaNew, // a: handle slot; create a fresh empty map and write its handle
+    aaLength, // a: size_t result, b: handle slot; entry count (0 if handle 0)
+    // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
+    // map on first insert into an empty (handle-0) local, writing the handle back.
+    aaInsert,
+    // a: size_t pointer result, b: handle slot, c: key slot; the address of the
+    // value for the key (into VM-owned memory) or 0 when the key is absent. Both
+    // the `m[k]` rvalue read and `k in m` lower to this: DMD's `m[k]` lowering
+    // wraps it in a null check that raises "Range violation" on a missing key.
+    aaGetRvalue,
+    aaIn,
+    // a: bool result, b: handle slot, c: key slot; remove the key, result true
+    // iff it was present.
+    aaRemove,
+    // a: bool result, b: handle slot, c: handle slot; entry-set equality.
+    aaEqual,
+    aaDup, // a: handle slot result, b: handle slot; an independent copy
+    // a: 16-byte slice-descriptor result, b: handle slot; a fresh heap block (an
+    // `int[]`) holding a copy of the map's keys / values.
+    aaKeys,
+    aaValues,
     throwString, // a: frame offset of a string-slice descriptor
     ret, // a: frame offset of the return value
 }
@@ -168,13 +340,14 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort c;
 }
 
-// A scalar pass-by-reference parameter: its slot in the callee frame holds the
-// referenced value, but the matching word in the caller's argument area holds
-// the caller-frame offset of the argument. The machine dereferences that
-// offset on entry and writes the slot back to it on return.
+// A pass-by-reference parameter: its slot in the callee frame holds the
+// referenced value (a scalar, or a 16-byte slice descriptor for a `ref T[]`),
+// but the matching word in the caller's argument area holds the caller-frame
+// offset of the argument. The machine dereferences that offset on entry and
+// writes the slot back to it on return.
 package(quickbite.backends.bytecode) struct RefParameter {
     ushort offset; // the parameter's frame offset (also its argument-area word)
-    ScalarType type; // the referenced scalar's type, giving the value's size
+    uint valueSize; // bytes of the referenced value, copied in and written back
 }
 
 package(quickbite.backends.bytecode) struct CompiledFunction {
@@ -192,6 +365,9 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     ushort lhs;
     ushort rhs;
     ScalarType operandType;
+    // When set, lhs/rhs are slice-descriptor offsets and operandType is the
+    // element type; the operands render as `[e0, e1, ...]`.
+    bool isArray;
 }
 
 package(quickbite.backends.bytecode) struct Program {

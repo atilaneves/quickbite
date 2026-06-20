@@ -903,6 +903,16 @@ switch; `Bytecode` still defaults to the old core):
   `evaluatesRuntimePowFloatInputs` block was deliberately not promoted
   because it lacks a `SystemLinker` oracle due to the dmd-as-a-library
   template-emission issue recorded in `ai/plans/dmd-backend.md`.
+- All SystemLinker-backed `tests/ut/backends/runner/ct/arrays.d` blocks,
+  completing `arrays.d` (module order 8) on the new core (53/53 promoted,
+  see the arrays analysis section). This is the native-layout memory model
+  realised: dynamic arrays as `{ptr, length}` slice descriptors over GC-heap
+  blocks with real element addresses, static-array inline storage, slices and
+  pointers with true write-through aliasing (the cases a snapshot model cannot
+  pass), append/concat/`dup`/`new`/resize/element-wise ops, and `int[int]`
+  associative arrays via druntime-hook call-site interception against a
+  VM-owned map table. The 5 `Ctfe, Interpreter`-only CTFE-divergence blocks
+  remain unpromoted (no `SystemLinker` oracle).
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -912,16 +922,18 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), and `math.d` (7) are now complete on the new core
-(see Rewrite Coverage State). Continue with `arrays.d` (module order 8),
-promoting one named behaviour or one tight failure-message family at a time.
-The float/builtin/string-slice machinery earned for `eval.d` and `math.d`,
-logical/comparison/short-circuit machinery earned for `logic.d`, narrow
-throw/result plumbing earned for `results.d`, and the comparison-operator /
+(5), `diagnostics.d` (6), `math.d` (7), and `arrays.d` (8) are now complete on
+the new core (see Rewrite Coverage State). Continue with `structs.d` (module
+order 9), promoting one named behaviour or one tight failure-message family at
+a time. The float/builtin/string-slice machinery earned for `eval.d` and
+`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
+narrow throw/result plumbing earned for `results.d`, the comparison-operator /
 ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d` are now available to the later modules. Array and slice
-behaviour should still be earned directly on the typed-frame core, not through
-old-core promotions.
+`diagnostics.d`, and the native-layout array/slice/pointer/AA machinery earned
+for `arrays.d` are now available to the later modules. Struct behaviour should
+still be earned directly on the typed-frame core, not through old-core
+promotions; the DMD field-offset/native-layout discipline used for arrays is
+the same authority structs need.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
@@ -1857,3 +1869,387 @@ next begins. The recommended order is:
 
 After all six items, `diagnostics.d` is complete on `BytecodeNewCore`
 (26/26, modulo the deliberately deferred Group C tests).
+
+## arrays.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-oracle-backed blocks in
+`tests/ut/backends/runner/ct/arrays.d` have been promoted to include
+`BytecodeNewCore` in their `AliasSeq`. 53 `BytecodeNewCore` tests now
+exist. 3 pass unchanged:
+`assertDiagnostic.integerEquality`,
+`assertDiagnostic.characterEquality`, and
+`assertDiagnostic.booleanEquality`. These exercise only scalar
+`assert(42 == 43)` / `assert('e' == 'f')` / `assert(true == false)`
+forms that the new core already handles via its typed scalar comparison
+and assertion-diagnostic paths — no array types appear in them.
+
+The remaining 50 failures group into 4 root-cause failure modes. The
+blocking site in all non-AA cases is `scalarType()` in `compiler.d`,
+which has no branch for `Tarray`, `Tsarray`, or `Taarray` and throws
+`"Unsupported type in bytecode core: T"` at the first array-typed
+local, parameter, or expression. The AA failures hit the same gate
+for `Taarray`.
+
+All four modes touch the same shared files
+(`source/quickbite/backends/bytecode/core/{program,compiler,machine,
+reify}.d`). Subagents **must run sequentially**, each building on the
+previous committed state.
+
+### Failure mode 1: Dynamic-array slice descriptor missing
+
+**Root cause:** `scalarType()` in `compiler.d` has no `Tarray` case.
+A dynamic array is a `{void* ptr, size_t length}` slice descriptor in
+native frame memory — 16 bytes on x86-64 (two `size_t` words). Until
+`ResultType` and the frame-allocation path recognise slice descriptors,
+every `T[]` local, parameter, return type, or expression sub-result
+immediately throws. This single gate blocks 36 tests.
+
+Within the slice-descriptor type, the required expressions are built up
+in dependency order: the simplest (array literals → heap allocation +
+descriptor write) must exist before indexing, and indexing before
+slicing and pointer arithmetic. The three tests that specifically
+motivated the native-layout memory model appear here:
+`dynamicArray.nestedSliceWritesPropagateToOriginalArray` (a nested
+slice `s2[0] = 99` must propagate to the original `a[1]` through
+shared real memory — a snapshot model can never pass this),
+`dynamicArray.nestedSliceAppendKeepsOriginalArrayTail` (slice append
+must leave original array tail intact via real GC heap addresses), and
+`pointer.arithmeticOverDynamicArray` (pointer arithmetic over
+`&values[0]` requires a real address into VM-owned heap memory).
+
+**Failing tests (36):**
+`assertDiagnostic.arrayElementMismatch`,
+`assertDiagnostic.arrayLengthMismatch`,
+`dynamicArray.lengthCases`,
+`dynamicArray.literalElements`,
+`dynamicArray.ubyteLiteralTruncatesElements`,
+`dynamicArray.indexReadWrite`,
+`dynamicArray.postIncrementIndex`,
+`dynamicArray.localAppend`,
+`dynamicArray.appendToNonEmptyArray`,
+`dynamicArray.refParameterAppend`,
+`dynamicArray.concatenation`,
+`dynamicArray.elementConcatenatesWithArray`,
+`dynamicArray.sliceFromRuntimeBounds`,
+`dynamicArray.nullZeroLengthSlice`,
+`dynamicArray.nestedSliceWritesPropagateToOriginalArray`,
+`dynamicArray.nestedSliceAppendKeepsOriginalArrayTail`,
+`dynamicArray.sliceAssignmentUpdatesArray`,
+`dynamicArray.overlappingSliceAssignmentDiagnostic`,
+`dynamicArray.sliceIndexPastLengthDiagnostic`,
+`dynamicArray.indexPastLengthDiagnostic`,
+`dynamicArray.returnValue`,
+`dynamicArray.sliceReturnValue`,
+`dynamicArray.indexesCallResult`,
+`dynamicArray.newCharArrayUsesRuntimeLengthAndDefaultFill`,
+`dynamicArray.dupDetachesCopyFromOriginal`,
+`dynamicArray.idupFreezesIndependentCopy`,
+`dynamicArray.ptrPointsAtFirstElement`,
+`dynamicArray.jaggedRowsKeepIndependentLengths`,
+`dynamicArray.lengthAssignmentResizesArray`,
+`dynamicArray.arrayOperationAddsRuntimeElements`,
+`pointer.arithmeticOverDynamicArray`,
+`pointer.indexReadsDynamicArray`,
+`pointer.comparisonWithinArray`,
+`pointer.relationsAcrossArraysReturnFalse`,
+`pointer.sliceFromDynamicArray`,
+`pointer.slicePastAllocatedBlockDiagnostic`.
+
+**Oracle behavior:** Dynamic arrays allocate on the GC heap; slice
+descriptors share the same backing memory, so writes through one slice
+propagate to all aliases. `.length` reads the descriptor length word.
+Indexing bounds-checks via druntime and throws `"index [N] is out of
+bounds for array of length M"` (the compiled-D `ArrayIndexError` text,
+not the CTFE wording). Overlapping slice assignment throws `"Range
+violation"`. Appending through `~=` calls `_d_arrayappendT`; `~`
+concatenation calls `_d_arraycatT`. Pointer arithmetic is plain
+machine arithmetic over `void*`; slicing from a pointer is
+unchecked (the allocated-block diagnostic is CTFE-only, so
+`pointer.slicePastAllocatedBlockDiagnostic` is a passing-fixture test
+for `BytecodeNewCore`).
+
+**Required implementation:** This mode drives the largest share of the
+slice-5 design. In dependency order within the mode:
+
+- `program.d` — extend `ResultType` with a slice-descriptor kind
+  (element `ScalarType` plus a dynamic-array tag); add
+  `sliceDescriptorSize = 2 * size_t.sizeof` (16 bytes). No new
+  `ScalarType` enum member: the descriptor is a composite, not a
+  scalar. Add opcodes for slice descriptor operations: `loadSlice`
+  (write `{ptr, length}` to a frame slot from a heap pointer and
+  length), `indexLoad` (typed element read from `ptr + index *
+  elemSize`), `indexStore` (typed element write), `sliceLength` (read
+  the length word), `slicePtr` (read the ptr word), `subSlice` (form
+  a new descriptor `{ptr + lo*elemSize, hi - lo}`), `appendElement`
+  (call druntime lowering and update the descriptor in the caller's
+  frame), `concatSlices` / `concatElement` (druntime concat),
+  `dupSlice` / `idupSlice` (copy + freeze), `setLength` (resize via
+  druntime), `sliceRangeAssign` (mem-copy with overlap check at
+  runtime → `"Range violation"`), `arrayOpAdd` (element-wise
+  addition for `sums[] = left[] + right[]`).
+- `compiler.d` — add a `sliceType()` helper parallel to `scalarType()`
+  mapping `Tarray T` to `(element ScalarType, isDynamic=true)`; add
+  `Tarray` handling in `compileVariableDeclaration` (allocate 16
+  bytes for the descriptor; compile an `ArrayLiteralExp` initializer
+  to heap-allocate and write the descriptor), `compileExpression`
+  (handle `ArrayLiteralExp`, `SliceExp`, `IndexExp`, `PtrExp`,
+  `CatExp`, `CatAssignExp`, `DotExp.length`, `DotExp.ptr`,
+  `AddressExp` over an indexed element, `NewExp` for `new T[](n)`,
+  `DotExp.dup`/`.idup`), and `compileAssert` (extend to recognise
+  slice-equality comparison in `_d_assert_fail` context for the
+  `[1,2,3] != [1,2,4]` diagnostic). Parameters of slice type pass the
+  16-byte descriptor by value (copy both words into the argument
+  area); `ref T[]` parameters pass the caller-frame offset of the
+  descriptor (extending the existing scalar ref-param mechanism to
+  16-byte composite descriptors).
+- `machine.d` — add handlers for each new opcode. The `call` handler
+  already copies `parameterBytes` into the callee frame; no change
+  needed for value slice parameters once the descriptor size is
+  correct. The ref-param writeback path extends to copy 16 bytes
+  back. Bounds-check handlers for `indexLoad`/`indexStore` throw a
+  native `ArrayIndexError` through the existing exception path.
+  Overlap-check in `sliceRangeAssign` throws `"Range violation"`.
+  Pointer arithmetic opcodes read the `ptr` word, add
+  `offset * elemSize`, write a new `ptr` word.
+- `reify.d` — extend `reify()` to handle a slice-descriptor
+  `ResultType`: read `{ptr, length}` from frame bytes, render elements
+  as a `Value` array for the `Evaluator` boundary display.
+
+### Failure mode 2: Static-array inline storage missing
+
+**Root cause:** `scalarType()` has no `Tsarray` case. A static array
+`T[N]` lives entirely in the frame at its DMD-computed offset and size
+(`N * T.sizeof`, aligned per DMD's `VarDeclaration.offset`); no heap
+allocation occurs. `char[2] first = "ab"` allocates 2 bytes inline in
+the frame and copies the string bytes in. The existing string-literal
+path (`loadStringSlice`) stores a slice descriptor (heap pointer +
+length), which is the wrong representation for a static array: static
+arrays are value types with no indirection, so writes to `first[0]`
+must not affect any other variable.
+
+**Failing tests (3):**
+`dynamicArray.mutableStringLiteralCopiesDoNotShareWrites`
+(`char[2] first = "ab"; first[0] = 'z';`),
+`staticArray.copyFromRuntimeArrayUsesArrayCtor` (`int[2] copy =
+source;`),
+`staticArray.multidimensionalSliceBlockAssignRepeatsRow` (`int[2][2]
+matrix;`).
+
+**Oracle behavior:** `char[2] first = "ab"; first[0] = 'z';` must not
+affect a later `char[2] second = "ab"` — each declaration copies the
+literal bytes into its own private inline frame storage. `int[2] copy
+= source` copies all `N * sizeof(T)` bytes from source into the
+destination frame slot (`_d_arraycopy` semantics, but for value-type
+static arrays this is a plain `memcpy`). `matrix[] = [first, first+1]`
+broadcasts a one-dimensional literal to each row of a
+two-dimensional static array in place.
+
+**Required implementation:**
+- `program.d` — add opcodes `loadStaticArray` (copy `N * elemSize`
+  bytes from a constant-pool entry or another frame slot into the
+  destination frame slot), `indexLoadStatic` / `indexStoreStatic`
+  (read/write an element at compile-time-known or runtime `index *
+  elemSize` offset within the inline block), `broadcastRow` (for
+  `matrix[] = [elem, elem+1]` — copy a row literal `N` times into
+  the inline block). Static arrays have no pointer/length words; the
+  type carries `N` and the element `ScalarType`.
+- `compiler.d` — add a `staticArrayType()` helper for `Tsarray`,
+  returning `(element ScalarType, length uint)`; handle it in
+  `compileVariableDeclaration` (reserve `N * elemSize` frame bytes),
+  `ArrayLiteralExp` when the target is a `Tsarray` (emit element
+  stores into the frame slot), `IndexExp` over a static-array local
+  (emit `indexLoadStatic`/`indexStoreStatic`), and the `T[N]
+  dest = src` assignment path (emit a block `copy` of `N * elemSize`
+  bytes). Initializing a `char[N]` from a `StringExp` literal copies
+  the string bytes directly (no slice descriptor).
+- `machine.d` — add handlers for `indexLoadStatic`,
+  `indexStoreStatic`, `broadcastRow`. These are direct frame-offset
+  arithmetic — no heap involvement.
+- `reify.d` — extend to handle a static-array `ResultType` if any
+  test exercises it as an eval result (none currently, but add a
+  stub).
+
+### Failure mode 3: `size_t` compound assignment not supported
+
+**Root cause:** `compileAddAssignExpression` in `compiler.d` (lines
+607–614) checks `lhs.type != ScalarType.int_ || rhs.type !=
+ScalarType.int_` and throws `"Unsupported compound assignment in
+bytecode core"` for any non-`int_` type. On x86-64 `size_t` is
+`ulong`, so `++len` lowers to `len += 1LU` where both sides have
+`ScalarType.ulong_`. The existing `addInt8` opcode (added for `long_`
+arithmetic) already handles 8-byte integer addition in `machine.d`;
+this mode requires only relaxing the gate in `compiler.d`.
+
+**Failing tests (2):**
+`dynamicArray.newUsesRuntimeLength` (`size_t len = 1; ++len;`
+before `new int[](len)`) and
+`dynamicArray.newMultidimensionalUsesRuntimeLengths`
+(`size_t rows = 1; ++rows;` before `new int[][](rows, cols)`).
+
+Note: both tests also require mode-1 array support to reach
+completion, so they are blocked first by this mode and then by mode 1.
+
+**Oracle behavior:** `++len` on a `size_t` local increments it from 1
+to 2; the resulting value is passed as the `new int[]` length.
+
+**Required implementation:**
+- `compiler.d` — in `compileAddAssignExpression`, relax the
+  scalar-type check to also accept `ScalarType.ulong_` (the
+  `size_t`-width case on x86-64). Emit `Op.addInt8` when the type is
+  `ulong_` (or `long_`), `Op.addInt4` when `int_` (or `uint_`). No
+  new opcodes; `addInt8` already exists in `program.d` and
+  `machine.d`. If the compound-assign lvalue type is `uint_`, it
+  should also be accepted (emitting `addInt4`).
+- No `program.d` or `machine.d` changes needed.
+
+### Failure mode 4: Associative-array type not recognised
+
+**Root cause:** `scalarType()` has no `Taarray` case. Every test in
+the `assocArray.*` group uses a local of type `int[int]`, causing an
+immediate throw before any AA operation can be attempted. The
+`Interpreter` backend handles AAs via call-site interception against
+its own managed map structure; for the new core, the same druntime
+AA runtime (`_d_aaGetY`, `_d_aaLen`, `_d_aaGetRvalue`, `_d_aaDelX`,
+`_d_aaDup`, the `in` operator via `_d_aaInX`) is the correct target.
+Per the design, the druntime templates whose bodies are available as
+source are executed by the VM; for POD key/value types (all tests here
+use `int`) the AA leaves bottom out in `GC.malloc` and related
+primitives, which go through the native bridge.
+
+**Failing tests (9):**
+`assocArray.literalKeepsRuntimeKeysAndValues`,
+`assocArray.literalKeepsLastDuplicateRuntimeKey`,
+`assocArray.keysAndValuesUseRuntimeLiteral`,
+`assocArray.inFindsRuntimeKey`,
+`assocArray.equalityComparesRuntimeEntries`,
+`assocArray.removeRuntimeKey`,
+`assocArray.dupCopiesEntries`,
+`assocArray.insertionGrowsAndOverwrites`,
+`assocArray.readMissingKeyThrowsDiagnostic`.
+
+**Oracle behavior:** `int[int] values = [k1: v1, k2: v2]` builds a
+live AA; `values[k]` reads a value (throwing `"Range violation"` for
+missing keys — the compiled-D druntime text, not the CTFE key-name
+wording); `k in values` returns a pointer or null; `values.remove(k)`
+removes and returns bool; `values.dup` copies entries; `values.keys`
+and `values.values` return slices; `values == same` compares entry
+sets.
+
+**Required implementation:** AAs are the most complex feature here
+because they require both a type-descriptor representation and
+call-site interception. In the native-layout model, a `T[K]` local is
+a single `void*` (the druntime `AA` handle — 8 bytes on x86-64). The
+VM stores this pointer in a frame slot, passes it to druntime AA
+functions, and reads the handle back from the same slot.
+
+- `program.d` — add an `AssocArrayType` descriptor (key `ScalarType`,
+  value `ScalarType`); add opcodes for each AA operation:
+  `aaLiteral` (build from key-value pairs), `aaIndex` (lookup,
+  throws on miss), `aaIn` (lookup, returns nullable pointer),
+  `aaRemove`, `aaLength`, `aaKeys`, `aaValues`, `aaDup`, `aaEqual`,
+  `aaAssign` (insert/overwrite). Alternatively — and more consistent
+  with the plan's call-site-interception approach — compile each AA
+  operation as a `call` to the appropriate druntime template function
+  (`_d_aaGetY` etc.) once those templates are in scope. The simpler
+  initial approach is direct VM opcode interception.
+- `compiler.d` — add `Taarray` handling in `scalarType()` (or a
+  parallel `aaType()` helper), reserve 8 bytes (one pointer) in the
+  frame for an AA local, compile `AssocArrayLiteralExp`, `IndexExp`
+  over an AA, `InExp`, dot-call expressions for `.remove`,
+  `.length`, `.keys`, `.values`, `.dup`, and `EqualExp` over two AAs.
+- `machine.d` — add handlers for each AA opcode (or route through
+  the native bridge to druntime).
+- `reify.d` — stub or full AA reification for the `Evaluator`
+  boundary (no `assocArray.*` test exercises the eval surface, so a
+  minimal stub that renders `"int[int]"` is acceptable for now).
+
+### Subagent partition (dependency-ordered, sequential)
+
+All four modes touch the same shared core files
+(`source/quickbite/backends/bytecode/core/{program,compiler,machine,
+reify}.d`). No parallelism is possible: each subagent must commit
+before the next begins. The recommended dependency order is
+3 → 2 → 1 → 4 (simplest fix first, deepest work last):
+
+1. **`size_t` compound assignment** (failure mode 3) — fixes 2 tests,
+   zero new opcodes, one relaxed gate. Run first: it is logically
+   independent but both tests also need mode-1 array support; fixing
+   this early keeps the delta for later commits small.
+2. **Static-array inline storage** (failure mode 2) — fixes 3 tests.
+   Static arrays are simpler than dynamic: no heap, no descriptor,
+   no druntime calls. They are blocked by mode 3 in the
+   `mutableStringLiteralCopiesDoNotShareWrites` test (which uses a
+   `char[2]` local, not a compound assignment — mode 3 doesn't block
+   it), so this can run right after step 1. Implement `Tsarray` frame
+   allocation, inline element read/write, and string-to-char-array
+   initialisation.
+3. **Dynamic-array slice descriptor + all expressions** (failure mode
+   1) — fixes 36 tests. This is the bulk of slice-5 and should be
+   implemented in internal sub-slices within one subagent, each
+   committed separately: (a) slice descriptor type + array-literal
+   heap allocation + index read + `.length` (basic: fixes
+   `lengthCases`, `literalElements`, `ubyteLiteralTruncatesElements`,
+   `indexReadWrite`, `postIncrementIndex` and the two
+   `assertDiagnostic` tests); (b) slices and aliasing (`SliceExp`,
+   range-assignment, overlap check — fixes `sliceFromRuntimeBounds`,
+   `nullZeroLengthSlice`, `nestedSliceWritesPropagateToOriginalArray`,
+   `sliceAssignmentUpdatesArray`, `overlappingSliceAssignmentDiagnostic`,
+   bounds-error diagnostics); (c) append and concatenation
+   (`~=`, `~`, `dup`, `idup` — fixes `localAppend`,
+   `appendToNonEmptyArray`, `refParameterAppend`, `concatenation`,
+   `elementConcatenatesWithArray`, `dupDetachesCopyFromOriginal`,
+   `idupFreezesIndependentCopy`, `nestedSliceAppendKeepsOriginalArrayTail`);
+   (d) `new T[](n)`, `.length = n`, element-wise array ops,
+   jagged / multidimensional arrays, return values, function
+   parameters, `.ptr` and pointer arithmetic (fixes remaining).
+4. **Associative arrays** (failure mode 4) — fixes 9 tests. Runs
+   last: AAs depend on having a working GC heap and druntime
+   interception path that mode 1 establishes first.
+
+The following 5 blocks remain out of scope for `BytecodeNewCore` and
+are **not promoted**:
+
+- `dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe`
+  (`Ctfe, Interpreter` only) — the CTFE-specific `"overlapping slice
+  assignment [1..3] = [0..2]"` diagnostic text is not produced by
+  compiled D; `BytecodeNewCore` targets the `SystemLinker` oracle.
+- `dynamicArray.sliceIndexPastLengthDiagnostic` (CTFE variant,
+  `Ctfe, Interpreter` only) — `"index 3 exceeds array length 2"` is
+  CTFE wording; the compiled form `"index [3] is out of bounds for
+  array of length 2"` is already in the promoted set above.
+- `dynamicArray.indexPastLengthDiagnostic` (CTFE variant, same
+  reason).
+- `assocArray.readMissingKeyThrowsDiagnostic` (CTFE variant,
+  `Ctfe, Interpreter` only) — the `"key \`absent\` not found"` text
+  is CTFE-only; the `SystemLinker` form is in the promoted set.
+- `pointer.slicePastAllocatedBlockDiagnostic` (CTFE variant, same
+  block structure as above — the compiled fixture passes silently and
+  is already in the promoted set).
+
+Note: the blocks listed as out-of-scope above are the `Ctfe,
+Interpreter`-only instantiations; the `BytecodeNewCore, SystemLinker,
+LLVMJit` instantiations of the same fixture are already promoted and
+are included in the failing-test counts above.
+
+**Completed implementation:** All 53 promoted `arrays.d` tests pass on
+`BytecodeNewCore` (focused run `53 test(s) run, 0 failed`; full suite green
+under `--random`). The new core now models dynamic arrays as native
+`{void* ptr, size_t length}` slice descriptors (16 bytes) in frame memory
+backed by GC heap blocks rooted in the machine's `heap` table, with element
+addresses computed as real `ptr + index*elemSize` so slice/pointer aliasing
+and write-through are real memory by construction. Earned in dependency-ordered
+sub-slices, each committed green: static-array inline storage; `size_t`
+compound assignment; dynamic-array descriptor + literals + index + `.length`;
+sub-slicing + aliasing + bounds diagnostics; slice range-assignment + overlap
+(`"Range violation"`) + array `==` operand rendering; array returns,
+parameters, and call-result indexing; element append `~=` (reallocating, with
+`ref T[]` writeback); concat `~` and `.dup`/`.idup`; `new T[](n)`,
+multidimensional `new`, jagged rows, `.length =` resize, and element-wise
+`dest[] = a[] + b[]`; `.ptr`/`&arr[i]`, deref, pointer arithmetic (DMD
+pre-scales the integer operand), pointer indexing/slicing, and pointer
+comparisons/relations; and associative arrays (`int[int]`) via call-site
+interception of the druntime AA hooks (`_d_aaGetY`, `_d_aaGetRvalueX`,
+`_d_aaIn`, `_d_aaDel`, `_d_aaLen`, `_d_aaEqual`, `object.dup`/`keys`/`values`)
+against a VM-owned map table referenced by an 8-byte handle. The 5 `Ctfe,
+Interpreter`-only CTFE-divergence blocks remain unpromoted (no `SystemLinker`
+oracle).
