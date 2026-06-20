@@ -160,7 +160,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
-            case indexStore1, indexStore4:
+            case indexStore1, indexStore4, indexStore16:
                 const storeSize = elementSize(instruction.op);
                 // Non-const: the heap element is written through this pointer.
                 auto storeElement = elementAddress(
@@ -976,7 +976,7 @@ private uint elementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op, sliceDescriptorSize;
-    if (op == Op.indexLoad16)
+    if (op == Op.indexLoad16 || op == Op.indexStore16)
         return sliceDescriptorSize;
     return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
 }

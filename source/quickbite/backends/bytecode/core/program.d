@@ -130,6 +130,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // bounds checked against the descriptor length.
     indexStore1,
     indexStore4,
+    // Write the 16-byte slice descriptor at frame offset a into element `c` (a
+    // size_t index in a frame slot) of the outer descriptor at offset b, bounds
+    // checked against the outer length. Backs storing an inner array into an
+    // array-of-arrays element.
+    indexStore16,
     // Form a sub-slice descriptor sharing the source's backing memory:
     // a: destination descriptor offset, b: source descriptor offset, c: offset
     // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is

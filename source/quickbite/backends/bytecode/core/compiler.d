@@ -775,6 +775,35 @@ private struct Compiler {
             ));
 
         const count = literal.elements is null ? 0 : literal.elements.length;
+
+        // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
+        // array, stored as a 16-byte descriptor. Build each inner array into a
+        // fresh descriptor slot and store it into the outer block.
+        if (elementIsArray) {
+            _code ~= Instruction(
+                Op.allocArray,
+                destination,
+                cast(ushort) sliceDescriptorSize,
+                cast(ushort) count,
+            );
+
+            foreach (elementIndex; 0 .. count) {
+                const inner =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                compileDynamicArrayInto(
+                    inner, elementType, (*literal.elements)[elementIndex],
+                );
+                const index = compileSizeConstant(elementIndex);
+                _code ~= Instruction(
+                    Op.indexStore16,
+                    inner,
+                    destination,
+                    index,
+                );
+            }
+            return;
+        }
+
         const elementSize = size(elementType);
         _code ~= Instruction(
             Op.allocArray,
@@ -1347,6 +1376,29 @@ private struct Compiler {
     // known dynamic-array local (or ref parameter); the appended descriptor
     // yields the array as the expression result.
     private Operand compileAppendElement(CatElemAssignExp append) {
+        // `outer[i] ~= x` for an array-of-arrays element: the inner descriptor is
+        // materialised into a fresh slot, so the reallocated descriptor must be
+        // written back into the outer block's element `i`. Other rows keep their
+        // own backing memory untouched.
+        if (auto outerElement = outerArrayElement(append.e1)) {
+            const value = compileExpression(append.e2);
+            const elementSize = size(outerElement.inner.elementType);
+            _code ~= Instruction(
+                appendElementOp(elementSize),
+                outerElement.inner.offset,
+                value.offset,
+            );
+            _code ~= Instruction(
+                Op.indexStore16,
+                outerElement.inner.offset,
+                outerElement.outerOffset,
+                outerElement.indexSlot,
+            );
+            return Operand(
+                outerElement.inner.offset, outerElement.inner.elementType,
+            );
+        }
+
         const descriptor = dynamicArrayDescriptor(append.e1);
         const value = compileExpression(append.e2);
         const elementSize = size(descriptor.elementType);
@@ -1356,6 +1408,39 @@ private struct Compiler {
             value.offset,
         );
         return Operand(descriptor.offset, descriptor.elementType);
+    }
+
+    // An `outer[i]` access into an array-of-arrays local: the outer descriptor
+    // offset, the index slot, and the inner descriptor materialised into a fresh
+    // slot. Null if `expression` is not such an access. Used to write a
+    // reallocated inner descriptor back into the outer block.
+    private OuterArrayElement* outerArrayElement(Expression expression) {
+        auto index = expression.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto variable = index.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        auto outer = declaration is null
+            ? null
+            : declaration in _dynamicArrayLocals;
+        if (outer is null || !outer.elementIsArray)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.indexLoad16, inner, outer.offset, indexSlot.offset,
+        );
+
+        auto result = new OuterArrayElement;
+        *result = OuterArrayElement(
+            outer.offset,
+            indexSlot.offset,
+            DynamicArrayLocal(inner, outer.elementType),
+        );
+        return result;
     }
 
     // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
@@ -2607,6 +2692,16 @@ private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// An `outer[i]` element of an array-of-arrays local: the outer descriptor's
+// frame offset, the slot holding the index `i`, and the inner descriptor loaded
+// into a fresh slot. Reallocating the inner array (an append) must write the new
+// inner descriptor back into the outer block at index `i`.
+private struct OuterArrayElement {
+    ushort outerOffset;
+    ushort indexSlot;
+    DynamicArrayLocal inner;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
