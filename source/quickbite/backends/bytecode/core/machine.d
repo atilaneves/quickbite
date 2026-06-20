@@ -256,6 +256,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case arrayAddAssign4:
+                applyArrayAddAssign4(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    base + instruction.c,
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -1183,6 +1193,33 @@ private void copySlice(
     auto destination = (cast(ubyte*) destinationPointer)[0 .. byteCount];
     const source = (cast(const(ubyte)*) sourcePointer)[0 .. byteCount];
     destination[] = source[];
+}
+
+// Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,
+// writing each sum through the destination's backing memory. All three lengths
+// must match (`dest[] = a[] + b[]` requires equal lengths).
+private void applyArrayAddAssign4(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t leftOffset,
+    in size_t rightOffset,
+) @trusted {
+    import std.conv: text;
+
+    const length = scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != length || rightLength != length)
+        throw new Exception(text(
+            "Array lengths don't match for array operation: ",
+            length, ", ", leftLength, ", ", rightLength,
+        ));
+
+    auto destination = cast(int*) scalarValue!size_t(stack, destinationOffset);
+    const left = cast(const(int)*) scalarValue!size_t(stack, leftOffset);
+    const right = cast(const(int)*) scalarValue!size_t(stack, rightOffset);
+    foreach (index; 0 .. length)
+        destination[index] = left[index] + right[index];
 }
 
 // The native address of element `index` within the slice descriptor at

@@ -186,6 +186,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
     dupArray1,
     dupArray4,
+    // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
+    // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
+    // integer elements and write the sum through the destination's backing
+    // memory. All three lengths must match. Backs the druntime arrayOp ["+","="]
+    // lowering.
+    arrayAddAssign4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
