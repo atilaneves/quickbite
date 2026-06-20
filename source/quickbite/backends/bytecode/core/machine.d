@@ -146,6 +146,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case sliceCopy1, sliceCopy4:
+                copySlice(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    sliceCopyElementSize(instruction.op),
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -875,6 +885,47 @@ private uint subSliceElementSize(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return op == Op.subSlice1 ? 1 : 4;
+}
+
+private uint sliceCopyElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.sliceCopy1 ? 1 : 4;
+}
+
+// Copy the source slice's elements into the destination slice's backing
+// memory, write-through. The lengths must match; overlapping ranges abort with
+// druntime's plain "Range violation" message.
+private void copySlice(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t sourceOffset,
+    in uint elementSize,
+) @trusted {
+    import std.conv: text;
+
+    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const sourceLength =
+        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    if (destinationLength != sourceLength)
+        throw new Exception(text(
+            "Array lengths don't match for copy: ",
+            sourceLength, " != ", destinationLength,
+        ));
+
+    const byteCount = destinationLength * elementSize;
+    if (sourcePointer < destinationPointer + byteCount &&
+        destinationPointer < sourcePointer + byteCount)
+        throw new Exception("Range violation");
+
+    auto destination = (cast(ubyte*) destinationPointer)[0 .. byteCount];
+    const source = (cast(const(ubyte)*) sourcePointer)[0 .. byteCount];
+    destination[] = source[];
 }
 
 // The native address of element `index` within the slice descriptor at

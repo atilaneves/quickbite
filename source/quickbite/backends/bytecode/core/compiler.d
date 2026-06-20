@@ -989,6 +989,12 @@ private struct Compiler {
             if (auto broadcast = tryStaticArrayBroadcast(slice, assign.e2))
                 return *broadcast;
 
+        // `arr[lo .. hi] = rhs` for a dynamic array: copy the rhs elements into
+        // the existing backing memory (write-through to the original array).
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto copy = tryDynamicArraySliceAssign(slice, assign.e2))
+                return *copy;
+
         auto variable = assign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -1185,6 +1191,103 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand.init;
         return result;
+    }
+
+    // `arr[lo .. hi] = rhs` for a dynamic-array local: form the destination
+    // sub-slice descriptor sharing `arr`'s backing memory, materialise the rhs
+    // into a source descriptor, and emit a write-through element copy. Null if
+    // the slice target is not a known dynamic-array local.
+    private Operand* tryDynamicArraySliceAssign(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
+        if (descriptor is null)
+            return null;
+
+        const elementType = descriptor.elementType;
+        const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        compileSliceInto(destination, elementType, slice);
+
+        const source = compileSourceSlice(elementType, rhs);
+        _code ~= Instruction(
+            sliceCopyOp(size(elementType)),
+            destination,
+            source,
+        );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
+    // Materialise the right-hand side of a dynamic-array slice assignment into a
+    // slice descriptor slot. A `SliceExp` shares the source's backing memory; an
+    // array or string literal heap-allocates a fresh block holding its elements.
+    private ushort compileSourceSlice(
+        in ScalarType elementType,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+
+        if (auto slice = rhs.isSliceExp) {
+            compileSliceInto(offset, elementType, slice);
+            return offset;
+        }
+
+        if (auto string_ = stringLiteralOf(rhs)) {
+            compileStringElementSlice(offset, elementType, string_);
+            return offset;
+        }
+
+        if (rhs.isArrayLiteralExp !is null) {
+            compileDynamicArrayInto(offset, elementType, rhs);
+            return offset;
+        }
+
+        throw new Exception(text(
+            "Unsupported slice-assignment source in bytecode core: ",
+            expressionChars(rhs),
+        ));
+    }
+
+    // Heap-allocate a block of `string_`'s characters and store each into it,
+    // leaving a slice descriptor at `offset`. The element size is fixed by the
+    // destination element type (1 for char, matching the indexStore split).
+    private void compileStringElementSlice(
+        in ushort offset,
+        in ScalarType elementType,
+        StringExp string_,
+    ) {
+        import quickbite.frontend.dmd.string_literals: stringChars;
+
+        const bytes = cast(const(ubyte)[]) stringChars(string_);
+        const elementSize = size(elementType);
+        _code ~= Instruction(
+            Op.allocArray,
+            offset,
+            cast(ushort) elementSize,
+            cast(ushort) bytes.length,
+        );
+
+        foreach (elementIndex, byteValue; bytes) {
+            const value = allocate(elementType);
+            _code ~= Instruction(
+                Op.loadConstant,
+                value,
+                constantIndex(byteValue),
+                cast(ushort) elementSize,
+            );
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize),
+                value,
+                offset,
+                index,
+            );
+        }
     }
 
     // Compile an array literal directly into an inline static-array slot,
@@ -2052,6 +2155,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
     return elementSize == 1 ? Op.subSlice1 : Op.subSlice4;
 }
 
+private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.sliceCopy1 : Op.sliceCopy4;
+}
+
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
     if (new_ is null ||
         new_.placement !is null ||
@@ -2288,6 +2398,11 @@ private bool isStringType(imported!"dmd.mtype".Type type) {
 
     auto element = base.nextOf; // const fails: nextOf is a mutable method.
     if (element is null)
+        return false;
+
+    // Only an immutable char element is a `string`/`wstring`/`dstring`; a
+    // mutable `char[]` is an ordinary dynamic array with heap-backed storage.
+    if (!element.isImmutable)
         return false;
 
     switch (element.toBasetype.ty) with (TY) {
