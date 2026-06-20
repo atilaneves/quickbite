@@ -192,6 +192,27 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // memory. All three lengths must match. Backs the druntime arrayOp ["+","="]
     // lowering.
     arrayAddAssign4,
+    // Read the element at `[pointer + index * elementSize]` into the 1- or
+    // 4-byte slot at frame offset a, where the raw `size_t` pointer value is at
+    // frame offset b and the `size_t` index at frame offset c. Backs `*p` (index
+    // 0) and `p[i]` through a pointer into VM-owned heap memory; unchecked, like
+    // compiled D. The element size is fixed by the opcode (1 or 4 bytes).
+    pointerLoad1,
+    pointerLoad4,
+    // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
+    // offset a from the raw `size_t` pointer value at frame offset b and an
+    // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
+    // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
+    // element size is fixed by the opcode (1 or 4 bytes).
+    pointerSlice1,
+    pointerSlice4,
+    // a: destination (one boolean byte), b: lhs, c: rhs (unsigned 8-byte
+    // comparison). Back raw pointer-value relations `p < q`, `p <= q`, `p > q`,
+    // `p >= q`, which compare as `size_t`.
+    lessThanUnsigned8,
+    lessOrEqualUnsigned8,
+    greaterThanUnsigned8,
+    greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
@@ -199,6 +220,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     convertDoubleToInt, // a: destination frame offset, b: source (truncates)
     addInt4, // a: destination frame offset, b: lhs, c: rhs
     addInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    subInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    mulInt8, // a: destination frame offset, b: lhs, c: rhs (8-byte integer)
+    divInt8, // a: destination frame offset, b: lhs, c: rhs (signed 8-byte div)
     subInt4, // a: destination frame offset, b: lhs, c: rhs
     bitOrInt4, // a: destination frame offset, b: lhs, c: rhs
     divInt4, // a: destination frame offset, b: lhs, c: rhs (signed division)
@@ -211,6 +235,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned >=)
     greaterOrEqualUnsigned4,
     notEqual4, // a: destination (one boolean byte), b: lhs, c: rhs (4-byte !=)
+    notEqual8, // a: destination (one boolean byte), b: lhs, c: rhs (8-byte !=)
     equalFloat, // a: destination (one boolean byte), b: lhs, c: rhs
     equalDouble,
     equalReal,

@@ -36,10 +36,10 @@ private struct Compiler {
         sliceDescriptorSize, stringSliceSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddAssignExp, ArrayLengthExp, ArrayLiteralExp, AssertExp, AssignExp,
-        BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp, DivExp,
-        Expression, IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp,
-        PostExp, RealExp, SliceExp, StringExp;
+        AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp, AssertExp,
+        AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
+        DivExp, Expression, IndexExp, LogicalExp, NegExp, NewExp, NotExp, OrExp,
+        PostExp, PtrExp, RealExp, SliceExp, StringExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -58,6 +58,10 @@ private struct Compiler {
     // the value records the slot offset and the element scalar type, giving the
     // element size for indexing and heap allocation.
     private DynamicArrayLocal[VarDeclaration] _dynamicArrayLocals;
+    // Locals whose slot holds a raw `size_t` pointer value (`T* p`); the value
+    // records the pointed-at element scalar, giving the stride for arithmetic,
+    // indexing, dereference, and slicing.
+    private ScalarType[VarDeclaration] _pointerLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -76,6 +80,7 @@ private struct Compiler {
         _stringLocals = null;
         _staticArrayLocals = null;
         _dynamicArrayLocals = null;
+        _pointerLocals = null;
 
         import dmd.astenums: TY;
 
@@ -275,6 +280,10 @@ private struct Compiler {
                 if (auto existing = declaration in _locals) {
                     if (declaration in _stringLocals)
                         return Operand(*existing, ScalarType.void_, true);
+                    if (auto element = declaration in _pointerLocals)
+                        return Operand(
+                            *existing, ScalarType.ulong_, false, true, *element,
+                        );
                     return Operand(*existing, scalarType(declaration.type));
                 }
 
@@ -355,7 +364,16 @@ private struct Compiler {
         if (auto length = expression.isArrayLengthExp)
             return compileArrayLength(length);
 
+        if (auto address = expression.isAddrExp)
+            if (auto pointer = tryAddressOfElement(address))
+                return *pointer;
+
+        if (auto deref = expression.isPtrExp)
+            return compilePointerDereference(deref);
+
         if (auto index = expression.isIndexExp) {
+            if (auto element = tryPointerIndex(index))
+                return *element;
             if (auto element = tryDynamicArrayIndex(index))
                 return *element;
             return compileStaticArrayIndex(index);
@@ -580,6 +598,14 @@ private struct Compiler {
             return;
         }
 
+        // A pointer local `T* p` holds a raw `size_t` address into VM-owned
+        // heap; allocate an 8-byte slot, compile the pointer-valued initializer,
+        // and copy its address word in.
+        if (isPointerType(variable.type)) {
+            compilePointerDeclaration(variable);
+            return;
+        }
+
         // A `string` local holds an 8-byte slice descriptor (data offset and
         // length), not a scalar; allocate the descriptor width and copy the
         // initializer's slice into it.
@@ -606,6 +632,38 @@ private struct Compiler {
             offset,
             operand.offset,
             cast(ushort) slotSize,
+        );
+    }
+
+    // A pointer local `T* p` holds a raw `size_t` address in an 8-byte frame
+    // slot. The initializer is a pointer-valued expression (`arr.ptr`,
+    // `&arr[i]`, `p + n`, ...); copy its address word into the slot and record
+    // the pointed-at element scalar for later stride and dereference.
+    private void compilePointerDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            throw new Exception(text(
+                "Unsupported initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        const pointer =
+            compileExpression(initializerExpression(initializer.exp));
+        if (!pointer.isPointer)
+            throw new Exception(text(
+                "Unsupported pointer initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        _locals[variable] = offset;
+        _pointerLocals[variable] = pointer.pointerElement;
+        _code ~= Instruction(
+            Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
         );
     }
 
@@ -1058,6 +1116,11 @@ private struct Compiler {
     private Operand compileCastExpression(CastExp cast_) {
         import std.conv: text;
 
+        // `arr.ptr` arrives as a CastExp of the array to `T*`; yield the
+        // descriptor's pointer word as a raw `size_t` address.
+        if (isPointerType(cast_.to))
+            return compileArrayPointer(cast_);
+
         const source = compileExpression(cast_.e1);
         const target = scalarType(cast_.to);
 
@@ -1089,9 +1152,116 @@ private struct Compiler {
         return extend(source, target);
     }
 
+    // `arr.ptr`: copy the descriptor's pointer word (the address of element 0)
+    // into a fresh `size_t` slot, yielding a pointer operand over the element
+    // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
+    private Operand compileArrayPointer(CastExp cast_) {
+        const descriptor = dynamicArrayDescriptor(cast_.e1);
+        return pointerToElement(
+            descriptor.offset, descriptor.elementType, compileSizeConstant(0),
+        );
+    }
+
+    // `&arr[i]`: the address of element `i`, i.e. `descriptor.ptr + i * size`,
+    // yielding a pointer operand over the element type. Null if the indexed
+    // operand is not a known dynamic-array descriptor.
+    private Operand* tryAddressOfElement(AddrExp address) {
+        auto index = address.e1.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = pointerToElement(
+            descriptor.offset, descriptor.elementType, indexSlot.offset,
+        );
+        return result;
+    }
+
+    // A pointer operand holding `descriptor.ptr + index * elementSize`: read the
+    // descriptor's pointer word, scale the index by the element size, and add.
+    private Operand pointerToElement(
+        in ushort descriptorOffset,
+        in ScalarType elementType,
+        in ushort indexSlot,
+    ) {
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, pointer, descriptorOffset, cast(ushort) size_t.sizeof,
+        );
+        return offsetPointer(pointer, elementType, indexSlot);
+    }
+
+    // Advance the `size_t` pointer at `pointerOffset` by `index * elementSize`
+    // into a fresh pointer slot, the shared scaling for `&arr[i]`, `p + n`, and
+    // `n + p`.
+    private Operand offsetPointer(
+        in ushort pointerOffset,
+        in ScalarType elementType,
+        in ushort indexSlot,
+    ) {
+        const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const stride = compileSizeConstant(size(elementType));
+        _code ~= Instruction(Op.mulInt8, scaled, indexSlot, stride);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);
+        return Operand(result, ScalarType.ulong_, false, true, elementType);
+    }
+
+    // `*p`: read the element the pointer addresses (index 0), yielding a scalar
+    // operand of the pointed-at element type.
+    private Operand compilePointerDereference(PtrExp deref) {
+        import std.conv: text;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            throw new Exception(text(
+                "Unsupported pointer dereference in bytecode core: ",
+                expressionChars(deref),
+            ));
+
+        return loadThroughPointer(pointer, compileSizeConstant(0));
+    }
+
+    // `p[i]`: read the element at `p + i` through a pointer, yielding a scalar
+    // operand of the pointed-at element type. Null if `p` is not a pointer.
+    private Operand* tryPointerIndex(IndexExp index) {
+        if (!isPointerType(index.e1.type))
+            return null;
+
+        const pointer = compileExpression(index.e1);
+        const indexSlot = compileExpression(index.e2);
+        auto result = new Operand;
+        *result = loadThroughPointer(pointer, indexSlot.offset);
+        return result;
+    }
+
+    // Read `size(elementType)` bytes from `[pointer + index * size]` into a
+    // fresh element slot, the shared loader for `*p` and `p[i]`.
+    private Operand loadThroughPointer(
+        in Operand pointer,
+        in ushort indexSlot,
+    ) {
+        const elementSize = size(pointer.pointerElement);
+        const offset = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            pointerLoadOp(elementSize), offset, pointer.offset, indexSlot,
+        );
+        return Operand(offset, pointer.pointerElement);
+    }
+
     private Operand compileAddExpression(Expression expression) {
         auto add = cast(BinExp) expression; // DMD AST fields are mutable refs.
         assert(add !is null);
+
+        // Pointer arithmetic `p + n` / `n + p`: advance the pointer operand by
+        // the integer operand scaled by the element size.
+        if (isPointerType(add.e1.type) || isPointerType(add.e2.type))
+            return compilePointerAdd(add);
 
         const lhs = compileExpression(add.e1);
         const rhs = compileExpression(add.e2);
@@ -1117,6 +1287,18 @@ private struct Compiler {
         );
     }
 
+    // `p + n` / `n + p`: scale the integer operand by the pointed-at element
+    // size and add it to the raw pointer value, yielding a pointer operand.
+    private Operand compilePointerAdd(BinExp add) {
+        const pointerFirst = isPointerType(add.e1.type);
+        const pointer =
+            compileExpression(pointerFirst ? add.e1 : add.e2);
+        const offset = compileExpression(pointerFirst ? add.e2 : add.e1);
+        return offsetPointer(
+            pointer.offset, pointer.pointerElement, offset.offset,
+        );
+    }
+
     // D's `|` is integer-typed; only the 4-byte int form is needed today.
     private Operand compileOrExpression(OrExp or) {
         const lhs = compileExpression(or.e1);
@@ -1135,6 +1317,14 @@ private struct Compiler {
     // needed today (it appears as the never-executed RHS of a short-circuited
     // `&&`); a runtime divide-by-zero would fault, matching compiled code.
     private Operand compileDivideExpression(DivExp divide) {
+        // `p - q`: DMD lowers it to `(byteDistance) / elementStride`, a MinExp
+        // of two pointers wrapped in a DivExp by the stride. The byte distance
+        // and stride are signed 8-byte (`ptrdiff_t`); divide them at that width.
+        if (auto difference = divide.e1.isMinExp)
+            if (isPointerType(difference.e1.type) &&
+                isPointerType(difference.e2.type))
+                return compilePointerDifference(divide, difference);
+
         const lhs = compileExpression(divide.e1);
         const rhs = compileExpression(divide.e2);
         return compileIntBinaryResult(
@@ -1145,6 +1335,46 @@ private struct Compiler {
             ScalarType.int_,
             "Unsupported division in bytecode core: ",
         );
+    }
+
+    // `p - n`: subtract `n * elementSize` from the raw pointer value, yielding a
+    // pointer operand over the same element type.
+    private Operand compilePointerSubtractInteger(BinExp subtract) {
+        const pointer = compileExpression(subtract.e1);
+        const offset = compileExpression(subtract.e2);
+        const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const stride = compileSizeConstant(size(pointer.pointerElement));
+        _code ~= Instruction(Op.mulInt8, scaled, offset.offset, stride);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.subInt8, result, pointer.offset, scaled);
+        return Operand(
+            result, ScalarType.ulong_, false, true, pointer.pointerElement,
+        );
+    }
+
+    // The raw byte distance `p - q` between two pointers as a signed 8-byte
+    // value; `p - q` wraps this in a DivExp by the element stride.
+    private Operand compilePointerDifferenceBytes(BinExp subtract) {
+        const lhs = compileExpression(subtract.e1);
+        const rhs = compileExpression(subtract.e2);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.subInt8, result, lhs.offset, rhs.offset);
+        return Operand(result, ScalarType.long_);
+    }
+
+    // `p - q`: divide the signed byte distance by the element stride to yield
+    // the `ptrdiff_t` element count.
+    private Operand compilePointerDifference(
+        DivExp divide,
+        BinExp difference,
+    ) {
+        const bytes = compilePointerDifferenceBytes(difference);
+        const stride = compileExpression(divide.e2);
+        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.divInt8, result, bytes.offset, stride.offset,
+        );
+        return Operand(result, ScalarType.long_);
     }
 
     // Integer `<` / `>`; both yield a bool. One opcode per operator, not per
@@ -1219,6 +1449,16 @@ private struct Compiler {
 
     private Operand compileSubtractExpression(BinExp subtract) {
         import std.conv: text;
+
+        // Pointer arithmetic `p - n`: step the pointer back by the integer
+        // operand scaled by the element size, yielding a pointer operand.
+        if (isPointerType(subtract.e1.type) && !isPointerType(subtract.e2.type))
+            return compilePointerSubtractInteger(subtract);
+
+        // Raw `p - q` between two pointers: the byte distance, which `p - q`
+        // wraps in a DivExp by the element stride to yield the element count.
+        if (isPointerType(subtract.e1.type) && isPointerType(subtract.e2.type))
+            return compilePointerDifferenceBytes(subtract);
 
         const lhs = compileExpression(subtract.e1);
         const rhs = compileExpression(subtract.e2);
@@ -2426,6 +2666,15 @@ private struct Compiler {
             return false;
 
         const op = operatorText(operator);
+
+        // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
+        // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
+        if (isPointerType((*call.arguments)[1].type) ||
+            isPointerType((*call.arguments)[2].type))
+            return compilePointerComparisonAssert(
+                op, (*call.arguments)[1], (*call.arguments)[2],
+            );
+
         switch (op) {
             case "==", "!=", "<", "<=", ">", ">=":
                 break;
@@ -2466,6 +2715,38 @@ private struct Compiler {
             condition,
             cast(ushort) diagnostic,
         );
+        return true;
+    }
+
+    // `assert(p == q)`, `assert(p is q)`, `assert(p < q)`, ... over pointer
+    // operands: compile both raw `size_t` pointer values and assert their
+    // comparison. `is`/`!is` (identity) compare the same raw addresses as
+    // `==`/`!=`; relations compare unsigned, as compiled pointer code does.
+    private bool compilePointerComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        const lhsPointer = compileExpression(lhs);
+        const rhsPointer = compileExpression(rhs);
+        const condition = allocateBytes(1, 1);
+        _code ~= Instruction(
+            pointerComparisonOp(op),
+            condition,
+            lhsPointer.offset,
+            rhsPointer.offset,
+        );
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            normalisedPointerOperator(op),
+            lhsPointer.offset,
+            rhsPointer.offset,
+            ScalarType.ulong_,
+        );
+        _code ~= Instruction(Op.assertTrue, condition, cast(ushort) diagnostic);
         return true;
     }
 
@@ -2770,6 +3051,12 @@ private struct Operand {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isString; // when set, `offset` holds a string-slice descriptor
+    // When set, `offset` holds a raw `size_t` pointer value (8 bytes) into
+    // VM-owned heap memory; `pointerElement` is the pointed-at element scalar,
+    // giving the stride for arithmetic, indexing, dereference, and slicing.
+    bool isPointer;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType
+        pointerElement;
 }
 
 // A dynamic-array local: its slice-descriptor frame offset and the element
@@ -2798,6 +3085,20 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.indexLoad1 : Op.indexLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerLoad1 : Op.pointerLoad4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.pointerSlice1 : Op.pointerSlice4;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
@@ -3063,6 +3364,34 @@ private imported!"quickbite.backends.bytecode.core.program".Op
     }
 }
 
+// The comparison opcode for a pointer relation: identity and equality compare
+// the raw 8-byte addresses, relations compare them as unsigned `size_t`.
+private imported!"quickbite.backends.bytecode.core.program".Op
+    pointerComparisonOp(in string operator) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+
+    switch (operator) {
+        case "==", "is": return Op.equal8;
+        case "!=", "!is": return Op.notEqual8;
+        case "<": return Op.lessThanUnsigned8;
+        case "<=": return Op.lessOrEqualUnsigned8;
+        case ">": return Op.greaterThanUnsigned8;
+        case ">=": return Op.greaterOrEqualUnsigned8;
+        default: assert(0, "Unsupported pointer comparison operator.");
+    }
+}
+
+// The relational operator a pointer comparison renders in a failure message:
+// identity `is`/`!is` render as `==`/`!=`, which `invertedOperator` understands.
+private string normalisedPointerOperator(in string operator)
+    @safe @nogc nothrow pure {
+    switch (operator) {
+        case "is": return "==";
+        case "!is": return "!=";
+        default: return operator;
+    }
+}
+
 // True for the druntime `core.internal.array.operations.arrayOp` template
 // instantiated with `["+", "="]`, the lowering of `dest[] = a[] + b[]`. Matched
 // by pretty name prefix and the template value arguments, like the interpreter.
@@ -3146,6 +3475,14 @@ private bool isDynamicArrayArgument(
     return argument.type !is null &&
         argument.type.toBasetype.ty == TY.Tarray &&
         !isStringType(argument.type);
+}
+
+// True when `type` is a raw pointer `T*` (not a function pointer or delegate);
+// these flow through frame slots as a `size_t` address into VM-owned heap.
+private bool isPointerType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    return type !is null && type.toBasetype.ty == TY.Tpointer;
 }
 
 private bool isFloating(

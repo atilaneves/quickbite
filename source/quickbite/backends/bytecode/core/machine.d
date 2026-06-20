@@ -266,6 +266,38 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case pointerLoad1, pointerLoad4:
+                const pointerLoadSize = pointerElementSize(instruction.op);
+                const pointerLoadAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        pointerLoadSize;
+                readHeapElement(
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + pointerLoadSize
+                    ],
+                    cast(const(ubyte)*) pointerLoadAddress,
+                );
+                ++ip;
+                break;
+
+            case pointerSlice1, pointerSlice4:
+                const pointerSliceSize = pointerElementSize(instruction.op);
+                const sliceLo = scalarValue!size_t(stack, base + instruction.c);
+                const sliceHi = scalarValue!size_t(
+                    stack, base + instruction.c + size_t.sizeof,
+                );
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    scalarValue!size_t(stack, base + instruction.b) +
+                        sliceLo * pointerSliceSize,
+                    sliceHi - sliceLo,
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -328,6 +360,36 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = sum;
+                ++ip;
+                break;
+
+            case subInt8:
+                const ubyte[long.sizeof] difference8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) -
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = difference8;
+                ++ip;
+                break;
+
+            case mulInt8:
+                const ubyte[long.sizeof] product8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) *
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = product8;
+                ++ip;
+                break;
+
+            case divInt8:
+                const ubyte[long.sizeof] quotient8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) /
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = quotient8;
                 ++ip;
                 break;
 
@@ -408,10 +470,45 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case lessThanUnsigned8:
+                stack[base + instruction.a] =
+                    scalarValue!size_t(stack, base + instruction.b) <
+                    scalarValue!size_t(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case lessOrEqualUnsigned8:
+                stack[base + instruction.a] =
+                    scalarValue!size_t(stack, base + instruction.b) <=
+                    scalarValue!size_t(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterThanUnsigned8:
+                stack[base + instruction.a] =
+                    scalarValue!size_t(stack, base + instruction.b) >
+                    scalarValue!size_t(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case greaterOrEqualUnsigned8:
+                stack[base + instruction.a] =
+                    scalarValue!size_t(stack, base + instruction.b) >=
+                    scalarValue!size_t(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
             case notEqual4:
                 stack[base + instruction.a] =
                     scalarValue!int(stack, base + instruction.b) !=
                     scalarValue!int(stack, base + instruction.c) ? 1 : 0;
+                ++ip;
+                break;
+
+            case notEqual8:
+                stack[base + instruction.a] =
+                    scalarValue!size_t(stack, base + instruction.b) !=
+                    scalarValue!size_t(stack, base + instruction.c) ? 1 : 0;
                 ++ip;
                 break;
 
@@ -1000,6 +1097,13 @@ private uint elementSize(
     if (op == Op.indexLoad16 || op == Op.indexStore16)
         return sliceDescriptorSize;
     return op == Op.indexLoad1 || op == Op.indexStore1 ? 1 : 4;
+}
+
+private uint pointerElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.pointerLoad1 || op == Op.pointerSlice1 ? 1 : 4;
 }
 
 private uint subSliceElementSize(
