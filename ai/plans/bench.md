@@ -154,7 +154,12 @@ now print the number of runnable unittest declarations in the prepared unit
 (`3 unchecked`) instead of the fake result count `0/0`. Covered by
 `results.SkipCheckDisplayCountsRunnableDeclarations`.
 
-Still open: item 7 backend-neutrality upkeep, plus item 1/2's remaining
+Single-backend zero-result self-check polish landed 2026-06-20: a backend
+that returns no `TestResult[]` entries is recorded as one failing self-check
+with `backend reported zero unittest results`, so the timing loop skips it with
+a useful reason instead of silently carrying an empty result set.
+
+Still open: item 7 backend-neutrality upkeep, plus any remaining item 1/2
 single-vs-multi-backend check polish where not already covered.
 
 ### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
@@ -183,7 +188,8 @@ For one backend, keep only a same-backend preflight:
 
 - run the selected backend once on the unit that will be timed;
 - collect the returned `TestResult[]`;
-- skip timing if the result count is zero;
+- skip timing if the result count is zero; done 2026-06-20 by normalising the
+  empty result to a failing self-check;
 - skip timing if any result failed; and
 - print the pass count in the timed row.
 

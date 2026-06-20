@@ -465,6 +465,23 @@ unittest {
     results[0].passed.should == true;
 }
 
+@("results.SingleBackendSelfCheckReportsZeroResults")
+unittest {
+    Runner[string] runners;
+    runners["a"] = new EmptyRunner;
+
+    const checkedResults = checkRunnerResults(
+        runners,
+        ["a"],
+        [standaloneUnit("fixture", testModule)],
+    );
+
+    const results = checkedResults[pairKey("fixture", "a")];
+    results.length.should == 1;
+    results[0].passed.should == false;
+    results[0].message.should == "backend reported zero unittest results";
+}
+
 @("results.SkipCheckDisplayCountsRunnableDeclarations")
 unittest {
     import quickbite.frontend.compiler: parseSnippet;
@@ -602,6 +619,12 @@ private final class ThrowingRunner: Runner {
 
     public override TestResult[] runTests(Module module_) {
         throw new Exception(_message);
+    }
+}
+
+private final class EmptyRunner: Runner {
+    public override TestResult[] runTests(Module module_) {
+        return [];
     }
 }
 

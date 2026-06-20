@@ -238,7 +238,18 @@ public TestResult[][string] checkRunnerResults(
 
         foreach (name; backendNames) {
             try {
-                allResults ~= runTests(runners[name], modules);
+                // Mutable: empty backend results are normalised below.
+                auto results = runTests(runners[name], modules);
+                if (results.length == 0)
+                    results = [
+                        TestResult(
+                            false,
+                            "runner returned no tests",
+                            "",
+                            "backend reported zero unittest results",
+                        ),
+                    ];
+                allResults ~= results;
                 resultNames ~= name;
                 errored ~= false;
             } catch (Exception e) {
