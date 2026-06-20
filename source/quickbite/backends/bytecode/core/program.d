@@ -149,6 +149,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
     concatArrays1,
     concatArrays4,
+    // Duplicate the slice descriptor at frame offset b into a fresh heap block
+    // holding an independent copy of all its elements, then write the
+    // descriptor {newPtr, length} to frame offset a. The block is rooted in
+    // `heap`. Mutating either array leaves the other intact (`arr.dup` /
+    // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
+    dupArray1,
+    dupArray4,
     copy, // a: destination frame offset, b: source frame offset, c: size
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset

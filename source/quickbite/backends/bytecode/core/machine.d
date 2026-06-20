@@ -187,6 +187,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case dupArray1, dupArray4:
+                heap ~= dupArray(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    dupArrayElementSize(instruction.op),
+                );
+                ++ip;
+                break;
+
             case copy:
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
@@ -937,6 +947,34 @@ private uint concatElementSize(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return op == Op.concatArrays1 ? 1 : 4;
+}
+
+private uint dupArrayElementSize(
+    in imported!"quickbite.backends.bytecode.core.program".Op op,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return op == Op.dupArray1 ? 1 : 4;
+}
+
+// Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
+// holding an independent copy of its elements, and write the descriptor
+// {newPtr, length} at `descriptorOffset`. Returns the new block so the caller
+// can root it in `heap`.
+private ubyte[] dupArray(
+    ref ubyte[] stack,
+    in size_t descriptorOffset,
+    in size_t sourceOffset,
+    in uint elementSize,
+) @trusted {
+    const length = scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+    const pointer = scalarValue!size_t(stack, sourceOffset);
+    const byteCount = length * elementSize;
+
+    auto block = new ubyte[](byteCount);
+    block[] = (cast(const(ubyte)*) pointer)[0 .. byteCount];
+
+    writeSliceDescriptor(stack, descriptorOffset, block, length);
+    return block;
 }
 
 // Concatenate the slice descriptors at `leftOffset` and `rightOffset` into a

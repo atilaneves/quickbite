@@ -688,6 +688,13 @@ private struct Compiler {
             return;
         }
 
+        // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
+        // a fresh heap block, so mutating either side leaves the other intact.
+        if (auto duplicate = tryArrayDuplication(source)) {
+            compileArrayDuplication(destination, elementType, duplicate);
+            return;
+        }
+
         // `dest = src[lo .. hi]` forms a sub-slice sharing the source's
         // backing memory, so writes through `dest` propagate to the original.
         if (auto slice = source.isSliceExp) {
@@ -842,6 +849,56 @@ private struct Compiler {
             indexStoreOp(elementSize), value.offset, offset, index,
         );
         return offset;
+    }
+
+    // The array operand of an `arr.dup` / `arr.idup` call, or null if `source`
+    // is not such a call. Both resolve to an `object.dup`/`object.idup`
+    // template CallExp whose callee identifier is `dup`/`idup` and whose single
+    // argument is the (cast-wrapped) source array; the AA `.dup` is a distinct
+    // `object.dup!(...)` instantiation and is not matched here.
+    private Expression tryArrayDuplication(Expression source) {
+        auto call = source.isCallExp;
+        if (call is null ||
+            call.arguments is null ||
+            call.arguments.length != 1)
+            return null;
+
+        auto function_ = callFunction(call);
+        if (function_ is null || function_.ident is null)
+            return null;
+
+        const name = function_.ident.toString;
+        if (name != "dup" && name != "idup")
+            return null;
+
+        auto argument = (*call.arguments)[0];
+        if (!isDynamicArrayArgument(argument))
+            return null;
+
+        return argument;
+    }
+
+    // `dest = arr.dup` / `dest = arr.idup`: materialise the source array's
+    // descriptor and emit an opcode that allocates a fresh heap block, copies
+    // every element into it, and writes the new descriptor to `destination`.
+    private void compileArrayDuplication(
+        in ushort destination,
+        in ScalarType elementType,
+        Expression source,
+    ) {
+        // The dup argument is the source array wrapped in an
+        // implicit-const cast; unwrap it so a known dynamic-array local reuses
+        // its descriptor in place rather than failing the cast.
+        auto array = source;
+        while (auto cast_ = array.isCastExp)
+            array = cast_.e1;
+
+        const sourceDescriptor = arrayDescriptorOffset(elementType, array);
+        _code ~= Instruction(
+            dupArrayOp(size(elementType)),
+            destination,
+            sourceDescriptor,
+        );
     }
 
     // Read the length word of a dynamic-array descriptor into a fresh size_t
@@ -2465,6 +2522,13 @@ private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
     return elementSize == 1 ? Op.concatArrays1 : Op.concatArrays4;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    return elementSize == 1 ? Op.dupArray1 : Op.dupArray4;
 }
 
 private bool isPlainExceptionNew(imported!"dmd.expression".NewExp new_) {
