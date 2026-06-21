@@ -3,12 +3,13 @@
 ## Current state / next action
 
 The backend works and is promoted alongside `SystemLinker` across the whole
-`SystemLinker`-oracle matrix **except** `ct/archive.d` (archive-backed imports,
-a deferred scope boundary — see "Deferred scope boundary"). That archive-backed
-import fixture is the only known behavior `LLVMJit` cannot pass now. The
-duplicate-`UND`-symbol → zero-GOT-stub defect is fixed by the ELF normalizer.
-`bin/ut @LLVMJit` is 421/0; the full `bin/ut` is 2459/0 and stable under
-`--random` and both historical seeds.
+`SystemLinker`-oracle matrix, including `ct/archive.d` archive-backed imports.
+Archive link files are split by shape: shared images are still `dlopen`'d into
+the process, while static archives are attached to the ORC object layer with
+`LLVMOrcCreateStaticLibrarySearchGeneratorForPath` and lazily searched for
+referenced members. The duplicate-`UND`-symbol → zero-GOT-stub defect is fixed
+by the ELF normalizer. `bin/ut @LLVMJit` is 422/0.
+The full `bin/ut --random` is 2462/0.
 
 Everything below is kept as an outcome log; the interposition (Step 1), fork
 fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
@@ -390,20 +391,15 @@ already happens and is balanced, and does not touch the live GC survivors; never
 disposing the LLJIT in the long-lived parent — leaks unbounded and still risks a
 mid-run collect.)
 
-### Deferred scope boundary — `ct/archive.d`
+### Archive-backed imports DONE
 
-`runTests.archiveBackedImport*` constructs `new backend([archivePath],
-[importPath])`, i.e. the `SystemLinker(string[] linkFiles, string[]
-importPaths)` constructor. `LLVMJitInputs` currently has **no `linkFiles`
-field** and the ORC loader resolves only druntime/phobos *process* symbols, not
-external `.a` archive symbols, so this test cannot compile under `LLVMJit`
-today. Left unpromoted.
-
-This is a *deferral*, not an inherent impossibility: ORC can load static
-archives (`LLVMOrcCreateStaticLibrarySearchGeneratorForPath`, or add each
-member object to the `JITDylib`). Archive support is out of scope for the
-current normalizer work but is the route if/when archive-backed imports need
-`LLVMJit` coverage. Until then it is a known hole in matrix parity.
+`runTests.archiveBackedImportLinksFromArchive` is promoted to `LLVMJit`. The
+`SystemLinker(string[] linkFiles, string[] importPaths)` constructor shape is
+mirrored: `.so` link files remain cold dependency images loaded with
+`dlopen(RTLD_GLOBAL)`, and non-`.so` link files are treated as static archives.
+Each static archive installs an ORC static-library search generator on the
+LLJIT object layer, so only referenced archive members are linked into the main
+`JITDylib`.
 
 ### Residual defect — duplicate undefined symbol → JITLink resolves it to 0
 
