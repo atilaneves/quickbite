@@ -244,6 +244,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // through a nested struct's context: `stack[contextBase + var.offset]`, with
     // the base+offset already summed into the slot at b.
     frameLoad,
+    // Write the native address of the current frame slot at offset b as a raw
+    // `size_t` pointer word into frame offset a. Backs `&local` (`int* p = &x`):
+    // the stack's reserved capacity keeps the address stable across the calls
+    // that grow the stack before the pointer is dereferenced.
+    frameAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset

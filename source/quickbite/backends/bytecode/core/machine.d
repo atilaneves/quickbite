@@ -7,6 +7,10 @@ private:
 package(quickbite.backends.bytecode) alias CompileFunction =
     void delegate(in size_t index);
 
+// Bytes reserved upfront for the VM call stack so growing it for callee frames
+// reuses the same block: raw `&local` pointers stay valid across calls.
+private enum stackCapacity = 4 * 1024 * 1024;
+
 // Executes the program's entry function and returns the raw bytes of its
 // result (empty for void).
 package(quickbite.backends.bytecode) ubyte[] run(
@@ -16,7 +20,12 @@ package(quickbite.backends.bytecode) ubyte[] run(
     import quickbite.backends.bytecode.core.program:
         Op, size, sliceDescriptorSize;
 
+    // Reserve a generous fixed capacity so growing `stack` for callee frames
+    // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
+    // struct field or heap and dereferenced later must stay valid across the
+    // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
+    stack.reserve(stackCapacity);
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
@@ -360,6 +369,13 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
             }
+
+            case frameAddress:
+                writeFrameAddress(
+                    stack, base + instruction.a, base + instruction.b,
+                );
+                ++ip;
+                break;
 
             case signExtend1to4:
                 const ubyte[int.sizeof] signWidened = scalarBytes(
@@ -1237,6 +1253,20 @@ private void writeBlockPointer(
 
     stack[offset .. offset + size_t.sizeof] =
         nativeToLittleEndian(cast(size_t) block.ptr);
+}
+
+// Write the native address of the frame slot at `slotOffset` as a raw `size_t`
+// pointer word into `offset`. Backs `&local`; the stack's reserved capacity
+// keeps the address valid across the calls that grow the stack.
+private void writeFrameAddress(
+    ref ubyte[] stack,
+    in size_t offset,
+    in size_t slotOffset,
+) @trusted {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] =
+        nativeToLittleEndian(cast(size_t) &stack[slotOffset]);
 }
 
 // Write a slice descriptor {ptr, length} at `offset` from an already-computed

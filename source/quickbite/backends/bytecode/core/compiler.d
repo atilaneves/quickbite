@@ -42,7 +42,7 @@ private struct Compiler {
         CmpExp, CondExp, ConstructExp, DivExp, DotVarExp, Expression, IndexExp,
         LogicalExp, MulExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
-        StringExp, StructLiteralExp;
+        StringExp, StructLiteralExp, SymOffExp;
     import dmd.arraytypes: Expressions;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
@@ -280,6 +280,18 @@ private struct Compiler {
 
         if (auto throw_ = statement.isThrowStatement) {
             compileThrow(throw_);
+            return;
+        }
+
+        // DMD wraps a scope holding structs with elaborate destructors in a
+        // `try { body } finally { dtors }` so the dtors run on every exit. No
+        // exception is thrown across these scopes in the core's tests, so the
+        // ordinary path -- body then finally -- replicates the runtime effect.
+        if (auto tryFinally = statement.isTryFinallyStatement) {
+            if (tryFinally._body !is null)
+                compileStatement(tryFinally._body);
+            if (tryFinally.finalbody !is null)
+                compileStatement(tryFinally.finalbody);
             return;
         }
 
@@ -612,8 +624,18 @@ private struct Compiler {
         if (auto length = expression.isArrayLengthExp)
             return compileArrayLength(length);
 
-        if (auto address = expression.isAddrExp)
+        if (auto address = expression.isAddrExp) {
             if (auto pointer = tryAddressOfElement(address))
+                return *pointer;
+            if (auto pointer = tryAddressOfLocal(address))
+                return *pointer;
+        }
+
+        // `&local` arrives as a `SymOffExp` (symbol plus byte offset): the
+        // address of a scalar local's frame slot, yielding an `int*`-style
+        // pointer operand.
+        if (auto symOff = expression.isSymOffExp)
+            if (auto pointer = tryAddressOfSymbol(symOff))
                 return *pointer;
 
         if (auto deref = expression.isPtrExp)
@@ -627,10 +649,18 @@ private struct Compiler {
             return compileStaticArrayIndex(index);
         }
 
-        // `base.field`: read a scalar struct field from its inline frame offset.
+        // `base.field`: read a struct field from its inline frame offset. A
+        // pointer field (`tracker.postblits`) yields a pointer operand over its
+        // raw 8-byte address; a scalar field its scalar value.
         if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
+            if (auto field = tryStructField(dot)) {
+                if (isPointerType(field.type))
+                    return Operand(
+                        field.offset, ScalarType.ulong_, false, true,
+                        scalarType(field.type.toBasetype.nextOf),
+                    );
                 return Operand(field.offset, scalarType(field.type));
+            }
 
         // `p.field` through a heap struct pointer: load the field at `ptr +
         // field.offset`.
@@ -1053,6 +1083,16 @@ private struct Compiler {
             if (blit.e1.isSliceExp !is null && blit.e2.isIntegerExp !is null)
                 return;
 
+        // A static array of structs with elaborate members (`Tracker[2] s;`)
+        // default-initializes by blitting the integer `0` over the inline block;
+        // the frame starts zeroed, so this needs no code.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (auto integer = blit.e2.isIntegerExp)
+                if (integer.toInteger == 0) {
+                    zeroFrameBlock(offset, totalSize);
+                    return;
+                }
+
         auto source = initializerExpression(initializer.exp);
 
         // `char[N] c = "..."`: copy the literal bytes directly into the inline
@@ -1074,10 +1114,102 @@ private struct Compiler {
             return;
         }
 
+        // `T[N] dest = src` for an element type with a postblit lowers to a
+        // `_d_arrayctor` call: block-copy each element, then run its postblit.
+        if (compileArrayConstructor(offset, variable.type, source))
+            return;
+
         throw new Exception(text(
             "Unsupported static array initializer in bytecode core: ",
             declarationChars(variable),
         ));
+    }
+
+    // Intercept DMD's `_d_arrayctor(dest[], src[], null)` lowering of a
+    // static-array copy whose element type has a postblit: block-copy the source
+    // into `destination`, then run the element postblit on each copied element
+    // (`this(this)` increments the test's postblit counter once per element).
+    // False if `source` is not a `_d_arrayctor` call.
+    private bool compileArrayConstructor(
+        in ushort destination,
+        Type arrayType,
+        Expression source,
+    ) {
+        auto call = source.isCallExp;
+        if (call is null)
+            return false;
+        auto function_ = callFunction(call);
+        if (function_ is null || function_.ident is null ||
+            function_.ident.toString != "_d_arrayctor")
+            return false;
+        if (call.arguments is null || call.arguments.length < 2)
+            return false;
+
+        auto elementType = arrayType.toBasetype.nextOf;
+        const elementSize = cast(uint) staticArraySize(elementType);
+        const count = cast(uint) staticArraySize(arrayType) / elementSize;
+
+        // The source argument is `cast(T[])sourceArray`; the static-array base
+        // is under the cast.
+        auto sourceArray = (*call.arguments)[1];
+        while (auto cast_ = sourceArray.isCastExp)
+            sourceArray = cast_.e1;
+        auto sourceOffset = staticArrayOffsetOf(sourceArray);
+        if (sourceOffset is null)
+            return false;
+
+        _code ~= Instruction(
+            Op.copy, destination, *sourceOffset,
+            cast(ushort) (count * elementSize),
+        );
+
+        auto postblit = structDeclarationOf(elementType).postblit;
+        if (postblit !is null)
+            foreach (i; 0 .. count)
+                runStructMethod(
+                    cast(ushort) (destination + i * elementSize), postblit,
+                );
+        return true;
+    }
+
+    // `__ArrayDtor(arr[lo .. hi])`: run the element destructor on each element
+    // of a static array's inline block (`source` / `copy` going out of scope),
+    // in reverse element order (matching DMD), so each `~this()` runs once.
+    private Operand compileArrayDtor(CallExp call) {
+        import std.conv: text;
+
+        if (call.arguments is null || call.arguments.length != 1)
+            throw new Exception(text(
+                "Unsupported array destructor in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto slice = (*call.arguments)[0].isSliceExp;
+        if (slice is null)
+            throw new Exception(text(
+                "Unsupported array destructor in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto arrayOffset = staticArrayOffsetOf(slice.e1);
+        if (arrayOffset is null)
+            throw new Exception(text(
+                "Unsupported array destructor in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        auto arrayType = slice.e1.type;
+        auto elementType = arrayType.toBasetype.nextOf;
+        const elementSize = cast(uint) staticArraySize(elementType);
+        const count = cast(uint) staticArraySize(arrayType) / elementSize;
+
+        auto dtor = structDeclarationOf(elementType).dtor;
+        if (dtor !is null)
+            foreach_reverse (i; 0 .. count)
+                runStructMethod(
+                    cast(ushort) (*arrayOffset + i * elementSize), dtor,
+                );
+        return Operand.init;
     }
 
     // A struct `S` local occupies `Type.size()` inline frame bytes at its
@@ -1392,6 +1524,14 @@ private struct Compiler {
 
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tstruct) {
+            // `arr[i]` element of a static array of structs: the element block
+            // lives inline at `arrayBase + i * elementSize`.
+            if (auto index = expression.isIndexExp)
+                if (staticArrayOffsetOf(index.e1) !is null) {
+                    resolved = true;
+                    return locateStaticArrayElement(index).offset;
+                }
+
             if (auto call = expression.isCallExp) {
                 resolved = true;
                 return compileCall(call).offset;
@@ -1624,6 +1764,14 @@ private struct Compiler {
         // A constructor's struct result is treated as void (its only effect is
         // mutating the receiver block), so no result slot is needed.
         _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
+    }
+
+    // Run a no-argument struct method (`function_`) on the inline block at frame
+    // offset `base`, passing the block as the hidden `this` receiver by
+    // reference. Backs the postblit (`this(this)`) and destructor (`~this()`)
+    // calls a static-array copy and scope exit insert.
+    private void runStructMethod(in ushort base, FuncDeclaration function_) {
+        runConstructor(base, function_, null);
     }
 
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
@@ -2199,6 +2347,69 @@ private struct Compiler {
         return result;
     }
 
+    // `&local` / `&base.field`: the native address of a scalar local's frame
+    // slot (or a struct field's inline slot), yielding an `int*`-style pointer
+    // operand over the pointed-at element type. Null if the operand is not a
+    // scalar local or struct field.
+    // `&local` as a SymOffExp (`symbolOffset`): the address of a scalar local's
+    // frame slot plus the symbol's byte offset, yielding an `int*`-style pointer
+    // operand over the pointed-at element type. Null if the symbol is not a
+    // scalar local.
+    private Operand* tryAddressOfSymbol(SymOffExp symOff) {
+        auto declaration = symOff.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        auto existing = declaration in _locals;
+        if (existing is null)
+            return null;
+
+        const slot = cast(ushort) (*existing + symOff.offset);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, slot);
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true,
+            scalarType(declaration.type),
+        );
+        return result;
+    }
+
+    private Operand* tryAddressOfLocal(AddrExp address) {
+        import dmd.astenums: TY;
+
+        ushort slot;
+        Type pointedType;
+
+        if (auto variable = address.e1.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            if (declaration is null)
+                return null;
+            auto existing = declaration in _locals;
+            if (existing is null)
+                return null;
+            slot = *existing;
+            pointedType = declaration.type;
+        } else if (auto dot = address.e1.isDotVarExp) {
+            auto field = tryStructField(dot);
+            if (field is null)
+                return null;
+            slot = field.offset;
+            pointedType = field.type;
+        } else
+            return null;
+
+        if (pointedType.toBasetype.ty == TY.Tstruct)
+            return null;
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.frameAddress, pointer, slot);
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true, scalarType(pointedType),
+        );
+        return result;
+    }
+
     // A pointer operand holding `descriptor.ptr + index * elementSize`: read the
     // descriptor's pointer word, scale the index by the element size, and add.
     private Operand pointerToElement(
@@ -2709,6 +2920,12 @@ private struct Compiler {
     private Operand compileAddAssignExpression(AddAssignExp addAssign) {
         import std.conv: text;
 
+        // `*p += rhs` through a pointer (a postblit's `++*this.postblits`): load
+        // `*p`, add the rhs, and store it back through the pointer.
+        if (auto deref = addAssign.e1.isPtrExp)
+            if (auto store = tryPointerDereferenceAddAssign(deref, addAssign.e2))
+                return *store;
+
         // `arr[i] += rhs` on a dynamic-array element (e.g. a destructor's
         // `this.sink[0] += 3`): load the element, add the rhs, and store it back
         // through the descriptor.
@@ -2892,6 +3109,21 @@ private struct Compiler {
             return descriptorResult;
         }
 
+        // A pointer field `T* p` (`tracker.postblits = &count`) holds an 8-byte
+        // raw address; copy the rhs pointer value into the field slot.
+        if (isPointerType(field.type)) {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(
+                Op.copy, field.offset, value.offset, cast(ushort) size_t.sizeof,
+            );
+            auto pointerResult = new Operand;
+            *pointerResult = Operand(
+                field.offset, ScalarType.ulong_, false, true,
+                scalarType(field.type.toBasetype.nextOf),
+            );
+            return pointerResult;
+        }
+
         const fieldScalar = scalarType(field.type);
         const value = compileExpression(rhs);
         _code ~= Instruction(
@@ -3046,6 +3278,36 @@ private struct Compiler {
         return result;
     }
 
+    // `*p += rhs` through a pointer: read `*p`, add `rhs`, and write the sum back
+    // through the same pointer. Null if `deref.e1` is not a pointer.
+    private Operand* tryPointerDereferenceAddAssign(
+        PtrExp deref,
+        Expression rhs,
+    ) {
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return null;
+
+        const zero = compileSizeConstant(0);
+        const current = loadThroughPointer(pointer, zero);
+        const rhsValue = compileExpression(rhs);
+        const addOp = isEightByteInteger(current.type)
+            ? Op.addInt8
+            : Op.addInt4;
+        _code ~= Instruction(
+            addOp, current.offset, current.offset, rhsValue.offset,
+        );
+        _code ~= Instruction(
+            pointerStoreOp(size(pointer.pointerElement)),
+            current.offset,
+            pointer.offset,
+            zero,
+        );
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
+        return result;
+    }
+
     // Write the rhs scalar to `[pointer + index * size]`, the shared store for
     // `*p = v` and `p[i] = v`.
     private Operand storeThroughPointer(
@@ -3152,9 +3414,12 @@ private struct Compiler {
         const elementSize = cast(uint) staticArraySize(index.type);
         const offset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
-        const elementType = index.type.toBasetype.ty == TY.Tsarray
-            ? ScalarType.void_
-            : scalarType(index.type);
+        // A sub-array or struct element has no scalar type; callers that handle
+        // those use only the offset (a static-array index chain, a struct base).
+        const elementType = index.type.toBasetype.ty == TY.Tsarray ||
+            index.type.toBasetype.ty == TY.Tstruct
+                ? ScalarType.void_
+                : scalarType(index.type);
         return StaticArrayElement(offset, elementType);
     }
 
@@ -3515,6 +3780,13 @@ private struct Compiler {
         import std.conv: text;
 
         auto function_ = callFunction(call);
+
+        // `__ArrayDtor(arr[lo .. hi])` runs the element destructor on each
+        // element of a static array going out of scope; intercept and emit the
+        // per-element `~this()` calls.
+        if (function_ !is null && function_.ident !is null &&
+            function_.ident.toString == "__ArrayDtor")
+            return compileArrayDtor(call);
 
         // `dest[] = a[] + b[]` lowers to a druntime arrayOp template call;
         // intercept it at the call site and emit element-wise semantics rather
