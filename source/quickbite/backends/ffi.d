@@ -14,6 +14,48 @@ public bool tryCallNative(
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
+    return tryCallNativeImpl(
+        function_,
+        NativeThis.init,
+        arguments,
+        result,
+        argumentWritebacks,
+    );
+}
+
+public bool tryCallNativeMember(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeStruct receiverType,
+    in imported!"quickbite.lang".Value receiver,
+    in imported!"quickbite.lang".Value[] arguments,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
+    if (receiverType is null || !receiver.isStruct || arguments.length != 0)
+        return false;
+
+    return tryCallNativeImpl(
+        function_,
+        NativeThis(receiverType, receiver, true),
+        arguments,
+        result,
+        argumentWritebacks,
+    );
+}
+
+private struct NativeThis {
+    private imported!"dmd.mtype".TypeStruct type;
+    private imported!"quickbite.lang".Value value;
+    private bool enabled;
+}
+
+private bool tryCallNativeImpl(
+    imported!"dmd.func".FuncDeclaration function_,
+    NativeThis receiver,
+    in imported!"quickbite.lang".Value[] arguments,
+    out imported!"quickbite.lang".Value result,
+    out imported!"quickbite.lang".Value[] argumentWritebacks,
+) {
     import core.sys.posix.dlfcn: dlsym;
     version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
     version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
@@ -46,7 +88,15 @@ public bool tryCallNative(
             "` is not loaded",
         );
 
-    return callViaLibffi(type, symbol, arguments, result, argumentWritebacks);
+    return callViaLibffi(
+        function_._linkage,
+        type,
+        symbol,
+        receiver,
+        arguments,
+        result,
+        argumentWritebacks,
+    );
 }
 
 private void loadDependencyImage(in string dependencyImage) {
@@ -78,16 +128,19 @@ private bool isSupportedNativeLinkage(
 // false for any signature shape not yet modelled, preserving the caller's
 // no-available-source diagnostic.
 private bool callViaLibffi(
+    imported!"dmd.astenums".LINK linkage,
     imported!"dmd.mtype".TypeFunction type,
     const void* symbol,
+    NativeThis receiver,
     in imported!"quickbite.lang".Value[] arguments,
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
     import quickbite.backends.libffi:
-        ffi_cif, ffi_type, ffi_status, ffi_prep_cif, ffi_call, FFI_DEFAULT_ABI;
+        ffi_cif, ffi_type, ffi_type_pointer, ffi_status, ffi_prep_cif,
+        ffi_call, FFI_DEFAULT_ABI;
     import quickbite.lang: Value;
-    import dmd.astenums: TY;
+    import dmd.astenums: LINK, TY;
     import dmd.mtype: Type;
     import dmd.typesem: size;
 
@@ -106,6 +159,22 @@ private bool callViaLibffi(
         if (argumentFfiTypes[index] is null)
             return false;
     }
+    if (receiver.enabled && ffiTypeFor(receiver.type) is null)
+        return false;
+    if (
+        linkage == LINK.d &&
+        !externDArgumentsFitRegisterScope(parameterTypes)
+    )
+        return false;
+
+    const hiddenNargs = receiver.enabled ? 1 : 0;
+    const totalNargs = hiddenNargs + nargs;
+    auto abiArgumentFfiTypes = new ffi_type*[](totalNargs);
+    if (receiver.enabled)
+        abiArgumentFfiTypes[0] = &ffi_type_pointer;
+    foreach (abiIndex; 0 .. nargs)
+        abiArgumentFfiTypes[hiddenNargs + abiIndex] =
+            argumentFfiTypes[abiSourceIndex(linkage, nargs, abiIndex)];
 
     // strtol's `endptr` writes a pointer into its string argument's buffer, so
     // any string argument of a call with an out-pointer must outlive the call.
@@ -119,9 +188,9 @@ private bool callViaLibffi(
         ffi_prep_cif(
             &cif,
             FFI_DEFAULT_ABI,
-            cast(uint) nargs,
+            cast(uint) totalNargs,
             returnFfi,
-            argumentFfiTypes.ptr,
+            abiArgumentFfiTypes.ptr,
         ) != ffi_status.FFI_OK
     )
         return false;
@@ -138,6 +207,22 @@ private bool callViaLibffi(
     // C-string buffers marshalled for pointer arguments, pinned across the
     // call below so the GC cannot reclaim them mid-call.
     const(char)*[] keepAlive;
+    ubyte[] receiverBuffer;
+    ubyte[] receiverPointerBuffer;
+    if (receiver.enabled) {
+        receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
+        marshalArgument(
+            receiverBuffer,
+            receiver.type,
+            receiver.value,
+            hasOutPointer,
+            keepAlive,
+        );
+
+        receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
+        *cast(void**) receiverPointerBuffer.ptr = receiverBuffer.ptr;
+    }
+
     auto argumentBuffers = new ubyte[][](nargs);
     auto argumentValues = new void*[](nargs);
     auto outParameterCells = new void**[](nargs);
@@ -163,6 +248,12 @@ private bool callViaLibffi(
 
         argumentValues[index] = argumentBuffers[index].ptr;
     }
+    auto abiArgumentValues = new void*[](totalNargs);
+    if (receiver.enabled)
+        abiArgumentValues[0] = receiverPointerBuffer.ptr;
+    foreach (abiIndex; 0 .. nargs)
+        abiArgumentValues[hiddenNargs + abiIndex] =
+            argumentValues[abiSourceIndex(linkage, nargs, abiIndex)];
 
     // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
     // even for narrow returns.
@@ -182,7 +273,7 @@ private bool callViaLibffi(
         &cif,
         cast(CFunction) symbol,
         returnBuffer.ptr,
-        argumentValues.ptr,
+        abiArgumentValues.ptr,
     );
 
     foreach (index; 0 .. nargs) {
@@ -196,6 +287,44 @@ private bool callViaLibffi(
 
     result = unmarshalValue(returnType, returnBuffer);
     return true;
+}
+
+private size_t abiSourceIndex(
+    imported!"dmd.astenums".LINK linkage,
+    in size_t argumentCount,
+    in size_t abiIndex,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK;
+
+    return linkage == LINK.d ? argumentCount - abiIndex - 1 : abiIndex;
+}
+
+private bool externDArgumentsFitRegisterScope(
+    in imported!"dmd.mtype".Type[] parameterTypes,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: TY;
+
+    size_t integerRegisters;
+    size_t sseRegisters;
+    foreach (parameterType; parameterTypes) {
+        switch (parameterType.ty) {
+            case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
+                 TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
+                 TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64,
+                 TY.Tpointer:
+                ++integerRegisters;
+                break;
+
+            case TY.Tfloat32, TY.Tfloat64:
+                ++sseRegisters;
+                break;
+
+            default:
+                return false;
+        }
+    }
+
+    return integerRegisters <= 6 && sseRegisters <= 8;
 }
 
 // Map a DMD basetype to the matching libffi ffi_type, or null if unmodelled.

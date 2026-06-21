@@ -1601,8 +1601,25 @@ private struct Walker {
                     return runThisConstructorCall(call.f, arguments);
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
-                if (hasNoAvailableSource(function_))
+                if (hasNoAvailableSource(function_)) {
+                    import quickbite.backends.ffi: tryCallNativeMember;
+
+                    Value result;
+                    Value[] writebacks;
+                    if (tryCallNativeMember(
+                        function_,
+                        receiverStructType(dot.e1),
+                        receiver,
+                        arguments,
+                        result,
+                        writebacks,
+                    )) {
+                        applyNativeWritebacks(writebacks, argumentExpressions);
+                        return result;
+                    }
+
                     throw new Exception(noAvailableSourceMessage(function_));
+                }
                 return runMemberFunction(
                     function_,
                     dot.e1,

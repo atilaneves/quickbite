@@ -1,5 +1,19 @@
 # LLVM ORC JIT Native Backend: `LLVMJit`
 
+## Current state / next action
+
+The backend works and is promoted alongside `SystemLinker` across the whole
+`SystemLinker`-oracle matrix **except** `ct/archive.d` (archive-backed imports,
+a deferred scope boundary — see "Deferred scope boundary"). The
+duplicate-`UND`-symbol → zero-GOT-stub defect is fixed by the ELF normalizer.
+`bin/ut @LLVMJit` is 421/0; the full `bin/ut` is 2457/0 and stable under
+`--random` and both historical seeds.
+
+Everything below is kept as an outcome log; the interposition (Step 1), fork
+fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
+goal was a POC viability gate; that was met at Step 1/3 and the goal has since
+moved to full-matrix + benchmark parity.
+
 ## Scope
 
 A second native backend that **reuses SystemLinker's object production
@@ -49,6 +63,14 @@ calls `__register_frame` — present with the JITLink `ObjectLinkingLayer`,
 else (symbol resolution, calling the function) is routine; this is the
 risk. The proof bar is built to fail loudly here rather than ship a
 backend that silently can't catch assertion failures.
+
+> **Postmortem (after Steps 1 & 4):** this predicted risk came back YES
+> immediately and cheaply — a null builder gave automatic `__register_frame`
+> with no work. The risks that actually consumed the project were all
+> *emergent* and none were foreseen here: weak-symbol stub shadowing (Step 1),
+> the dispose-then-collect segfault (Step 4 fork fix), and the duplicate-`UND`
+> zero-GOT-stub (Step 4 residual / Next fix). Calibrate accordingly: the scary
+> upfront unwinding question was not where the bodies were buried.
 
 What we expected *not* to need for the POC: `ModuleInfo`/module-ctor
 registration and GC scan-range registration via `_d_dso_registry`. Confirmed
@@ -134,14 +156,6 @@ fork child emits objects to disk and exits; the parent gets the paths back.
 (`dmd -shared`) + `loadSharedLibrary` as before. Gate met:
 `bin/ut @SystemLinker` (403 tests, 0 failed), `bin/ut --random`, and both
 historical seeds (`2828407573`, `3516581215`) all green — behavior preserved.
-
-Pull the fork + `emitObjectFiles` flow (and its prep: rod-root assertion,
-user-import promotion, child-side prune, `adoptTypeInfos`) out of
-`system_linker.d` into a package-private `native/codegen.d` that returns
-the emitted object-file paths to the parent. `SystemLinker` calls it, then
-does its `dmd -shared` + `loadSharedLibrary` as today. Gate: full
-SystemLinker matrix stays green under `--random` and both historical seeds
-(`2828407573`, `3516581215`) — this step must be behavior-preserving.
 
 ### Step 1 — minimal end-to-end proof (the gate)
 
@@ -252,8 +266,9 @@ logic}.d`) no longer exist: master's single-oracle migration
 (`ai/plans/single-oracle.md`) moved every language-surface `rt/` module into
 `ct/`, redefining `rt/` as behaviour that needs the runtime environment.
 `LLVMJit` is an `rt/` backend (oracle = `SystemLinker`) and must not appear in
-`ct/` blocks, so after the merge it is promoted into the only surviving `rt/`
-SystemLinker-oracle block:
+`ct/` blocks (**superseded in Step 4 — this was over-conservative; `LLVMJit`
+belongs in `ct/` wherever `SystemLinker` does**), so after the merge it is
+promoted into the only surviving `rt/` SystemLinker-oracle block:
 
 - `tests/ut/backends/runner/rt/cstdlib.d` — the `malloc.` block (a real
   runtime libc `malloc` call through the in-process JIT).
@@ -279,7 +294,10 @@ drove the real benchmark harness (`benchmarks.harness.measure`: 2 warmup +
 median) over the four single-unittest fixtures below, calling each backend's
 `runTests` on the *same* parsed `Module` so only the post-parse load path is
 timed. One fixture per measurement ⇒ median per-fixture == median per-test.
-Each backend confirmed PASS before timing. Two full repeats; numbers stable.
+Each backend confirmed PASS before timing. Two full repeats; the *gap* is
+stable. Per-run SystemLinker timings swing up to ~50% under `powersave`
+(fixture 2: 33.5 vs 50.7 ms) — well inside the 5–7× margin, but the
+absolute numbers are noisy, not the speedup.
 
 Fixtures: (0) passing `twice()` int assert (the Step 1 passing fixture);
 (1) `cast(float)` precision (`rt/expressions.d`); (2) delegate `funcptr`
@@ -371,15 +389,20 @@ already happens and is balanced, and does not touch the live GC survivors; never
 disposing the LLJIT in the long-lived parent — leaks unbounded and still risks a
 mid-run collect.)
 
-### Not promotable at all — `ct/archive.d`
+### Deferred scope boundary — `ct/archive.d`
 
 `runTests.archiveBackedImport*` constructs `new backend([archivePath],
 [importPath])`, i.e. the `SystemLinker(string[] linkFiles, string[]
-importPaths)` constructor. `LLVMJitInputs` has **no `linkFiles` field** and the
-ORC loader resolves only druntime/phobos *process* symbols, not external `.a`
-archive symbols (an explicit non-goal in `LLVMJitInputs`' comment). Archive
-linking through the in-process JIT is unimplemented; this test cannot compile
-under `LLVMJit`. Left unpromoted, unchanged.
+importPaths)` constructor. `LLVMJitInputs` currently has **no `linkFiles`
+field** and the ORC loader resolves only druntime/phobos *process* symbols, not
+external `.a` archive symbols, so this test cannot compile under `LLVMJit`
+today. Left unpromoted.
+
+This is a *deferral*, not an inherent impossibility: ORC can load static
+archives (`LLVMOrcCreateStaticLibrarySearchGeneratorForPath`, or add each
+member object to the `JITDylib`). Archive support is out of scope for the
+current normalizer work but is the route if/when archive-backed imports need
+`LLVMJit` coverage. Until then it is a known hole in matrix parity.
 
 ### Residual defect — duplicate undefined symbol → JITLink resolves it to 0
 
@@ -407,6 +430,17 @@ GNU ld (SystemLinker's `dmd -shared`) coalesces duplicate undefined symbols by
 name and never hits this — same shared codegen, identical object bytes, only the
 loader differs.
 
+Caveat: "under accumulated process-global DMD state" is *when* the duplicate
+appears, not *why*. The mechanism by which accumulated dmd state writes the same
+`UND GLOBAL` to the symtab twice is uncharacterized. So the normalizer below is
+a **defense against an uncharacterized emitter**, not a fix for a known one —
+which is why it ships with a "reject unsupported shapes" guard rather than
+assuming the only malformation is duplicate `UND` (accumulated state could in
+principle produce others). Duplicate `UND GLOBAL` is valid ELF that ld
+coalesces, so the standards-conformant reading is that **JITLink is strict
+where ld is lenient** — i.e. this is plausibly an upstream JITLink bug worth a
+minimal repro + report, with the in-loader normalizer as the bridge we control.
+
 This is **codegen-deterministic, not GC-timing-dependent**, so unlike the
 original crash it does **not** scatter under `--random`: across 6 full-suite
 orderings (3 random + 2 fixed seeds + the no-seed default) exactly the same
@@ -432,6 +466,29 @@ stub's GOT slot contained `0`, so execution jumped to address zero. The symbol
 was present in the benchmark process, and `SystemLinker` passed the same
 package (`156/156`), so this was another duplicate-undefined-global instance,
 not a cerealed or shared-codegen failure.
+
+Layer decision (which of three fixes): (a) **fix dmd codegen** to not emit the
+duplicate — touches the `SystemLinker`-shared path, and the cause is
+uncharacterized (above), so high-risk for the whole backend family; (b) **wait
+on an upstream JITLink fix** — not actionable on our timeline, and unconfirmed
+as a bug; (c) **normalize the object in our loader** before `AddObjectFile` —
+contained to `LLVMJit`, deterministic, reversible. We picked (c) as the bridge
+and should still file the upstream repro for (b). Revisit (a) only if the
+normalizer proves insufficient or the uncharacterized emitter starts producing
+other malformations.
+
+Implementation approach decision (given (c), D vs C++): keep this PR D-only.
+The normalizer is Quickbite-owned backend code, not a new build-system feature.
+Investigation of calling LLVM's C++ ELF reader found it would reduce some
+parsing boilerplate but would not remove the byte patching: LLVM exposes
+relocations over the object's bytes, and the shim would still have to compute
+the `r_info` offset and mutate the buffer. It would also add a new C++
+compile/link path that this repo does not currently have: `dub.sdl` and the
+generated Reggae/Ninja build only compile D sources for Quickbite, and a Dub
+mixed-source probe rejected `.cpp` source files. The LLVM C object API is
+read-oriented here and has no relocation symbol-index setter. A C++ shim is
+worth revisiting only if Quickbite grows first-class C++ build support or the
+ELF helper expands beyond this narrow normalization job.
 
 Fixed in the loader, not with a GC-symbol list. `native/elf.d` parses the
 Quickbite-supported object shape (little-endian ELF64 `ET_REL`, one
@@ -501,14 +558,13 @@ bin/ut @LLVMJit                     # the new backend's matrix blocks
 ./ci.sh                               # includes the latency bench row
 ```
 
-## Open questions to settle in Step 1
+## Open questions from Step 1 — both answered
 
-- Does LLJIT default to the JITLink `ObjectLinkingLayer` on this host (the
-  one with automatic eh_frame registration), or must we force it via
-  `LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator`? This is the first
-  thing to determine empirically.
-- Does the installed `libLLVM.so` expose a linkable bare soname, or only
-  the versioned one?
+- LLJIT defaults to the JITLink `ObjectLinkingLayer` on this host (null
+  builder), so eh_frame registers automatically — no
+  `LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator` needed. See Step 1.
+- The installed `libLLVM.so` exposes a linkable bare soname (`-lLLVM`
+  resolves it). See Step 1 / Build wiring.
 
 ## Key reference files
 
