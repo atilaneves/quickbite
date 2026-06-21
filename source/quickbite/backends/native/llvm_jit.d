@@ -425,12 +425,15 @@ private void addObjectFile(
     imported!"quickbite.backends.native.llvm_orc".LLVMOrcJITDylibRef dylib,
     in string objPath,
 ) {
+    import quickbite.backends.native.elf: normalizeDuplicateUndefinedGlobalsInFile;
     import quickbite.backends.native.llvm_orc:
         LLVMCreateMemoryBufferWithContentsOfFile,
         LLVMMemoryBufferRef,
         LLVMOrcLLJITAddObjectFile;
     import std.conv: text;
     import std.string: fromStringz, toStringz;
+
+    normalizeDuplicateUndefinedGlobalsInFile(objPath);
 
     LLVMMemoryBufferRef buffer;
     char* message;

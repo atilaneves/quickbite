@@ -1636,10 +1636,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
 // ("Unsupported eval post expression"); Bytecode cannot compile the array
 // slice ("Unsupported expression `arr[]`"); IR reports the array literal as
 // unsupported.
-// LLVMJit excluded: under accumulated state dmd emits the rod with a duplicate
-// undefined symbol (gc_expandArrayUsed) that JITLink resolves to 0 where GNU ld
-// coalesces it; the JIT'd append then calls null (ai/plans/llvm-jit.md Step 4).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, SystemLinker, LLVMJit)) {
     @("foreach.reverseIntArrayVisitsBackToFront." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -3,18 +3,17 @@
 ## Current state / next action
 
 The backend works and is promoted alongside `SystemLinker` across the whole
-`SystemLinker`-oracle matrix **except** two holdouts: `ct/archive.d`
-(archive-backed imports, a deferred scope boundary — see "Deferred scope
-boundary") and **5 array fixtures** hitting the duplicate-`UND`-symbol →
-zero-GOT-stub defect. `bin/ut @LLVMJit` is 395/0; the full `bin/ut` is 2021/0
-and stable under `--random` and both historical seeds.
+`SystemLinker`-oracle matrix **except** `ct/archive.d` (archive-backed imports,
+a deferred scope boundary — see "Deferred scope boundary"). That archive-backed
+import fixture is the only known behavior `LLVMJit` cannot pass now. The
+duplicate-`UND`-symbol → zero-GOT-stub defect is fixed by the ELF normalizer.
+`bin/ut @LLVMJit` is 421/0; the full `bin/ut` is 2459/0 and stable under
+`--random` and both historical seeds.
 
-**The only open task is the ELF duplicate-`UND` normalizer** — see "Next fix"
-at the end. Everything above it (Steps 0–4) is committed and kept here as an
-outcome log; the interposition (Step 1) and fork-fix (Step 4) writeups are the
-load-bearing history. Original goal was a POC viability gate; that was met at
-Step 1/3 and the goal has since moved to full-matrix + benchmark parity, which
-the normalizer is the last blocker for.
+Everything below is kept as an outcome log; the interposition (Step 1), fork
+fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
+goal was a POC viability gate; that was met at Step 1/3 and the goal has since
+moved to full-matrix + benchmark parity.
 
 ## Scope
 
@@ -335,7 +334,7 @@ approval. All other ci.sh steps pass: `bin/ut` (1597 tests, 0 failed, 4/4
 expected failures), `tests/example.d`, `bin/bench`, `bin/qb`, and the other
 14 REPL tests.
 
-## Step 4 — promote the full SystemLinker matrix to LLVMJit ✅ DONE (with a documented residual)
+## Step 4 — full SystemLinker matrix promotion ✅ DONE
 
 **Goal.** Promote every `SystemLinker`-tagged matrix block to also run on
 `LLVMJit`. `SystemLinker` is `LLVMJit`'s single behaviour oracle
@@ -426,7 +425,8 @@ with a **duplicate undefined symbol** — e.g. `gc_expandArrayUsed` appears
 the JIT'd array-append worker (`_d_arrayappendcTX_`) calls `gc_expandArrayUsed`
 via the PLT/GOT, **JITLink resolves the extra symbol's GOT slot to `0`** and the
 JIT'd code calls a null pointer (`rip = 0x0`, faulting `call` goes through a GOT
-slot holding 0, while the symbol *does* otherwise resolve via `LLVMOrcLLJITLookup`).
+slot holding 0, while the symbol *does* otherwise resolve via
+`LLVMOrcLLJITLookup`).
 GNU ld (SystemLinker's `dmd -shared`) coalesces duplicate undefined symbols by
 name and never hits this — same shared codegen, identical object bytes, only the
 loader differs.
@@ -454,113 +454,82 @@ them): deduplicating the names fed to `LLVMOrcAbsoluteSymbols` in
 `defineHostSymbols` (the duplicate is in the *object's* symtab, not our map);
 defining the host interposition as a strong rather than weak absolute (breaks
 the legitimate cross-object duplicate-weak dedup with "duplicate definition"
-errors). A robust fix needs either ELF symtab/relocation surgery on the object
-buffer before `LLVMOrcLLJITAddObjectFile` (coalesce duplicate undefined globals)
-or a dmd codegen change (which touches the SystemLinker-shared path) — both out
-of scope here; the affected fixtures stay on `SystemLinker` only.
+errors). The fix below uses ELF symtab/relocation surgery on the object buffer
+before `LLVMOrcLLJITAddObjectFile`.
 
-### Next fix — normalize duplicate undefined ELF symbols before ORC
+### Duplicate undefined ELF normalizer ✅ DONE
 
-`bin/bench.sh --dub cerealed -b llvmjit` now exposes the same defect at package
-scale. The JIT child crashes in JIT'd
+`bin/bench.sh --dub cerealed -b llvmjit` exposed the same defect at package
+scale. The JIT child crashed in JIT'd
 `core.internal.array.capacity._d_arrayshrinkfitH!(ubyte[], ubyte)`: the object
-calls `gc_shrinkArrayUsed`, ORC creates an indirect stub for that call, and the
-stub's GOT slot contains `0`, so execution jumps to address zero. The symbol is
-present in the benchmark process (`dlsym(RTLD_DEFAULT, "gc_shrinkArrayUsed")`
-returns a real `libphobos2.so` address), and `SystemLinker` passes the same
-package (`156/156`), so this is another instance of JITLink mishandling
-duplicate undefined globals rather than a cerealed or shared-codegen failure.
+called `gc_shrinkArrayUsed`, ORC created an indirect stub for that call, and the
+stub's GOT slot contained `0`, so execution jumped to address zero. The symbol
+was present in the benchmark process, and `SystemLinker` passed the same
+package (`156/156`), so this was another duplicate-undefined-global instance,
+not a cerealed or shared-codegen failure.
 
 Layer decision (which of three fixes): (a) **fix dmd codegen** to not emit the
 duplicate — touches the `SystemLinker`-shared path, and the cause is
 uncharacterized (above), so high-risk for the whole backend family; (b) **wait
 on an upstream JITLink fix** — not actionable on our timeline, and unconfirmed
 as a bug; (c) **normalize the object in our loader** before `AddObjectFile` —
-contained to `LLVMJit`, deterministic, reversible. We pick (c) as the bridge
+contained to `LLVMJit`, deterministic, reversible. We picked (c) as the bridge
 and should still file the upstream repro for (b). Revisit (a) only if the
 normalizer proves insufficient or the uncharacterized emitter starts producing
 other malformations.
 
-Implementation approach decision (given (c), D vs C++): keep this PR D-only. The
-normalizer is Quickbite-owned backend code, not a new build-system feature.
+Implementation approach decision (given (c), D vs C++): keep this PR D-only.
+The normalizer is Quickbite-owned backend code, not a new build-system feature.
 Investigation of calling LLVM's C++ ELF reader found it would reduce some
 parsing boilerplate but would not remove the byte patching: LLVM exposes
 relocations over the object's bytes, and the shim would still have to compute
 the `r_info` offset and mutate the buffer. It would also add a new C++
-compile/link path that this repo
-does not currently have: `dub.sdl` and the generated Reggae/Ninja build only
-compile D sources for Quickbite, and a Dub mixed-source probe rejected `.cpp`
-source files. The LLVM C object API is read-oriented here and has no relocation
-symbol-index setter. A C++ shim is worth revisiting only if Quickbite grows
-first-class C++ build support or the ELF helper expands beyond this narrow
-normalization job.
+compile/link path that this repo does not currently have: `dub.sdl` and the
+generated Reggae/Ninja build only compile D sources for Quickbite, and a Dub
+mixed-source probe rejected `.cpp` source files. The LLVM C object API is
+read-oriented here and has no relocation symbol-index setter. A C++ shim is
+worth revisiting only if Quickbite grows first-class C++ build support or the
+ELF helper expands beyond this narrow normalization job.
 
-Fix it generically, not with a GC-symbol list:
+Fixed in the loader, not with a GC-symbol list. `native/elf.d` parses the
+Quickbite-supported object shape (little-endian ELF64 `ET_REL`, one
+`SHT_SYMTAB`, `SHT_RELA` relocation sections), coalesces duplicate
+`UND GLOBAL` symbol-table entries by name, and rewrites relocation `r_info`
+symbol indices to the first canonical entry. It leaves section-local, defined,
+weak-COMDAT, and file symbols untouched, and keeps `defineHostSymbols`
+conceptually separate: host-symbol interposition still handles weak
+druntime/phobos definitions, while the ELF normalizer handles duplicate
+undefined globals that JITLink would otherwise lower to zero-valued stubs.
 
-1. Red test: **promote one of the 5 already-excluded array fixtures to
-   `LLVMJit`** — e.g. `ct/arrays.d`'s
-   `dynamicArray.lengthAssignmentResizesArray`. These are already written,
-   already approved, already backed by the `SystemLinker` oracle, and already
-   red under `LLVMJit`, so this needs no new test approval (promotion to a
-   backend backed by its oracle is pre-approved per `AGENTS.md`) and is the
-   cleanest matrix-level red. The
-   `bin/bench.sh --dub cerealed -b llvmjit` crash is the package-scale **smoke**
-   check only — not the committed red test, since a bench row is not a matrix
-   unit test.
-2. Add a D implementation of a Quickbite-owned ELF64 relocatable-object
-   normalizer in the `native/` package, called after object emission and before
-   `LLVMOrcLLJITAddObjectFile`. Scope it tightly to the object format dmd emits
-   here: little-endian ELF64 `ET_REL`, one `SHT_SYMTAB`, and `SHT_RELA`
-   relocation sections. Reject unsupported shapes with a clear diagnostic.
-3. In the normalizer, coalesce duplicate undefined global symbols by name.
-   Keep the first symbol table entry as canonical, rewrite every relocation's
-   `r_info` symbol index from duplicate entries to the canonical entry, and
-   leave section-local, defined, weak-COMDAT, and file symbols untouched.
-   Shrinking the symbol table is optional; redirecting relocations is the
-   required behavior. Keeping all entries (only redirecting relocations) is the
-   safe choice — it avoids renumbering, which would also force fixing
-   `SHT_GROUP`/COMDAT signature-symbol indices.
+The previously excluded fixtures are promoted to `LLVMJit`, and focused
+minimal-object tests cover the relocation rewrite and the no-duplicate no-op
+case. The orphan duplicate `UND` entry can remain in the symbol table:
+redirecting all relocations away from it is sufficient; JITLink does not
+materialize a zero-valued call stub for an unreferenced undefined symbol.
 
-   **Verify the orphan does not itself crash:** after redirecting relocations,
-   the duplicate `UND GLOBAL` is still in the symtab but referenced by nothing.
-   Confirm JITLink does **not** materialize a zero-valued stub for an
-   unreferenced `UND` symbol on its own. If it does, redirecting relocations is
-   insufficient and the normalizer must also neutralize the orphan entry (rebind
-   it to the canonical, or set `STN_UNDEF`/`STB_LOCAL`). Check this before
-   declaring the fix done — it is the difference between a working normalizer
-   and one that still calls null.
-4. Keep `defineHostSymbols` exactly conceptually separate. It still replicates
-   ELF interposition for weak druntime/phobos definitions that the object
-   defines. The new normalizer handles duplicate `UND GLOBAL` entries that
-   JITLink turns into zero-valued stubs.
-5. Green the red test with the smallest implementation. Only after that, move
-   the ELF rewrite into a small private helper module and add focused tests for
-   the symbol-index rewrite using generated or checked-in minimal object bytes.
-6. **Promote all 5 excluded fixtures** (the four `ct/arrays.d` /
-   `ct/cerealed.d` / `ct/control_flow.d` entries plus `jaggedRows...`) to
-   `LLVMJit` and remove their exclusion comments — this is the matrix-level
-   proof the normalizer works, not an optional follow-up. Then verify with the
-   required suite:
+Verified:
 
-   ```sh
-   ninja bin/ut
-   bin/ut --random                       # plus both historical seeds
-   bin/ut @LLVMJit                       # excluded fixtures now green here
-   bin/bench.sh --dub cerealed -b llvmjit
-   bin/bench.sh --dub cerealed -b system-linker
-   ```
+```sh
+ninja bin/ut
+bin/ut
+bin/ut --random
+bin/ut --random --seed 2828407573
+bin/ut --random --seed 3516581215
+bin/ut @LLVMJit
+bin/bench.sh --dub cerealed -b llvmjit
+bin/bench.sh --dub cerealed -b system-linker
+```
 
-Success (all required): the 5 fixtures pass under `bin/ut @LLVMJit` and the
-full `bin/ut` stays green under `--random` + both seeds; `cerealed llvmjit`
-reports a timed row instead of `JIT child died`; and the implementation remains
-mechanically derived from ELF symbol tables and relocations rather than
-hardcoded runtime symbol names.
+`cerealed llvmjit` now reports a timed `156/156` row instead of
+`JIT child died`, and the implementation remains mechanically derived from ELF
+symbol tables and relocations rather than hardcoded runtime symbol names.
 
 ### Reproduction
 
 ```sh
-bin/ut @LLVMJit                 # 395/0 — promoted matrix is green in isolation
-bin/ut                          # 2021/0 — full suite green, stable under --random
+bin/ut @LLVMJit                 # 421/0 — full promoted LLVMJit matrix
+bin/ut                          # 2459/0 — full suite green
+bin/ut --random
 bin/ut --random --seed 2828407573
 bin/ut --random --seed 3516581215
 ```

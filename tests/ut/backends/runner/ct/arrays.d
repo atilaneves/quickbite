@@ -360,10 +360,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-// LLVMJit excluded: under accumulated state dmd emits the rod with a duplicate
-// undefined symbol (gc_expandArrayUsed) that JITLink resolves to 0 where GNU ld
-// coalesces it; the JIT'd append then calls null (ai/plans/llvm-jit.md Step 4).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.nestedSliceAppendKeepsOriginalArrayTail." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -636,10 +633,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
     }
 }
 
-// LLVMJit excluded: under accumulated state dmd emits the rod with a duplicate
-// undefined symbol (gc_expandArrayUsed) that JITLink resolves to 0 where GNU ld
-// coalesces it; the JIT'd resize then calls null (ai/plans/llvm-jit.md Step 4).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1375,10 +1369,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLin
 // Bytecode ("Unsupported expression `rows.length`"), BytecodeNewCore
 // ("Unsupported type in bytecode core: int[][]"), and IR (unsupported nested
 // array literal) cannot run jagged arrays.
-// LLVMJit excluded: under accumulated state dmd emits the rod with a duplicate
-// undefined symbol (gc_expandArrayUsed) that JITLink resolves to 0 where GNU ld
-// coalesces it; the JIT'd append then calls null (ai/plans/llvm-jit.md Step 4).
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)) {
     @("dynamicArray.jaggedRowsKeepIndependentLengths." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
