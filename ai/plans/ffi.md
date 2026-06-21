@@ -2047,3 +2047,178 @@ new member-arguments fixture passes on `SystemLinker` and `Interpreter`;
 existing dependency-image and `rt/cstdlib.d` fixtures still pass; and
 unsupported member shapes continue to fall through to the existing
 no-available-source diagnostic.
+
+## 30. Increment 7: native exceptions become Interpreter exceptions
+
+**Status: planned.** This is the next §26 contract after member-function calls.
+The implementation is Interpreter-only. Bytecode and IR stay out (§23, §26),
+and no callback, delegate, virtual dispatch, variadic, or generated-wrapper
+work is implied.
+
+### 30.1 Why this next
+
+§25 through §29 make the Interpreter cross the native boundary for concrete
+dependency-image functions and struct member functions. A normal D dependency
+can also signal failure by throwing:
+
+```d
+void dependencyThrow() {
+    throw new Exception("dependency failed");
+}
+```
+
+Today the libffi path calls the native function with no Quickbite exception
+boundary:
+
+```text
+Interpreter frame -> quickbite.backends.ffi -> ffi_call -> dependency function
+```
+
+If the dependency function throws, the native `Throwable` escapes through the
+libffi call instead of becoming the Interpreter's existing
+`InterpretedException` state. That means ordinary interpreted `try`/`catch`
+cannot handle an exception raised by a dependency-image function, even though
+compiled D can.
+
+This increment implements the §12 rule for the first direction only:
+
+```text
+native Exception -> Interpreter pending exception
+native Error     -> fatal native failure
+```
+
+### 30.2 First fixture (approval required)
+
+Add one oracle-backed dependency-image fixture in
+`tests/ut/backends/runner/rt/dependency_image.d`, mirroring the existing
+dependency-image tests. The dependency image is compiled with the throwing body
+and then rewritten to declarations only:
+
+```d
+module dep_image_exception_fixture;
+
+void dependencyThrow() {
+    throw new Exception("dependency failed");
+}
+```
+
+Visible source after image build:
+
+```d
+module dep_image_exception_fixture;
+
+void dependencyThrow();
+```
+
+Source under test:
+
+```d
+import dep_image_exception_fixture;
+
+unittest {
+    try {
+        dependencyThrow();
+        assert(false);
+    } catch (Exception caught) {
+        assert(caught.msg == "dependency failed");
+    }
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes — compiled D catches the dependency-image
+  `Exception` and exposes its message.
+Interpreter: fails before the fix because the native exception is not converted
+  into the interpreter's exception representation; passes after the FFI
+  boundary maps the native exception into the existing interpreted catch path.
+```
+
+This fixture intentionally uses `object.Exception`, not a dependency-defined
+subclass. Preserving the thrown message and matching `catch (Exception)` is the
+first semantic contract. Dependency-defined exception subclasses and field
+state are later rungs.
+
+### 30.3 Scope
+
+In scope:
+
+```text
+Interpreter only
+non-member dependency-image functions called through `tryCallNative`
+`object.Exception` thrown by native dependency code
+mapping the native exception message to an interpreted `Exception` object
+ordinary interpreted `catch (Exception caught)` handling and `caught.msg`
+native `Error` remains fatal and is not caught by `catch (Exception)`
+```
+
+Out of scope, each requiring a separate approved oracle fixture:
+
+```text
+member functions that throw
+dependency-defined exception subclasses and subclass-specific fields
+native exception chaining (`Throwable.next`)
+native `Error` recovery as an ordinary backend exception
+exceptions thrown after out-parameter writebacks
+backend exceptions crossing into native callbacks
+callbacks, delegates, virtual dispatch, variadics, Bytecode, and IR
+generated wrapper source
+```
+
+Do not special-case the dependency fixture. The throw must remain a native
+throw from the dependency image, caught at the common FFI boundary.
+
+### 30.4 Implementation shape
+
+All native execution still goes through `quickbite.backends.ffi`; do not add a
+backend-local direct call path in `interpreter/impl.d`.
+
+```text
+1. Add the approved fixture first and confirm it fails on the Interpreter.
+2. Change the FFI API so a native call can report one of: no supported call
+   shape, returned value, native `Exception`, or native `Error`.
+3. Catch `Exception` and `Error` around `ffi_call` in `callViaLibffi`.
+   `Exception` is returned to the Interpreter as a caught native exception;
+   `Error` is rethrown or reported as fatal native failure, not converted into
+   an interpreted `Exception`.
+4. In `Walker.runCallExpression`, convert a caught native `Exception` into the
+   same `Value.classValue` shape used by interpreted `new Exception(message)`,
+   then throw `InterpretedException` so existing `runTryCatchStatement`,
+   `catchMatches`, and `bindCatchVariable` handle it.
+5. Keep the no-supported-call path returning false so the existing
+   no-available-source diagnostic still owns unsupported signatures.
+6. Preserve successful return values and existing argument writeback behavior.
+```
+
+The native exception object must not be stored as an opaque native handle in
+this slice. The interpreted value only needs the existing class type names for
+`Throwable`/`Exception` matching and the `msg` field for the approved fixture.
+
+### 30.5 Anchors
+
+Re-grep and re-read before editing; line numbers drift.
+
+```text
+native call result       source/quickbite/backends/ffi.d
+                          (tryCallNative, tryCallNativeMember,
+                           tryCallNativeImpl, callViaLibffi)
+libffi boundary          source/quickbite/backends/ffi.d
+                          (ffi_call and return-value unmarshalling)
+interpreter exception    source/quickbite/backends/interpreter/impl.d
+                          (InterpretedException, throwInterpretedException,
+                           applyThrowableConstructor)
+call site                source/quickbite/backends/interpreter/impl.d
+                          (Walker.runCallExpression native-call branches)
+catch handling           source/quickbite/backends/interpreter/impl.d
+                          (runTryCatchStatement, catchMatches,
+                           bindCatchVariable)
+fixture style to mirror  tests/ut/backends/runner/rt/dependency_image.d
+```
+
+Done when: after an approved fixture is added, `bin/ut --random` is green; the
+new dependency-image exception fixture passes on `SystemLinker` and
+`Interpreter`; the existing dependency-image member fixtures and `rt/cstdlib.d`
+suite still pass; unsupported native call shapes still fall through to the
+existing no-available-source diagnostic; and native `Error` is not converted
+into an interpreted `Exception`.
