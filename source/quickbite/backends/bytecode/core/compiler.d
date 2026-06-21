@@ -220,6 +220,16 @@ private struct Compiler {
             return;
         }
 
+        // A `DtorExpStatement` is the destructor call DMD inserts at a scope
+        // exit (`~this()` on a local going out of scope). It is an ExpStatement
+        // subclass but `isExpStatement` matches only the plain `Exp` kind, so
+        // handle it explicitly: compile its destructor-call expression.
+        if (auto dtor = statement.isDtorExpStatement) {
+            if (dtor.exp !is null)
+                compileExpression(dtor.exp);
+            return;
+        }
+
         if (auto expressionStatement = statement.isExpStatement) {
             if (expressionStatement.exp !is null)
                 compileExpression(expressionStatement.exp);
@@ -2699,6 +2709,13 @@ private struct Compiler {
     private Operand compileAddAssignExpression(AddAssignExp addAssign) {
         import std.conv: text;
 
+        // `arr[i] += rhs` on a dynamic-array element (e.g. a destructor's
+        // `this.sink[0] += 3`): load the element, add the rhs, and store it back
+        // through the descriptor.
+        if (auto index = addAssign.e1.isIndexExp)
+            if (auto element = tryDynamicArrayElementAddAssign(index, addAssign.e2))
+                return *element;
+
         // `p.field += rhs` through a heap struct pointer: load the field, add the
         // rhs, and store the result back through the pointer.
         if (auto dot = addAssign.e1.isDotVarExp)
@@ -3070,6 +3087,41 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(value.offset, descriptor.elementType);
+        return result;
+    }
+
+    // `arr[i] += rhs` on a dynamic-array element: load `arr[i]`, add `rhs`, and
+    // store the sum back through the descriptor. Null if `index.e1` is not a
+    // known dynamic-array descriptor.
+    private Operand* tryDynamicArrayElementAddAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        if (descriptor is null)
+            return null;
+
+        const elementType = descriptor.elementType;
+        const elementSize = size(elementType);
+        const indexSlot = compileExpression(index.e2).offset;
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+        );
+
+        const rhsValue = compileExpression(rhs);
+        const addOp = isEightByteInteger(elementType)
+            ? Op.addInt8
+            : Op.addInt4;
+        _code ~= Instruction(addOp, current, current, rhsValue.offset);
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current, elementType);
         return result;
     }
 
