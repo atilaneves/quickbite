@@ -1491,14 +1491,10 @@ bridge, and did not start callback/delegate support.
 
 ## 26. Current FFI boundary
 
-**The next implementation slice is now selected: §27 (correct the `extern(D)`
-calling convention in the Interpreter).** It is not one of the deferred
-semantic contracts below; it is a correctness gap discovered in the
-already-landed §25 `extern(D)` support — see §27.1 for why it jumps the queue.
-The deferred contracts remain deferred until §27 lands. Do not start a new FFI
-implementation PR by silently choosing from §25's deferred items; each of these
-changes adds a distinct semantic contract and needs its own narrow plan plus an
-approved oracle-backed test:
+§27 corrected the `extern(D)` calling convention in the Interpreter. Do not
+start a new FFI implementation PR by silently choosing from §25's deferred
+items; each of these changes adds a distinct semantic contract and needs its own
+narrow plan plus an approved oracle-backed test:
 
 ```text
 member functions needing `this`
@@ -1509,16 +1505,16 @@ generated wrapper source
 Bytecode/IR/native-layout bridge work
 ```
 
-After §27, the next planning PR should pick exactly one of those contracts,
-identify the smallest compiled-D oracle fixture that proves it, and state which
-backend owns the first implementation. Until that exists, keep Bytecode and IR
-out of the FFI work from this plan; their native-layout bridge remains governed
-by §23 and `ai/plans/bytecode.md`.
+The next planning PR should pick exactly one of those contracts, identify the
+smallest compiled-D oracle fixture that proves it, and state which backend owns
+the first implementation. Until that exists, keep Bytecode and IR out of the FFI
+work from this plan; their native-layout bridge remains governed by §23 and
+`ai/plans/bytecode.md`.
 
 ## 27. Increment 4: correct the extern(D) calling convention (Interpreter)
 
-**Status: selected, not started.** This is the next implementation slice, and
-it is Interpreter-only. Bytecode and IR stay out (§23, §26).
+**Status: implemented.** This slice is Interpreter-only. Bytecode and IR stay
+out (§23, §26).
 
 ### 27.1 Why this, and why it is not a §26 contract
 
