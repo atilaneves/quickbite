@@ -16,6 +16,30 @@ auto newBackend(T)() {
     return new T;
 }
 
+public string buildSharedLibrary(
+    in Sandbox sandbox,
+    in string libraryName,
+    in string[] sourcePaths,
+) {
+    import std.process: execute;
+
+    const imagePath = sandbox.inSandboxPath("lib" ~ libraryName ~ ".so");
+    string[] command = [
+        "dmd",
+        "-shared",
+        "-fPIC",
+        "-defaultlib=libphobos2.so",
+        "-of=" ~ imagePath,
+    ];
+    foreach (sourcePath; sourcePaths)
+        command ~= sandbox.inSandboxPath(sourcePath);
+
+    const build = execute(command);
+    build.status.should == 0;
+
+    return imagePath;
+}
+
 public void runBackendSourceFixtureTests(T)(
     in string moduleSource,
 ) {
