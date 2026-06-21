@@ -1710,3 +1710,169 @@ Done when: `bin/ut --random` is green; the new ≥2-argument `extern(D)` fixture
 passes on `SystemLinker` and `Interpreter`; the one-argument `dependency_image.d`
 fixture and the entire `extern(C)` `cstdlib.d` suite remain green; and the
 reversal is applied for `LINK.d` only.
+
+## 28. Increment 5: member functions with `this` (Interpreter)
+
+**Status: planned.** This is the next §26 contract: native member calls that
+need a hidden `this` argument. The first implementation is Interpreter-only.
+Bytecode and IR stay out (§23, §26), and no callback/delegate/virtual-dispatch
+work is implied.
+
+### 28.1 Why this next
+
+§25 made the Interpreter call body-less non-member functions from resident
+symbols and prepared dependency images. §27 corrected the `extern(D)` argument
+order for those calls. The next body-less leaf a D dependency exposes is a
+method call:
+
+```d
+struct Counter {
+    int value;
+    int read() const { return value + 17; }
+}
+```
+
+When the dependency image supplies the method body and the source visible to
+the Interpreter contains only the declaration, DMD resolves the call to a
+`FuncDeclaration` with `fbody is null` and `needThis == true`. The current
+Interpreter handles that path before the native-call fallback:
+
+```text
+DotVarExp receiver -> needThis -> resolveMemberFunction ->
+  hasNoAvailableSource -> throw noAvailableSourceMessage
+```
+
+So the existing `tryCallNative` chokepoint is never given a chance to marshal
+the receiver. This increment adds that one missing hidden argument.
+
+### 28.2 First fixture (approval required)
+
+Add one oracle-backed dependency-image fixture in
+`tests/ut/backends/runner/rt/dependency_image.d`, mirroring the existing
+`extern(D)` fixtures. The dependency image is compiled with the method body and
+then rewritten to declarations only:
+
+```d
+module dep_image_member_fixture;
+
+struct Counter {
+    int value;
+
+    int read() const {
+        return value + 17;
+    }
+}
+```
+
+Visible source after image build:
+
+```d
+module dep_image_member_fixture;
+
+struct Counter {
+    int value;
+    int read() const;
+}
+```
+
+Source under test:
+
+```d
+import dep_image_member_fixture;
+
+unittest {
+    Counter counter = Counter(25);
+    assert(counter.read == 42);
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes — compiled D constructs the same struct and calls
+  the dependency-image method body natively.
+Interpreter: fails before the fix with the no-available-source diagnostic;
+  passes after the hidden receiver is marshalled through the FFI chokepoint.
+```
+
+This fixture proves only a `this`-only, non-mutating, non-virtual struct method.
+It is intentionally order-sensitive only through the receiver field value, not
+through explicit parameters.
+
+### 28.3 Scope
+
+In scope:
+
+```text
+Interpreter only
+non-virtual struct member functions from prepared dependency images
+`extern(D)` member functions with no explicit parameters
+receiver passed as the leading hidden `this` pointer
+read-only receiver usage; no receiver writeback
+existing §24 scalar return surface
+```
+
+Out of scope, each requiring a separate approved oracle fixture:
+
+```text
+member functions with explicit parameters (`[this, reverse(explicit)]`)
+mutating struct methods and receiver writeback
+class methods, virtual dispatch, interfaces, and vtables
+constructors/destructors/postblits
+properties beyond ordinary zero-argument call lowering
+member functions returning structs through hidden sret
+callbacks, delegates, exceptions, variadics, Bytecode, and IR
+```
+
+The method must remain a normal body-less leaf. Do not inline, recompile, or
+special-case the dependency body inside the Interpreter.
+
+### 28.4 Implementation shape
+
+All native execution still goes through `quickbite.backends.ffi`; do not add a
+backend-local call path in `interpreter/impl.d`.
+
+```text
+1. Extend the FFI entry point to accept hidden arguments separately from the
+   source-order explicit argument list. The simplest shape is a new helper or
+   overload that takes the receiver value and prepends it to the libffi ABI
+   arrays as a hidden argument.
+2. Keep explicit argument reversal from §27 applying only to explicit
+   parameters. For this first fixture there are none, so the ABI order is
+   simply `[this]`.
+3. In `Walker.runCallExpression`, when a `DotVarExp` member call resolves to a
+   body-less `FuncDeclaration`, try the native member-call path before throwing
+   `noAvailableSourceMessage`.
+4. Marshal the struct receiver into native memory for the duration of the call
+   and pass a pointer to that memory as hidden `this`. Reuse the existing
+   struct field marshalling instead of inventing a separate field walker.
+5. Do not write the receiver back after the call in this slice. Reject or leave
+   unclaimed any method shape that would require mutation semantics.
+6. Preserve the existing non-member call path and the `rt/cstdlib.d` suite.
+```
+
+The hidden receiver must not be counted as a source argument for
+`argumentWritebacks`; writeback slots remain keyed to the user's explicit
+argument expressions.
+
+### 28.5 Anchors
+
+Re-grep and re-read before editing; line numbers drift.
+
+```text
+member call gate         source/quickbite/backends/interpreter/impl.d
+                          (Walker.runCallExpression: DotVarExp + needThis +
+                           resolveMemberFunction + hasNoAvailableSource)
+native chokepoint        source/quickbite/backends/ffi.d
+                          (tryCallNative, callViaLibffi, abiSourceIndex,
+                           marshalArgument)
+struct marshalling       source/quickbite/backends/ffi.d
+                          (TY.Tstruct handling in marshalArgument)
+dependency fixture style tests/ut/backends/runner/rt/dependency_image.d
+no-source diagnostic     source/quickbite/frontend/dmd/functions.d
+```
+
+Done when: after an approved fixture is added, `bin/ut --random` is green; the
+new member fixture passes on `SystemLinker` and `Interpreter`; existing
+dependency-image and `rt/cstdlib.d` fixtures still pass; and unsupported member
+shapes continue to fall through to the existing no-available-source diagnostic.
