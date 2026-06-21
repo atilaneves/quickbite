@@ -29,14 +29,29 @@ public class LLVMJit:
     }
 
     public this(
-        const string[] dependencyImages,
+        const string[] linkFiles,
+        const string[] importPaths,
+    ) {
+        this(
+            LLVMJitInputs(
+                importPaths,
+                sharedLibraries(linkFiles),
+                staticLibraries(linkFiles),
+            ),
+        );
+        loadDependencyImages(_inputs.dependencyImages);
+    }
+
+    public this(
+        const string[] linkFiles,
         const string[] importPaths,
         in string packageRoot,
     ) {
         this(
             LLVMJitInputs(
                 archiveImportPathsUnder(importPaths, packageRoot),
-                dependencyImages,
+                sharedLibraries(linkFiles),
+                staticLibraries(linkFiles),
             ),
         );
         loadDependencyImages(_inputs.dependencyImages);
@@ -188,6 +203,35 @@ public struct LLVMJitInputs {
     // Cold dub dependency images are dlopen'd with RTLD_GLOBAL before ORC asks
     // the process-symbol generator to resolve dependency symbols.
     public const string[] dependencyImages;
+    // Static libraries are searched by ORC and their members are linked only
+    // when the hot objects reference a symbol they define.
+    public const string[] staticLibraries;
+}
+
+private string[] sharedLibraries(in string[] linkFiles) @safe pure {
+    import std.algorithm.iteration: filter, map;
+    import std.array: array;
+
+    return linkFiles
+        .filter!(linkFile => linkFile.isSharedLibraryPath)
+        .map!(linkFile => linkFile.idup)
+        .array;
+}
+
+private string[] staticLibraries(in string[] linkFiles) @safe pure {
+    import std.algorithm.iteration: filter, map;
+    import std.array: array;
+
+    return linkFiles
+        .filter!(linkFile => !linkFile.isSharedLibraryPath)
+        .map!(linkFile => linkFile.idup)
+        .array;
+}
+
+private bool isSharedLibraryPath(in string linkFile) @safe pure {
+    import std.string: endsWith;
+
+    return linkFile.endsWith(".so");
 }
 
 // import paths under the package belong to the project under test and are
@@ -300,10 +344,38 @@ private imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jitForObje
     );
     LLVMOrcJITDylibAddGenerator(dylib, generator);
 
+    foreach (staticLibrary; inputs.staticLibraries)
+        addStaticLibraryGenerator(jit, dylib, staticLibrary);
+
     foreach (objPath; objPaths)
         addObjectFile(jit, dylib, objPath);
 
     return jit;
+}
+
+private void addStaticLibraryGenerator(
+    imported!"quickbite.backends.native.llvm_orc".LLVMOrcLLJITRef jit,
+    imported!"quickbite.backends.native.llvm_orc".LLVMOrcJITDylibRef dylib,
+    in string staticLibrary,
+) {
+    import quickbite.backends.native.llvm_orc:
+        LLVMOrcCreateStaticLibrarySearchGeneratorForPath,
+        LLVMOrcDefinitionGeneratorRef,
+        LLVMOrcJITDylibAddGenerator,
+        LLVMOrcLLJITGetObjLinkingLayer;
+    import std.conv: text;
+    import std.string: toStringz;
+
+    LLVMOrcDefinitionGeneratorRef generator;
+    throwOnError(
+        LLVMOrcCreateStaticLibrarySearchGeneratorForPath(
+            &generator,
+            LLVMOrcLLJITGetObjLinkingLayer(jit),
+            staticLibrary.toStringz,
+        ),
+        text("static library generator ", staticLibrary),
+    );
+    LLVMOrcJITDylibAddGenerator(dylib, generator);
 }
 
 // dmd emits many druntime/phobos template instances and TypeInfos into the rod

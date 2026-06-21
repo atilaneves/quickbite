@@ -13,7 +13,7 @@ public struct CodegenInputs {
     // Modules under archive import paths are defined by prebuilt libraries on
     // the link line and must not be codegen'd again. Whether default imports
     // are traversed for template-instance codegen is derived from the modules
-    // themselves (see anyHasTemplateInstanceMember), not from a caller flag.
+    // themselves (see archiveCodegenImports), not from a caller flag.
     public const string[] archiveImportPaths;
 }
 
@@ -64,6 +64,9 @@ public string[] emitObjectFilesForLink(
         .filter!(import_ =>
             isUnderImportPaths(import_, inputs.archiveImportPaths))
         .array;
+    auto archiveCodegenImports = archiveImports
+        .filter!(import_ => import_.hasTemplateInstanceMember)
+        .array;
     // Derive the need for druntime/phobos template-instance codegen from the
     // modules themselves rather than from how the caller was invoked. The
     // signal is an archive-backed module that holds template-instance members:
@@ -74,26 +77,27 @@ public string[] emitObjectFilesForLink(
     // join this link. A trivial archive dep with no templates instantiates
     // none, so root-promoting the default-path modules would only pollute
     // later links in this process; leave them out.
-    auto defaultImports = anyHasTemplateInstanceMember(archiveImports)
+    auto defaultImports = archiveCodegenImports.length != 0
         ? userImportedModules(rootModules, true)
             .filter!(import_ => isUnderDefaultImportPaths(import_))
             .array
         : null;
     prepareForCodegen(userImports);
-    prepareArchiveImportsForTemplateCodegen(archiveImports);
+    prepareArchiveImportsForTemplateCodegen(archiveCodegenImports);
     prepareArchiveImportsForTemplateCodegen(defaultImports);
 
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
-    auto modules = rootModules ~ userImports ~ archiveImports ~ defaultImports ~ [rod];
+    auto modules = rootModules ~ userImports ~ archiveCodegenImports
+        ~ defaultImports ~ [rod];
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
     // Archive-backed modules belong here despite not being codegen'd: the
     // prebuilt libraries define their symbols.
     bool[Module] linkSet;
-    foreach (linkModule; modules)
+    foreach (linkModule; modules ~ archiveImports)
         linkSet[linkModule] = true;
     foreach (userImport; userImports ~ archiveImports ~ defaultImports)
         linkSet[userImport] = true;
@@ -119,7 +123,7 @@ public string[] emitObjectFilesForLink(
         pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);
-        foreach (archiveImport; archiveImports) {
+        foreach (archiveImport; archiveCodegenImports) {
             keepOnlyTemplateCodegenMembers(archiveImport);
             pruneForeignMembers(archiveImport, context);
         }
@@ -572,16 +576,12 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
 // snippet's semantic pass appends an archive-backed module's instantiated
 // templates to that module's members, so a non-empty hit means this link will
 // emit instances that can reference druntime/phobos members.
-private bool anyHasTemplateInstanceMember(
-    imported!"dmd.dmodule".Module[] modules,
-) {
-    foreach (module_; modules) {
-        if (module_.members is null)
-            continue;
-        foreach (i; 0 .. module_.members.length)
-            if ((*module_.members)[i].isTemplateInstance)
-                return true;
-    }
+private bool hasTemplateInstanceMember(imported!"dmd.dmodule".Module module_) {
+    if (module_.members is null)
+        return false;
+    foreach (i; 0 .. module_.members.length)
+        if ((*module_.members)[i].isTemplateInstance)
+            return true;
     return false;
 }
 

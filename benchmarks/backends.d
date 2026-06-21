@@ -36,7 +36,8 @@ private Runner makeSystemLinker(in BackendEnv env) {
 }
 
 // In-process ORC JIT: reuses SystemLinker's object production but resolves
-// druntime/phobos and dub dependency-image symbols from the running process.
+// druntime/phobos and dub shared-image symbols from the running process, and
+// static archives through ORC.
 private Runner makeLLVMJit(in BackendEnv env) {
     return new LLVMJit(
         env.linkFiles,
