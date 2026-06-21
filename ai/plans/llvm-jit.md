@@ -315,7 +315,7 @@ approval. All other ci.sh steps pass: `bin/ut` (1597 tests, 0 failed, 4/4
 expected failures), `tests/example.d`, `bin/bench`, `bin/qb`, and the other
 14 REPL tests.
 
-## Step 4 — promote the full SystemLinker matrix to LLVMJit ✅ DONE (with a documented residual)
+## Step 4 — full SystemLinker matrix promotion ✅ DONE
 
 **Goal.** Promote every `SystemLinker`-tagged matrix block to also run on
 `LLVMJit`. `SystemLinker` is `LLVMJit`'s single behaviour oracle
@@ -401,7 +401,8 @@ with a **duplicate undefined symbol** — e.g. `gc_expandArrayUsed` appears
 the JIT'd array-append worker (`_d_arrayappendcTX_`) calls `gc_expandArrayUsed`
 via the PLT/GOT, **JITLink resolves the extra symbol's GOT slot to `0`** and the
 JIT'd code calls a null pointer (`rip = 0x0`, faulting `call` goes through a GOT
-slot holding 0, while the symbol *does* otherwise resolve via `LLVMOrcLLJITLookup`).
+slot holding 0, while the symbol *does* otherwise resolve via
+`LLVMOrcLLJITLookup`).
 GNU ld (SystemLinker's `dmd -shared`) coalesces duplicate undefined symbols by
 name and never hits this — same shared codegen, identical object bytes, only the
 loader differs.
@@ -418,68 +419,59 @@ them): deduplicating the names fed to `LLVMOrcAbsoluteSymbols` in
 `defineHostSymbols` (the duplicate is in the *object's* symtab, not our map);
 defining the host interposition as a strong rather than weak absolute (breaks
 the legitimate cross-object duplicate-weak dedup with "duplicate definition"
-errors). A robust fix needs either ELF symtab/relocation surgery on the object
-buffer before `LLVMOrcLLJITAddObjectFile` (coalesce duplicate undefined globals)
-or a dmd codegen change (which touches the SystemLinker-shared path) — both out
-of scope here; the affected fixtures stay on `SystemLinker` only.
+errors). The fix below uses ELF symtab/relocation surgery on the object buffer
+before `LLVMOrcLLJITAddObjectFile`.
 
-### Next fix — normalize duplicate undefined ELF symbols before ORC
+### Duplicate undefined ELF normalizer ✅ DONE
 
-`bin/bench.sh --dub cerealed -b llvmjit` now exposes the same defect at package
-scale. The JIT child crashes in JIT'd
+`bin/bench.sh --dub cerealed -b llvmjit` exposed the same defect at package
+scale. The JIT child crashed in JIT'd
 `core.internal.array.capacity._d_arrayshrinkfitH!(ubyte[], ubyte)`: the object
-calls `gc_shrinkArrayUsed`, ORC creates an indirect stub for that call, and the
-stub's GOT slot contains `0`, so execution jumps to address zero. The symbol is
-present in the benchmark process (`dlsym(RTLD_DEFAULT, "gc_shrinkArrayUsed")`
-returns a real `libphobos2.so` address), and `SystemLinker` passes the same
-package (`156/156`), so this is another instance of JITLink mishandling
-duplicate undefined globals rather than a cerealed or shared-codegen failure.
+called `gc_shrinkArrayUsed`, ORC created an indirect stub for that call, and the
+stub's GOT slot contained `0`, so execution jumped to address zero. The symbol
+was present in the benchmark process, and `SystemLinker` passed the same
+package (`156/156`), so this was another duplicate-undefined-global instance,
+not a cerealed or shared-codegen failure.
 
-Fix it generically, not with a GC-symbol list:
+Fixed in the loader, not with a GC-symbol list. `native/elf.d` parses the
+Quickbite-supported object shape (little-endian ELF64 `ET_REL`, one
+`SHT_SYMTAB`, `SHT_RELA` relocation sections), coalesces duplicate
+`UND GLOBAL` symbol-table entries by name, and rewrites relocation `r_info`
+symbol indices to the first canonical entry. It leaves section-local, defined,
+weak-COMDAT, and file symbols untouched, and keeps `defineHostSymbols`
+conceptually separate: host-symbol interposition still handles weak
+druntime/phobos definitions, while the ELF normalizer handles duplicate
+undefined globals that JITLink would otherwise lower to zero-valued stubs.
 
-1. Add one approved red behavior test first. Prefer a small real-D fixture that
-   passes under `SystemLinker` and makes `LLVMJit` call
-   `_d_arrayshrinkfitH!(ubyte[], ubyte)` via normal dynamic-array operations.
-   If no small fixture reproduces the zero-stub failure, use
-   `bin/bench.sh --dub cerealed -b llvmjit` as the smoke red and extract the
-   smallest non-spawning backend test that still exposes the object shape.
-2. Add a Quickbite-owned ELF64 relocatable-object normalizer in the
-   `native/` package, called after object emission and before
-   `LLVMOrcLLJITAddObjectFile`. Scope it tightly to the object format dmd emits
-   here: little-endian ELF64 `ET_REL`, one `SHT_SYMTAB`, and `SHT_RELA`
-   relocation sections. Reject unsupported shapes with a clear diagnostic.
-3. In the normalizer, coalesce duplicate undefined global symbols by name.
-   Keep the first symbol table entry as canonical, rewrite every relocation's
-   `r_info` symbol index from duplicate entries to the canonical entry, and
-   leave section-local, defined, weak-COMDAT, and file symbols untouched.
-   Shrinking the symbol table is optional; redirecting relocations is the
-   required behavior.
-4. Keep `defineHostSymbols` exactly conceptually separate. It still replicates
-   ELF interposition for weak druntime/phobos definitions that the object
-   defines. The new normalizer handles duplicate `UND GLOBAL` entries that
-   JITLink turns into zero-valued stubs.
-5. Green the red test with the smallest implementation. Only after that, move
-   the ELF rewrite into a small private helper module and add focused tests for
-   the symbol-index rewrite using generated or checked-in minimal object bytes.
-6. Verify with the required suite:
+The previously excluded fixtures are promoted to `LLVMJit`, and focused
+minimal-object tests cover the relocation rewrite and the no-duplicate no-op
+case. The orphan duplicate `UND` entry can remain in the symbol table:
+redirecting all relocations away from it is sufficient; JITLink does not
+materialize a zero-valued call stub for an unreferenced undefined symbol.
 
-   ```sh
-   ninja bin/ut
-   bin/ut --random
-   bin/bench.sh --dub cerealed -b llvmjit
-   bin/bench.sh --dub cerealed -b system-linker
-   ```
+Verified:
 
-Success: `cerealed llvmjit` reports a timed row instead of
-`JIT child died`, the previously excluded array fixtures can be promoted to
-`LLVMJit`, and the implementation remains mechanically derived from ELF symbol
-tables and relocations rather than hardcoded runtime symbol names.
+```sh
+ninja bin/ut
+bin/ut
+bin/ut --random
+bin/ut --random --seed 2828407573
+bin/ut --random --seed 3516581215
+bin/ut @LLVMJit
+bin/bench.sh --dub cerealed -b llvmjit
+bin/bench.sh --dub cerealed -b system-linker
+```
+
+`cerealed llvmjit` now reports a timed `156/156` row instead of
+`JIT child died`, and the implementation remains mechanically derived from ELF
+symbol tables and relocations rather than hardcoded runtime symbol names.
 
 ### Reproduction
 
 ```sh
-bin/ut @LLVMJit                 # 395/0 — promoted matrix is green in isolation
-bin/ut                          # 2021/0 — full suite green, stable under --random
+bin/ut @LLVMJit                 # 421/0 — full promoted LLVMJit matrix
+bin/ut                          # 2457/0 — full suite green
+bin/ut --random
 bin/ut --random --seed 2828407573
 bin/ut --random --seed 3516581215
 ```

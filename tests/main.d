@@ -24,6 +24,7 @@ int main(string[] args) {
         "ut.backends.runner.ct.imports",
         "ut.backends.runner.rt.cstdlib",
         "ut.backends.runner.rt.dependency_image",
+        "ut.backends.runner.rt.elf",
         "ut.backends.runner.rt.llvm_jit",
     );
 }
