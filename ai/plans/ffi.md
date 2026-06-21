@@ -2050,10 +2050,11 @@ no-available-source diagnostic.
 
 ## 30. Increment 7: native exceptions become Interpreter exceptions
 
-**Status: planned.** This is the next §26 contract after member-function calls.
-The implementation is Interpreter-only. Bytecode and IR stay out (§23, §26),
-and no callback, delegate, virtual dispatch, variadic, or generated-wrapper
-work is implied.
+**Status: landed (PR #290).** This §26 contract after member-function calls
+made native `object.Exception` values thrown by dependency-image functions
+become ordinary Interpreter exceptions. The implementation is Interpreter-only.
+Bytecode and IR stay out (§23, §26), and no callback, delegate, virtual
+dispatch, variadic, or generated-wrapper work is implied.
 
 ### 30.1 Why this next
 
@@ -2222,3 +2223,192 @@ new dependency-image exception fixture passes on `SystemLinker` and
 suite still pass; unsupported native call shapes still fall through to the
 existing no-available-source diagnostic; and native `Error` is not converted
 into an interpreted `Exception`.
+
+## 31. Increment 8: dependency-defined exception subclasses
+
+**Status: implemented.** This native-exception rung after §30 preserves enough
+native exception type metadata for dependency-defined subclasses to match
+ordinary interpreted `catch` clauses. The implementation is Interpreter-only.
+Bytecode and IR stay out (§23, §26), and no callback, delegate, virtual
+dispatch, variadic, or generated-wrapper work is implied.
+
+### 31.1 Why this next
+
+§30 preserves the message from a native `object.Exception` and lets ordinary
+interpreted `catch (Exception)` code handle it. Real dependencies often throw
+their own exception subclasses:
+
+```d
+class DependencyException: Exception {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+void dependencyThrowCustom() {
+    throw new DependencyException("dependency failed");
+}
+```
+
+Today the FFI boundary reports only the message. `Walker.runCallExpression`
+then builds the same interpreted `object.Exception` shape used for §30. That
+means `catch (DependencyException)` cannot distinguish the native dynamic type,
+even though compiled D can.
+
+This increment keeps the §12 first-direction rule but carries one more piece of
+native exception metadata:
+
+```text
+native DependencyException -> interpreted DependencyException pending exception
+native Error               -> fatal native failure
+```
+
+### 31.2 First fixture (approval required)
+
+Add one oracle-backed dependency-image fixture in
+`tests/ut/backends/runner/rt/dependency_image.d`, mirroring §30. The dependency
+image is compiled with the class and throwing body, then rewritten to
+declarations only:
+
+```d
+module dep_image_custom_exception_fixture;
+
+class DependencyException: Exception {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+void dependencyThrowCustom() {
+    throw new DependencyException("dependency failed");
+}
+```
+
+Visible source after image build:
+
+```d
+module dep_image_custom_exception_fixture;
+
+class DependencyException: Exception {
+    this(string msg);
+}
+
+void dependencyThrowCustom();
+```
+
+Source under test:
+
+```d
+import dep_image_custom_exception_fixture;
+
+unittest {
+    try {
+        dependencyThrowCustom();
+        assert(false);
+    } catch (DependencyException caught) {
+        assert(caught.msg == "dependency failed");
+    }
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes — compiled D catches the dependency-defined
+  subclass and exposes the inherited `Exception.msg`.
+Interpreter: fails before the fix because the native exception is converted to
+  interpreted `object.Exception`; passes after the FFI boundary preserves the
+  native dynamic type well enough for `catch (DependencyException)` and
+  `caught.msg`.
+```
+
+This fixture intentionally avoids subclass fields. It proves only dynamic type
+matching and the inherited message.
+
+### 31.3 Scope
+
+In scope:
+
+```text
+Interpreter only
+non-member dependency-image functions called through `tryCallNative`
+dependency-defined classes that directly extend `object.Exception`
+preserving the native exception's dynamic class name
+mapping that class name to the interpreted declaration visible in the module
+ordinary interpreted `catch (DependencyException caught)` handling
+inherited `Exception.msg`
+native `Error` remains fatal and is not caught by `catch (Exception)`
+```
+
+Out of scope, each requiring a separate approved oracle fixture:
+
+```text
+subclass-specific fields and constructor state beyond `msg`
+exception subclasses outside the visible imports of the interpreted module
+full imported-class declaration reconstruction when lexical lookup cannot find
+  the class
+member functions that throw dependency-defined subclasses
+native exception chaining (`Throwable.next`)
+native `Error` recovery as an ordinary backend exception
+exceptions thrown after out-parameter writebacks
+backend exceptions crossing into native callbacks
+callbacks, delegates, virtual dispatch, variadics, Bytecode, and IR
+generated wrapper source
+```
+
+Do not retain the native exception object as an opaque handle in this slice.
+The interpreted value should be an ordinary class value whose dynamic type is
+the dependency-defined exception declaration and whose inherited `msg` matches
+the native exception.
+
+### 31.4 Implementation shape
+
+All native execution still goes through `quickbite.backends.ffi`; do not add a
+backend-local direct call path in `interpreter/impl.d`.
+
+```text
+1. Add the approved fixture first and confirm it fails on the Interpreter.
+2. Extend `NativeCallException` so the FFI boundary reports the native
+   exception's dynamic class name as well as `msg`.
+3. Catch `Exception` around `ffi_call` exactly as §30 does. Native `Error`
+   stays fatal by falling through the boundary.
+4. In `Walker.runCallExpression`, first try to resolve the reported class name
+   against the interpreter's lexical class lookup. If it is found, build that
+   interpreted class value with the inherited `msg` field and throw
+   `InterpretedException`.
+5. If lexical lookup cannot find the imported dependency class, build the
+   narrow exception value shape this fixture needs: native fully-qualified
+   dynamic name, short dynamic name, the known `Exception`/`Throwable` base
+   type names, and the inherited `msg` field. This keeps `catch` matching on
+   the existing `Value.classHasType` path without claiming subclass fields.
+6. Preserve the §30 `object.Exception` fixture, member-call fixtures, and the
+   `rt/cstdlib.d` suite.
+```
+
+The class-name metadata is matching input only; it must not become a new
+mechanism for importing fields or declarations that are not visible to the
+interpreted module.
+
+### 31.5 Anchors
+
+Re-grep and re-read before editing; line numbers drift.
+
+```text
+native exception type    source/quickbite/backends/ffi.d
+                          (NativeCallException and the `ffi_call` catch)
+interpreter conversion   source/quickbite/backends/interpreter/impl.d
+                          (throwNativeException and native-call branches in
+                           Walker.runCallExpression)
+catch matching           source/quickbite/backends/interpreter/impl.d
+                          (runTryCatchStatement, catchMatches,
+                           bindCatchVariable)
+class values             source/quickbite/lang/package.d
+fixture style to mirror  tests/ut/backends/runner/rt/dependency_image.d
+```
+
+Done when: after an approved fixture is added, `bin/ut --random` is green; the
+new dependency-defined exception fixture passes on `SystemLinker` and
+`Interpreter`; the §30 `object.Exception` fixture still passes; existing
+dependency-image member fixtures and `rt/cstdlib.d` still pass; subclass fields
+remain unsupported; and native `Error` is not converted into an interpreted
+`Exception`.

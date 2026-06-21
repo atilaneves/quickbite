@@ -304,3 +304,76 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.nativeCustomException.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_custom_exception_fixture.d",
+        );
+        writeFile(depPath, q{
+            module dep_image_custom_exception_fixture;
+
+            class DependencyException: Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            void dependencyThrowCustom() {
+                throw new DependencyException("dependency failed");
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_custom_exception_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_custom_exception_fixture;
+
+            class DependencyException: Exception {
+                this(string msg);
+            }
+
+            void dependencyThrowCustom();
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_custom_exception_fixture;
+
+                unittest {
+                    try {
+                        dependencyThrowCustom();
+                        assert(false);
+                    } catch (DependencyException caught) {
+                        assert(caught.msg == "dependency failed");
+                    }
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
