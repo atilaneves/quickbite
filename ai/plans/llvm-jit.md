@@ -423,6 +423,58 @@ buffer before `LLVMOrcLLJITAddObjectFile` (coalesce duplicate undefined globals)
 or a dmd codegen change (which touches the SystemLinker-shared path) — both out
 of scope here; the affected fixtures stay on `SystemLinker` only.
 
+### Next fix — normalize duplicate undefined ELF symbols before ORC
+
+`bin/bench.sh --dub cerealed -b llvmjit` now exposes the same defect at package
+scale. The JIT child crashes in JIT'd
+`core.internal.array.capacity._d_arrayshrinkfitH!(ubyte[], ubyte)`: the object
+calls `gc_shrinkArrayUsed`, ORC creates an indirect stub for that call, and the
+stub's GOT slot contains `0`, so execution jumps to address zero. The symbol is
+present in the benchmark process (`dlsym(RTLD_DEFAULT, "gc_shrinkArrayUsed")`
+returns a real `libphobos2.so` address), and `SystemLinker` passes the same
+package (`156/156`), so this is another instance of JITLink mishandling
+duplicate undefined globals rather than a cerealed or shared-codegen failure.
+
+Fix it generically, not with a GC-symbol list:
+
+1. Add one approved red behavior test first. Prefer a small real-D fixture that
+   passes under `SystemLinker` and makes `LLVMJit` call
+   `_d_arrayshrinkfitH!(ubyte[], ubyte)` via normal dynamic-array operations.
+   If no small fixture reproduces the zero-stub failure, use
+   `bin/bench.sh --dub cerealed -b llvmjit` as the smoke red and extract the
+   smallest non-spawning backend test that still exposes the object shape.
+2. Add a Quickbite-owned ELF64 relocatable-object normalizer in the
+   `native/` package, called after object emission and before
+   `LLVMOrcLLJITAddObjectFile`. Scope it tightly to the object format dmd emits
+   here: little-endian ELF64 `ET_REL`, one `SHT_SYMTAB`, and `SHT_RELA`
+   relocation sections. Reject unsupported shapes with a clear diagnostic.
+3. In the normalizer, coalesce duplicate undefined global symbols by name.
+   Keep the first symbol table entry as canonical, rewrite every relocation's
+   `r_info` symbol index from duplicate entries to the canonical entry, and
+   leave section-local, defined, weak-COMDAT, and file symbols untouched.
+   Shrinking the symbol table is optional; redirecting relocations is the
+   required behavior.
+4. Keep `defineHostSymbols` exactly conceptually separate. It still replicates
+   ELF interposition for weak druntime/phobos definitions that the object
+   defines. The new normalizer handles duplicate `UND GLOBAL` entries that
+   JITLink turns into zero-valued stubs.
+5. Green the red test with the smallest implementation. Only after that, move
+   the ELF rewrite into a small private helper module and add focused tests for
+   the symbol-index rewrite using generated or checked-in minimal object bytes.
+6. Verify with the required suite:
+
+   ```sh
+   ninja bin/ut
+   bin/ut --random
+   bin/bench.sh --dub cerealed -b llvmjit
+   bin/bench.sh --dub cerealed -b system-linker
+   ```
+
+Success: `cerealed llvmjit` reports a timed row instead of
+`JIT child died`, the previously excluded array fixtures can be promoted to
+`LLVMJit`, and the implementation remains mechanically derived from ELF symbol
+tables and relocations rather than hardcoded runtime symbol names.
+
 ### Reproduction
 
 ```sh
