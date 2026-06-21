@@ -130,6 +130,19 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case allocStruct:
+                // Allocate a fresh heap block for a single `new S` struct,
+                // copy the initialised block of `c` bytes from the frame in,
+                // root it, and write the raw heap pointer into the frame slot.
+                auto structBlock = new ubyte[](instruction.c);
+                structBlock[] = stack[
+                    base + instruction.b .. base + instruction.b + instruction.c
+                ];
+                heap ~= structBlock;
+                writeBlockPointer(stack, base + instruction.a, structBlock);
+                ++ip;
+                break;
+
             case setArrayLength:
                 heap ~= resizeArray(
                     stack,
@@ -1189,6 +1202,20 @@ private void writeSliceDescriptor(
         nativeToLittleEndian(cast(size_t) block.ptr);
     stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
         nativeToLittleEndian(length);
+}
+
+// Write a heap block's native address as a raw `size_t` pointer word at
+// `offset` (a `new S` struct pointer slot); the block is rooted in `heap`, so
+// it stays alive while field access reads and writes it through the pointer.
+private void writeBlockPointer(
+    ref ubyte[] stack,
+    in size_t offset,
+    in ubyte[] block,
+) @trusted {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] =
+        nativeToLittleEndian(cast(size_t) block.ptr);
 }
 
 // Write a slice descriptor {ptr, length} at `offset` from an already-computed

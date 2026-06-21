@@ -111,6 +111,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
     // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
     allocArray2D,
+    // Allocate `c` bytes of VM-owned writable heap for a single `new S` struct
+    // block, copy the initialised block of `c` bytes from frame offset b into it,
+    // root it in `heap`, and write the raw `size_t` heap pointer into the 8-byte
+    // frame slot at offset a. Backs `new Struct(...)`; field access through the
+    // pointer reads and writes the heap block via pointerLoad/pointerStore.
+    allocStruct,
     // Resize the dynamic array whose descriptor is at frame offset a to the
     // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
     // block, copy the `min(oldLength, newLength)` existing elements, fill any

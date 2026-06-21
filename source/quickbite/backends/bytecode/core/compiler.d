@@ -38,10 +38,12 @@ private struct Compiler {
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
-        AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
-        CondExp, DivExp, DotVarExp, Expression, IndexExp, LogicalExp, MulExp,
+        AssignExp, BinExp, BlitExp, CallExp, CastExp, CatElemAssignExp, CatExp,
+        CmpExp, CondExp, ConstructExp, DivExp, DotVarExp, Expression, IndexExp,
+        LogicalExp, MulExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
         StringExp, StructLiteralExp;
+    import dmd.arraytypes: Expressions;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -72,6 +74,12 @@ private struct Compiler {
     // base offset and the struct declaration, giving each field's offset and
     // type for field access and whole-struct block copies.
     private StructLocal[VarDeclaration] _structLocals;
+    // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
+    // struct block (`S* p = new S(...)`); the value is the struct declaration,
+    // giving each field's offset and type so `p.field` resolves to a load/store
+    // through the pointer at `ptr + field.offset`.
+    private imported!"dmd.dstruct".StructDeclaration[VarDeclaration]
+        _structPointerLocals;
     // The receiver of the method currently being compiled, if any: the base
     // offset of the hidden `this` block in the frame plus the struct
     // declaration, so an unqualified `this.field` resolves against it.
@@ -98,6 +106,7 @@ private struct Compiler {
         _pointerLocals = null;
         _assocArrayLocals = null;
         _structLocals = null;
+        _structPointerLocals = null;
         _hasThis = false;
         _thisLocal = StructLocal.init;
 
@@ -433,6 +442,16 @@ private struct Compiler {
         if (auto assign = expression.isAssignExp)
             return compileAssignExpression(assign);
 
+        // A field construction inside a constructor body (`this.value = seed +
+        // 2`) arrives as a ConstructExp/BlitExp (op `construct`/`blit`), not an
+        // AssignExp; route a struct-field-lvalue form through the assign path.
+        if (auto construct = expression.isConstructExp)
+            if (construct.e1.isDotVarExp !is null)
+                return compileAssignExpression(construct);
+        if (auto blit = expression.isBlitExp)
+            if (blit.e1.isDotVarExp !is null)
+                return compileAssignExpression(blit);
+
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
         // `concatenateElemAssign`); detect by op, not name. Whole-array
         // `arr ~= other` (op `concatenateAssign`) is a different node and is
@@ -483,8 +502,19 @@ private struct Compiler {
             if (auto field = tryStructField(dot))
                 return Operand(field.offset, scalarType(field.type));
 
+        // `p.field` through a heap struct pointer: load the field at `ptr +
+        // field.offset`.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructPointerField(dot))
+                return loadStructPointerField(*field);
+
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
+
+        // `new S(args)`: heap-allocate a struct block and yield a `S*` pointer.
+        if (auto newExp = expression.isNewExp)
+            if (auto pointer = tryNewStruct(newExp))
+                return *pointer;
 
         throw new Exception(text(
             "Unsupported expression in bytecode core: ",
@@ -854,6 +884,10 @@ private struct Compiler {
 
         _locals[variable] = offset;
         _pointerLocals[variable] = pointer.pointerElement;
+        // A `S* p = new S(...)` pointer addresses a heap struct block; record the
+        // struct declaration so `p.field` resolves through the pointer.
+        if (auto structDeclaration = structPointerDeclaration(variable.type))
+            _structPointerLocals[variable] = structDeclaration;
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
         );
@@ -1174,6 +1208,194 @@ private struct Compiler {
             cast(ushort) (*base + field.offset), field.type,
         );
         return result;
+    }
+
+    // A field accessed through a struct pointer (`p.field` where `p` is a heap
+    // `S*`): the frame slot holding the raw `size_t` pointer, the field's byte
+    // offset within the block, and its type.
+    private static struct StructPointerField {
+        ushort pointerSlot;
+        ushort fieldOffset;
+        Type type;
+    }
+
+    // Resolve `p.field` (a DotVarExp over a struct-pointer local) to the
+    // pointer's frame slot, the field's byte offset, and its type, or null if
+    // `p` is not a known struct-pointer local.
+    private StructPointerField* tryStructPointerField(DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return null;
+
+        // `p.field` arrives as `(*p).field`: the base is a `PtrExp` over the
+        // pointer local, which DMD inserts for member access through a pointer.
+        auto base = dot.e1;
+        if (auto deref = base.isPtrExp)
+            base = deref.e1;
+
+        auto variable = base.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null || (declaration in _structPointerLocals) is null)
+            return null;
+
+        auto pointerSlot = declaration in _locals;
+        if (pointerSlot is null)
+            return null;
+
+        auto result = new StructPointerField;
+        *result = StructPointerField(
+            *pointerSlot, cast(ushort) field.offset, field.type,
+        );
+        return result;
+    }
+
+    // Materialise the address `pointerSlot + fieldOffset` of a struct-pointer
+    // field into a fresh pointer slot, so the existing `pointerLoad`/
+    // `pointerStore` opcodes (index 0) read and write the heap field.
+    private ushort structFieldAddress(in StructPointerField field) {
+        const fieldPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const fieldOffset = compileSizeConstant(field.fieldOffset);
+        _code ~= Instruction(
+            Op.addInt8, fieldPointer, field.pointerSlot, fieldOffset,
+        );
+        return fieldPointer;
+    }
+
+    // `p.field`: read a scalar field through the struct pointer at `ptr +
+    // field.offset` into a fresh slot.
+    private Operand loadStructPointerField(StructPointerField field) {
+        const fieldScalar = scalarType(field.type);
+        const elementSize = size(fieldScalar);
+        const fieldPointer = structFieldAddress(field);
+        const destination = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            pointerLoadOp(elementSize),
+            destination,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
+        return Operand(destination, fieldScalar);
+    }
+
+    // `p.field = value`: write `value` (already in a frame slot) through the
+    // struct pointer at `ptr + field.offset`.
+    private void storeStructPointerField(
+        StructPointerField field,
+        in ushort valueSlot,
+    ) {
+        const elementSize = size(scalarType(field.type));
+        const fieldPointer = structFieldAddress(field);
+        _code ~= Instruction(
+            pointerStoreOp(elementSize),
+            valueSlot,
+            fieldPointer,
+            compileSizeConstant(0),
+        );
+    }
+
+    // `new S(args)`: heap-allocate a single struct block, initialise it (run the
+    // constructor, or store each argument into its field for a constructor-less
+    // struct), and yield a raw `S*` pointer operand. Null if `newExp` is not a
+    // struct `new` (so array/exception `new` fall through).
+    private Operand* tryNewStruct(NewExp newExp) {
+        import dmd.astenums: TY;
+
+        if (newExp.newtype is null ||
+            newExp.newtype.toBasetype.ty != TY.Tstruct)
+            return null;
+
+        const blockSize = cast(uint) staticArraySize(newExp.newtype);
+
+        // Build the initialised struct value in a temporary frame block, then
+        // copy it into a fresh heap block addressed by the returned pointer.
+        const block = allocateStructBlock(newExp.newtype);
+        zeroFrameBlock(block, blockSize);
+
+        if (newExp.member !is null)
+            runConstructor(block, newExp.member, newExp.arguments);
+        else
+            initialiseStructFields(block, newExp.newtype, newExp.arguments);
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.allocStruct, pointer, block, cast(ushort) blockSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, false, true, ScalarType.void_,
+        );
+        return result;
+    }
+
+    // Store each `new S(args)` argument into its field at `base + field.offset`
+    // for a constructor-less struct (`new Pair(a, b)`): the fields are filled in
+    // declaration order, matching DMD's field-wise construction.
+    private void initialiseStructFields(
+        in ushort base,
+        Type structType,
+        Expressions* arguments,
+    ) {
+        import dmd.astenums: TY;
+
+        if (arguments is null)
+            return;
+
+        auto structDeclaration = structDeclarationOf(structType);
+        foreach (index; 0 .. arguments.length) {
+            if (index >= structDeclaration.fields.length)
+                break;
+            auto field = structDeclaration.fields[index];
+            const fieldOffset = cast(ushort) (base + field.offset);
+            const value = compileExpression((*arguments)[index]);
+            _code ~= Instruction(
+                Op.copy,
+                fieldOffset,
+                value.offset,
+                cast(ushort) size(scalarType(field.type)),
+            );
+        }
+    }
+
+    // Run a constructor `this(args)` on the struct block at frame offset `base`:
+    // pass the block as the hidden `this` receiver (by reference) and the
+    // ordinary arguments, mirroring the method-call path. The constructor
+    // mutates the block in place, which the caller then copies onto the heap.
+    private void runConstructor(
+        in ushort base,
+        FuncDeclaration constructor,
+        Expressions* arguments,
+    ) {
+        const index = registerFunction(constructor);
+        const layout = parameterLayout(constructor);
+        const argumentArea = allocateBytes(layout.blockSize, 8);
+
+        // The hidden `this` receiver: store the block's frame offset, which the
+        // machine dereferences on entry and writes back on return.
+        _code ~= Instruction(
+            Op.loadConstant,
+            cast(ushort) (argumentArea + layout.thisOffset),
+            constantIndex(base),
+            cast(ushort) size(ScalarType.uint_),
+        );
+
+        if (arguments !is null)
+            foreach (argumentIndex; 0 .. arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+                emitCallArgument(
+                    slot,
+                    layout.isReference[argumentIndex],
+                    (*arguments)[argumentIndex],
+                );
+            }
+
+        // A constructor's struct result is treated as void (its only effect is
+        // mutating the receiver block), so no result slot is needed.
+        _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
     }
 
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
@@ -2231,6 +2453,24 @@ private struct Compiler {
     private Operand compileAddAssignExpression(AddAssignExp addAssign) {
         import std.conv: text;
 
+        // `p.field += rhs` through a heap struct pointer: load the field, add the
+        // rhs, and store the result back through the pointer.
+        if (auto dot = addAssign.e1.isDotVarExp)
+            if (auto field = tryStructPointerField(dot)) {
+                const current = loadStructPointerField(*field);
+                const rhsValue = compileExpression(addAssign.e2);
+                const lvalueType = scalarType(field.type);
+                const addOp = lvalueType == ScalarType.long_ ||
+                    lvalueType == ScalarType.ulong_
+                        ? Op.addInt8
+                        : Op.addInt4;
+                _code ~= Instruction(
+                    addOp, current.offset, current.offset, rhsValue.offset,
+                );
+                storeStructPointerField(*field, current.offset);
+                return Operand(current.offset, lvalueType);
+            }
+
         auto variable = addAssign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -2319,6 +2559,15 @@ private struct Compiler {
         if (auto dot = assign.e1.isDotVarExp)
             if (auto store = tryStructFieldAssign(dot, assign.e2))
                 return *store;
+
+        // `p.field = rhs` through a heap struct pointer: write the scalar rhs at
+        // `ptr + field.offset`.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto field = tryStructPointerField(dot)) {
+                const value = compileExpression(assign.e2);
+                storeStructPointerField(*field, value.offset);
+                return Operand(value.offset, scalarType(field.type));
+            }
 
         auto variable = assign.e1.isVarExp;
         auto declaration =
@@ -3003,59 +3252,10 @@ private struct Compiler {
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
                     (argumentArea + layout.offsets[argumentIndex]);
-
-                // A `ref` argument passes the caller-frame offset of the
-                // referenced local, not its value: the machine dereferences it
-                // on entry and writes the slot back to it on return.
-                if (layout.isReference[argumentIndex]) {
-                    const reference =
-                        referenceOffset((*call.arguments)[argumentIndex]);
-                    _code ~= Instruction(
-                        Op.loadConstant,
-                        slot,
-                        constantIndex(reference),
-                        cast(ushort) size(ScalarType.uint_),
-                    );
-                    continue;
-                }
-
-                // A by-value struct argument block-copies the whole struct into
-                // the argument area, so the callee mutates only its own copy.
-                auto argument = (*call.arguments)[argumentIndex];
-                if (argument.type !is null &&
-                    argument.type.toBasetype.ty == TY.Tstruct) {
-                    const source = structOperandOffset(argument);
-                    _code ~= Instruction(
-                        Op.copy,
-                        slot,
-                        source,
-                        cast(ushort) staticArraySize(argument.type),
-                    );
-                    continue;
-                }
-
-                // A non-string dynamic-array argument copies a 16-byte slice
-                // descriptor into the argument area; the backing memory is
-                // shared with the caller.
-                if (isDynamicArrayArgument(argument)) {
-                    const descriptor = arrayDescriptorOffset(
-                        dynamicArrayElementType(argument.type), argument,
-                    );
-                    _code ~= Instruction(
-                        Op.copy,
-                        slot,
-                        descriptor,
-                        cast(ushort) sliceDescriptorSize,
-                    );
-                    continue;
-                }
-
-                const operand = compileExpression(argument);
-                _code ~= Instruction(
-                    Op.copy,
+                emitCallArgument(
                     slot,
-                    operand.offset,
-                    cast(ushort) size(operand.type),
+                    layout.isReference[argumentIndex],
+                    (*call.arguments)[argumentIndex],
                 );
             }
 
@@ -3067,6 +3267,62 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(Op.call, index, argumentArea, destination);
         return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // Emit a single call argument into `slot` of the argument area: a `ref`
+    // argument passes the caller-frame offset (dereferenced on entry, written
+    // back on return); a by-value struct block-copies the whole struct; a
+    // dynamic array copies its 16-byte descriptor; a scalar copies its value.
+    private void emitCallArgument(
+        in ushort slot,
+        in bool isReference,
+        Expression argument,
+    ) {
+        import dmd.astenums: TY;
+
+        if (isReference) {
+            const reference = referenceOffset(argument);
+            _code ~= Instruction(
+                Op.loadConstant,
+                slot,
+                constantIndex(reference),
+                cast(ushort) size(ScalarType.uint_),
+            );
+            return;
+        }
+
+        if (argument.type !is null &&
+            argument.type.toBasetype.ty == TY.Tstruct) {
+            const source = structOperandOffset(argument);
+            _code ~= Instruction(
+                Op.copy,
+                slot,
+                source,
+                cast(ushort) staticArraySize(argument.type),
+            );
+            return;
+        }
+
+        if (isDynamicArrayArgument(argument)) {
+            const descriptor = arrayDescriptorOffset(
+                dynamicArrayElementType(argument.type), argument,
+            );
+            _code ~= Instruction(
+                Op.copy,
+                slot,
+                descriptor,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
+        const operand = compileExpression(argument);
+        _code ~= Instruction(
+            Op.copy,
+            slot,
+            operand.offset,
+            cast(ushort) size(operand.type),
+        );
     }
 
     // Emit a throw of the plain "Range violation" message and yield a null
@@ -4703,6 +4959,22 @@ private bool isPointerType(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
     return type !is null && type.toBasetype.ty == TY.Tpointer;
+}
+
+// The struct declaration a pointer `S*` points at, or null if `type` is not a
+// pointer to a struct.
+private imported!"dmd.dstruct".StructDeclaration structPointerDeclaration(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+
+    if (type is null || type.toBasetype.ty != TY.Tpointer)
+        return null;
+    auto pointed = type.toBasetype.nextOf;
+    if (pointed is null || pointed.toBasetype.ty != TY.Tstruct)
+        return null;
+    return (cast(TypeStruct) pointed.toBasetype).sym;
 }
 
 private bool isFloating(
