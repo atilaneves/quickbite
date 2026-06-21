@@ -179,3 +179,68 @@ unittest {
         interpreted[0].passed.should == true;
     }
 }
+
+@("dependencyImage.externDMemberFunctionWithArguments.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_member_args_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_member_args_fixture;
+
+            struct Counter {
+                int value;
+
+                int addSub(int addend, int subtrahend) const {
+                    return value + addend - subtrahend;
+                }
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_member_args_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_member_args_fixture;
+
+            struct Counter {
+                int value;
+                int addSub(int addend, int subtrahend) const;
+            }
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_member_args_fixture;
+
+                unittest {
+                    Counter counter = Counter(25);
+                    int addend = 20;
+                    int subtrahend = 3;
+                    assert(counter.addSub(addend, subtrahend) == 42);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
