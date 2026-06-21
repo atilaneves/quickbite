@@ -72,6 +72,11 @@ private struct Compiler {
     // base offset and the struct declaration, giving each field's offset and
     // type for field access and whole-struct block copies.
     private StructLocal[VarDeclaration] _structLocals;
+    // The receiver of the method currently being compiled, if any: the base
+    // offset of the hidden `this` block in the frame plus the struct
+    // declaration, so an unqualified `this.field` resolves against it.
+    private StructLocal _thisLocal;
+    private bool _hasThis;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -93,12 +98,23 @@ private struct Compiler {
         _pointerLocals = null;
         _assocArrayLocals = null;
         _structLocals = null;
+        _hasThis = false;
+        _thisLocal = StructLocal.init;
 
         import dmd.astenums: TY;
 
         _currentReturnType = _program.functions[index].returnType;
         const layout = parameterLayout(function_);
         _frameOffset = layout.blockSize;
+
+        // A struct method receives a hidden `this` block by reference at the
+        // start of the argument area; record its base so `this.field` resolves.
+        if (layout.hasThis) {
+            _hasThis = true;
+            _thisLocal = StructLocal(
+                layout.thisOffset, thisStructDeclaration(function_),
+            );
+        }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
                 auto parameter = (*function_.parameters)[parameterIndex];
@@ -183,6 +199,15 @@ private struct Compiler {
                     _currentReturnType.elementType, return_.exp,
                 );
                 _code ~= Instruction(Op.ret, descriptor);
+                return;
+            }
+
+            // A constructor's implicit `return this;` has a void result here
+            // (no struct is returned by value yet); emit a bare `ret`.
+            if (return_.exp is null ||
+                (!_currentReturnType.isString &&
+                    _currentReturnType.scalar == ScalarType.void_)) {
+                _code ~= Instruction(Op.ret);
                 return;
             }
 
@@ -485,20 +510,30 @@ private struct Compiler {
         return Operand(located.offset, located.type);
     }
 
-    // `i++` on an integer local: copy the old value to the result slot, then
-    // add `e2` (the increment) to the lvalue's slot. Scoped to integer
-    // local-variable lvalues, matching the compound-assignment path.
+    // `i++` on an integer local or struct field: copy the old value to the
+    // result slot, then add `e2` (the increment) to the lvalue's slot. Scoped
+    // to integer lvalues, matching the compound-assignment path.
     private Operand compilePostIncrement(PostExp post) {
         import std.conv: text;
 
-        auto variable = post.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        auto slot = declaration is null ? null : declaration in _locals;
-        const lvalueType = slot is null
-            ? ScalarType.void_
-            : scalarType(declaration.type);
-        if (slot is null || !isIntegerScalar(lvalueType))
+        ushort lvalueSlot;
+        auto lvalueType = ScalarType.void_;
+
+        if (auto variable = post.e1.isVarExp) {
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto slot = declaration in _locals) {
+                    lvalueSlot = *slot;
+                    lvalueType = scalarType(declaration.type);
+                }
+        } else if (auto dot = post.e1.isDotVarExp) {
+            // `this.pos++` / `box.pos++`: the field lives at its inline offset.
+            if (auto field = tryStructField(dot)) {
+                lvalueSlot = field.offset;
+                lvalueType = scalarType(field.type);
+            }
+        }
+
+        if (!isIntegerScalar(lvalueType))
             throw new Exception(text(
                 "Unsupported post-increment in bytecode core: ",
                 expressionChars(post),
@@ -506,7 +541,7 @@ private struct Compiler {
 
         const result = allocate(lvalueType);
         _code ~= Instruction(
-            Op.copy, result, *slot, cast(ushort) size(lvalueType),
+            Op.copy, result, lvalueSlot, cast(ushort) size(lvalueType),
         );
 
         const increment = compileExpression(post.e2);
@@ -514,7 +549,7 @@ private struct Compiler {
             lvalueType == ScalarType.ulong_
                 ? Op.addInt8
                 : Op.addInt4;
-        _code ~= Instruction(addOp, *slot, *slot, increment.offset);
+        _code ~= Instruction(addOp, lvalueSlot, lvalueSlot, increment.offset);
         return Operand(result, lvalueType);
     }
 
@@ -908,6 +943,16 @@ private struct Compiler {
                 return;
 
         auto source = initializerExpression(initializer.exp);
+
+        // `auto box = Box(input)` with a constructor lowers to
+        // `box = 0 , box.this(input)`: the block is already zeroed above, so run
+        // the constructor call, which passes `box`'s block as the hidden `this`.
+        if (auto comma = source.isCommaExp)
+            if (auto call = comma.e2.isCallExp) {
+                compileExpression(call);
+                return;
+            }
+
         if (auto literal = source.isStructLiteralExp) {
             compileStructLiteralInto(offset, literal);
             return;
@@ -1047,15 +1092,46 @@ private struct Compiler {
         return (cast(TypeStruct) type.toBasetype).sym;
     }
 
-    // The inline frame base offset of a struct lvalue (a struct local or by-value
-    // struct parameter), or null if `expression` is not a known struct.
+    // The struct declaration a method's hidden `this` refers to, or null if the
+    // function is not a struct member.
+    private imported!"dmd.dstruct".StructDeclaration thisStructDeclaration(
+        FuncDeclaration function_,
+    ) {
+        if (auto aggregate = function_.isThis())
+            return aggregate.isStructDeclaration;
+        return null;
+    }
+
+    // The inline frame base offset of a struct lvalue (a struct local, by-value
+    // struct parameter, or the method's hidden `this` receiver), or null if
+    // `expression` is not a known struct.
     private ushort* structBaseOffsetOrNull(Expression expression) {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _structLocals)
                     return &existing.offset;
 
+        // An unqualified `this.field` inside a method resolves against the
+        // hidden receiver block.
+        if (_hasThis && expression.isThisExp !is null)
+            return &_thisLocal.offset;
+
         return null;
+    }
+
+    // The frame offset of the receiver struct block of a method call
+    // `receiver.method(args)`. The callee is a `DotVarExp` whose `e1` is the
+    // receiver (a struct local, by-value parameter, or the enclosing `this`).
+    private ushort methodReceiverOffset(CallExp call) {
+        import std.conv: text;
+
+        if (auto dot = call.e1.isDotVarExp)
+            return structOperandOffset(dot.e1);
+
+        throw new Exception(text(
+            "Unsupported method receiver in bytecode core: ",
+            expressionChars(call),
+        ));
     }
 
     // The inline frame offset of a struct-valued expression: a struct lvalue's
@@ -1265,6 +1341,19 @@ private struct Compiler {
                 Op.copy,
                 destination,
                 result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
+        // `dest = src` where `src` is another dynamic-array local, parameter, or
+        // `this.field`: copy the 16-byte slice descriptor, sharing the backing
+        // memory (D's reference semantics for dynamic-array assignment).
+        if (auto descriptor = dynamicArrayDescriptorOrNull(source)) {
+            _code ~= Instruction(
+                Op.copy,
+                destination,
+                descriptor.offset,
                 cast(ushort) sliceDescriptorSize,
             );
             return;
@@ -2068,6 +2157,13 @@ private struct Compiler {
             return emitBinary(Op.subFloat, lhs, rhs, ScalarType.float_);
         if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
             return emitBinary(Op.subDouble, lhs, rhs, ScalarType.double_);
+
+        // 8-byte integer subtraction (e.g. `size_t`): same operand and result
+        // type on both sides, kept at the full width.
+        if (isEightByteInteger(lhs.type) &&
+            lhs.type == rhs.type &&
+            scalarType(subtract.type) == lhs.type)
+            return emitBinary(Op.subInt8, lhs, rhs, lhs.type);
 
         return compileIntBinaryResult(
             subtract,
@@ -2889,6 +2985,20 @@ private struct Compiler {
         const layout = parameterLayout(function_);
         const argumentArea = allocateBytes(layout.blockSize, 8);
 
+        // A struct method call `receiver.method(args)` passes the receiver as
+        // the hidden `this` block (by reference) at the start of the argument
+        // area: store the receiver's frame offset there, which the machine
+        // dereferences on entry and writes back on return.
+        if (layout.hasThis) {
+            const receiver = methodReceiverOffset(call);
+            _code ~= Instruction(
+                Op.loadConstant,
+                cast(ushort) (argumentArea + layout.thisOffset),
+                constantIndex(receiver),
+                cast(ushort) size(ScalarType.uint_),
+            );
+        }
+
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
@@ -3165,6 +3275,13 @@ private struct Compiler {
                 if (auto existing = declaration in _dynamicArrayLocals)
                     return existing.offset;
             }
+
+        // `append42(buffer.bytes)` / `append42(this.bytes)`: a `ref` to a struct
+        // field binds to the field's inline slot (`base + field.offset`), so the
+        // callee's writeback lands in the caller's struct.
+        if (auto dot = argument.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return field.offset;
 
         throw new Exception(text(
             "Unsupported ref argument in bytecode core: ",
@@ -3855,11 +3972,29 @@ private struct Compiler {
     }
 
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
+        import dmd.astenums: TY;
+
         ParameterLayout layout;
+
+        // A struct method takes its receiver as a hidden `this` block at the
+        // start of the argument area, passed by reference: the caller stores the
+        // receiver's frame offset, the machine copies the block in on entry and
+        // writes the (possibly mutated) block back on return, matching `ref this`.
+        if (auto structDeclaration = thisStructDeclaration(function_)) {
+            auto thisType = structDeclaration.type;
+            const structAlign = staticArrayAlign(thisType);
+            const structBytes = cast(uint) staticArraySize(thisType);
+            layout.blockSize =
+                (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
+            layout.hasThis = true;
+            layout.thisOffset = cast(ushort) layout.blockSize;
+            layout.refParameters ~=
+                RefParameter(cast(ushort) layout.blockSize, structBytes);
+            layout.blockSize += structBytes;
+        }
+
         if (function_.parameters is null)
             return layout;
-
-        import dmd.astenums: TY;
 
         foreach (parameterIndex; 0 .. function_.parameters.length) {
             auto parameter = (*function_.parameters)[parameterIndex];
@@ -3936,6 +4071,12 @@ private struct Compiler {
                 true,
                 dynamicArrayElementType(type),
             );
+
+        // A struct-typed result (a constructor returning the receiver) is
+        // consumed only for its side effects here; treat it as void, since no
+        // struct is returned by value yet.
+        if (type.toBasetype.ty == TY.Tstruct)
+            return ResultType(ScalarType.void_, false);
 
         return ResultType(scalarType(type), false);
     }
@@ -4026,6 +4167,8 @@ private struct ParameterLayout {
     bool[] isReference; // per parameter: true for a scalar `ref` parameter
     RefParameter[] refParameters; // the slot and type of each `ref` parameter
     uint blockSize;
+    bool hasThis; // a struct method's hidden `this` receiver (passed by ref)
+    ushort thisOffset; // frame offset of the hidden `this` block
 }
 
 private struct Operand {
