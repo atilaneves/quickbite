@@ -1879,7 +1879,7 @@ shapes continue to fall through to the existing no-available-source diagnostic.
 
 ## 29. Increment 6: member functions with explicit arguments (Interpreter)
 
-**Status: planned.** This is the next native-member rung after §28: dependency
+**Status: implemented.** This native-member rung after §28 added dependency
 image struct member functions that take ordinary explicit arguments in addition
 to the hidden `this` pointer. The implementation is Interpreter-only. Bytecode
 and IR stay out (§23, §26), and no mutation, virtual dispatch, callbacks,

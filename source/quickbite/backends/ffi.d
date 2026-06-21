@@ -31,7 +31,7 @@ public bool tryCallNativeMember(
     out imported!"quickbite.lang".Value result,
     out imported!"quickbite.lang".Value[] argumentWritebacks,
 ) {
-    if (receiverType is null || !receiver.isStruct || arguments.length != 0)
+    if (receiverType is null || !receiver.isStruct)
         return false;
 
     return tryCallNativeImpl(
@@ -163,7 +163,7 @@ private bool callViaLibffi(
         return false;
     if (
         linkage == LINK.d &&
-        !externDArgumentsFitRegisterScope(parameterTypes)
+        !externDArgumentsFitRegisterScope(parameterTypes, receiver.enabled)
     )
         return false;
 
@@ -301,10 +301,11 @@ private size_t abiSourceIndex(
 
 private bool externDArgumentsFitRegisterScope(
     in imported!"dmd.mtype".Type[] parameterTypes,
+    in bool hasHiddenThis,
 ) @safe @nogc nothrow pure {
     import dmd.astenums: TY;
 
-    size_t integerRegisters;
+    size_t integerRegisters = hasHiddenThis ? 1 : 0;
     size_t sseRegisters;
     foreach (parameterType; parameterTypes) {
         switch (parameterType.ty) {
