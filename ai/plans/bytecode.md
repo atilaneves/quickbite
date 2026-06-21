@@ -913,6 +913,18 @@ switch; `Bytecode` still defaults to the old core):
   associative arrays via druntime-hook call-site interception against a
   VM-owned map table. The 5 `Ctfe, Interpreter`-only CTFE-divergence blocks
   remain unpromoted (no `SystemLinker` oracle).
+- All `tests/ut/backends/runner/ct/structs.d` blocks, completing `structs.d`
+  (module order 9) on the new core (43/43 promoted, see the structs analysis
+  section). This is slice 4 (structs with native layout) realised on top of
+  the array memory model: structs are `Type.size()` inline frame blocks with
+  fields at DMD-computed offsets, by-value copy semantics, methods with a
+  hidden ref `this`, `new Struct` GC-heap allocation with constructors and
+  field-through-pointer access, dynamic-array field returns, `with`/`goto`/
+  labels, struct-by-value returns, operator overloads via DMD's lowered
+  method calls, field-wise POD default equality, struct-typed field chains,
+  nested-struct enclosing-local capture through a stack-base-index context
+  pointer, and scope-exit destructor / static-array postblit insertion. All
+  43 blocks are SystemLinker-oracle-backed; none were withheld.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -922,18 +934,20 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), `math.d` (7), and `arrays.d` (8) are now complete on
-the new core (see Rewrite Coverage State). Continue with `structs.d` (module
-order 9), promoting one named behaviour or one tight failure-message family at
-a time. The float/builtin/string-slice machinery earned for `eval.d` and
-`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
-narrow throw/result plumbing earned for `results.d`, the comparison-operator /
-ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d`, and the native-layout array/slice/pointer/AA machinery earned
-for `arrays.d` are now available to the later modules. Struct behaviour should
+(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), and `structs.d` (9)
+are now complete on the new core (see Rewrite Coverage State). Continue with
+`control_flow.d` (module order 10), promoting one named behaviour or one tight
+failure-message family at a time. The float/builtin/string-slice machinery
+earned for `eval.d` and `math.d`, logical/comparison/short-circuit machinery
+earned for `logic.d`, narrow throw/result plumbing earned for `results.d`, the
+comparison-operator / ref-parameter / explicit-message / unittest-halt
+machinery earned for `diagnostics.d`, the native-layout array/slice/pointer/AA
+machinery earned for `arrays.d`, and the struct native-layout / methods /
+`new` / operator / `with`-`goto` / lifetime machinery earned for `structs.d`
+are now available to the later modules. `control_flow.d` behaviour should
 still be earned directly on the typed-frame core, not through old-core
-promotions; the DMD field-offset/native-layout discipline used for arrays is
-the same authority structs need.
+promotions; the `with`/`goto`/label and short-circuit control-flow primitives
+already landed for `logic.d` and `structs.d` are the foundation it builds on.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
@@ -2713,3 +2727,25 @@ promoted tests in place.
 
 All 43 blocks are SystemLinker-oracle-backed and in scope; none are
 withheld from promotion.
+
+**Completed implementation:** All six failure modes were earned in seven
+sequential commits (mode 6 split into four sub-slices), each building on
+the prior committed state. `structs.d` (module order 9) is now complete on
+the new core: 43/43 promoted `BytecodeNewCore` blocks pass and the full
+suite is green under multiple random seeds. The new core gained struct
+native-layout frame blocks at DMD-computed field offsets, by-value copy
+semantics (scalar/descriptor mutations stay local while shared
+backing-pointer element writes leak), methods with a hidden ref `this`,
+`new Struct` GC-heap allocation with constructors and field-through-pointer
+access, dynamic-array field returns, `with`/`goto`/labels (forward-jump
+fixups), struct-by-value `ResultType` returns (NRVO-style copy), operator
+overloads through DMD's lowered method calls, field-wise POD default
+equality, struct-typed fields and chains, nested-struct enclosing-local
+capture via a stack-base-index context pointer (`frameBaseIndex`/
+`frameLoad`), and scope-exit destructor / static-array postblit insertion
+intercepting `_d_arrayctor`/`__ArrayDtor`. The static-array postblit/dtor
+slice required raw `&local` addresses to stay valid across frame growth, so
+the VM now reserves a fixed stack capacity up front; deep recursion beyond
+that reserve could reallocate and invalidate live `&local` pointers, a
+case no current test exercises and a future bench/feature checkpoint
+should revisit.
