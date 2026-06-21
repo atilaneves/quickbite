@@ -12,12 +12,21 @@
 # (optimize + releaseMode + noBoundsCheck) propagate to the dependencies. It is
 # used rather than reggae/ninja on purpose: reggae's buildgen only accepts
 # standard dub build types, and every optimising standard type adds `-inline`,
-# which this project omits because DMD hangs inlining large lowering.d. The host
-# stays DMD-compiled: SystemLinker dlopens DMD-backend `.so`s whose DMD
-# exception-handling ABI an LDC host cannot load.
+# which this project omits because DMD hangs inlining large lowering.d.
+#
+# The host is LDC-built: LDC nearly halves the frontend (parse + semantic) row,
+# which executes no generated code. The native post-parse backends do execute
+# DMD-codegen'd code, which an LDC host cannot run in-process (extern(D) ABI
+# divergence, ai/spikes/ldc-eh/FINDINGS.md), so SystemLinker hands the linked
+# .so to a small DMD-built executor (bin/bench-exec, built below) over a process
+# boundary. llvmjit's in-process JIT has no such boundary and is unavailable
+# under this build; use system-linker for native post-parse rows.
 # Usage: bin/bench.sh [--dub=NAME] [bench-flags] [fixture ...]
 set -euo pipefail
 cd "$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 printf '%s\n' 'Building benchmark binary if needed...' >&2
-dub build --config=benchmark --build=benchmark-opt
+dub build --compiler=ldc2 --config=benchmark-ldc --build=benchmark-opt
+# The run executor must be DMD-built so its druntime/extern(D) ABI matches the
+# DMD-codegen'd .so it loads.
+dub build :bench-exec --compiler=dmd
 exec bin/bench "$@"

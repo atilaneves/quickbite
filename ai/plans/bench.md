@@ -300,6 +300,40 @@ rules out. The split is nonetheless clean:
 The earlier Phase 1/2/3 text above is retained as the record of the in-process
 hypothesis the spike falsified.
 
+#### Phases 1′ and 2′ result (2026-06-21): LDC build with a DMD run executor
+
+Both phases landed together. `bin/bench.sh` now builds the host with LDC
+(`--config=benchmark-ldc --build=benchmark-opt`), whose only change from the DMD
+`benchmark` config is swapping the DMD-only `-defaultlib=libphobos2.so` for
+LDC's `-link-defaultlib-shared`; `dmd:frontend` and `:dmd-backend-vendor` compile
+under LDC unchanged. Measured on `--dub cerealed`:
+
+| build of `bin/bench`        | frontend (parse+semantic) | system-linker post-parse |
+| --------------------------- | ------------------------- | ------------------------ |
+| DMD `benchmark-opt`         | ~1677 ms                  | ~660–680 ms (in-process) |
+| LDC `benchmark-ldc`         | ~1073 ms                  | ~442 ms (via executor)   |
+
+The frontend nearly halves, as predicted (~1066 ms), and the post-parse row is
+*faster* under LDC (LDC-built codegen), not inflated by the process boundary,
+while staying correct (`156/156`).
+
+The executor is the **`bench-exec` subPackage** (DMD-built, no dmd-frontend
+import). Under `version (LDC)`, `SystemLinker.runTests` codegens+links the `.so`
+in the LDC host, then `exec`s `bin/bench-exec` with a request file (the `.so`
+path, dependency images, and the mangled unittest symbols) and reads the
+`TestResult[]` back from a results file. The shared wire format lives in
+`bench-exec/run_wire.d`; DMD hosts (`bin/ut`, the DMD `benchmark` config) keep
+running tests in-process unchanged, so `version (LDC)` is the only switch. The
+boundary is a *process*, not an *ABI*, boundary: the DMD-built executor's
+druntime/extern(D) ABI matches the DMD-codegen'd `.so` (finding 3 above).
+
+**LLVMJit stays unavailable under the LDC build.** Its value is the *in-process*
+ORC JIT, which produces no `.so` to hand the executor and whose JIT'd DMD-codegen
+would mismatch the LDC host's extern(D) ABI. The cli drops it from the defaults
+with a note and rejects an explicit `-b llvmjit` with a message pointing at the
+DMD build or `system-linker`. So Phase 2′'s LLVMJit clause is intentionally not
+met: `system-linker` is the working native post-parse backend under LDC.
+
 ### The fix
 
 `bin/bench.sh` builds with dub's `benchmark-opt` build type
