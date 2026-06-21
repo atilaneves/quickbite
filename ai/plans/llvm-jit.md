@@ -4,9 +4,10 @@
 
 The backend works and is promoted alongside `SystemLinker` across the whole
 `SystemLinker`-oracle matrix **except** `ct/archive.d` (archive-backed imports,
-a deferred scope boundary — see "Deferred scope boundary"). The
+a deferred scope boundary — see "Deferred scope boundary"). That archive-backed
+import fixture is the only known behavior `LLVMJit` cannot pass now. The
 duplicate-`UND`-symbol → zero-GOT-stub defect is fixed by the ELF normalizer.
-`bin/ut @LLVMJit` is 421/0; the full `bin/ut` is 2457/0 and stable under
+`bin/ut @LLVMJit` is 421/0; the full `bin/ut` is 2459/0 and stable under
 `--random` and both historical seeds.
 
 Everything below is kept as an outcome log; the interposition (Step 1), fork
@@ -527,7 +528,7 @@ symbol tables and relocations rather than hardcoded runtime symbol names.
 
 ```sh
 bin/ut @LLVMJit                 # 421/0 — full promoted LLVMJit matrix
-bin/ut                          # 2457/0 — full suite green
+bin/ut                          # 2459/0 — full suite green
 bin/ut --random
 bin/ut --random --seed 2828407573
 bin/ut --random --seed 3516581215
