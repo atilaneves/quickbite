@@ -9,8 +9,11 @@ public void loadDependencyImages(in string[] dependencyImages) {
 }
 
 public class NativeCallException: Exception {
-    public this(in string message) {
+    public string className;
+
+    public this(in string message, in string className) {
         super(message);
+        this.className = className;
     }
 }
 
@@ -283,7 +286,7 @@ private bool callViaLibffi(
             abiArgumentValues.ptr,
         );
     } catch (Exception exception) {
-        throw new NativeCallException(exception.msg);
+        throw new NativeCallException(exception.msg, exception.classinfo.name);
     }
 
     foreach (index; 0 .. nargs) {

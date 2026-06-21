@@ -443,20 +443,23 @@ private struct Walker {
         throw new InterpretedException(object);
     }
 
-    private void throwNativeException(in string message) {
-        throw new InterpretedException(Value.classValue(
-            "object.Exception",
-            [
-                "Exception",
-                "Throwable",
-                "Object",
-                "object.Exception",
-                "object.Throwable",
-                "object.Object",
-            ],
+    private void throwNativeException(in string message, in string className) {
+        if (auto class_ = dynamicClassDeclarationByName(className)) {
+            auto object = classDefaultValue(class_)
+                .withClassFieldNamed("msg", Value(message));
+            throw new InterpretedException(object);
+        }
+
+        throw new InterpretedException(nativeExceptionValue(message, className));
+    }
+
+    private Value nativeExceptionValue(in string message, in string className) const {
+        return Value.classValue(
+            className,
+            nativeExceptionTypeNames(className),
             ["msg"],
             [Value(message)],
-        ));
+        );
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
@@ -1636,7 +1639,7 @@ private struct Walker {
                             return result;
                         }
                     } catch (NativeCallException exception) {
-                        throwNativeException(exception.msg);
+                        throwNativeException(exception.msg, exception.className);
                     }
 
                     throw new Exception(noAvailableSourceMessage(function_));
@@ -1669,7 +1672,7 @@ private struct Walker {
                         return result;
                     }
                 } catch (NativeCallException exception) {
-                    throwNativeException(exception.msg);
+                    throwNativeException(exception.msg, exception.className);
                 }
 
                 throw new Exception(noAvailableSourceMessage(call.f));
@@ -4825,6 +4828,28 @@ private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
     }
 
     return names;
+}
+
+
+private string[] nativeExceptionTypeNames(in string name) @safe pure {
+    return [
+        unqualifiedName(name),
+        name,
+        "Exception",
+        "Throwable",
+        "Object",
+        "object.Exception",
+        "object.Throwable",
+        "object.Object",
+    ];
+}
+
+
+private string unqualifiedName(in string name) @safe pure {
+    import std.string: lastIndexOf;
+
+    const index = name.lastIndexOf('.');
+    return index == -1 ? name : name[index + 1 .. $];
 }
 
 
