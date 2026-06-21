@@ -1491,10 +1491,14 @@ bridge, and did not start callback/delegate support.
 
 ## 26. Current FFI boundary
 
-There is no further implementation slice selected in this file yet. Do not
-start a new FFI implementation PR by silently choosing from §25's deferred
-items; each of these changes adds a distinct semantic contract and needs its
-own narrow plan plus an approved oracle-backed test:
+**The next implementation slice is now selected: §27 (correct the `extern(D)`
+calling convention in the Interpreter).** It is not one of the deferred
+semantic contracts below; it is a correctness gap discovered in the
+already-landed §25 `extern(D)` support — see §27.1 for why it jumps the queue.
+The deferred contracts remain deferred until §27 lands. Do not start a new FFI
+implementation PR by silently choosing from §25's deferred items; each of these
+changes adds a distinct semantic contract and needs its own narrow plan plus an
+approved oracle-backed test:
 
 ```text
 member functions needing `this`
@@ -1505,8 +1509,208 @@ generated wrapper source
 Bytecode/IR/native-layout bridge work
 ```
 
-The next planning PR should pick exactly one of those contracts, identify the
-smallest compiled-D oracle fixture that proves it, and state which backend owns
-the first implementation. Until that exists, keep Bytecode and IR out of the
-FFI work from this plan; their native-layout bridge remains governed by §23
-and `ai/plans/bytecode.md`.
+After §27, the next planning PR should pick exactly one of those contracts,
+identify the smallest compiled-D oracle fixture that proves it, and state which
+backend owns the first implementation. Until that exists, keep Bytecode and IR
+out of the FFI work from this plan; their native-layout bridge remains governed
+by §23 and `ai/plans/bytecode.md`.
+
+## 27. Increment 4: correct the extern(D) calling convention (Interpreter)
+
+**Status: selected, not started.** This is the next implementation slice, and
+it is Interpreter-only. Bytecode and IR stay out (§23, §26).
+
+### 27.1 Why this, and why it is not a §26 contract
+
+§25 landed `extern(D)` support, but the only `extern(D)` oracle fixture
+(`tests/ut/backends/runner/rt/dependency_image.d`) calls `dependencyAdd(int)` —
+**one** explicit argument — and every other FFI fixture is `extern(C)`
+(`rt/cstdlib.d`). No test exercises an `extern(D)` call with two or more
+register arguments, and that case is currently **wrong**.
+
+`callViaLibffi` prepares its CIF with `FFI_DEFAULT_ABI` (`FFI_UNIX64`, i.e. the
+System V **C** ABI). But the D x86-64 ABI passes the *explicit* parameters of an
+`extern(D)` function in **reverse register order** relative to C. Hidden
+parameters (`this`, the nested-context pointer, the struct-return `sret`
+pointer) keep their normal leading position and are **not** reversed.
+
+This was confirmed empirically against `dmd`-compiled symbols invoked through
+the C ABI:
+
+```text
+extern(D) int sub(int a, int b)        // a - b
+  called C-order sub(10, 3)  ->  -7    // i.e. it computed 3 - 10: args reversed
+
+extern(D) int three(int a,int b,int c) // a*100 + b*10 + c
+  called C-order three(1, 2, 3)  ->  321   // read as (a,b,c) = (3,2,1)
+
+struct Box { int value; int addTwo(int a, int b); } // value*1000 + a*100 + b
+  called C-order addTwo(&Box(9), 1, 2)  ->  9201     // this kept first; (a,b)=(2,1)
+```
+
+Reverse-of-one is the identity, which is the *only* reason the §25
+one-argument fixture is green. Almost every real dub-package `extern(D)`
+function takes ≥2 arguments, so "execute any dub package" is impossible until
+this is correct. It is also the prerequisite for member functions with
+arguments (§27.6): `this`-only methods already call correctly (no explicit args
+to reverse — `Box.get()` above with `this` as the first register argument
+returns the right value today), but `obj.method(a, b)` does not.
+
+Because this is a correctness gap in already-landed behaviour rather than a new
+semantic contract, it jumps the §26 queue instead of being chosen from the
+deferred list.
+
+### 27.2 The rule to implement
+
+D defines the `extern(D)` x86-64 convention as the System V C ABI applied to
+the parameter list with the **explicit** parameters in **reverse order**;
+hidden parameters keep their normal leading position. Concretely, in terms of
+the arrays handed to `ffi_prep_cif`/`ffi_call`:
+
+```text
+extern(C):  atypes/avalue = [arg0, arg1, ..., argN]            (unchanged)
+extern(D):  atypes/avalue = [hidden..., argN, ..., arg1, arg0]
+```
+
+libffi performs SysV register/stack classification on whatever array it is
+given, so reversing the explicit `(ffi_type*, value-bytes)` pairs **together**,
+before `ffi_prep_cif`, reproduces `extern(D)` assignment for the
+register-resident case. No new libffi surface is needed; this is purely how the
+existing `atypes`/`avalue` arrays are ordered.
+
+### 27.3 Scope
+
+In scope: non-member `extern(D)` functions whose explicit parameters are
+scalars and pointers that all fit in argument registers (≤6 integer/pointer,
+≤8 SSE), over the existing §24 signature surface. The reversal applies **only**
+for `LINK.d`; `LINK.c` (libc, `rt/cstdlib.d`) keeps source order and must not
+change. The existing one-argument `dependency_image.d` fixture must stay green
+(reverse of one element is the identity).
+
+Out of scope — each a named follow-up with its own approved oracle fixture:
+
+```text
+arguments that spill to the stack (>6 integer or >8 SSE register args, or large
+  by-value structs): D's "reverse then classify" must be verified against the
+  oracle before claiming support — do not assume the register-only reversal
+  generalizes to stack slots
+this / member functions (the rung after this — §27.6)
+struct-by-value parameter reversal and sret ordering beyond what the
+  register-only scalar fixture proves
+variadics, delegates, exceptions, Bytecode/IR — unchanged from §26
+```
+
+### 27.4 Implementation shape
+
+All changes are confined to `callViaLibffi` in
+`source/quickbite/backends/ffi.d`; the call site, gates, symbol resolution, and
+the no-source diagnostic are unchanged.
+
+```text
+1. Decide reversal from the function's linkage: reverse the explicit parameter
+   order iff LINK.d. (extern(C) keeps source order.) There is no this/sret in
+   this slice — member functions are still gated out at the call site by
+   !call.f.needThis (interpreter/impl.d), and no signature here returns a
+   struct via sret beyond the existing by-value support.
+2. Build the libffi-facing atypes** and avalue** arrays in ABI order: identity
+   for LINK.c, reverse(explicit) for LINK.d. Keep the logical, source-order
+   arrays for everything else.
+3. Preserve out-parameter writeback correctness across the reversal. The
+   out-pointer cells and argumentWritebacks[index] are keyed by ORIGINAL
+   (source) argument index; the writeback contract (Walker.applyNativeWritebacks
+   maps slot i to the i-th argument expression) must keep using source indices.
+   Reverse only the arrays passed to libffi, and translate between source index
+   and libffi slot when reading back the out-pointer cells. Getting this wrong
+   silently breaks strtol-style writeback — but note strtol is extern(C), so it
+   is not reversed; an extern(D) out-pointer case is itself a later rung.
+4. Run ffi_prep_cif + ffi_call exactly as today on the ABI-ordered arrays.
+```
+
+The reversal must operate on the `(ffi_type*, marshalled-bytes)` pair as a
+unit — reversing only the types or only the buffers corrupts the call.
+
+### 27.5 The fixture (approval required)
+
+Add one new oracle-backed fixture proving a ≥2-argument `extern(D)` call, in the
+style of `rt/dependency_image.d` (build a `.so` with `dmd -shared`, rewrite the
+dependency as declaration-only, then run the same source on `SystemLinker` (the
+oracle) and `Interpreter`). The function must take at least two register
+arguments whose result is order-sensitive, e.g.:
+
+```d
+// dependency image (compiled with body, then rewritten to a declaration):
+int dependencySub(int a, int b) { return a - b; }   // extern(D) by default
+
+// source under test:
+import dep_image_fixture;
+unittest {
+    assert(dependencySub(10, 3) == 7);
+}
+```
+
+Expectations:
+
+```text
+SystemLinker (oracle): passes — links the image, calls dependencySub natively.
+Interpreter: FAILS before the fix (returns -7 via the C-ABI ordering), the red
+  test that drives the work; PASSES after the reversal is applied.
+```
+
+Per `AGENTS.md` this new fixture needs approval before it is added; it is the
+red test, so propose it first (strict TDD: failing test → fix → green suite).
+Unlike §24's behaviour-preserving phases, this slice changes behaviour and
+cannot be done without an approved test.
+
+### 27.6 The rung after this
+
+Member functions, `this`-only first. With §27 landed, the reversal machinery and
+the existing by-value-struct marshalling combine cleanly:
+
+```text
+this-only method (int Box.get()):  already correct today (no explicit args);
+  needs only relaxing the !call.f.needThis gate and marshalling the receiver
+  address as the leading hidden argument.
+this + args (int Box.addTwo(a,b)):  depends on §27 — [this, reverse(explicit)].
+```
+
+That is a separate planning PR and a separate approved fixture; do not fold it
+into §27.
+
+### 27.7 Implementation handoff
+
+Read `AGENTS.md` and `ai/mistakes.md` first. Work in a worktree
+(`worktrees/ffi-externd-abi`). Build/test per `AGENTS.md`:
+`dub run reggae --compiler=ldc -- -b ninja` (if `build.ninja` is absent), then
+`ninja bin/ut`, then `bin/ut --random`.
+
+Anchors (re-grep for current line numbers and re-read before editing):
+
+```text
+function to change       source/quickbite/backends/ffi.d
+                          (callViaLibffi — the atypes/avalue construction and
+                           the ffi_prep_cif/ffi_call; ffiTypeFor, marshalArgument,
+                           unmarshalValue, isOutPointer stay as-is)
+linkage gate             same file, isSupportedNativeLinkage (LINK.c | LINK.d)
+                          and the LINK.d branch you key reversal on
+entry point + writeback  same file, tryCallNative (signature unchanged) and the
+                          out-pointer cell handling
+call site + gates        source/quickbite/backends/interpreter/impl.d
+                          (Walker.runCallExpression: hasNoAvailableSource &&
+                           !call.f.needThis && tryCallNative); unchanged here
+writeback machinery      same file, applyNativeWritebacks /
+                          nativeOutParameterVariable; unchanged, but keep its
+                          source-index contract intact (§27.4 step 3)
+libffi binding           source/quickbite/backends/libffi.d (no new surface)
+fixture style to mirror  tests/ut/backends/runner/rt/dependency_image.d
+acceptance suite         tests/ut/backends/runner/rt/cstdlib.d (extern(C) must
+                          stay green — it is NOT reversed)
+```
+
+DMD API needed: `function_._linkage` (already read by `isSupportedNativeLinkage`)
+to distinguish `LINK.d` from `LINK.c`; `TypeFunction.parameterList` for the
+explicit parameter sequence (already used). No new DMD surface.
+
+Done when: `bin/ut --random` is green; the new ≥2-argument `extern(D)` fixture
+passes on `SystemLinker` and `Interpreter`; the one-argument `dependency_image.d`
+fixture and the entire `extern(C)` `cstdlib.d` suite remain green; and the
+reversal is applied for `LINK.d` only.

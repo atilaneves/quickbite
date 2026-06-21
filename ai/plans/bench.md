@@ -139,23 +139,106 @@ findings still fall out clearly:
   embedded frontend looked ~2.5× too slow. It was never `-allinst` (+22 ms) or
   cold init (−25 ms).
 
-### Why the driver must stay DMD-compiled
+### Building the driver with LDC (the segfault, and how to beat it)
 
-`SystemLinker` exists to measure **DMD's fast codegen** — the realistic
-`dub test` path. Its per-run `.so` is therefore DMD-backend output, which on
-Linux emits DMD's DWARF EH (`__dmd_begin_catch`, `_d_throwdwarf`, defined in
-`libphobos2.so`). An LDC-compiled host runs on LDC's incompatible EH ABI
-(`_d_eh_personality`, in `libdruntime-ldc-shared.so`) and does **not** export
-`__dmd_begin_catch`; loading DMD's phobos alongside it to supply that symbol puts
-two druntimes (two GCs, two DSO registries) in one process and segfaults — the
-exact "smuggling in its own copy" failure `linkSharedLibrary` warns about.
+LDC nearly halves the frontend (table above), so we *want* an LDC-built
+`bin/bench`. The goal is sharp: keep measuring **DMD's fast codegen** — the
+embedded dmd backend stays the code under test — but compile the benchmark
+*tool* (including that dmd-as-a-library codegen) with LDC for speed, then
+execute the DMD-codegen output it produces. "LDC-compiled DMD codegen, then
+jump to the generated code."
 
-So the host that `dlopen`s DMD-backend `.so`s must itself be DMD-compiled.
-Compiling the `.so` with LDC instead would make `SystemLinker` measure LDC
-codegen, which is no longer what it is for. `ctfe`/`interpreter`/`frontend` have
-no `dlopen` and *would* run faster under an LDC host, but splitting the driver
-into two host binaries to chase that is not worth it. **Conclusion: keep a
-single DMD host; just build every package in it optimised.**
+The blocker is the `system-linker`/`llvm-jit` segfault. The earlier conclusion
+— "the host that `dlopen`s DMD-backend `.so`s must itself be DMD-compiled" —
+bundles three *separable* runtime concerns and then condemns the whole idea on
+the strength of the worst one. Pull them apart:
+
+A DMD-codegen `.so` needs three categories of symbol at load time:
+
+1. **GC + ordinary druntime** — `_d_newclass`, `_d_arrayappendcTX`,
+   `gc_malloc`, `TypeInfo`, etc.
+2. **Exception machinery** — `_d_throwdwarf`, `__dmd_begin_catch`/
+   `__dmd_end_catch`, and the DMD DWARF **personality** routine.
+3. **Module registration** — `ModuleInfo` / `_d_dso_registry`.
+
+Only category 2 genuinely diverges between DMD and LDC. Category 1 is *the same
+druntime source with the same mangled names* — `_d_newclass` is `_d_newclass`
+whichever compiler built the host. An LDC host already exports those, so
+`dlopen` + `RTLD_GLOBAL` binds the generated DMD code to **the host's single
+LDC GC**. The "two druntimes → segfault" only happens because today the `.so`
+is linked `dmd -shared -defaultlib=libphobos2.so` (`system_linker.d:186`),
+giving it a `DT_NEEDED` on **DMD's** libphobos2 that drags a *second* druntime
+(second GC, second DSO registry) into the process. **That is a property of the
+link line we control, not a law of physics.**
+
+So the lever is two-sided:
+
+- **Stop the generated `.so` from bringing its own druntime.** Change
+  `system_linker.d`'s link so it does *not* pull DMD's libphobos2; leave
+  druntime symbols undefined, resolved at load time from the LDC host. One GC,
+  one DSO registry.
+- **Supply the handful of DMD-only EH symbols as shims** in the LDC host that
+  forward to LDC's `_d_eh_personality` machinery over the *shared*
+  `object.Throwable`. That is the only genuinely DMD-specific surface left.
+
+The remaining risk concentrates entirely in category 2: do DMD's and LDC's
+`_Unwind_Exception` wrappers and personality LSDA encodings agree closely
+enough for a shim to bridge them? That is empirical, which is why the plan
+leads with a spike rather than committing to an architecture up front.
+
+**The decisive simplification — a C-ABI firewall.** Make the generated
+module's entry a `nothrow extern(C)` runner that does its own
+`try/catch(Throwable)` *inside DMD frames* and returns a status across the C
+boundary. Then no exception ever unwinds from DMD frames into LDC host frames:
+the host makes a plain C call and reads an int. All D EH stays *within* DMD
+frames, needing only that DMD's EH helpers are present and operate on the
+host's GC. This collapses "make two EH ABIs unwind through each other" into the
+much smaller "make DMD's self-contained throw/catch work when its GC is the
+host's LDC GC."
+
+#### Plan (spike-first, with hard fallbacks so the goal ships regardless)
+
+- **Phase 0 — empirical ground truth (the spike).** Throwaway LDC host linking
+  shared LDC druntime (`-link-defaultlib-shared`): dmd-backend-codegen a
+  trivial fixture that throws+catches an `AssertError`, link the `.so` *without*
+  `-defaultlib=libphobos2.so`, `dlopen` it `RTLD_GLOBAL`, call a `extern(C)`
+  entry that runs+catches internally. `nm`/`ldd` the `.so` and both druntimes to
+  enumerate the *exact* unresolved symbol set. → verify: trivial fixture runs
+  and reports caught-vs-uncaught correctly, no segfault, `ldd` shows no DMD
+  libphobos2. **Deliverable: the precise DMD-only symbol gap, and a yes/no on
+  whether throw/catch works once the GC is shared.**
+- **Phase 1 — EH shim.** Implement the symbols Phase 0 surfaced
+  (`_d_throwdwarf`, `__dmd_begin_catch`/`__dmd_end_catch`, the DMD personality)
+  as a small TU linked into the host, forwarding to LDC druntime's EH over the
+  shared `Throwable`. → verify: throw/catch works through the shim across
+  `AssertError`, user `Exception`, nested, and `finally`.
+- **Phase 2 — C-ABI firewall in the real backends.** Turn the generated
+  test-runner entry `SystemLinker`/`LLVMJit` invoke into a `nothrow extern(C)`
+  status-returning runner; drop the host-side D `try/catch` around generated
+  code; keep the existing fork-child isolation (mistakes lesson 253) as the
+  crash-containment net. → verify: `bin/ut @SystemLinker` and the LLVMJit matrix
+  stay green under an LDC-built host, including `--random`.
+- **Phase 3 — LDC build of `bench`.** Add the LDC build config
+  (`-O3 -release -boundscheck=off -link-defaultlib-shared`), replace the
+  DMD-only dub flags (`-defaultlib=libphobos2.so`, `--allow-multiple-definition`)
+  with LDC equivalents, and confirm `dmd:frontend` + `:dmd-backend-vendor`
+  compile under LDC (they do upstream — distro dmd is LDC-built). → verify: the
+  frontend row drops toward ~1066 ms **and** the `system-linker` row runs
+  instead of segfaulting, DMD-codegen semantics intact.
+
+**Fallback ladder** (so "LDC-compiled DMD codegen" ships even if the boldest
+form fails):
+
+- firewall insufficient and cross-ABI unwinding genuinely needed → extend
+  Phase 1 to a full bidirectional personality shim;
+- in-process EH unsound at any depth → keep the LDC host doing the *codegen*
+  (the part we want fast) and `exec` a tiny DMD-compiled executor for only the
+  `dlopen`+run step. Codegen stays LDC-fast; execution crosses a *process*
+  boundary instead of an *ABI* boundary — guaranteeing the goal even if the
+  in-process jump is abandoned.
+
+The fork that remains is **how far in-process we get**, settled by Phase 0's
+measurement rather than guessed at now.
 
 ### The fix
 
