@@ -8,6 +8,12 @@ public void loadDependencyImages(in string[] dependencyImages) {
         loadDependencyImage(dependencyImage);
 }
 
+public class NativeCallException: Exception {
+    public this(in string message) {
+        super(message);
+    }
+}
+
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.lang".Value[] arguments,
@@ -269,12 +275,16 @@ private bool callViaLibffi(
         GC.removeRoot(root);
 
     alias CFunction = extern(C) void function();
-    ffi_call(
-        &cif,
-        cast(CFunction) symbol,
-        returnBuffer.ptr,
-        abiArgumentValues.ptr,
-    );
+    try {
+        ffi_call(
+            &cif,
+            cast(CFunction) symbol,
+            returnBuffer.ptr,
+            abiArgumentValues.ptr,
+        );
+    } catch (Exception exception) {
+        throw new NativeCallException(exception.msg);
+    }
 
     foreach (index; 0 .. nargs) {
         if (outParameterCells[index] is null)

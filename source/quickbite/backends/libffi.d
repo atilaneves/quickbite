@@ -47,22 +47,20 @@ enum uint FFI_DEFAULT_ABI = 2;
 // The `type` tag of a struct ffi_type (ffi.h FFI_TYPE_STRUCT).
 enum ushort FFI_TYPE_STRUCT = 13;
 
-@nogc nothrow:
-
 ffi_status ffi_prep_cif(
     ffi_cif* cif,
     uint abi,
     uint nargs,
     ffi_type* rtype,
     ffi_type** atypes,
-);
+) @nogc nothrow;
 
 void ffi_call(
     ffi_cif* cif,
     void function() fn,
     void* rvalue,
     void** avalue,
-);
+) @nogc;
 
 extern __gshared {
     ffi_type ffi_type_void;

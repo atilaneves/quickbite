@@ -443,6 +443,22 @@ private struct Walker {
         throw new InterpretedException(object);
     }
 
+    private void throwNativeException(in string message) {
+        throw new InterpretedException(Value.classValue(
+            "object.Exception",
+            [
+                "Exception",
+                "Throwable",
+                "Object",
+                "object.Exception",
+                "object.Throwable",
+                "object.Object",
+            ],
+            ["msg"],
+            [Value(message)],
+        ));
+    }
+
     private Value chainExceptionObject(in Value thrown, in Value next) const {
         if (!thrown.isClassObject || !thrown.hasClassFieldNamed("_nextInChainPtr"))
             return thrown;
@@ -1602,20 +1618,25 @@ private struct Walker {
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (hasNoAvailableSource(function_)) {
-                    import quickbite.backends.ffi: tryCallNativeMember;
+                    import quickbite.backends.ffi:
+                        NativeCallException, tryCallNativeMember;
 
                     Value result;
                     Value[] writebacks;
-                    if (tryCallNativeMember(
-                        function_,
-                        receiverStructType(dot.e1),
-                        receiver,
-                        arguments,
-                        result,
-                        writebacks,
-                    )) {
-                        applyNativeWritebacks(writebacks, argumentExpressions);
-                        return result;
+                    try {
+                        if (tryCallNativeMember(
+                            function_,
+                            receiverStructType(dot.e1),
+                            receiver,
+                            arguments,
+                            result,
+                            writebacks,
+                        )) {
+                            applyNativeWritebacks(writebacks, argumentExpressions);
+                            return result;
+                        }
+                    } catch (NativeCallException exception) {
+                        throwNativeException(exception.msg);
                     }
 
                     throw new Exception(noAvailableSourceMessage(function_));
@@ -1633,17 +1654,22 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.backends.ffi: tryCallNative;
+            import quickbite.backends.ffi:
+                NativeCallException, tryCallNative;
 
             if (hasNoAvailableSource(call.f)) {
                 Value result;
                 Value[] writebacks;
-                if (
-                    !call.f.needThis &&
-                    tryCallNative(call.f, arguments, result, writebacks)
-                ) {
-                    applyNativeWritebacks(writebacks, argumentExpressions);
-                    return result;
+                try {
+                    if (
+                        !call.f.needThis &&
+                        tryCallNative(call.f, arguments, result, writebacks)
+                    ) {
+                        applyNativeWritebacks(writebacks, argumentExpressions);
+                        return result;
+                    }
+                } catch (NativeCallException exception) {
+                    throwNativeException(exception.msg);
                 }
 
                 throw new Exception(noAvailableSourceMessage(call.f));
