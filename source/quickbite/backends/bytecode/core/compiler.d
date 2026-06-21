@@ -94,6 +94,16 @@ private struct Compiler {
     private size_t[const(void)*] _labelTargets;
     private size_t[][const(void)*] _pendingGotos;
     private size_t[ulong] _constantIndices;
+    // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
+    // which is reset per function). A nested struct's method reads a captured
+    // enclosing local through the struct's context pointer, which records the
+    // enclosing frame's base; this map recovers the captured local's offset
+    // within that frame at the point the method (a separate function) compiles.
+    private ushort[VarDeclaration] _capturedOffsets;
+    // The frame offset of the current method's hidden `this` block when it is a
+    // nested struct whose first field (`vthis`) holds the enclosing-frame
+    // context index; 0 otherwise. Set while compiling such a method.
+    private bool _hasNestedContext;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
     private ResultType _currentReturnType; // result type of the function whose
@@ -116,6 +126,7 @@ private struct Compiler {
         _structLocals = null;
         _structPointerLocals = null;
         _hasThis = false;
+        _hasNestedContext = false;
         _thisLocal = StructLocal.init;
         _withDerefBases = null;
         _labelTargets = null;
@@ -134,6 +145,8 @@ private struct Compiler {
             _thisLocal = StructLocal(
                 layout.thisOffset, thisStructDeclaration(function_),
             );
+            _hasNestedContext = _thisLocal.declaration !is null &&
+                _thisLocal.declaration.isNested;
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
@@ -459,6 +472,15 @@ private struct Compiler {
                     return Operand(*existing, scalarType(declaration.type));
                 }
 
+            // A captured enclosing local read inside a nested struct's method
+            // (`return seed;`): resolve it through the hidden `this` block's
+            // context pointer (vthis at offset 0), which holds the enclosing
+            // frame's base index.
+            if (_hasNestedContext)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (auto captured = declaration in _capturedOffsets)
+                        return loadCapturedLocal(declaration, *captured);
+
             throw new Exception(text(
                 "Unsupported variable in bytecode core: ",
                 expressionChars(expression),
@@ -470,6 +492,12 @@ private struct Compiler {
                 compileVariableDeclaration(variable);
                 return Operand.init;
             }
+
+            // A nested type declaration (`struct Inner { ... }` inside a
+            // function body) is a compile-time construct that emits no runtime
+            // code; semantic has already resolved it.
+            if (declaration.declaration.isAggregateDeclaration !is null)
+                return Operand.init;
 
             throw new Exception(text(
                 "Unsupported declaration in bytecode core: ",
@@ -928,6 +956,7 @@ private struct Compiler {
         const slotSize = isString ? stringSliceSize : size(type);
         const offset = allocateBytes(slotSize, isString ? 4 : size(type));
         _locals[variable] = offset;
+        _capturedOffsets[variable] = offset;
         if (isString)
             _stringLocals[variable] = true;
 
@@ -1050,10 +1079,17 @@ private struct Compiler {
         import std.conv: text;
 
         const offset = allocateStructBlock(variable.type);
-        _structLocals[variable] =
-            StructLocal(offset, structDeclarationOf(variable.type));
+        auto declaration = structDeclarationOf(variable.type);
+        _structLocals[variable] = StructLocal(offset, declaration);
 
         zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
+
+        // A nested struct carries a hidden context pointer (`vthis`) at offset 0
+        // recording the enclosing function's frame, so its methods can read
+        // captured enclosing locals. The empty `S()` literal leaves it zero, so
+        // set it here to the current frame base index.
+        if (declaration.isNested)
+            _code ~= Instruction(Op.frameBaseIndex, offset);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -1362,6 +1398,34 @@ private struct Compiler {
 
         resolved = false;
         return 0;
+    }
+
+    // Read a captured enclosing local of type `declaration` at `capturedOffset`
+    // within the enclosing frame: the nested struct's `this` block holds the
+    // enclosing frame's base index in its first field (vthis, offset 0); add the
+    // captured offset and load the scalar through it.
+    private Operand loadCapturedLocal(
+        VarDeclaration declaration,
+        in ushort capturedOffset,
+    ) {
+        const contextBase =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, contextBase, _thisLocal.offset, cast(ushort) size_t.sizeof,
+        );
+        const sourceIndex =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const offsetConstant = compileSizeConstant(capturedOffset);
+        _code ~= Instruction(
+            Op.addInt8, sourceIndex, contextBase, offsetConstant,
+        );
+
+        const type = scalarType(declaration.type);
+        const destination = allocate(type);
+        _code ~= Instruction(
+            Op.frameLoad, destination, sourceIndex, cast(ushort) size(type),
+        );
+        return Operand(destination, type);
     }
 
     // A field accessed through a struct pointer (`p.field` where `p` is a heap

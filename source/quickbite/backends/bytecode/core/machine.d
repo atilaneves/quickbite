@@ -346,6 +346,21 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case frameBaseIndex:
+                writeScalar!size_t(stack, base + instruction.a, base);
+                ++ip;
+                break;
+
+            case frameLoad: {
+                const sourceIndex =
+                    scalarValue!size_t(stack, base + instruction.b);
+                stack[
+                    base + instruction.a .. base + instruction.a + instruction.c
+                ] = stack[sourceIndex .. sourceIndex + instruction.c];
+                ++ip;
+                break;
+            }
+
             case signExtend1to4:
                 const ubyte[int.sizeof] signWidened = scalarBytes(
                     cast(int) scalarValue!byte(stack, base + instruction.b),

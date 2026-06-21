@@ -233,6 +233,17 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterThanUnsigned8,
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
+    // Write the absolute stack index of the current frame's base (`base`) as a
+    // raw `size_t` word into frame offset a. Backs a nested struct's hidden
+    // context pointer (`vthis`), which records the enclosing function's frame so
+    // the struct's methods can read captured enclosing locals. A stable index
+    // (not a native address) survives the stack array's reallocation on growth.
+    frameBaseIndex,
+    // Read `c` bytes from the absolute stack index held in the size_t slot at
+    // frame offset b into frame offset a. Backs a captured enclosing local read
+    // through a nested struct's context: `stack[contextBase + var.offset]`, with
+    // the base+offset already summed into the slot at b.
+    frameLoad,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset
