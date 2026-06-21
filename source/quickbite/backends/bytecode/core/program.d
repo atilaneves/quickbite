@@ -42,16 +42,20 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     }
 }
 
-// The static type of a function result: a scalar, a string, or a dynamic
-// array. A string result is a slice descriptor (byte offset and length into
-// Program.data); a dynamic-array result is a 16-byte {ptr, length} descriptor
-// (its backing memory stays alive through the machine's `heap` root), with
-// `elementType` giving the element scalar.
+// The static type of a function result: a scalar, a string, a dynamic array,
+// or a by-value struct. A string result is a slice descriptor (byte offset and
+// length into Program.data); a dynamic-array result is a 16-byte {ptr, length}
+// descriptor (its backing memory stays alive through the machine's `heap`
+// root), with `elementType` giving the element scalar. A struct result is an
+// inline block of `structSize` bytes copied back to the caller's destination on
+// return (NRVO-style), just like any other frame block.
 package(quickbite.backends.bytecode) struct ResultType {
     ScalarType scalar;
     bool isString;
     bool isArray;
     ScalarType elementType;
+    bool isStruct;
+    uint structSize;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
@@ -67,6 +71,8 @@ package(quickbite.backends.bytecode) enum sliceDescriptorSize =
 package(quickbite.backends.bytecode) uint size(in ResultType type)
     @safe @nogc nothrow pure
 {
+    if (type.isStruct)
+        return type.structSize;
     if (type.isArray)
         return sliceDescriptorSize;
     return type.isString ? stringSliceSize : size(type.scalar);
@@ -111,6 +117,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
     // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
     allocArray2D,
+    // Allocate `c` bytes of VM-owned writable heap for a single `new S` struct
+    // block, copy the initialised block of `c` bytes from frame offset b into it,
+    // root it in `heap`, and write the raw `size_t` heap pointer into the 8-byte
+    // frame slot at offset a. Backs `new Struct(...)`; field access through the
+    // pointer reads and writes the heap block via pointerLoad/pointerStore.
+    allocStruct,
     // Resize the dynamic array whose descriptor is at frame offset a to the
     // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
     // block, copy the `min(oldLength, newLength)` existing elements, fill any
@@ -221,6 +233,22 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     greaterThanUnsigned8,
     greaterOrEqualUnsigned8,
     copy, // a: destination frame offset, b: source frame offset, c: size
+    // Write the absolute stack index of the current frame's base (`base`) as a
+    // raw `size_t` word into frame offset a. Backs a nested struct's hidden
+    // context pointer (`vthis`), which records the enclosing function's frame so
+    // the struct's methods can read captured enclosing locals. A stable index
+    // (not a native address) survives the stack array's reallocation on growth.
+    frameBaseIndex,
+    // Read `c` bytes from the absolute stack index held in the size_t slot at
+    // frame offset b into frame offset a. Backs a captured enclosing local read
+    // through a nested struct's context: `stack[contextBase + var.offset]`, with
+    // the base+offset already summed into the slot at b.
+    frameLoad,
+    // Write the native address of the current frame slot at offset b as a raw
+    // `size_t` pointer word into frame offset a. Backs `&local` (`int* p = &x`):
+    // the stack's reserved capacity keeps the address stable across the calls
+    // that grow the stack before the pointer is dereferenced.
+    frameAddress,
     signExtend1to4, // a: destination frame offset, b: source frame offset
     zeroExtend1to4, // a: destination frame offset, b: source frame offset
     signExtend4to8, // a: destination frame offset, b: source frame offset

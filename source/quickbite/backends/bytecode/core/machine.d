@@ -7,6 +7,10 @@ private:
 package(quickbite.backends.bytecode) alias CompileFunction =
     void delegate(in size_t index);
 
+// Bytes reserved upfront for the VM call stack so growing it for callee frames
+// reuses the same block: raw `&local` pointers stay valid across calls.
+private enum stackCapacity = 4 * 1024 * 1024;
+
 // Executes the program's entry function and returns the raw bytes of its
 // result (empty for void).
 package(quickbite.backends.bytecode) ubyte[] run(
@@ -16,7 +20,12 @@ package(quickbite.backends.bytecode) ubyte[] run(
     import quickbite.backends.bytecode.core.program:
         Op, size, sliceDescriptorSize;
 
+    // Reserve a generous fixed capacity so growing `stack` for callee frames
+    // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
+    // struct field or heap and dereferenced later must stay valid across the
+    // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
+    stack.reserve(stackCapacity);
     // VM-owned writable heap blocks backing dynamic arrays. Holding the GC
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
@@ -127,6 +136,19 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 writeSliceDescriptor(
                     stack, base + instruction.a, outerBlock, rows,
                 );
+                ++ip;
+                break;
+
+            case allocStruct:
+                // Allocate a fresh heap block for a single `new S` struct,
+                // copy the initialised block of `c` bytes from the frame in,
+                // root it, and write the raw heap pointer into the frame slot.
+                auto structBlock = new ubyte[](instruction.c);
+                structBlock[] = stack[
+                    base + instruction.b .. base + instruction.b + instruction.c
+                ];
+                heap ~= structBlock;
+                writeBlockPointer(stack, base + instruction.a, structBlock);
                 ++ip;
                 break;
 
@@ -319,11 +341,39 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case copy:
+                // A self-copy (identical source and destination, e.g. a
+                // redundant temporary write `x = x`) is a no-op; skip it, since
+                // a slice-to-itself assignment would abort as overlapping.
+                if (instruction.a != instruction.b)
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + instruction.c
+                    ] = stack[
+                        base + instruction.b
+                        .. base + instruction.b + instruction.c
+                    ];
+                ++ip;
+                break;
+
+            case frameBaseIndex:
+                writeScalar!size_t(stack, base + instruction.a, base);
+                ++ip;
+                break;
+
+            case frameLoad: {
+                const sourceIndex =
+                    scalarValue!size_t(stack, base + instruction.b);
                 stack[
                     base + instruction.a .. base + instruction.a + instruction.c
-                ] = stack[
-                    base + instruction.b .. base + instruction.b + instruction.c
-                ];
+                ] = stack[sourceIndex .. sourceIndex + instruction.c];
+                ++ip;
+                break;
+            }
+
+            case frameAddress:
+                writeFrameAddress(
+                    stack, base + instruction.a, base + instruction.b,
+                );
                 ++ip;
                 break;
 
@@ -1189,6 +1239,34 @@ private void writeSliceDescriptor(
         nativeToLittleEndian(cast(size_t) block.ptr);
     stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
         nativeToLittleEndian(length);
+}
+
+// Write a heap block's native address as a raw `size_t` pointer word at
+// `offset` (a `new S` struct pointer slot); the block is rooted in `heap`, so
+// it stays alive while field access reads and writes it through the pointer.
+private void writeBlockPointer(
+    ref ubyte[] stack,
+    in size_t offset,
+    in ubyte[] block,
+) @trusted {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] =
+        nativeToLittleEndian(cast(size_t) block.ptr);
+}
+
+// Write the native address of the frame slot at `slotOffset` as a raw `size_t`
+// pointer word into `offset`. Backs `&local`; the stack's reserved capacity
+// keeps the address valid across the calls that grow the stack.
+private void writeFrameAddress(
+    ref ubyte[] stack,
+    in size_t offset,
+    in size_t slotOffset,
+) @trusted {
+    import std.bitmanip: nativeToLittleEndian;
+
+    stack[offset .. offset + size_t.sizeof] =
+        nativeToLittleEndian(cast(size_t) &stack[slotOffset]);
 }
 
 // Write a slice descriptor {ptr, length} at `offset` from an already-computed

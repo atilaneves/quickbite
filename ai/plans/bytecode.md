@@ -913,6 +913,18 @@ switch; `Bytecode` still defaults to the old core):
   associative arrays via druntime-hook call-site interception against a
   VM-owned map table. The 5 `Ctfe, Interpreter`-only CTFE-divergence blocks
   remain unpromoted (no `SystemLinker` oracle).
+- All `tests/ut/backends/runner/ct/structs.d` blocks, completing `structs.d`
+  (module order 9) on the new core (43/43 promoted, see the structs analysis
+  section). This is slice 4 (structs with native layout) realised on top of
+  the array memory model: structs are `Type.size()` inline frame blocks with
+  fields at DMD-computed offsets, by-value copy semantics, methods with a
+  hidden ref `this`, `new Struct` GC-heap allocation with constructors and
+  field-through-pointer access, dynamic-array field returns, `with`/`goto`/
+  labels, struct-by-value returns, operator overloads via DMD's lowered
+  method calls, field-wise POD default equality, struct-typed field chains,
+  nested-struct enclosing-local capture through a stack-base-index context
+  pointer, and scope-exit destructor / static-array postblit insertion. All
+  43 blocks are SystemLinker-oracle-backed; none were withheld.
 
 The engine switch is an internal constructor parameter on `Bytecode`
 defaulting to the old core. There is no CTFE-only/full-D mode parameter: the
@@ -922,18 +934,20 @@ dual-mode model and the `ExecutionMode` enum have been removed
 
 ## Current Next Step
 `eval.d` (module order 1), `integrals.d` (3), `logic.d` (4), `results.d`
-(5), `diagnostics.d` (6), `math.d` (7), and `arrays.d` (8) are now complete on
-the new core (see Rewrite Coverage State). Continue with `structs.d` (module
-order 9), promoting one named behaviour or one tight failure-message family at
-a time. The float/builtin/string-slice machinery earned for `eval.d` and
-`math.d`, logical/comparison/short-circuit machinery earned for `logic.d`,
-narrow throw/result plumbing earned for `results.d`, the comparison-operator /
-ref-parameter / explicit-message / unittest-halt machinery earned for
-`diagnostics.d`, and the native-layout array/slice/pointer/AA machinery earned
-for `arrays.d` are now available to the later modules. Struct behaviour should
+(5), `diagnostics.d` (6), `math.d` (7), `arrays.d` (8), and `structs.d` (9)
+are now complete on the new core (see Rewrite Coverage State). Continue with
+`control_flow.d` (module order 10), promoting one named behaviour or one tight
+failure-message family at a time. The float/builtin/string-slice machinery
+earned for `eval.d` and `math.d`, logical/comparison/short-circuit machinery
+earned for `logic.d`, narrow throw/result plumbing earned for `results.d`, the
+comparison-operator / ref-parameter / explicit-message / unittest-halt
+machinery earned for `diagnostics.d`, the native-layout array/slice/pointer/AA
+machinery earned for `arrays.d`, and the struct native-layout / methods /
+`new` / operator / `with`-`goto` / lifetime machinery earned for `structs.d`
+are now available to the later modules. `control_flow.d` behaviour should
 still be earned directly on the typed-frame core, not through old-core
-promotions; the DMD field-offset/native-layout discipline used for arrays is
-the same authority structs need.
+promotions; the `with`/`goto`/label and short-circuit control-flow primitives
+already landed for `logic.d` and `structs.d` are the foundation it builds on.
 
 Promotion of further test modules onto the old core stops; new surface area
 (`control_flow.d`, `structs.d`, `arrays.d`, `exceptions.d`) is earned
@@ -2253,3 +2267,485 @@ interception of the druntime AA hooks (`_d_aaGetY`, `_d_aaGetRvalueX`,
 against a VM-owned map table referenced by an 8-byte handle. The 5 `Ctfe,
 Interpreter`-only CTFE-divergence blocks remain unpromoted (no `SystemLinker`
 oracle).
+
+## structs.d Promotion Analysis (BytecodeNewCore)
+
+All 43 SystemLinker-backed blocks in
+`tests/ut/backends/runner/ct/structs.d` have been promoted to include
+`BytecodeNewCore` in their `AliasSeq`. Every block's `AliasSeq` is
+`(Ctfe, Interpreter, BytecodeNewCore, SystemLinker, LLVMJit)`, so all 43
+are SystemLinker-oracle-backed and all 43 are in scope; none are
+CTFE-only divergence blocks. The two lifetime tests called out for care
+— `struct.scopeDestructorRunsAtCtfe` and
+`struct.staticArrayCopyRunsPostblitAndDtors` — both include
+`SystemLinker` and assert observable side effects (`sink[0] += 3` through
+a `~this()`, and postblit/dtor counters through `int*`) that compiled D
+reproduces identically, so they are real-compiled-D-backed, not
+CTFE-only. All 43 currently fail.
+
+The dominant first diagnostic is `Unsupported type in bytecode core:
+<StructName>`: `scalarType()` in `compiler.d` (line 3621) has no
+`Tstruct` branch and throws at the `default:` case (line 3658) for the
+first struct-typed local, parameter, field-bearing declaration, or
+expression. Because this gate fires before method, `new`, operator, and
+`with` lowering, the deeper diagnostics each test would hit are masked.
+The masked diagnostics, confirmed by reading the code paths, are: no
+`DotVarExp`/field-access handler anywhere in `compileExpression` (every
+local is a flat `VarDeclaration`-keyed frame slot — there is no aggregate
+or field concept); no `ThisExp` or implicit-`this` mechanism, so methods
+cannot resolve `value`/`bytes`/`pos`; no `Tstruct` case in
+`compileVariableDeclaration`, `parameterLayout`, or `resultType`; no
+`StructLiteralExp` handler; no struct-typed `NewExp` (`compileNew`
+handles only array `new` and exception `new`); no `WithStatement`,
+`GotoStatement`, or `LabelStatement` in `compileStatement`; and no
+operator-overload (`opEquals`/`opCmp`/`opBinary`/`opIndex`/`opUnary`/
+`opAssign`) rewrite path.
+
+The native-layout precedent from slice-5 (`arrays.d`) is the model: a
+struct occupies `Type.size()` inline frame bytes at its DMD-computed
+alignment, and each field lives at its DMD-computed
+`VarDeclaration.offset` within that block — exactly as static arrays
+already use `staticArraySize`/`staticArrayAlign` and inline element
+offsets. Dynamic-array fields are 16-byte `{ptr, length}` slice
+descriptors embedded in the struct block, reusing the existing
+`DynamicArrayLocal` machinery and slice opcodes; pointer fields are
+8-byte address words; scalar fields are their native widths. No struct
+value ever needs a tag at runtime; the compiler resolves every field
+access to a `(baseOffset + fieldOffset, fieldType)` frame reference at
+emit time.
+
+All seven modes touch the same shared core files
+(`source/quickbite/backends/bytecode/core/{program,compiler,machine,
+reify}.d`). Subagents **must run sequentially**, each building on the
+previous committed state. The modes are presented in dependency order:
+each later mode assumes the struct frame-layout and field-access
+machinery of mode 1.
+
+### Failure mode 1: Struct native-layout locals, fields, and by-value copy
+
+**Root cause:** `scalarType()` has no `Tstruct` case, so the first
+struct-typed local (`Value wrapper;`), parameter (`int read(Value
+wrapper)`), or struct literal (`Pair(seed)`) throws immediately. Even
+once the type is accepted, there is no field-access path: `wrapper.value
+= 42` is a `DotVarExp` assignment target, and `compileExpression` /
+`compileAssign` have no `DotVarExp` handler — the model keys every value
+on a flat `VarDeclaration`, with no notion of a base aggregate plus a
+field offset. A struct must become an inline frame block (like a static
+array), with each field resolved to `baseOffset + field.offset` and the
+field's own scalar/slice/pointer type. By-value semantics fall out of
+this: passing a struct copies all its bytes into the argument area, so a
+callee's `p.x = 99` mutates only its private copy
+(`byValueScalarFieldMutationDoesNotLeak`); a dynamic-array field copies
+its 16-byte descriptor by value, so an append inside the callee
+reallocates the callee's descriptor and does not leak
+(`byValueArrayDescriptorMutationDoesNotLeak`), while an element write
+`buffer.bytes[0] = 99` goes through the shared backing pointer and *does*
+leak (`byValueArrayElementMutationLeaksThroughSlice`) — both behaviours
+are automatic once the descriptor is copied by value and element access
+reuses the existing slice opcodes. Struct literals `Pair(seed)` and
+`S(seed)` initialise leading fields from the given arguments and
+default-init the rest (zero for `int`, an empty descriptor for `ubyte[]`,
+a scalar-broadcast for the `int[3]` static-array field of `S`).
+
+**Failing tests (11; passing once this mode is done):**
+`struct.scalarFieldReadWrite`,
+`struct.multipleScalarFields`,
+`struct.scalarFieldsDefaultToZero`,
+`struct.arrayFieldDefaultsToEmpty`,
+`struct.literalDefaultsMissingFieldToZero`,
+`struct.literalFillsStaticArrayFieldFromScalar`,
+`struct.scalarStructPassedToFunction`,
+`struct.multiFieldStructPassedToFunction`,
+`struct.byValueScalarFieldMutationDoesNotLeak`,
+`struct.byValueArrayDescriptorMutationDoesNotLeak`,
+`struct.byValueArrayElementMutationLeaksThroughSlice`.
+
+**Oracle behavior:** A struct is a value type laid out at its
+DMD-computed field offsets; default-init zeroes scalars and leaves
+dynamic-array fields as empty `{null, 0}` descriptors. `Pair(seed)`
+constructs with `first = seed, second = 0`; `S(seed)` broadcasts the
+scalar into all three elements of the `int[3]` field. Passing a struct by
+value copies the whole block; mutations to scalar or descriptor fields
+stay local to the callee, but element writes through a shared
+dynamic-array backing pointer propagate to the caller.
+
+**Required implementation:**
+- `program.d` — no new opcodes are strictly required for scalar-field
+  structs: `copy` already does block byte copies. A struct frame block is
+  copied with a single `copy` of `Type.size()` bytes (value-parameter
+  passing, literal/default assignment). Dynamic-array fields reuse the
+  slice opcodes; static-array fields reuse `loadStaticArray` and the
+  inline index opcodes. (A struct-typed `ResultType` for mode 4/6 returns
+  is added later.)
+- `compiler.d` — add a `Tstruct` branch to `compileVariableDeclaration`
+  that reserves `staticArraySize`-style inline bytes
+  (`variable.type.size`, `variable.type.alignsize`) and records the base
+  offset in a new `_structLocals[VarDeclaration] = (offset, StructType)`
+  map (parallel to `_staticArrayLocals`); a `StructType` descriptor
+  holding each field's `(offset, kind, elementType)`. Add `Tstruct`
+  handling to `parameterLayout` and the `compileFunctionBody` parameter
+  loop (a by-value struct parameter is a block in the argument area; no
+  ref unless `ref`). Add a `DotVarExp` handler that resolves
+  `base.field` to a frame reference `(baseOffset + field.offset,
+  fieldType)` — used as an rvalue in `compileExpression`, an lvalue in
+  `compileAssign`/`compileAddAssign`, a slice base in the dynamic-array
+  paths, and a static-array base in the inline-index paths. Add a
+  `StructLiteralExp` handler that emits per-field stores into the inline
+  block (zero/empty default for omitted trailing fields, scalar broadcast
+  for a static-array field initialised from a scalar). Default-init of a
+  bare `Struct s;` emits nothing beyond the zeroed frame for scalar
+  fields and an empty descriptor for dynamic-array fields.
+- `machine.d` — no new handlers for scalar/descriptor field structs;
+  block `copy` and the existing slice/static-array opcodes already
+  execute. (Result-passing handlers come with mode 4/6.)
+- `reify.d` — no change for this mode (no struct is an eval result yet;
+  these tests assert scalar/length values).
+
+### Failure mode 2: Struct methods, implicit `this`, and field ref-passing
+
+**Root cause:** A method `int get() { return value; }` is a
+`FuncDeclaration` with an implicit `this` parameter and an unqualified
+field reference `value` that DMD resolves to `this.value` (a `DotVarExp`
+over a `ThisExp`, or a bare `VarExp` of the field whose `var` is a struct
+member). The new core has no `this` mechanism: `registerFunction` /
+`parameterLayout` build the argument block from `function_.parameters`
+only, never adding a `this` slot, and there is no `ThisExp` handler. A
+call `box.get` is a `DotVarExp`/`CallExp` whose `e1` is the receiver;
+`compileCall` (line 2528) only handles `VarExp`-callee free functions via
+`callFunction` (line 4292) and has no method-receiver path. So every
+method body fails to resolve its fields, and every method call fails to
+pass the receiver. Field ref-passing (`append42(bytes)` /
+`append42(buffer.bytes)`) additionally needs a `ref T[]` argument whose
+referenced object is a *field* slot inside a struct block rather than a
+standalone local — the existing ref-param writeback keys on a local's
+frame offset and must accept `baseOffset + field.offset`.
+
+**Failing tests (12; passing once this mode is done, given mode 1):**
+`struct.methodReadsField`,
+`struct.methodPostIncrementsSizeTField`,
+`struct.methodPostIncrementsRuntimeSizeTField`,
+`struct.methodReadsArrayFieldAtPostIncrementedField`,
+`struct.methodReadsArrayFieldAtRuntimePostIncrementedField`,
+`struct.methodIndexWritesArrayField`,
+`struct.methodAppendsArrayField`,
+`struct.methodCallsStructMethod`,
+`struct.arrayFieldPassedByRef`,
+`struct.methodPassesFieldByRef`,
+`struct.templateMethodPassesFieldByRef`,
+`struct.constructorStoresDynamicArrayParameter`.
+
+**Oracle behavior:** A method receives `this` as a hidden `ref`-like
+pointer to the receiver block; field reads/writes go through it, so
+`box.value = 42; box.get == 42` reads the live field, `cursor.next`
+returns the pre-increment `pos` and leaves `pos == 1`, and
+`writer.put(42)` appends through the receiver's `bytes` descriptor,
+reallocating and writing the descriptor back into the caller's struct.
+Calling another method (`write` → `append`) forwards the same receiver.
+`append42(buffer.bytes)` binds a `ref ubyte[]` to the field's descriptor
+slot; the reallocated descriptor is written back into the field.
+`constructorStoresDynamicArrayParameter` runs `this(int[] input) {
+store(input); }` which forwards through a second method to assign the
+field.
+
+**Required implementation:**
+- `program.d` — extend `RefParameter` usage so the receiver block is
+  passed by reference (the method mutates the caller's struct in place,
+  matching D's `ref this`). No new opcode if the existing ref mechanism
+  is generalised to a block of `Type.size()` bytes written back on
+  return; `methodAppendsArrayField` and friends require the receiver's
+  descriptor field to be written back, so a 16-byte (or whole-block)
+  writeback is needed.
+- `compiler.d` — in `parameterLayout`/`compileFunctionBody`, prepend a
+  hidden `this` parameter for a `FuncDeclaration` whose `isThis()`
+  aggregate is a struct: reserve a receiver reference (frame slot bound to
+  the receiver block) and record the struct type so unqualified field
+  references resolve against it. Add a `ThisExp` handler and make the
+  `DotVarExp` handler (from mode 1) and the bare-field `VarExp` case
+  resolve a member `VarDeclaration` to `thisBase + field.offset`. In
+  `compileCall`, add a method-receiver path: when the callee is a
+  `DotVarExp` whose `var` is a struct method, compile the receiver to its
+  block offset and pass it as the hidden `this` argument, then the
+  ordinary arguments. Generalise the ref-param writeback so a `ref`
+  argument can name a field slot (`baseOffset + field.offset`), used both
+  for the receiver and for `append42(field)`. Template methods
+  (`append(T)(T)`) are ordinary `FuncDeclaration`s post-instantiation, so
+  no extra work beyond method support.
+- `machine.d` — extend the ref-param entry/return path to dereference and
+  write back the receiver block (or its mutated descriptor field) of the
+  required width.
+- `reify.d` — no change (these tests assert scalar/length results).
+
+### Failure mode 3: `new Struct` heap allocation, pointers, and constructors
+
+**Root cause:** `new Pair(seed, seed + 1)` and `new Box(seed)` are
+struct-typed `NewExp`s; `compileNew` (line 1059) handles only array
+`new` and plain-exception `new` (`isPlainExceptionNew`, line 3786), so a
+struct `new` falls through to `"Unsupported expression in bytecode core:
+new Pair(...)"`. The result is a `Pair*` pointer local — a struct pointer
+— which the pointer machinery (`_pointerLocals`, `pointerLoad`/`Store`)
+currently models only for scalar-element pointers, not for a pointer to a
+multi-field aggregate where `p.a`/`p.b` are field accesses through the
+address. Member access through a struct pointer (`p.a += p.b`,
+`p.b = next(p.a)`) is a `DotVarExp` over a dereferenced pointer.
+
+**Failing tests (3; passing once this mode is done, given modes 1–2):**
+`struct.newPointerInitializesFields`,
+`struct.newPointerAllocatesMutableInstance`,
+`struct.newPointerRunsConstructor`.
+
+**Oracle behavior:** `new Pair(a, b)` allocates a struct block on the GC
+heap, runs the field-wise constructor (or `this(seed)` running `value =
+seed + 2`), and yields a pointer to it; `p.a`/`p.b` read and write the
+heap fields through the pointer, with mutations visible across reads
+(`p.a += p.b; p.b = next(p.a)`).
+
+**Required implementation:**
+- `program.d` — reuse `allocArray`-style heap allocation for a single
+  struct block (a fixed `Type.size()` byte block rooted in `heap`),
+  yielding a raw `size_t` pointer; add struct-field load/store through a
+  pointer if not already expressible via the existing
+  `pointerLoad`/`pointerStore` with a field-offset addend (a
+  `pointerLoadN`/`pointerStoreN` at `ptr + fieldOffset` for the field's
+  width).
+- `compiler.d` — add a struct branch to `compileNew`: allocate the block,
+  run the constructor (the `this(...)` `FuncDeclaration` from mode 2, with
+  the heap pointer as the receiver) or do field-wise init for a
+  bare-field literal `new Pair(a, b)`, and yield a struct-pointer
+  `Operand`. Record a `_structPointerLocals[VarDeclaration] = StructType`
+  so `DotVarExp` over the pointer resolves a field to `ptr + field.offset`
+  with the field's width. Member-assignment through the pointer routes to
+  the pointer-store path.
+- `machine.d` — add the struct-block allocation and field-through-pointer
+  load/store handlers (offset addend within a heap block).
+- `reify.d` — no change (these tests assert scalar field results).
+
+### Failure mode 4: Struct dynamic-array field return values
+
+**Root cause:** A method `ubyte[] get() { return values; }` returns a
+dynamic-array *field*; the existing array-return path (`resultType` +
+`arrayDescriptorOffset`, lines 165–169) expects the returned expression
+to resolve to a dynamic-array local, not a `DotVarExp` field of the
+receiver. Assigning the call result back to a field
+(`values = identity(input)`) and indexing the call result
+(`box.get[1]`) likewise need the field/method machinery from modes 1–2 to
+interoperate with the array-return descriptor handling.
+
+**Failing tests (3; passing once this mode is done, given modes 1–2):**
+`struct.dynamicArrayFieldReturnValue`,
+`struct.dynamicArrayReturnValueAssignsField`,
+`struct.dynamicArrayFieldReturnValueIndexesCallResult`.
+
+**Oracle behavior:** `box.get` returns the field's `{ptr, length}`
+descriptor (sharing the backing block); `result.length == 2` and indexing
+read through it. `box.set(replacement)` assigns the field from a free
+function's array return. `box.get[1]` indexes the returned descriptor.
+
+**Required implementation:**
+- `compiler.d` — extend `arrayDescriptorOffset` (and the return path) to
+  accept a `DotVarExp` field whose type is a dynamic array, resolving it
+  to the field's descriptor slot. Ensure assigning a dynamic-array call
+  result into a struct field reuses the field-as-descriptor-slot lvalue
+  from mode 1, and that indexing a call result (`box.get[1]`) over a
+  struct method works through the existing call-result index path.
+- `program.d`/`machine.d`/`reify.d` — no new opcodes; the slice
+  descriptor return mechanism from slice-5 already carries the bytes.
+
+### Failure mode 5: `with` statement, labels/`goto`, and `with(enum)`
+
+**Root cause:** `compileStatement` has no `WithStatement`,
+`GotoStatement`, or `LabelStatement` branch (confirmed by absence
+anywhere in the core), so all three `with` tests die with `"Unsupported
+statement in bytecode core: With"` (after mode 1 admits the struct
+type). `with (point) { x += scale; ... }` introduces the struct's fields
+as unqualified names referring to the `point` instance — each becomes a
+`DotVarExp`/member `VarExp` over the `with` subject, resolvable with the
+mode-1 field machinery once the subject's base offset is in scope.
+`with (point) { goto target; ... target: x += 1; }` additionally needs
+`LabelStatement` and forward `GotoStatement` (a `jump` to a patched
+label). `with (Mode) { total += cast(int) on; ... }` is an enum `with`:
+its body references enum members, which DMD has already folded to integer
+constants, so the body lowers to ordinary `int` compound assignments — it
+needs only the `WithStatement` wrapper to compile its body (no struct
+subject at all).
+
+**Failing tests (3; passing once this mode is done — the enum one needs
+only `WithStatement`, the struct ones also need mode 1):**
+`with.structInstanceUsesRuntimeShapedFields`,
+`with.structLocalGotoRestartsInsideBody`,
+`with.enumExecutesBody`.
+
+**Oracle behavior:** `total(point)` mutates the `with` subject's fields
+in place (`x += scale; y += x; return x + y` → 15 for `x=3, y=5,
+scale=2`). The `goto` skips the `x += 100` step and lands at `target`,
+yielding `41 + 1 = 42`. The enum `with` adds `on (5)` and `off (2)` to
+the seed `3`, giving `10`.
+
+**Required implementation:**
+- `program.d` — no new opcode; labels and `goto` reuse the existing
+  `jump` with a patched target index (the same patch mechanism
+  `compileIfStatement`/`compileForStatement` already use).
+- `compiler.d` — add `WithStatement` to `compileStatement`: bind the
+  subject expression (a struct lvalue → its base offset; an enum/type →
+  no runtime binding) so that unqualified field references inside the body
+  resolve to the subject's block, then compile the body. Add
+  `LabelStatement` (record the instruction index, resolving any pending
+  forward jumps) and `GotoStatement` (emit a `jump`, patched to the
+  label's index — supporting forward references via a fixup list). The
+  enum `with` requires only that `WithStatement` compile its body, since
+  the enum members are already constant-folded.
+- `machine.d`/`reify.d` — no change.
+
+### Failure mode 6: Operator overloads, default equality, nested structs, and struct-by-value returns
+
+**Root cause:** This mode collects the remaining surface that requires
+struct *values* to flow as call arguments, return values, and comparison
+operands, plus rewrites of operator syntax to method calls and the two
+lifetime tests. DMD lowers `a == b` on a struct to `a.opEquals(b)` (or a
+field-wise `__equals` for default equality), `a < b` to `a.opCmp(b) < 0`,
+`a + b` to `a.opBinary!"+"(b)`, `a[i]` to `a.opIndex(i)`, `-a` to
+`a.opUnary!"-"()`, and `s = v` to `s.opAssign(v)`. Each is a method call
+on a struct receiver returning a scalar or a struct value — so they all
+depend on mode-2 method support plus a struct-typed `ResultType` (a
+function/method returning `Money`/`Score`/`Pair`/`Outer` by value, which
+`resultType` currently cannot express). `make(3) == make(3)` calls a
+free function returning a struct by value, then compares; the masked
+diagnostics `make(7).opUnary().value`, `make(40).opBinary(make(2)).cents`
+confirm these are method calls on struct rvalues whose result is a struct
+value indexed for a field. Nested structs need a struct-typed *field*
+(`Outer.inner`) and a nested struct capturing an enclosing local
+(`Inner.readBase` reads `seed` by reference to the enclosing frame — a
+closure-context capture). The two lifetime tests need
+destructor/postblit insertion: `~this()` at scope exit
+(`scopeDestructorRunsAtCtfe`) and `this(this)` + `~this()` on a
+static-array copy (`staticArrayCopyRunsPostblitAndDtors`, four dtors at
+block exit, two postblits on the `Tracker[2] copy = source` blit).
+
+**Failing tests (11; grouped sub-dependencies noted):**
+struct-by-value returns + default/custom equality + ordering:
+`struct.defaultEqualityComparesFields`,
+`struct.customOpEquals`,
+`struct.opCmpOrdersValues`;
+operator overloads returning structs:
+`struct.opBinaryAddsOperands`,
+`struct.opIndexSelectsElement`,
+`struct.opUnaryNegatesValue`,
+`struct.opAssignFromScalar`;
+nested / chained struct fields:
+`struct.nestedReadsCapturedLocalThroughDefaultInit`,
+`struct.fieldChainReadsInnerStructMember`;
+lifetime effects:
+`struct.scopeDestructorRunsAtCtfe`,
+`struct.staticArrayCopyRunsPostblitAndDtors`.
+
+**Oracle behavior:** Default `==`/`!=` compares fields member-wise
+(`make(3) == make(3)`, `make(3) != make(4)`); `opEquals`/`opCmp`/
+`opBinary`/`opIndex`/`opUnary`/`opAssign` run the user method and yield
+its scalar or struct result. A struct-typed field
+(`Outer.inner.v`) reads through nested offsets;
+`make(40).inner.v == 42`. A nested struct's method reads the captured
+enclosing local by reference, so a later `seed += bump` is visible
+(`inner.readBase == 42`). `scopeDestructorRunsAtCtfe` runs `~this()` at
+the inner scope's close, mutating `sink[0]` from 4 to 7.
+`staticArrayCopyRunsPostblitAndDtors` runs two postblits on the
+element-wise static-array copy and four destructors (both arrays) at
+block exit, observed through `int*` counters.
+
+**Required implementation:**
+- `program.d` — add a struct `ResultType` kind (a block of `Type.size()`
+  bytes with the struct's field layout) so a function/method can return a
+  struct by value; the caller receives the block (NRVO-style copy into a
+  destination slot). No new arithmetic opcodes — operator bodies are
+  ordinary method calls.
+- `compiler.d` — (a) extend `resultType` to a struct-block kind and the
+  return path to copy a struct value into the result area; (b) add the
+  operator-lowering recognition so DMD's already-lowered `opEquals`/
+  `opCmp`/`opBinary`/`opIndex`/`opUnary`/`opAssign` calls (they arrive as
+  `CallExp`/`DotVarExp` after semantic, or as `EqualExp`/`CmpExp` that
+  must be routed to the method) compile through the mode-2 method path;
+  (c) add default-equality lowering (field-wise compare when no
+  `opEquals` exists — DMD emits `__equals`/`TypeInfo` compare, which the
+  core should special-case to a sequence of per-field scalar compares
+  combined with `&&`); (d) add a struct-typed *field* to the field
+  machinery (a `DotVarExp` whose field is itself a struct, enabling the
+  `Outer.inner.v` chain — resolve nested `baseOffset + inner.offset +
+  v.offset`); (e) add nested-struct enclosing-local capture (the nested
+  `struct Inner` method reads `seed` from the enclosing unittest frame —
+  this requires passing a context pointer / frame reference, the one
+  genuinely new mechanism here); (f) insert destructor calls at scope
+  exit for struct locals with `~this()`, and postblit calls on
+  static-array element copies with `this(this)` — DMD's
+  `dtorExp`/`postblit` hooks identify these; the core must emit the method
+  calls at the lowered points.
+- `machine.d` — struct-value return (block copy into the caller's
+  destination), field-through-context-pointer access for the nested
+  capture, and the dtor/postblit calls execute as ordinary calls; no new
+  opcode families beyond block copy and a context-pointer load.
+- `reify.d` — extend `reify()` to render a struct `ResultType` (read the
+  field bytes per the layout) for any eval-boundary struct result; the
+  promoted tests assert scalar fields of struct results
+  (`(make(40) + make(2)).cents`), so a field-projection at the assert
+  site may suffice, but a struct reification stub keeps the
+  `Evaluator` boundary consistent.
+
+### Subagent partition (dependency-ordered, sequential)
+
+All modes touch the same shared core files
+(`source/quickbite/backends/bytecode/core/{program,compiler,machine,
+reify}.d`). No parallelism is possible: each subagent must commit before
+the next begins. The dependency order is 1 → 2 → 3 → 4 → 5 → 6 (struct
+layout first, the deepest value-flow / operator / lifetime work last).
+After each subagent, rerun only
+`ut.backends.runner.ct.structs.*.BytecodeNewCore` and leave passing
+promoted tests in place.
+
+1. **Struct native-layout locals, fields, and by-value copy** (failure
+   mode 1) — fixes 11 tests. Add the `Tstruct` frame block, the
+   `StructType`/field-offset descriptor, the `DotVarExp` field
+   rvalue/lvalue path, by-value struct parameters, struct literals, and
+   default-init. This is the foundation every later mode builds on.
+2. **Struct methods, implicit `this`, and field ref-passing** (failure
+   mode 2) — fixes 12 tests. Add the hidden `this` receiver, `ThisExp`
+   and bare-field resolution, the method-receiver call path, and
+   field-slot ref-parameter writeback.
+3. **`new Struct`, struct pointers, and constructors** (failure mode 3) —
+   fixes 3 tests. Add struct-block heap allocation, constructor running on
+   the heap receiver, and field-through-pointer access.
+4. **Struct dynamic-array field return values** (failure mode 4) — fixes
+   3 tests. Extend the array-return descriptor path to field receivers and
+   call-result indexing/assignment into fields.
+5. **`with`, labels/`goto`, and `with(enum)`** (failure mode 5) — fixes 3
+   tests. Add `WithStatement`, `LabelStatement`, and `GotoStatement`
+   (forward-jump fixups), binding struct/enum `with` subjects.
+6. **Operator overloads, default equality, nested structs, and
+   struct-by-value returns** (failure mode 6) — fixes 11 tests. Add the
+   struct-typed `ResultType`, operator-method lowering, field-wise default
+   equality, struct-typed fields and chains, nested-struct enclosing-local
+   capture, and destructor/postblit insertion. The deepest mode; split
+   into committed sub-slices (value returns + equality/ordering; the
+   remaining operator overloads; nested/chained fields; lifetime
+   effects).
+
+All 43 blocks are SystemLinker-oracle-backed and in scope; none are
+withheld from promotion.
+
+**Completed implementation:** All six failure modes were earned in seven
+sequential commits (mode 6 split into four sub-slices), each building on
+the prior committed state. `structs.d` (module order 9) is now complete on
+the new core: 43/43 promoted `BytecodeNewCore` blocks pass and the full
+suite is green under multiple random seeds. The new core gained struct
+native-layout frame blocks at DMD-computed field offsets, by-value copy
+semantics (scalar/descriptor mutations stay local while shared
+backing-pointer element writes leak), methods with a hidden ref `this`,
+`new Struct` GC-heap allocation with constructors and field-through-pointer
+access, dynamic-array field returns, `with`/`goto`/labels (forward-jump
+fixups), struct-by-value `ResultType` returns (NRVO-style copy), operator
+overloads through DMD's lowered method calls, field-wise POD default
+equality, struct-typed fields and chains, nested-struct enclosing-local
+capture via a stack-base-index context pointer (`frameBaseIndex`/
+`frameLoad`), and scope-exit destructor / static-array postblit insertion
+intercepting `_d_arrayctor`/`__ArrayDtor`. The static-array postblit/dtor
+slice required raw `&local` addresses to stay valid across frame growth, so
+the VM now reserves a fixed stack capacity up front; deep recursion beyond
+that reserve could reallocate and invalidate live `&local` pointers, a
+case no current test exercises and a future bench/feature checkpoint
+should revisit.
