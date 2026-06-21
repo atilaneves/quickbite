@@ -39,8 +39,9 @@ private struct Compiler {
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
         AssignExp, BinExp, CallExp, CastExp, CatElemAssignExp, CatExp, CmpExp,
-        CondExp, DivExp, Expression, IndexExp, LogicalExp, MulExp, NegExp,
-        NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp, StringExp;
+        CondExp, DivExp, DotVarExp, Expression, IndexExp, LogicalExp, MulExp,
+        NegExp, NewExp, NotExp, OrExp, PostExp, PtrExp, RealExp, SliceExp,
+        StringExp, StructLiteralExp;
     import dmd.func: FuncDeclaration;
     import dmd.mtype: Type;
     import dmd.statement: Statement;
@@ -66,6 +67,11 @@ private struct Compiler {
     // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
     // a 1-based index into the machine's VM-owned map table, 0 until created.
     private bool[VarDeclaration] _assocArrayLocals;
+    // Locals (and by-value parameters) whose slot is a struct `S` stored inline
+    // in the frame at its DMD-computed size and alignment; the value records the
+    // base offset and the struct declaration, giving each field's offset and
+    // type for field access and whole-struct block copies.
+    private StructLocal[VarDeclaration] _structLocals;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -86,6 +92,7 @@ private struct Compiler {
         _dynamicArrayLocals = null;
         _pointerLocals = null;
         _assocArrayLocals = null;
+        _structLocals = null;
 
         import dmd.astenums: TY;
 
@@ -104,6 +111,15 @@ private struct Compiler {
                 {
                     _dynamicArrayLocals[parameter] = DynamicArrayLocal(
                         offset, dynamicArrayElementType(parameter.type),
+                    );
+                    continue;
+                }
+
+                // A by-value struct parameter is an inline block, tracked like a
+                // struct local so field access resolves against its base offset.
+                if (parameter.type.toBasetype.ty == TY.Tstruct) {
+                    _structLocals[parameter] = StructLocal(
+                        offset, structDeclarationOf(parameter.type),
                     );
                     continue;
                 }
@@ -437,10 +453,27 @@ private struct Compiler {
             return compileStaticArrayIndex(index);
         }
 
+        // `base.field`: read a scalar struct field from its inline frame offset.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return Operand(field.offset, scalarType(field.type));
+
+        if (auto literal = expression.isStructLiteralExp)
+            return compileStructLiteralOperand(literal);
+
         throw new Exception(text(
             "Unsupported expression in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // A struct literal as an rvalue (a struct-valued expression, e.g. a by-value
+    // call argument `read(Value(...))`): materialise the block into a fresh slot.
+    private Operand compileStructLiteralOperand(StructLiteralExp literal) {
+        const offset = allocateStructBlock(literal.type);
+        zeroFrameBlock(offset, cast(uint) staticArraySize(literal.type));
+        compileStructLiteralInto(offset, literal);
+        return Operand(offset, ScalarType.void_);
     }
 
     // Read an element of a static array at a compile-time-constant index. The
@@ -572,9 +605,25 @@ private struct Compiler {
     private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
         Expression expression,
     ) {
+        import dmd.astenums: TY;
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 return declaration in _dynamicArrayLocals;
+
+        // `base.field` where the field is a dynamic array: its slice descriptor
+        // lives at `base + field.offset`, so indexing, `.length`, element-assign
+        // and append reuse the existing dynamic-array machinery on that slot.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                if (field.type.toBasetype.ty == TY.Tarray &&
+                    !isStringType(field.type)) {
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        field.offset, dynamicArrayElementType(field.type),
+                    );
+                    return result;
+                }
 
         // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
         // yields an inner array. Materialise the inner descriptor into a fresh
@@ -680,6 +729,14 @@ private struct Compiler {
         // its DMD-computed size and alignment; no heap, no slice descriptor.
         if (variable.type.toBasetype.ty == TY.Tsarray) {
             compileStaticArrayDeclaration(variable);
+            return;
+        }
+
+        // A struct `S` is a value type stored inline in the frame at its
+        // DMD-computed size and alignment; each field lives at `base +
+        // field.offset`.
+        if (variable.type.toBasetype.ty == TY.Tstruct) {
+            compileStructDeclaration(variable);
             return;
         }
 
@@ -821,6 +878,226 @@ private struct Compiler {
             "Unsupported static array initializer in bytecode core: ",
             declarationChars(variable),
         ));
+    }
+
+    // A struct `S` local occupies `Type.size()` inline frame bytes at its
+    // DMD-computed alignment, each field at `base + field.offset`. The block is
+    // zeroed first (scalar fields default to 0, dynamic-array fields to an empty
+    // `{null, 0}` descriptor), then a struct-literal initializer stores its
+    // per-field values; a bare `S s;` leaves the zeroed block.
+    private void compileStructDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        const offset = allocateStructBlock(variable.type);
+        _structLocals[variable] =
+            StructLocal(offset, structDeclarationOf(variable.type));
+
+        zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        if (initializer is null)
+            return;
+
+        // A bare `S s;` default-initialises to `S.init`. DMD represents this as
+        // a blit of the integer `0` over the whole struct; for the structs this
+        // mode covers, `.init` is all-zero, which the zeroed block already
+        // holds, so no further code is needed.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e2.isIntegerExp !is null)
+                return;
+
+        auto source = initializerExpression(initializer.exp);
+        if (auto literal = source.isStructLiteralExp) {
+            compileStructLiteralInto(offset, literal);
+            return;
+        }
+
+        // `S dest = src`: a value-type block copy of the whole struct.
+        if (auto sourceOffset = structBaseOffsetOrNull(source)) {
+            _code ~= Instruction(
+                Op.copy,
+                offset,
+                *sourceOffset,
+                cast(ushort) staticArraySize(variable.type),
+            );
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported struct initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
+    }
+
+    private ushort allocateStructBlock(Type type) {
+        return allocateBytes(
+            cast(uint) staticArraySize(type), staticArrayAlign(type),
+        );
+    }
+
+    // Store each provided field of a struct literal into the inline block at
+    // `base + field.offset`. Omitted trailing fields keep their zeroed default;
+    // a static-array field initialised from a scalar broadcasts that scalar to
+    // every element, and a dynamic-array field copies its slice descriptor.
+    private void compileStructLiteralInto(
+        in ushort base,
+        StructLiteralExp literal,
+    ) {
+        import dmd.astenums: TY;
+
+        if (literal.elements is null)
+            return;
+
+        foreach (index; 0 .. literal.elements.length) {
+            auto element = (*literal.elements)[index];
+            if (element is null || index >= literal.sd.fields.length)
+                continue;
+
+            auto field = literal.sd.fields[index];
+            const fieldOffset = cast(ushort) (base + field.offset);
+            auto fieldType = field.type;
+
+            if (fieldType.toBasetype.ty == TY.Tstruct) {
+                if (auto inner = element.isStructLiteralExp)
+                    compileStructLiteralInto(fieldOffset, inner);
+                continue;
+            }
+
+            if (fieldType.toBasetype.ty == TY.Tsarray) {
+                storeStaticArrayField(fieldOffset, fieldType, element);
+                continue;
+            }
+
+            if (fieldType.toBasetype.ty == TY.Tarray &&
+                !isStringType(fieldType)) {
+                compileDynamicArrayInto(
+                    fieldOffset, dynamicArrayElementType(fieldType), element,
+                );
+                continue;
+            }
+
+            const value = compileExpression(element);
+            _code ~= Instruction(
+                Op.copy,
+                fieldOffset,
+                value.offset,
+                cast(ushort) size(scalarType(fieldType)),
+            );
+        }
+    }
+
+    // Fill a static-array field `T[N]` from a struct-literal element: DMD passes
+    // either a scalar to broadcast to every element or an array literal.
+    private void storeStaticArrayField(
+        in ushort fieldOffset,
+        Type fieldType,
+        Expression element,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        const elementScalar = scalarType(fieldType.toBasetype.nextOf);
+        const elementSize = size(elementScalar);
+        const count = cast(uint) staticArraySize(fieldType) / elementSize;
+
+        // `S(seed)` broadcasts a scalar into all elements of the field.
+        if (element.type.toBasetype.ty != TY.Tsarray) {
+            const value = compileExpression(element);
+            foreach (i; 0 .. count)
+                _code ~= Instruction(
+                    Op.copy,
+                    cast(ushort) (fieldOffset + i * elementSize),
+                    value.offset,
+                    cast(ushort) elementSize,
+                );
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported static-array struct field in bytecode core: ",
+            expressionChars(element),
+        ));
+    }
+
+    // Write `byteCount` zero bytes into the frame at `offset`, in 8-byte chunks
+    // (with a final narrower chunk), to default-init a struct block.
+    private void zeroFrameBlock(in ushort offset, in uint byteCount) {
+        const zero = compileSizeConstant(0);
+        uint written = 0;
+        while (written < byteCount) {
+            const chunk = byteCount - written >= size_t.sizeof
+                ? cast(uint) size_t.sizeof
+                : byteCount - written;
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (offset + written),
+                zero,
+                cast(ushort) chunk,
+            );
+            written += chunk;
+        }
+    }
+
+    // The DMD struct declaration of a struct-typed expression/type.
+    private imported!"dmd.dstruct".StructDeclaration structDeclarationOf(
+        Type type,
+    ) {
+        import dmd.mtype: TypeStruct;
+        return (cast(TypeStruct) type.toBasetype).sym;
+    }
+
+    // The inline frame base offset of a struct lvalue (a struct local or by-value
+    // struct parameter), or null if `expression` is not a known struct.
+    private ushort* structBaseOffsetOrNull(Expression expression) {
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _structLocals)
+                    return &existing.offset;
+
+        return null;
+    }
+
+    // The inline frame offset of a struct-valued expression: a struct lvalue's
+    // base, or a struct literal materialised into a fresh block.
+    private ushort structOperandOffset(Expression expression) {
+        import std.conv: text;
+
+        if (auto base = structBaseOffsetOrNull(expression))
+            return *base;
+
+        if (auto literal = expression.isStructLiteralExp)
+            return compileStructLiteralOperand(literal).offset;
+
+        throw new Exception(text(
+            "Unsupported struct value in bytecode core: ",
+            expressionChars(expression),
+        ));
+    }
+
+    // A located struct field: its inline frame offset and DMD type.
+    private static struct StructField {
+        ushort offset;
+        Type type;
+    }
+
+    // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
+    // inline frame offset (`base + field.offset`) and type, or null if the base
+    // is not a known struct local.
+    private StructField* tryStructField(DotVarExp dot) {
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return null;
+
+        auto base = structBaseOffsetOrNull(dot.e1);
+        if (base is null)
+            return null;
+
+        auto result = new StructField;
+        *result = StructField(
+            cast(ushort) (*base + field.offset), field.type,
+        );
+        return result;
     }
 
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
@@ -1942,6 +2219,11 @@ private struct Compiler {
             if (auto copy = tryDynamicArraySliceAssign(slice, assign.e2))
                 return *copy;
 
+        // `base.field = rhs`: write into a struct field at its inline offset.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto store = tryStructFieldAssign(dot, assign.e2))
+                return *store;
+
         auto variable = assign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -1963,6 +2245,37 @@ private struct Compiler {
             cast(ushort) size(type),
         );
         return Operand(*slot, type);
+    }
+
+    // `base.field = rhs`: write into a struct field at its inline frame offset.
+    // A dynamic-array field takes the rhs slice descriptor (or a whole-array
+    // literal); a scalar field is a byte copy. Null if the base is not a known
+    // struct local, so other assignment forms fall through.
+    private Operand* tryStructFieldAssign(DotVarExp dot, Expression rhs) {
+        import dmd.astenums: TY;
+
+        auto field = tryStructField(dot);
+        if (field is null)
+            return null;
+
+        if (field.type.toBasetype.ty == TY.Tarray &&
+            !isStringType(field.type)) {
+            compileDynamicArrayInto(
+                field.offset, dynamicArrayElementType(field.type), rhs,
+            );
+            auto descriptorResult = new Operand;
+            *descriptorResult = Operand(field.offset, ScalarType.void_);
+            return descriptorResult;
+        }
+
+        const fieldScalar = scalarType(field.type);
+        const value = compileExpression(rhs);
+        _code ~= Instruction(
+            Op.copy, field.offset, value.offset, cast(ushort) size(fieldScalar),
+        );
+        auto result = new Operand;
+        *result = Operand(field.offset, fieldScalar);
+        return result;
     }
 
     // `arr ~= x` (append element): reallocate `arr`'s backing memory with the
@@ -2199,6 +2512,12 @@ private struct Compiler {
         if (auto index = expression.isIndexExp)
             return locateStaticArrayElement(index).offset;
 
+        // `base.field` where the field is a static array: its inline block lives
+        // at `base + field.offset`.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return field.offset;
+
         throw new Exception(text(
             "Unsupported static array access in bytecode core: ",
             expressionChars(expression),
@@ -2219,12 +2538,19 @@ private struct Compiler {
     }
 
     private bool indexesStaticArray(Expression expression) {
+        import dmd.astenums: TY;
+
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 return (declaration in _staticArrayLocals) !is null;
 
         if (auto index = expression.isIndexExp)
             return indexesStaticArray(index.e1);
+
+        // `base.field` where the field is a static array.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return field.type.toBasetype.ty == TY.Tsarray;
 
         return false;
     }
@@ -2526,6 +2852,7 @@ private struct Compiler {
     }
 
     private Operand compileCall(CallExp call) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         auto function_ = callFunction(call);
@@ -2582,10 +2909,24 @@ private struct Compiler {
                     continue;
                 }
 
+                // A by-value struct argument block-copies the whole struct into
+                // the argument area, so the callee mutates only its own copy.
+                auto argument = (*call.arguments)[argumentIndex];
+                if (argument.type !is null &&
+                    argument.type.toBasetype.ty == TY.Tstruct) {
+                    const source = structOperandOffset(argument);
+                    _code ~= Instruction(
+                        Op.copy,
+                        slot,
+                        source,
+                        cast(ushort) staticArraySize(argument.type),
+                    );
+                    continue;
+                }
+
                 // A non-string dynamic-array argument copies a 16-byte slice
                 // descriptor into the argument area; the backing memory is
                 // shared with the caller.
-                auto argument = (*call.arguments)[argumentIndex];
                 if (isDynamicArrayArgument(argument)) {
                     const descriptor = arrayDescriptorOffset(
                         dynamicArrayElementType(argument.type), argument,
@@ -3544,6 +3885,20 @@ private struct Compiler {
                 continue;
             }
 
+            // A by-value struct `S` parameter is a block of `Type.size()` bytes
+            // at its DMD alignment in the argument area; the caller block-copies
+            // its struct in, so the callee mutates only its private copy.
+            if (parameter.type.toBasetype.ty == TY.Tstruct) {
+                const structAlign = staticArrayAlign(parameter.type);
+                const structBytes = cast(uint) staticArraySize(parameter.type);
+                layout.blockSize =
+                    (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += structBytes;
+                continue;
+            }
+
             // A scalar `ref` parameter has a frame slot sized for the
             // referenced value, just like a value parameter; the difference is
             // only in how the argument word is passed and written back.
@@ -3694,6 +4049,15 @@ private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A struct local (or by-value struct parameter): the base offset of its inline
+// frame block plus the DMD struct declaration giving each field's offset and
+// type. A struct is a value type; the whole block is `Type.size()` bytes at
+// `Type.alignsize()`, and each field lives at `base + field.offset`.
+private struct StructLocal {
+    ushort offset;
+    imported!"dmd.dstruct".StructDeclaration declaration;
 }
 
 // An `outer[i]` element of an array-of-arrays local: the outer descriptor's
