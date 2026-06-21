@@ -332,11 +332,17 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
 
             case copy:
-                stack[
-                    base + instruction.a .. base + instruction.a + instruction.c
-                ] = stack[
-                    base + instruction.b .. base + instruction.b + instruction.c
-                ];
+                // A self-copy (identical source and destination, e.g. a
+                // redundant temporary write `x = x`) is a no-op; skip it, since
+                // a slice-to-itself assignment would abort as overlapping.
+                if (instruction.a != instruction.b)
+                    stack[
+                        base + instruction.a
+                        .. base + instruction.a + instruction.c
+                    ] = stack[
+                        base + instruction.b
+                        .. base + instruction.b + instruction.c
+                    ];
                 ++ip;
                 break;
 

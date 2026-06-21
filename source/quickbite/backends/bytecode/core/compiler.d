@@ -187,7 +187,7 @@ private struct Compiler {
             null,
             0,
             layout.blockSize,
-            resultType(returnType(function_)),
+            functionResultType(function_),
             layout.refParameters.dup,
         );
         return cast(ushort) index;
@@ -219,6 +219,15 @@ private struct Compiler {
                     _currentReturnType.elementType, return_.exp,
                 );
                 _code ~= Instruction(Op.ret, descriptor);
+                return;
+            }
+
+            // `return structValue;`: the result block lives at the struct
+            // operand's inline base; `ret` copies its `structSize` bytes back to
+            // the caller's destination.
+            if (_currentReturnType.isStruct) {
+                const base = structOperandOffset(return_.exp);
+                _code ~= Instruction(Op.ret, base);
                 return;
             }
 
@@ -524,11 +533,15 @@ private struct Compiler {
         // A field construction inside a constructor body (`this.value = seed +
         // 2`) arrives as a ConstructExp/BlitExp (op `construct`/`blit`), not an
         // AssignExp; route a struct-field-lvalue form through the assign path.
+        // A `checkaction=context` assert temporary (`__assertOp3 = make(5)[0]`)
+        // is a scalar construction onto a `VarExp` local, also routed here.
         if (auto construct = expression.isConstructExp)
-            if (construct.e1.isDotVarExp !is null)
+            if (construct.e1.isDotVarExp !is null ||
+                construct.e1.isVarExp !is null)
                 return compileAssignExpression(construct);
         if (auto blit = expression.isBlitExp)
-            if (blit.e1.isDotVarExp !is null)
+            if (blit.e1.isDotVarExp !is null ||
+                blit.e1.isVarExp !is null)
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
@@ -1071,12 +1084,16 @@ private struct Compiler {
             return;
         }
 
-        // `S dest = src`: a value-type block copy of the whole struct.
-        if (auto sourceOffset = structBaseOffsetOrNull(source)) {
+        // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
+        // whole struct from its inline base (a local, a nested field, or a
+        // materialised struct-valued call) into the declared slot.
+        bool resolved;
+        const sourceOffset = structBaseOffsetOrMaterialise(source, resolved);
+        if (resolved) {
             _code ~= Instruction(
                 Op.copy,
                 offset,
-                *sourceOffset,
+                sourceOffset,
                 cast(ushort) staticArraySize(variable.type),
             );
             return;
@@ -1261,11 +1278,10 @@ private struct Compiler {
     private ushort structOperandOffset(Expression expression) {
         import std.conv: text;
 
-        if (auto base = structBaseOffsetOrNull(expression))
-            return *base;
-
-        if (auto literal = expression.isStructLiteralExp)
-            return compileStructLiteralOperand(literal).offset;
+        bool resolved;
+        const base = structBaseOffsetOrMaterialise(expression, resolved);
+        if (resolved)
+            return base;
 
         throw new Exception(text(
             "Unsupported struct value in bytecode core: ",
@@ -1281,21 +1297,71 @@ private struct Compiler {
 
     // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
     // inline frame offset (`base + field.offset`) and type, or null if the base
-    // is not a known struct local.
+    // is not a resolvable struct value.
     private StructField* tryStructField(DotVarExp dot) {
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             return null;
 
-        auto base = structBaseOffsetOrNull(dot.e1);
-        if (base is null)
+        bool resolved;
+        const base = structBaseOffsetOrMaterialise(dot.e1, resolved);
+        if (!resolved)
             return null;
 
         auto result = new StructField;
         *result = StructField(
-            cast(ushort) (*base + field.offset), field.type,
+            cast(ushort) (base + field.offset), field.type,
         );
         return result;
+    }
+
+    // The inline frame base of any struct-valued expression: a struct lvalue's
+    // base, a nested struct field (`outer.inner` → `base + inner.offset`), or a
+    // struct-valued call / comma materialised into a fresh block. Sets `resolved`
+    // false (and returns 0) when `expression` is not a struct the core handles.
+    private ushort structBaseOffsetOrMaterialise(
+        Expression expression,
+        out bool resolved,
+    ) {
+        import dmd.astenums: TY;
+
+        if (auto base = structBaseOffsetOrNull(expression)) {
+            resolved = true;
+            return *base;
+        }
+
+        // `outer.inner` where `inner` is itself a struct-typed field: the inner
+        // block lives inline at `outerBase + inner.offset`.
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = dot.var.isVarDeclaration)
+                if (field.type.toBasetype.ty == TY.Tstruct) {
+                    bool outerResolved;
+                    const outerBase =
+                        structBaseOffsetOrMaterialise(dot.e1, outerResolved);
+                    if (outerResolved) {
+                        resolved = true;
+                        return cast(ushort) (outerBase + field.offset);
+                    }
+                }
+
+        if (expression.type !is null &&
+            expression.type.toBasetype.ty == TY.Tstruct) {
+            if (auto call = expression.isCallExp) {
+                resolved = true;
+                return compileCall(call).offset;
+            }
+            if (auto literal = expression.isStructLiteralExp) {
+                resolved = true;
+                return compileStructLiteralOperand(literal).offset;
+            }
+            if (auto comma = expression.isCommaExp) {
+                compileExpression(comma.e1);
+                return structBaseOffsetOrMaterialise(comma.e2, resolved);
+            }
+        }
+
+        resolved = false;
+        return 0;
     }
 
     // A field accessed through a struct pointer (`p.field` where `p` is a heap
@@ -2370,15 +2436,16 @@ private struct Compiler {
 
         const falseJump = emitJumpIfFalse(condition);
         const whenTrue = compileExpression(conditional.e1);
+        const valueSize = operandSize(whenTrue);
         _code ~= Instruction(
-            Op.copy, result, whenTrue.offset, cast(ushort) size_t.sizeof,
+            Op.copy, result, whenTrue.offset, cast(ushort) valueSize,
         );
         const endJump = emitJump;
 
         patchJump(falseJump);
         const whenFalse = compileExpression(conditional.e2);
         _code ~= Instruction(
-            Op.copy, result, whenFalse.offset, cast(ushort) size_t.sizeof,
+            Op.copy, result, whenFalse.offset, cast(ushort) valueSize,
         );
         patchJump(endJump);
 
@@ -2389,6 +2456,16 @@ private struct Compiler {
             whenTrue.isPointer,
             whenTrue.pointerElement,
         );
+    }
+
+    // The byte width an operand occupies in the frame: 8 for a pointer or string
+    // descriptor, otherwise its scalar type's size.
+    private uint operandSize(in Operand operand) @safe pure {
+        if (operand.isPointer)
+            return cast(uint) size_t.sizeof;
+        if (operand.isString)
+            return stringSliceSize;
+        return size(operand.type);
     }
 
     // Normalise an expression to a one-byte bool condition. A pointer condition
@@ -2503,6 +2580,23 @@ private struct Compiler {
             const offset = allocate(ScalarType.real_);
             _code ~= Instruction(Op.negateReal, offset, source.offset);
             return Operand(offset, ScalarType.real_);
+        }
+
+        // Integer negation `-x` is `0 - x`; the result keeps the operand's
+        // integer type (a user `opUnary!"-"` body negates a scalar field).
+        if (isIntegerScalar(source.type)) {
+            const eightByte = isEightByteInteger(source.type);
+            const zero = allocate(source.type);
+            _code ~= Instruction(
+                Op.loadConstant, zero, constantIndex(0),
+                cast(ushort) size(source.type),
+            );
+            const offset = allocate(source.type);
+            _code ~= Instruction(
+                eightByte ? Op.subInt8 : Op.subInt4,
+                offset, zero, source.offset,
+            );
+            return Operand(offset, source.type);
         }
 
         throw new Exception(text(
@@ -3366,6 +3460,7 @@ private struct Compiler {
         const returnType = _program.functions[index].returnType;
         const destination =
             (!returnType.isString && !returnType.isArray &&
+                !returnType.isStruct &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -4068,6 +4163,16 @@ private struct Compiler {
 
         const op = operatorText(operator);
 
+        // A struct comparison (`==`, `!=`, `<`, ... over struct operands): DMD
+        // has already lowered the condition `assert_.e1` to the authoritative
+        // bool (a bitwise `is` for a POD default `==`, an `opEquals`/`opCmp` call
+        // otherwise). Compile that condition directly and assert it; the rendered
+        // operands are dead code on a passing assert.
+        import dmd.astenums: TY;
+        if ((*call.arguments)[1].type.toBasetype.ty == TY.Tstruct ||
+            (*call.arguments)[2].type.toBasetype.ty == TY.Tstruct)
+            return compileBoolConditionAssert(assert_.e1, op);
+
         // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
         // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
         if (isPointerType((*call.arguments)[1].type) ||
@@ -4124,6 +4229,81 @@ private struct Compiler {
             cast(ushort) diagnostic,
         );
         return true;
+    }
+
+    // Assert the already-lowered boolean condition `condition` is true, throwing
+    // a verbatim message naming the relation on failure. Used for struct
+    // comparisons whose condition DMD has lowered to a bitwise `is`, an
+    // `opEquals` call, or an `opCmp` relation; the condition is the authoritative
+    // bool, so re-deriving it from the rendered operands is unnecessary.
+    private bool compileBoolConditionAssert(
+        Expression condition,
+        in string op,
+    ) {
+        import std.conv: text;
+
+        const operand = compileBoolValue(condition);
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            text("Assertion failure (", op, ")"),
+            operand.offset,
+            operand.offset,
+            operand.type,
+        );
+        _code ~= Instruction(
+            Op.assertTrueVerbatim, operand.offset, cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // Compile an expression to a one-byte boolean. A struct identity `a is b`
+    // (DMD's lowering of a POD struct `==`) compares the two inline blocks
+    // byte-wise; everything else is an ordinary boolean expression (an
+    // `opEquals` call, an `opCmp` relation, a `&&` chain).
+    private Operand compileBoolValue(Expression expression) {
+        if (auto identity = expression.isIdentityExp)
+            return compileStructIdentity(identity);
+        return compileExpression(expression);
+    }
+
+    // `a is b` / `a !is b` over struct values (DMD's lowering of a POD struct
+    // `==`/`!=`): compare the two inline blocks field by field and combine the
+    // per-field results with `&&`, yielding a bool. Field-wise comparison sizes
+    // each compare by the field's scalar type, ignoring inter-field padding.
+    private Operand compileStructIdentity(
+        imported!"dmd.expression".IdentityExp identity,
+    ) {
+        import dmd.tokens: EXP;
+
+        const left = structOperandOffset(identity.e1);
+        const right = structOperandOffset(identity.e2);
+        const declaration = structDeclarationOf(identity.e1.type);
+
+        const result = allocate(ScalarType.bool_);
+        // Assume equal, then short-circuit to false on the first unequal field.
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
+
+        size_t[] falseJumps;
+        foreach (field; declaration.fields) {
+            const fieldEqual = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                equalOp(size(scalarType(cast(Type) field.type))),
+                fieldEqual,
+                cast(ushort) (left + field.offset),
+                cast(ushort) (right + field.offset),
+            );
+            falseJumps ~= emitJumpIfFalse(Operand(fieldEqual, ScalarType.bool_));
+        }
+
+        const endJump = emitJump;
+        foreach (jump; falseJumps)
+            patchJump(jump);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
+        patchJump(endJump);
+
+        if (identity.op == EXP.notIdentity)
+            _code ~= Instruction(Op.notBool, result, result);
+        return Operand(result, ScalarType.bool_);
     }
 
     // `assert(p == q)`, `assert(p is q)`, `assert(p < q)`, ... over pointer
@@ -4432,13 +4612,26 @@ private struct Compiler {
                 dynamicArrayElementType(type),
             );
 
-        // A struct-typed result (a constructor returning the receiver) is
-        // consumed only for its side effects here; treat it as void, since no
-        // struct is returned by value yet.
+        // A by-value struct result is an inline block of `Type.size()` bytes,
+        // copied back to the caller's destination on return like any other frame
+        // block; field access then resolves against that destination's base.
         if (type.toBasetype.ty == TY.Tstruct)
-            return ResultType(ScalarType.void_, false);
+            return ResultType(
+                ScalarType.void_, false, false, ScalarType.void_,
+                true, cast(uint) staticArraySize(type),
+            );
 
         return ResultType(scalarType(type), false);
+    }
+
+    // The result type of a whole function. A constructor's nominal result is its
+    // struct receiver, but the core consumes it only for side effects (the
+    // receiver is passed by reference and mutated in place), so a constructor
+    // returns void; every other function uses its declared return type.
+    private ResultType functionResultType(FuncDeclaration function_) {
+        if (function_.isCtorDeclaration !is null)
+            return ResultType(ScalarType.void_, false);
+        return resultType(returnType(function_));
     }
 
     // The element scalar type of a dynamic array `T[]`. For an array-of-arrays

@@ -42,16 +42,20 @@ package(quickbite.backends.bytecode) uint size(in ScalarType type)
     }
 }
 
-// The static type of a function result: a scalar, a string, or a dynamic
-// array. A string result is a slice descriptor (byte offset and length into
-// Program.data); a dynamic-array result is a 16-byte {ptr, length} descriptor
-// (its backing memory stays alive through the machine's `heap` root), with
-// `elementType` giving the element scalar.
+// The static type of a function result: a scalar, a string, a dynamic array,
+// or a by-value struct. A string result is a slice descriptor (byte offset and
+// length into Program.data); a dynamic-array result is a 16-byte {ptr, length}
+// descriptor (its backing memory stays alive through the machine's `heap`
+// root), with `elementType` giving the element scalar. A struct result is an
+// inline block of `structSize` bytes copied back to the caller's destination on
+// return (NRVO-style), just like any other frame block.
 package(quickbite.backends.bytecode) struct ResultType {
     ScalarType scalar;
     bool isString;
     bool isArray;
     ScalarType elementType;
+    bool isStruct;
+    uint structSize;
 }
 
 // Bytes of a string-slice descriptor laid out in the frame: a uint offset
@@ -67,6 +71,8 @@ package(quickbite.backends.bytecode) enum sliceDescriptorSize =
 package(quickbite.backends.bytecode) uint size(in ResultType type)
     @safe @nogc nothrow pure
 {
+    if (type.isStruct)
+        return type.structSize;
     if (type.isArray)
         return sliceDescriptorSize;
     return type.isString ? stringSliceSize : size(type.scalar);
