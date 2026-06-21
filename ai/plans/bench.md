@@ -369,11 +369,30 @@ never tripped this because it keeps bounds checks on.
 
 ### Caveat for readers of the numbers
 
-Even fully optimised, the absolute frontend stays ~2.5× a distro `dmd`, because
-the embedded frontend is DMD-compiled (no LDC/LTO/PGO) and the frontend row is a
-single cold whole-package sample that carries one-time init. Read absolute
-frontend ms as "DMD-compiled frontend"; the trustworthy comparisons are
-cross-backend agreement and the post-parse rows, which share one host.
+Even fully optimised under LDC, the absolute frontend stays ~1.6× a distro `dmd`
+(LDC `-O` min ~1052 ms vs distro parse+semantic ~650 ms on `--dub cerealed`).
+Building the host with LDC already cut it from ~2.5× (when the embedded frontend
+was DMD-compiled) to ~1.6×; the residual gap is **PGO**: the distro `dmd` release
+is built profile-guided, and a branch-heavy AST walker is exactly the workload
+PGO's hot/cold splitting and branch layout speed up. Read absolute frontend ms as
+"LDC-built frontend, no PGO"; the trustworthy comparisons are cross-backend
+agreement and the post-parse rows, which share one host. The post-parse row
+(codegen+link+run via the executor, ~442 ms) already *matches* distro `dmd`'s
+codegen+link+run, so the executor boundary adds no measurable tax — the whole
+~1.6× delta lives in the frontend.
+
+**ThinLTO ruled out (2026-06-21).** Spiked `-flto=thin` (LLD-linked — the default
+gcc/`collect2` + LLVMgold path rejects the gcc lto-wrapper args) on the embedded
+frontend: **no measurable win** (LDC `-O`+ThinLTO min ~1066 ms vs `-O` ~1052 ms,
+within cold-sample noise), at ~10 s extra link. `-O` already does the
+intra-module optimisation and the large self-contained `dmd:frontend` modules
+leave ThinLTO's cross-module inlining little to find. PGO — not LTO — is the
+remaining lever, and a much larger undertaking (representative training workload +
+two-phase instrumented build), so it is deliberately out of this PR's scope.
+Don't re-spike LTO. Note when measuring the frontend: it is a *single cold sample
+per process* (modules persist in DMD's global symbol table, so it cannot
+re-measure), so aggregate across many process launches and use the **minimum** —
+median/max drift badly under thermal throttling on a `powersave`-governed host.
 
 ## Target Shape
 
