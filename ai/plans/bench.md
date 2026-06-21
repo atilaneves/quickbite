@@ -242,9 +242,9 @@ measurement rather than guessed at now.
 
 #### Phase 0 result (2026-06-21): in-process execution is not viable
 
-Phase 0 ran (`ai/spikes/ldc-eh/`, reproduce with `run.sh`; full write-up in
-`FINDINGS.md`). It settles the fork: **the LDC host cannot run DMD-codegen'd
-code in-process.** Three findings, worst last.
+Phase 0 ran; full write-up and inlined reproducer in
+`ai/spikes/ldc-eh/FINDINGS.md`. It settles the fork: **the LDC host cannot run
+DMD-codegen'd code in-process.** Three findings, worst last.
 
 1. **The EH gap is exactly as predicted.** A DMD-codegen `.so` linked without
    DMD's libphobos2 has its whole undefined set satisfied by LDC's shared
