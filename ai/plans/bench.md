@@ -240,6 +240,66 @@ form fails):
 The fork that remains is **how far in-process we get**, settled by Phase 0's
 measurement rather than guessed at now.
 
+#### Phase 0 result (2026-06-21): in-process execution is not viable
+
+Phase 0 ran (`ai/spikes/ldc-eh/`, reproduce with `run.sh`; full write-up in
+`FINDINGS.md`). It settles the fork: **the LDC host cannot run DMD-codegen'd
+code in-process.** Three findings, worst last.
+
+1. **The EH gap is exactly as predicted.** A DMD-codegen `.so` linked without
+   DMD's libphobos2 has its whole undefined set satisfied by LDC's shared
+   druntime *except* `__dmd_personality_v0`, `_d_throwdwarf`,
+   `__dmd_begin_catch` (plus the rest of `rt.dwarfeh`). Category 1 is indeed the
+   same druntime by name. So far the plan held.
+2. **Category 3 is not free.** The `.so` self-registers via `_d_dso_registry`
+   with DMD-format DSO data; LDC's identically-named registry aborts at load
+   (`rt/sections_elf_shared.d DSO already registered`). Survivable — the
+   generated `.so` need not self-register, since SystemLinker `dlsym`s the
+   unittest and DWARF unwinding uses `.eh_frame_hdr`, not the registry — but it
+   contradicts "category 3, non-divergent".
+3. **`extern(D)` ABI diverges — decisive.** An LDC host calling a
+   DMD-compiled `extern(D)` function with inputs `(1,2,3,4)` gets `4321`: DMD
+   and LDC pass `extern(D)` parameters in opposite orders (`extern(C)` agrees).
+   DMD-codegen'd tests call `extern(D)` druntime/phobos functions constantly
+   (`object.Exception.__ctor`, array helpers, formatting…); against the host's
+   single LDC druntime every such call scrambles its arguments — a bare `new
+   Exception("x")` crashes in LDC's `Exception.__ctor`. The C-ABI firewall
+   guards only the entry point and outward-unwinding exceptions, not these
+   inward calls. There is no LDC flag to emit DMD's `extern(D)` ABI, and the
+   embedded dmd-backend emits DMD's ABI by definition, so one shared druntime
+   cannot serve both.
+
+**Consequence — Phases 1 and 2 as written are obviated.** The EH shim (Phase 1)
+and in-process firewall (Phase 2) presuppose a shared druntime, which finding 3
+rules out. The split is nonetheless clean:
+
+- **Frontend rows (parse + semantic): the safe headline win.** They execute no
+  generated code, so an LDC-built `bin/bench` halves them (~1798 ms → ~1066 ms)
+  with zero ABI exposure. This is the big number and it is free of all three
+  findings.
+- **Post-parse rows (codegen + link + run).** LDC-built codegen stays fast,
+  but the `dlopen`+run step must execute in **DMD-compiled** code so `extern(D)`
+  matches the generated `.so`. That is the fallback ladder's bottom rung —
+  `exec` a tiny DMD-compiled executor (not `fork`: a fork of the LDC host is
+  still LDC code). Execution crosses a *process* boundary, not an *ABI*
+  boundary.
+
+**Revised path (supersedes Phases 1–2):**
+
+- **Phase 1′ — LDC build for the frontend win.** Add the LDC `benchmark` build
+  (LDC equivalents of the DMD-only dub flags) and confirm `dmd:frontend` +
+  `:dmd-backend-vendor` compile under LDC. Frontend rows get the win; post-parse
+  backends are temporarily unavailable under the LDC build (or still run via the
+  existing DMD build). → verify: frontend row drops toward ~1066 ms.
+- **Phase 2′ — DMD-compiled run executor.** Factor the `dlopen`+`dlsym`+run+
+  report step into a small standalone DMD-built executable the LDC host `exec`s
+  per benchmark unit, results returned over a pipe/file. → verify:
+  `system-linker` and LLVMJit post-parse rows run under the LDC-built bench,
+  matching the current DMD-built numbers; `bin/ut` matrices stay green.
+
+The earlier Phase 1/2/3 text above is retained as the record of the in-process
+hypothesis the spike falsified.
+
 ### The fix
 
 `bin/bench.sh` builds with dub's `benchmark-opt` build type
