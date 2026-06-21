@@ -1395,18 +1395,27 @@ Done when: `bin/ut --random` is green with the §24.3 reject-list returning
 `false` (preserving the no-source diagnostic), the eight cstdlib functions
 still passing through the new libffi path, and the cascade deleted.
 
-## 25. Next PR: arbitrary native functions in the Interpreter
+## 25. Arbitrary native functions in the Interpreter
 
-The next FFI work is Interpreter-only. The goal is to move beyond resident
+**Status: landed (PR #276).** The Interpreter now loads dependency images
+with `RTLD_NOW | RTLD_GLOBAL`, routes supported body-less non-member native
+calls through `tryCallNative`, accepts both `extern(C)` and `extern(D)`
+linkage, resolves by `mangleExact(function_)`, and reuses the §24 libffi
+descriptor path for the existing scalar/pointer/string/by-value-struct
+signature set. The first oracle-backed fixture lives in
+`tests/ut/backends/runner/rt/dependency_image.d` and proves an `extern(D)`
+function supplied by a prepared dependency image.
+
+This FFI increment was Interpreter-only. The goal was to move beyond resident
 `extern(C)` libc leaves and make the boxed Interpreter call arbitrary concrete
 native functions whose addresses are available in the host process or the
 prepared dependency image.
 
-Do not use Bytecode or IR as the next slice. Their native bridge remains future
-work, even though §23 records how native-layout backends should eventually cross
-the boundary.
+Bytecode and IR were deliberately left out of this slice. Their native bridge
+remains future work, even though §23 records how native-layout backends should
+eventually cross the boundary.
 
-What "arbitrary functions" means for the next increment:
+What "arbitrary functions" meant for this increment:
 
 ```text
 in scope:
@@ -1424,7 +1433,7 @@ out of scope:
   Bytecode/IR/native-layout bridge work
 ```
 
-Current blockers in the code:
+Original blockers in the code:
 
 ```text
 source/quickbite/backends/interpreter/impl.d
@@ -1440,7 +1449,7 @@ source/quickbite/backends/native/llvm_jit.d
   does not yet have an equivalent session-level load step.
 ```
 
-The next PR should preserve the §24 libffi descriptor path and extend the
+The PR preserved the §24 libffi descriptor path and extended the
 Interpreter call boundary instead of adding more libc-specific branches:
 
 ```text
@@ -1455,7 +1464,7 @@ resolved FuncDeclaration
   -> unmarshal the result
 ```
 
-First implementation shape:
+Implementation shape:
 
 ```text
 1. Give Interpreter construction or runner inputs access to the same prepared
@@ -1475,9 +1484,29 @@ First implementation shape:
    plumbing PR.
 ```
 
-The first test still needs approval unless it is only promoting an already
-existing oracle-backed backend-matrix fixture. Prefer a narrow fixture that
-proves the Interpreter can call a non-libc function through this generalized
-path; keep `SystemLinker` as the oracle. The slice should not add Bytecode/IR
-expectations, should not implement the native-layout bridge, and should not
-start callback/delegate support.
+The approved fixture proves the Interpreter can call a non-libc function
+through this generalized path, with `SystemLinker` as the oracle. The slice
+did not add Bytecode/IR expectations, did not implement the native-layout
+bridge, and did not start callback/delegate support.
+
+## 26. Current FFI boundary
+
+There is no further implementation slice selected in this file yet. Do not
+start a new FFI implementation PR by silently choosing from §25's deferred
+items; each of these changes adds a distinct semantic contract and needs its
+own narrow plan plus an approved oracle-backed test:
+
+```text
+member functions needing `this`
+delegates, callbacks, closures, virtual dispatch, interfaces
+variadics
+exceptions crossing the boundary as ordinary backend exceptions
+generated wrapper source
+Bytecode/IR/native-layout bridge work
+```
+
+The next planning PR should pick exactly one of those contracts, identify the
+smallest compiled-D oracle fixture that proves it, and state which backend owns
+the first implementation. Until that exists, keep Bytecode and IR out of the
+FFI work from this plan; their native-layout bridge remains governed by §23
+and `ai/plans/bytecode.md`.
