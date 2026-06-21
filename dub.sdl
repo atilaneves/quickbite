@@ -12,6 +12,25 @@ subPackage {
     importPaths "vendor/dmd-backend"
 }
 
+// The DMD-built run executor. The LDC benchmark host cannot run DMD-codegen'd
+// unittests in-process (extern(D) ABI divergence, ai/spikes/ldc-eh/FINDINGS.md),
+// so under the LDC build SystemLinker hands the linked `.so` + symbol names to
+// this tiny standalone executable, which dlopens and runs them across a process
+// boundary. It deliberately imports nothing from the quickbite/dmd packages, so
+// as a subPackage with its own sourcePaths it builds without the dmd frontend.
+// Build it with DMD so its druntime matches the DMD-codegen'd `.so`.
+subPackage {
+    name "bench-exec"
+    targetType "executable"
+    targetName "bench-exec"
+    targetPath "bin"
+    sourcePaths "bench-exec"
+    importPaths "bench-exec"
+    // Shared druntime so core.runtime.Runtime.loadLibrary can load the
+    // generated `.so`, matching how SystemLinker links it.
+    dflags "-defaultlib=libphobos2.so"
+}
+
 configuration "unittest" {
     targetType "executable"
     targetName "ut"
@@ -74,6 +93,39 @@ configuration "benchmark" {
     sourcePaths "benchmarks"
     importPaths "benchmarks"
     dflags "-defaultlib=libphobos2.so"
+    versions "QuickbiteRuntimeLoadLibrary"
+    // The native package (linked in via source/) references the ORC JIT, so
+    // the benchmark binary must link libLLVM too. A bare libLLVM.so symlink is
+    // installed, so plain -lLLVM resolves the versioned runtime.
+    libs "LLVM" platform="linux"
+    // The resident native-call chokepoint (quickbite.backends.ffi) builds
+    // libffi call interfaces; plain -lffi resolves the installed runtime.
+    libs "ffi" platform="linux"
+
+    dependency "dmd:frontend" version="~>2.112.0"
+    dependency ":dmd-backend-vendor" version="*"
+}
+
+// LDC-built sibling of `benchmark`. LDC nearly halves the frontend
+// (parse + semantic) row, which executes no generated code and so carries
+// none of the extern(D)/EH ABI hazards that block running DMD-codegen'd
+// native tests on an LDC host (ai/spikes/ldc-eh/FINDINGS.md). The only
+// DMD-only flag swapped out is `-defaultlib=libphobos2.so`; LDC links the
+// shared default libraries with `-link-defaultlib-shared`. Native post-parse
+// backends (system-linker, llvm-jit) are unavailable under this build until
+// the DMD run executor lands; the cli refuses them with a clear message.
+configuration "benchmark-ldc" {
+    targetType "executable"
+    targetName "bench"
+    targetPath "bin"
+
+    mainSourceFile "benchmarks/main.d"
+    sourcePaths "benchmarks"
+    // The version(LDC) SystemLinker run path hands tests to the DMD-built
+    // bench-exec subPackage; both sides share its run_wire module.
+    sourceFiles "bench-exec/run_wire.d"
+    importPaths "benchmarks" "bench-exec"
+    dflags "-link-defaultlib-shared"
     versions "QuickbiteRuntimeLoadLibrary"
     // The native package (linked in via source/) references the ORC JIT, so
     // the benchmark binary must link libLLVM too. A bare libLLVM.so symlink is

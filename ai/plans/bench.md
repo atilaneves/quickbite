@@ -300,6 +300,40 @@ rules out. The split is nonetheless clean:
 The earlier Phase 1/2/3 text above is retained as the record of the in-process
 hypothesis the spike falsified.
 
+#### Phases 1′ and 2′ result (2026-06-21): LDC build with a DMD run executor
+
+Both phases landed together. `bin/bench.sh` now builds the host with LDC
+(`--config=benchmark-ldc --build=benchmark-opt`), whose only change from the DMD
+`benchmark` config is swapping the DMD-only `-defaultlib=libphobos2.so` for
+LDC's `-link-defaultlib-shared`; `dmd:frontend` and `:dmd-backend-vendor` compile
+under LDC unchanged. Measured on `--dub cerealed`:
+
+| build of `bin/bench`        | frontend (parse+semantic) | system-linker post-parse |
+| --------------------------- | ------------------------- | ------------------------ |
+| DMD `benchmark-opt`         | ~1677 ms                  | ~660–680 ms (in-process) |
+| LDC `benchmark-ldc`         | ~1073 ms                  | ~442 ms (via executor)   |
+
+The frontend nearly halves, as predicted (~1066 ms), and the post-parse row is
+*faster* under LDC (LDC-built codegen), not inflated by the process boundary,
+while staying correct (`156/156`).
+
+The executor is the **`bench-exec` subPackage** (DMD-built, no dmd-frontend
+import). Under `version (LDC)`, `SystemLinker.runTests` codegens+links the `.so`
+in the LDC host, then `exec`s `bin/bench-exec` with a request file (the `.so`
+path, dependency images, and the mangled unittest symbols) and reads the
+`TestResult[]` back from a results file. The shared wire format lives in
+`bench-exec/run_wire.d`; DMD hosts (`bin/ut`, the DMD `benchmark` config) keep
+running tests in-process unchanged, so `version (LDC)` is the only switch. The
+boundary is a *process*, not an *ABI*, boundary: the DMD-built executor's
+druntime/extern(D) ABI matches the DMD-codegen'd `.so` (finding 3 above).
+
+**LLVMJit stays unavailable under the LDC build.** Its value is the *in-process*
+ORC JIT, which produces no `.so` to hand the executor and whose JIT'd DMD-codegen
+would mismatch the LDC host's extern(D) ABI. The cli drops it from the defaults
+with a note and rejects an explicit `-b llvmjit` with a message pointing at the
+DMD build or `system-linker`. So Phase 2′'s LLVMJit clause is intentionally not
+met: `system-linker` is the working native post-parse backend under LDC.
+
 ### The fix
 
 `bin/bench.sh` builds with dub's `benchmark-opt` build type
@@ -335,11 +369,30 @@ never tripped this because it keeps bounds checks on.
 
 ### Caveat for readers of the numbers
 
-Even fully optimised, the absolute frontend stays ~2.5× a distro `dmd`, because
-the embedded frontend is DMD-compiled (no LDC/LTO/PGO) and the frontend row is a
-single cold whole-package sample that carries one-time init. Read absolute
-frontend ms as "DMD-compiled frontend"; the trustworthy comparisons are
-cross-backend agreement and the post-parse rows, which share one host.
+Even fully optimised under LDC, the absolute frontend stays ~1.6× a distro `dmd`
+(LDC `-O` min ~1052 ms vs distro parse+semantic ~650 ms on `--dub cerealed`).
+Building the host with LDC already cut it from ~2.5× (when the embedded frontend
+was DMD-compiled) to ~1.6×; the residual gap is **PGO**: the distro `dmd` release
+is built profile-guided, and a branch-heavy AST walker is exactly the workload
+PGO's hot/cold splitting and branch layout speed up. Read absolute frontend ms as
+"LDC-built frontend, no PGO"; the trustworthy comparisons are cross-backend
+agreement and the post-parse rows, which share one host. The post-parse row
+(codegen+link+run via the executor, ~442 ms) already *matches* distro `dmd`'s
+codegen+link+run, so the executor boundary adds no measurable tax — the whole
+~1.6× delta lives in the frontend.
+
+**ThinLTO ruled out (2026-06-21).** Spiked `-flto=thin` (LLD-linked — the default
+gcc/`collect2` + LLVMgold path rejects the gcc lto-wrapper args) on the embedded
+frontend: **no measurable win** (LDC `-O`+ThinLTO min ~1066 ms vs `-O` ~1052 ms,
+within cold-sample noise), at ~10 s extra link. `-O` already does the
+intra-module optimisation and the large self-contained `dmd:frontend` modules
+leave ThinLTO's cross-module inlining little to find. PGO — not LTO — is the
+remaining lever, and a much larger undertaking (representative training workload +
+two-phase instrumented build), so it is deliberately out of this PR's scope.
+Don't re-spike LTO. Note when measuring the frontend: it is a *single cold sample
+per process* (modules persist in DMD's global symbol table, so it cannot
+re-measure), so aggregate across many process launches and use the **minimum** —
+median/max drift badly under thermal throttling on a `powersave`-governed host.
 
 ## Target Shape
 

@@ -55,6 +55,18 @@ public class SystemLinker:
     }
 
     public override TestResult[] runTests(Module[] modules) {
+        // An LDC-built host cannot run DMD-codegen'd unittests in-process (the
+        // extern(D) ABI and DMD-only EH symbols diverge, ai/spikes/ldc-eh/
+        // FINDINGS.md), so hand the linked .so to the DMD-built run executor
+        // across a process boundary instead. DMD-built hosts (bin/ut, the DMD
+        // benchmark build) keep running the tests in-process, unchanged.
+        version (LDC)
+            return runTestsViaExecutor(modules, _inputs);
+        else
+            return runTestsInProcess(modules);
+    }
+
+    private TestResult[] runTestsInProcess(Module[] modules) {
         import quickbite.frontend.util: foreachUnitTestDeclaration;
         import core.runtime: Runtime;
 
@@ -84,6 +96,12 @@ public class SystemLinker:
 
     public override EvalResult eval(FuncDeclaration function_) {
         import core.runtime: Runtime;
+
+        // eval runs the compiled function in-process; the LDC host cannot. It
+        // is never reached on the LDC benchmark path (only runTests is), so
+        // guard rather than route it through the executor.
+        version (LDC)
+            throw new Exception("SystemLinker.eval is unavailable under the LDC build");
 
         auto library = compileToSharedLibrary(
             [function_.getModule],
@@ -128,7 +146,15 @@ private string[] archiveImportPathsUnder(in string[] importPaths, in string pack
         .array;
 }
 
-private void* compileToSharedLibrary(
+// A codegen'd-and-linked shared library on disk. The caller owns dir, deleting
+// it once the library is loaded (the loader keeps it mapped) or the executor
+// has run against it.
+private struct BuiltLibrary {
+    string dir;
+    string libPath;
+}
+
+private BuiltLibrary buildSharedLibrary(
     imported!"dmd.dmodule".Module[] modules,
     in SystemLinkerInputs inputs,
 ) {
@@ -136,7 +162,7 @@ private void* compileToSharedLibrary(
     import quickbite.frontend.compiler: withCompilerLock;
     import core.atomic: atomicFetchAdd;
     import std.conv: text;
-    import std.file: mkdirRecurse, rmdirRecurse, tempDir;
+    import std.file: mkdirRecurse, tempDir;
     import std.path: buildPath;
 
     // Unique paths per call: dlopen caches by path, so reusing one would
@@ -148,9 +174,6 @@ private void* compileToSharedLibrary(
     const index = atomicFetchAdd(_libraryCounter, 1u);
     const dir = buildPath(tempDir, text("quickbite_native_", getpid, "_", index));
     mkdirRecurse(dir);
-    // The loader keeps the library mapped after Runtime.loadLibrary, so the
-    // files can go as soon as it is loaded.
-    scope(exit) rmdirRecurse(dir);
     const libPath = buildPath(dir, "module.so");
 
     string[] objPaths;
@@ -165,7 +188,109 @@ private void* compileToSharedLibrary(
     });
     linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
 
-    return loadSharedLibrary(libPath);
+    return BuiltLibrary(dir, libPath);
+}
+
+private void* compileToSharedLibrary(
+    imported!"dmd.dmodule".Module[] modules,
+    in SystemLinkerInputs inputs,
+) {
+    import std.file: rmdirRecurse;
+
+    auto built = buildSharedLibrary(modules, inputs);
+    // The loader keeps the library mapped after Runtime.loadLibrary, so the
+    // files can go as soon as it is loaded.
+    scope(exit) rmdirRecurse(built.dir);
+    return loadSharedLibrary(built.libPath);
+}
+
+// The LDC host path: codegen+link in this (LDC) process, then run the linked
+// .so in the DMD-built bench-exec subprocess so the generated code meets a
+// matching DMD druntime. Only compiled under an LDC host; DMD hosts run tests
+// in-process via runTestsInProcess.
+version (LDC)
+private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
+    imported!"dmd.dmodule".Module[] modules,
+    in SystemLinkerInputs inputs,
+) {
+    import quickbite.backends.runner: TestResult;
+    import quickbite.frontend.util: foreachUnitTestDeclaration;
+    import run_wire: RunRequest, UnitTestSymbol, encodeRequest, decodeResults;
+    import dmd.mangle: mangleExact;
+    import std.file: read, rmdirRecurse, write;
+    import std.path: buildPath;
+    import std.string: fromStringz;
+
+    auto built = buildSharedLibrary(modules, inputs);
+    scope(exit) rmdirRecurse(built.dir);
+
+    UnitTestSymbol[] symbols;
+    foreach (module_; modules)
+        foreachUnitTestDeclaration(module_, (unitTest) {
+            symbols ~= UnitTestSymbol(
+                mangleExact(unitTest).fromStringz.idup,
+                unitTest.ident.toChars.fromStringz.idup,
+                unitTest.loc.toChars.fromStringz.idup,
+            );
+        });
+
+    const requestFile = buildPath(built.dir, "request.bin");
+    const resultsFile = buildPath(built.dir, "results.bin");
+    write(requestFile, encodeRequest(RunRequest(
+        built.libPath,
+        sharedLibrariesOf(inputs.linkFiles),
+        symbols,
+    )));
+
+    runExecutor(requestFile, resultsFile);
+
+    TestResult[] cases;
+    foreach (result; decodeResults(cast(ubyte[]) read(resultsFile)))
+        cases ~= TestResult(result.passed, result.name, result.location, result.message);
+    return cases;
+}
+
+version (LDC)
+private void runExecutor(in string requestFile, in string resultsFile) {
+    import std.conv: text;
+    import std.process: spawnProcess, wait;
+
+    // The executor inherits stdout/stderr so fixture output reaches the
+    // console exactly as the in-process path shows it; results come back over
+    // the results file, not stdout, so that output cannot corrupt the frame.
+    auto pid = spawnProcess([executorPath, requestFile, resultsFile]);
+    const status = wait(pid);
+    if (status != 0)
+        throw new Exception(text(
+            "run executor exited with status ", status,
+            " (a fixture may have crashed the process)",
+        ));
+}
+
+version (LDC)
+private string executorPath() {
+    import std.file: exists, thisExePath;
+    import std.path: buildPath, dirName;
+
+    // bin/bench.sh builds the DMD executor next to bin/bench.
+    const path = buildPath(thisExePath.dirName, "bench-exec");
+    if (!path.exists)
+        throw new Exception(
+            "run executor not found at " ~ path
+            ~ " (build it with `dub build :bench-exec`)",
+        );
+    return path;
+}
+
+version (LDC)
+private string[] sharedLibrariesOf(in string[] linkFiles) @safe {
+    import std.algorithm.iteration: filter, map;
+    import std.array: array;
+
+    return linkFiles
+        .filter!isSharedLibraryPath
+        .map!(file => file.idup)
+        .array;
 }
 
 private void linkSharedLibrary(
