@@ -85,6 +85,14 @@ private struct Compiler {
     // declaration, so an unqualified `this.field` resolves against it.
     private StructLocal _thisLocal;
     private bool _hasThis;
+    // Synthetic `with` pointers (`S* __withSym = &subject`): each maps to the
+    // inline frame base of its struct subject, so `(*__withSym).field` in the
+    // body resolves to `subjectBase + field.offset`.
+    private ushort[VarDeclaration] _withDerefBases;
+    // Resolved label positions (instruction index) by identifier, plus the
+    // indices of `jump` instructions awaiting a still-unseen forward label.
+    private size_t[const(void)*] _labelTargets;
+    private size_t[][const(void)*] _pendingGotos;
     private size_t[ulong] _constantIndices;
     private bool _inUnittestEntry; // true only while compiling the entry
                                    // function when it is a UnitTestDeclaration
@@ -109,6 +117,9 @@ private struct Compiler {
         _structPointerLocals = null;
         _hasThis = false;
         _thisLocal = StructLocal.init;
+        _withDerefBases = null;
+        _labelTargets = null;
+        _pendingGotos = null;
 
         import dmd.astenums: TY;
 
@@ -240,6 +251,21 @@ private struct Compiler {
             return;
         }
 
+        if (auto with_ = statement.isWithStatement) {
+            compileWithStatement(with_);
+            return;
+        }
+
+        if (auto label = statement.isLabelStatement) {
+            compileLabelStatement(label);
+            return;
+        }
+
+        if (auto goto_ = statement.isGotoStatement) {
+            compileGotoStatement(goto_);
+            return;
+        }
+
         // An import only brings symbols into scope; semantic has already
         // resolved them, so it emits no code.
         if (statement.isImportStatement !is null)
@@ -263,6 +289,59 @@ private struct Compiler {
             compileStatement(if_.elsebody);
 
         patchJump(endJump);
+    }
+
+    // `with (subject) body`. For a struct subject, DMD binds a synthetic
+    // `S* __withSym = &subject` and rewrites the body's unqualified fields to
+    // `(*__withSym).field`; record the subject's inline base so those resolve
+    // against it. For an enum/type subject there is no runtime binding (DMD has
+    // already constant-folded the members), so just compile the body.
+    private void compileWithStatement(
+        imported!"dmd.statement".WithStatement with_,
+    ) {
+        if (with_.wthis !is null)
+            if (auto base = structBaseOffsetOrNull(with_.exp))
+                _withDerefBases[with_.wthis] = *base;
+
+        if (with_._body !is null)
+            compileStatement(with_._body);
+    }
+
+    // `label:` — record the label's instruction index and patch any forward
+    // `goto`s already emitted for it to jump here.
+    private void compileLabelStatement(
+        imported!"dmd.statement".LabelStatement label,
+    ) {
+        const target = _code.length;
+        _labelTargets[cast(const(void)*) label.ident] = target;
+
+        if (auto pending = cast(const(void)*) label.ident in _pendingGotos) {
+            foreach (index; *pending) {
+                _code[index].a = cast(ushort) target;
+                _code[index].b = cast(ushort) target;
+            }
+            _pendingGotos.remove(cast(const(void)*) label.ident);
+        }
+
+        if (label.statement !is null)
+            compileStatement(label.statement);
+    }
+
+    // `goto label;` — an unconditional `jump`. If the label is already known,
+    // patch the target now; otherwise record the jump for the label to fix up.
+    private void compileGotoStatement(
+        imported!"dmd.statement".GotoStatement goto_,
+    ) {
+        const index = emitJump;
+        const key = cast(const(void)*) goto_.ident;
+
+        if (auto target = key in _labelTargets) {
+            _code[index].a = cast(ushort) *target;
+            _code[index].b = cast(ushort) *target;
+            return;
+        }
+
+        _pendingGotos[key] ~= index;
     }
 
     // A `for (init; condition; increment) body` loop, the lowering of `foreach`
@@ -1144,6 +1223,15 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _structLocals)
                     return &existing.offset;
+
+        // Inside `with (subject)`, the body's unqualified fields appear as
+        // `(*__withSym).field`, where `__withSym` is a synthetic `S*` bound to
+        // `&subject`. Resolve the dereference back to the subject's inline base.
+        if (auto deref = expression.isPtrExp)
+            if (auto variable = deref.e1.isVarExp)
+                if (auto declaration = variable.var.isVarDeclaration)
+                    if (auto existing = declaration in _withDerefBases)
+                        return existing;
 
         // An unqualified `this.field` inside a method resolves against the
         // hidden receiver block.
@@ -2469,6 +2557,22 @@ private struct Compiler {
                 );
                 storeStructPointerField(*field, current.offset);
                 return Operand(current.offset, lvalueType);
+            }
+
+        // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
+        // body's `(*__withSym).field`): add into the field's own frame slot.
+        if (auto dot = addAssign.e1.isDotVarExp)
+            if (auto field = tryStructField(dot)) {
+                const lvalueType = scalarType(field.type);
+                const rhsValue = compileExpression(addAssign.e2);
+                const addOp = lvalueType == ScalarType.long_ ||
+                    lvalueType == ScalarType.ulong_
+                        ? Op.addInt8
+                        : Op.addInt4;
+                _code ~= Instruction(
+                    addOp, field.offset, field.offset, rhsValue.offset,
+                );
+                return Operand(field.offset, lvalueType);
             }
 
         auto variable = addAssign.e1.isVarExp;
