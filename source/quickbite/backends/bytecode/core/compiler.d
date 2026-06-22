@@ -74,6 +74,10 @@ private struct Compiler {
     // base offset and the struct declaration, giving each field's offset and
     // type for field access and whole-struct block copies.
     private StructLocal[VarDeclaration] _structLocals;
+    // Delegate locals (`auto d = () => this.field;`): a 16-byte slot holding a
+    // `{functionIndex, context}` pair and the captured lambda, so `d()` reads
+    // the index and context back and dispatches indirectly.
+    private DelegateLocal[VarDeclaration] _delegateLocals;
     // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
     // struct block (`S* p = new S(...)`); the value is the struct declaration,
     // giving each field's offset and type so `p.field` resolves to a load/store
@@ -93,6 +97,18 @@ private struct Compiler {
     // indices of `jump` instructions awaiting a still-unseen forward label.
     private size_t[const(void)*] _labelTargets;
     private size_t[][const(void)*] _pendingGotos;
+    // The loops currently being compiled, innermost last. Each holds the `jump`
+    // indices awaiting the loop's exit (`break`) and its continue point
+    // (`continue`), plus the label ident of an enclosing `label:` for labeled
+    // `break`/`continue`. `break`/`continue` append a jump to the matching
+    // loop's list; the loop patches both lists once its targets are known.
+    private LoopContext[] _loopStack;
+    // The switches currently being compiled, innermost last; each maps its cases
+    // and default to body indices for the dispatch chain (see SwitchContext).
+    private SwitchContext[] _switchStack;
+    // The label ident of a `label:` that immediately wraps the next loop, so the
+    // loop records it for labeled `break`/`continue`; null otherwise.
+    private const(void)* _pendingLoopLabel;
     private size_t[ulong] _constantIndices;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
@@ -123,6 +139,7 @@ private struct Compiler {
         _dynamicArrayLocals = null;
         _pointerLocals = null;
         _assocArrayLocals = null;
+        _delegateLocals = null;
         _structLocals = null;
         _structPointerLocals = null;
         _hasThis = false;
@@ -131,6 +148,9 @@ private struct Compiler {
         _withDerefBases = null;
         _labelTargets = null;
         _pendingGotos = null;
+        _loopStack = null;
+        _switchStack = null;
+        _pendingLoopLabel = null;
 
         import dmd.astenums: TY;
 
@@ -170,6 +190,14 @@ private struct Compiler {
                     _structLocals[parameter] = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
+                    continue;
+                }
+
+                // A `string` parameter holds an 8-byte slice descriptor, tracked
+                // like a string local so it reads back as a slice, not a scalar.
+                if (isStringType(parameter.type)) {
+                    _locals[parameter] = offset;
+                    _stringLocals[parameter] = true;
                     continue;
                 }
 
@@ -278,6 +306,16 @@ private struct Compiler {
             return;
         }
 
+        if (auto do_ = statement.isDoStatement) {
+            compileDoStatement(do_);
+            return;
+        }
+
+        if (auto unrolled = statement.isUnrolledLoopStatement) {
+            compileUnrolledLoopStatement(unrolled);
+            return;
+        }
+
         if (auto throw_ = statement.isThrowStatement) {
             compileThrow(throw_);
             return;
@@ -309,6 +347,48 @@ private struct Compiler {
             compileGotoStatement(goto_);
             return;
         }
+
+        if (auto break_ = statement.isBreakStatement) {
+            compileBreakStatement(break_);
+            return;
+        }
+
+        if (auto continue_ = statement.isContinueStatement) {
+            compileContinueStatement(continue_);
+            return;
+        }
+
+        if (auto switch_ = statement.isSwitchStatement) {
+            compileSwitchStatement(switch_);
+            return;
+        }
+
+        if (auto case_ = statement.isCaseStatement) {
+            compileCaseStatement(case_);
+            return;
+        }
+
+        if (auto default_ = statement.isDefaultStatement) {
+            compileDefaultStatement(default_);
+            return;
+        }
+
+        if (auto gotoCase = statement.isGotoCaseStatement) {
+            compileGotoCaseStatement(gotoCase);
+            return;
+        }
+
+        if (auto gotoDefault = statement.isGotoDefaultStatement) {
+            compileGotoDefaultStatement(gotoDefault);
+            return;
+        }
+
+        // DMD appends a `SwitchErrorStatement` to a `final switch` body as the
+        // runtime guard for an unmatched value. A final switch over an enum is
+        // exhaustive, so the dispatch always matches and this guard is
+        // unreachable; emit no code for it.
+        if (statement.isSwitchErrorStatement !is null)
+            return;
 
         // An import only brings symbols into scope; semantic has already
         // resolved them, so it emits no code.
@@ -367,8 +447,31 @@ private struct Compiler {
             _pendingGotos.remove(cast(const(void)*) label.ident);
         }
 
-        if (label.statement !is null)
+        // A `label:` wrapping a loop names it for labeled `break`/`continue`:
+        // hand the ident to the loop so it records it on its loop context.
+        if (label.statement !is null) {
+            // DMD wraps a labeled `for` as `label: { init?; for }`; the label
+            // governs the contained loop, so hand it the ident. The flag
+            // survives the leading statements (they never touch it) and the
+            // loop consumes it as it enters.
+            if (containsLoop(label.statement))
+                _pendingLoopLabel = cast(const(void)*) label.ident;
             compileStatement(label.statement);
+        }
+    }
+
+    private static bool containsLoop(Statement statement) @safe pure nothrow {
+        if (statement is null)
+            return false;
+        if (statement.isForStatement !is null)
+            return true;
+        if (auto scope_ = statement.isScopeStatement)
+            return containsLoop(scope_.statement);
+        if (auto compound = statement.isCompoundStatement)
+            foreach (childIndex; 0 .. compound.statements.length)
+                if (containsLoop((*compound.statements)[childIndex]))
+                    return true;
+        return false;
     }
 
     // `goto label;` — an unconditional `jump`. If the label is already known,
@@ -402,14 +505,337 @@ private struct Compiler {
             ? size_t.max
             : emitJumpIfFalse(compileExpression(for_.condition));
 
+        // Enter the loop: any `label:` immediately wrapping it (consumed here)
+        // names this context for labeled `break`/`continue`.
+        LoopContext context;
+        context.label = _pendingLoopLabel;
+        _pendingLoopLabel = null;
+        _loopStack ~= context;
+
         if (for_._body !is null)
             compileStatement(for_._body);
+
+        // `continue` lands on the increment, then falls through to the re-test.
+        foreach (index; _loopStack[$ - 1].continuePatches)
+            patchJumpTo(index, _code.length);
         if (for_.increment !is null)
             compileExpression(for_.increment);
 
         _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+
+        // `break` lands just past the loop, as does the condition's exit jump.
+        foreach (index; _loopStack[$ - 1].breakPatches)
+            patchJump(index);
+        _loopStack.length -= 1;
+
         if (exitJump != size_t.max)
             patchJump(exitJump);
+    }
+
+    // A `do body while (condition)` loop: the body runs once before any test.
+    // Compile the body, then the continue point (the condition test), which
+    // jumps back to the body start while true and falls through to exit.
+    private void compileDoStatement(
+        imported!"dmd.statement".DoStatement do_,
+    ) {
+        const bodyIndex = _code.length;
+
+        // Enter the loop: any `label:` immediately wrapping it (consumed here)
+        // names this context for labeled `break`/`continue`.
+        LoopContext context;
+        context.label = _pendingLoopLabel;
+        _pendingLoopLabel = null;
+        _loopStack ~= context;
+
+        if (do_._body !is null)
+            compileStatement(do_._body);
+
+        // `continue` lands on the condition test, then re-runs the body if true.
+        foreach (index; _loopStack[$ - 1].continuePatches)
+            patchJumpTo(index, _code.length);
+
+        const condition = compileExpression(do_.condition);
+        _code ~= Instruction(
+            Op.jumpIfTrue, condition.offset, cast(ushort) bodyIndex,
+        );
+
+        // `break` lands just past the loop.
+        foreach (index; _loopStack[$ - 1].breakPatches)
+            patchJump(index);
+        _loopStack.length -= 1;
+    }
+
+    // A `foreach` over a compile-time expression tuple, which DMD has already
+    // unrolled into one body copy per tuple element (no runtime iteration
+    // variable). `break` exits the whole unrolled block; `continue` jumps to the
+    // next unrolled iteration. Each iteration is one statement in `statements`,
+    // so a `continue` is patched to the start of the following statement (or to
+    // the exit for the last) and `break` to the exit, reusing the loop stack.
+    private void compileUnrolledLoopStatement(
+        imported!"dmd.statement".UnrolledLoopStatement unrolled,
+    ) {
+        LoopContext context;
+        context.label = _pendingLoopLabel;
+        _pendingLoopLabel = null;
+        _loopStack ~= context;
+
+        if (unrolled.statements !is null)
+            foreach (index; 0 .. unrolled.statements.length) {
+                // `continue` in the previous iteration lands on this one's start.
+                foreach (patch; _loopStack[$ - 1].continuePatches)
+                    patchJumpTo(patch, _code.length);
+                _loopStack[$ - 1].continuePatches = null;
+
+                compileStatement((*unrolled.statements)[index]);
+            }
+
+        // A `continue` in the final iteration, plus every `break`, lands past the
+        // whole unrolled block.
+        foreach (patch; _loopStack[$ - 1].continuePatches)
+            patchJump(patch);
+        foreach (patch; _loopStack[$ - 1].breakPatches)
+            patchJump(patch);
+        _loopStack.length -= 1;
+    }
+
+    // `break;` / `break label;` — emit an exit `jump` and record it on the
+    // matching loop's break list for the loop to patch to its exit point.
+    private void compileBreakStatement(
+        imported!"dmd.statement".BreakStatement break_,
+    ) {
+        // Unlabeled `break` exits the innermost breakable statement, which
+        // includes a switch; a switch's context is a break target like a loop.
+        const loop = targetLoopIndex(break_.ident, false);
+        _loopStack[loop].breakPatches ~= emitJump;
+    }
+
+    // `continue;` / `continue label;` — emit a jump and record it on the
+    // matching loop's continue list for the loop to patch to its increment.
+    private void compileContinueStatement(
+        imported!"dmd.statement".ContinueStatement continue_,
+    ) {
+        // Unlabeled `continue` skips a switch and targets the enclosing loop.
+        const loop = targetLoopIndex(continue_.ident, true);
+        _loopStack[loop].continuePatches ~= emitJump;
+    }
+
+    // The loop a `break`/`continue` targets: for an unlabeled transfer the
+    // innermost context (skipping switches when `forContinue`, since a switch is
+    // not a continue target), or the context whose `label:` matches a labeled
+    // one.
+    private size_t targetLoopIndex(
+        imported!"dmd.identifier".Identifier ident,
+        in bool forContinue,
+    ) @safe pure {
+        import std.conv: text;
+
+        if (ident is null) {
+            foreach_reverse (index; 0 .. _loopStack.length)
+                if (!(forContinue && _loopStack[index].isSwitch))
+                    return index;
+            assert(0, "No enclosing breakable statement in bytecode core.");
+        }
+
+        const key = cast(const(void)*) ident;
+        foreach_reverse (index; 0 .. _loopStack.length)
+            if (_loopStack[index].label is key)
+                return index;
+
+        throw new Exception(text(
+            "Unresolved loop label in bytecode core: ", ident.toString,
+        ));
+    }
+
+    // `switch (condition) { cases }` over an integer/enum selector. Lower it to
+    // the body followed by a linear dispatch chain (an if-chain of equality
+    // tests against each case value, falling through to `default` or past the
+    // switch). The body is emitted before the dispatch so each case body's
+    // instruction index is known when the dispatch (and any `goto case`/`goto
+    // default`) is patched. Entry jumps over the body to the dispatch.
+    private void compileSwitchStatement(
+        imported!"dmd.statement".SwitchStatement switch_,
+    ) {
+        // DMD lowers a `string` switch to `object.__switch!(C, caseStrings...)`,
+        // whose call returns the matched case's table index (or -1), and rewrites
+        // its cases to those integer indices. Lower the selector ourselves to a
+        // string-equality chain producing that index, then the integer dispatch
+        // below handles the rest unchanged.
+        const selector = stringSwitchSelector(switch_.condition) !is null
+            ? compileStringSwitchSelector(switch_.condition.isCallExp)
+            : compileExpression(switch_.condition);
+
+        // Jump over the body to the dispatch chain at the end.
+        const entryJump = emitJump;
+
+        // A switch is a break target (not a continue target); reuse the loop
+        // stack so `break` inside a case lands past the switch.
+        LoopContext loopContext;
+        loopContext.label = _pendingLoopLabel;
+        loopContext.isSwitch = true;
+        _pendingLoopLabel = null;
+        _loopStack ~= loopContext;
+
+        SwitchContext switchContext;
+        _switchStack ~= switchContext;
+
+        if (switch_._body !is null)
+            compileStatement(switch_._body);
+
+        // The end of a case body falls through to the next case body; the final
+        // body must skip the dispatch chain entirely.
+        const bodyEndJump = emitJump;
+
+        // The dispatch chain: test the selector against each case value, jumping
+        // to that case body on a match; fall through to default or past switch.
+        patchJump(entryJump);
+        foreach (caseIndex; 0 .. switch_.cases.length) {
+            auto case_ = (*switch_.cases)[caseIndex];
+            const target = _switchStack[$ - 1].caseIndices[cast(const(void)*) case_];
+            const matches = allocate(ScalarType.bool_);
+            const value = compileExpression(case_.exp);
+            _code ~= Instruction(
+                equalOp(size(selector.type)), matches, selector.offset, value.offset,
+            );
+            _code ~= Instruction(Op.jumpIfTrue, matches, cast(ushort) target);
+        }
+
+        // No case matched: a `final switch` covers every value (no default), so
+        // its dispatch always matches and falls through unreachably.
+        if (switch_.hasDefault)
+            _code ~= Instruction(
+                Op.jump, cast(ushort) _switchStack[$ - 1].defaultIndex,
+            );
+
+        patchJump(bodyEndJump);
+
+        // Resolve `goto case`/`goto default` jumps now that every body index and
+        // the default index are known.
+        foreach (target, patches; _switchStack[$ - 1].gotoCasePatches)
+            foreach (patch; patches)
+                patchJumpTo(patch, _switchStack[$ - 1].caseIndices[target]);
+        foreach (patch; _switchStack[$ - 1].gotoDefaultPatches)
+            patchJumpTo(patch, _switchStack[$ - 1].defaultIndex);
+
+        // `break` inside a case lands here, just past the switch.
+        foreach (index; _loopStack[$ - 1].breakPatches)
+            patchJump(index);
+        _loopStack.length -= 1;
+        _switchStack.length -= 1;
+    }
+
+    // The `object.__switch!(C, caseStrings...)` template instance behind a
+    // lowered string-switch condition, or null if the condition is not one.
+    // Its expression arguments are the case strings, indexed positionally.
+    private imported!"dmd.dtemplate".TemplateInstance stringSwitchSelector(
+        Expression condition,
+    ) {
+        import dmd.id: Id;
+
+        auto call = condition.isCallExp;
+        if (call is null)
+            return null;
+        auto variable = call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto function_ = variable.var.isFuncDeclaration;
+        if (function_ is null)
+            return null;
+        auto instance = function_.parent.isTemplateInstance;
+        if (instance is null || instance.name !is Id.__switch)
+            return null;
+        return instance;
+    }
+
+    // Lower `object.__switch!(C, "s0", "s1", ...)(selector)` to a string-equality
+    // chain producing the matched case's table index (or -1) in an `int` slot:
+    // the integer dispatch then matches it against the cases' integer indices.
+    // The case strings are the template instance's expression arguments (the
+    // leading argument is the element type); their position is the index DMD
+    // assigned each rewritten `CaseStatement.exp`, so positional matching is
+    // exact regardless of the table's ordering.
+    private Operand compileStringSwitchSelector(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import dmd.dtemplate: isExpression;
+
+        auto instance = stringSwitchSelector(call);
+        const result = allocate(ScalarType.int_);
+        _code ~= Instruction(
+            Op.loadConstant, result, constantIndex(cast(ulong) -1), 4,
+        );
+
+        const selector =
+            compileExpression((*call.arguments)[0]); // the runtime string.
+
+        size_t[] matchedJumps;
+        int index = 0;
+        foreach (argument; *instance.tiargs) {
+            auto caseString =
+                isExpression(argument) is null ? null
+                : isExpression(argument).isStringExp;
+            if (caseString is null) // the leading element-type argument.
+                continue;
+
+            const literal = compileStringLiteral(caseString);
+            const matches = allocate(ScalarType.bool_);
+            _code ~= Instruction(
+                Op.stringSliceEqual, matches, selector.offset, literal.offset,
+            );
+            const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
+            _code ~= Instruction(
+                Op.loadConstant, result, constantIndex(cast(ulong) index), 4,
+            );
+            matchedJumps ~= emitJump;
+            patchJump(skip);
+            ++index;
+        }
+        foreach (jump; matchedJumps)
+            patchJump(jump);
+
+        return Operand(result, ScalarType.int_);
+    }
+
+    // A `case value:` label: record its body's instruction index for the
+    // dispatch and any `goto case value`, then compile the case body.
+    private void compileCaseStatement(
+        imported!"dmd.statement".CaseStatement case_,
+    ) {
+        _switchStack[$ - 1].caseIndices[cast(const(void)*) case_] = _code.length;
+        if (case_.statement !is null)
+            compileStatement(case_.statement);
+    }
+
+    // A `default:` label: record its body's instruction index, then compile it.
+    private void compileDefaultStatement(
+        imported!"dmd.statement".DefaultStatement default_,
+    ) {
+        _switchStack[$ - 1].defaultIndex = _code.length;
+        if (default_.statement !is null)
+            compileStatement(default_.statement);
+    }
+
+    // `goto case value;` (or `goto case;`, the next case) — an unconditional
+    // jump to the resolved target case body. DMD resolves the target into `.cs`,
+    // so no value re-matching is needed even for a runtime selector. The target
+    // index is only known once the whole body is compiled, so record the jump.
+    private void compileGotoCaseStatement(
+        imported!"dmd.statement".GotoCaseStatement gotoCase,
+    ) {
+        _switchStack[$ - 1].gotoCasePatches[cast(const(void)*) gotoCase.cs] ~=
+            emitJump;
+    }
+
+    // `goto default;` — an unconditional jump to the default case body, patched
+    // once the default's index is known.
+    private void compileGotoDefaultStatement(
+        imported!"dmd.statement".GotoDefaultStatement gotoDefault,
+    ) {
+        _switchStack[$ - 1].gotoDefaultPatches ~= emitJump;
+    }
+
+    private void patchJumpTo(in size_t index, in size_t target) @safe pure {
+        _code[index].a = cast(ushort) target;
+        _code[index].b = cast(ushort) target;
     }
 
     private void compileThrow(imported!"dmd.statement".ThrowStatement throw_) {
@@ -521,6 +947,13 @@ private struct Compiler {
             if (declaration.declaration.isAggregateDeclaration !is null)
                 return Operand.init;
 
+            // A static nested function declaration (`static int f() { ... }`
+            // inside a function body) introduces no runtime storage. Its body
+            // is compiled lazily when `&f` or `f()` first reaches it, so the
+            // declaration itself emits no code.
+            if (declaration.declaration.isFuncDeclaration !is null)
+                return Operand.init;
+
             throw new Exception(text(
                 "Unsupported declaration in bytecode core: ",
                 expressionChars(expression),
@@ -629,14 +1062,24 @@ private struct Compiler {
                 return *pointer;
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
+            // `&f` of a free or static nested function: the function-pointer
+            // value is the callee's VM function index in a size_t slot.
+            if (auto variable = address.e1.isVarExp)
+                if (auto function_ = variable.var.isFuncDeclaration)
+                    return functionPointer(function_);
         }
 
         // `&local` arrives as a `SymOffExp` (symbol plus byte offset): the
         // address of a scalar local's frame slot, yielding an `int*`-style
         // pointer operand.
-        if (auto symOff = expression.isSymOffExp)
+        if (auto symOff = expression.isSymOffExp) {
             if (auto pointer = tryAddressOfSymbol(symOff))
                 return *pointer;
+            // `&f` can also arrive as a `SymOffExp` over a function symbol;
+            // the function-pointer value is its VM function index.
+            if (auto function_ = symOff.var.isFuncDeclaration)
+                return functionPointer(function_);
+        }
 
         if (auto deref = expression.isPtrExp)
             return compilePointerDereference(deref);
@@ -704,6 +1147,7 @@ private struct Compiler {
     // result slot, then add `e2` (the increment) to the lvalue's slot. Scoped
     // to integer lvalues, matching the compound-assignment path.
     private Operand compilePostIncrement(PostExp post) {
+        import dmd.tokens: EXP;
         import std.conv: text;
 
         ushort lvalueSlot;
@@ -734,12 +1178,15 @@ private struct Compiler {
             Op.copy, result, lvalueSlot, cast(ushort) size(lvalueType),
         );
 
+        // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
+        // `minusMinus`) decides whether we add or subtract it.
         const increment = compileExpression(post.e2);
-        const addOp = lvalueType == ScalarType.long_ ||
-            lvalueType == ScalarType.ulong_
-                ? Op.addInt8
-                : Op.addInt4;
-        _code ~= Instruction(addOp, lvalueSlot, lvalueSlot, increment.offset);
+        const eightByte = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_;
+        const stepOp = post.op == EXP.minusMinus
+            ? (eightByte ? Op.subInt8 : Op.subInt4)
+            : (eightByte ? Op.addInt8 : Op.addInt4);
+        _code ~= Instruction(stepOp, lvalueSlot, lvalueSlot, increment.offset);
         return Operand(result, lvalueType);
     }
 
@@ -988,6 +1435,13 @@ private struct Compiler {
             return;
         }
 
+        // A delegate local `auto d = () => this.field;` holds a
+        // `{functionIndex, context}` pair; build it from the lambda literal.
+        if (variable.type.toBasetype.ty == TY.Tdelegate) {
+            compileDelegateDeclaration(variable);
+            return;
+        }
+
         // A `string` local holds an 8-byte slice descriptor (data offset and
         // length), not a scalar; allocate the descriptor width and copy the
         // initializer's slice into it.
@@ -1051,6 +1505,51 @@ private struct Compiler {
             _structPointerLocals[variable] = structDeclaration;
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
+        );
+    }
+
+    // A delegate value is a `{functionIndex, context}` pair: two `size_t` words,
+    // the callee's VM function index and the captured context (the enclosing
+    // method's `this` receiver frame offset, passed as the lambda's hidden `this`
+    // block on the indirect call).
+    private enum delegateValueSize = cast(uint) (2 * size_t.sizeof);
+
+    // A delegate local `auto d = () => this.field;`: a 16-byte `{functionIndex,
+    // context}` pair built from the lambda literal initializer, plus a tracking
+    // entry recording the lambda so `d()` recovers its layout and result type.
+    private void compileDelegateDeclaration(VarDeclaration variable) {
+        import std.conv: text;
+
+        auto initializer =
+            variable._init is null ? null : variable._init.isExpInitializer;
+        auto literal = initializer is null
+            ? null
+            : initializerExpression(initializer.exp).isFuncExp;
+        if (literal is null || literal.fd is null)
+            throw new Exception(text(
+                "Unsupported delegate initializer in bytecode core: ",
+                declarationChars(variable),
+            ));
+
+        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+        emitDelegateValue(offset, literal.fd);
+        _delegateLocals[variable] = DelegateLocal(offset, literal.fd);
+    }
+
+    // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
+    // `offset`: the lambda's registered VM index in the first word, the enclosing
+    // method's `this` receiver offset (the captured context) in the second.
+    private void emitDelegateValue(in ushort offset, FuncDeclaration lambda) {
+        const index = registerFunction(lambda);
+        _code ~= Instruction(
+            Op.loadConstant, offset, constantIndex(index),
+            cast(ushort) size_t.sizeof,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            cast(ushort) (offset + size_t.sizeof),
+            constantIndex(_thisLocal.offset),
+            cast(ushort) size_t.sizeof,
         );
     }
 
@@ -1407,6 +1906,41 @@ private struct Compiler {
     ) {
         if (auto aggregate = function_.isThis())
             return aggregate.isStructDeclaration;
+
+        // A nested `delegate` lambda that captures the enclosing method's `this`
+        // (`() => this.field`) receives that `this` as its context. DMD models
+        // the context as `vthis` (`__capture`, typed `void*`) and resolves the
+        // captured field's `ThisExp.var` to the enclosing method's own `vthis`.
+        // Give the lambda a hidden `this` block of the enclosing struct so the
+        // ordinary receiver ABI carries the context and `this.field` resolves
+        // against it.
+        return capturedThisStructDeclaration(function_);
+    }
+
+    // The enclosing struct whose `this` a capturing delegate lambda reads, or
+    // null if `function_` is not such a lambda. The lambda is nested in a struct
+    // method and holds a context (`vthis`); the struct is the method's receiver
+    // aggregate. Capturing an enclosing *local* (rather than `this`) is not yet
+    // modelled -- such a lambda's `this.field` would still route here, but only
+    // `this`-capturing lambdas are exercised; a local-capturing one would read
+    // the wrong slot, which the leading-edge closures work must address.
+    private imported!"dmd.dstruct".StructDeclaration
+    capturedThisStructDeclaration(FuncDeclaration function_) {
+        auto literal = function_.isFuncLiteralDeclaration;
+        if (literal is null || function_.vthis is null)
+            return null;
+
+        auto enclosing = enclosingMethodOf(function_);
+        if (enclosing is null)
+            return null;
+        if (auto aggregate = enclosing.isThis())
+            return aggregate.isStructDeclaration;
+        return null;
+    }
+
+    private FuncDeclaration enclosingMethodOf(FuncDeclaration function_) {
+        if (auto parent = function_.toParent2)
+            return parent.isFuncDeclaration;
         return null;
     }
 
@@ -1444,6 +1978,12 @@ private struct Compiler {
 
         if (auto dot = call.e1.isDotVarExp)
             return structOperandOffset(dot.e1);
+
+        // An IIFE `(() => this.field)()`: the callee is the lambda directly (a
+        // FuncExp), and its hidden `this` block is the enclosing method's own
+        // `this` receiver, already present in this frame.
+        if (call.e1.isFuncExp !is null && _hasThis)
+            return _thisLocal.offset;
 
         throw new Exception(text(
             "Unsupported method receiver in bytecode core: ",
@@ -2297,6 +2837,21 @@ private struct Compiler {
             return Operand(offset, target);
         }
 
+        // `cast(double)intExpr` (e.g. `double d = seed;`): numerically widen any
+        // integer operand -- including a call result already materialised into a
+        // temp slot by `compileExpression` -- to a double, preserving signedness.
+        if (!isFloating(source.type) && target == ScalarType.double_) {
+            import quickbite.backends.bytecode.core.program: unsignedConvertFlag;
+
+            const offset = allocate(target);
+            const width = cast(ushort) (size(source.type) |
+                (isSigned(source.type) ? 0 : unsignedConvertFlag));
+            _code ~= Instruction(
+                Op.convertIntToDouble, offset, source.offset, width,
+            );
+            return Operand(offset, target);
+        }
+
         if (isFloating(source.type) != isFloating(target))
             throw new Exception(text(
                 "Unsupported numeric cast in bytecode core: ",
@@ -2372,6 +2927,25 @@ private struct Compiler {
             scalarType(declaration.type),
         );
         return result;
+    }
+
+    // `&f`: a function-pointer value, the callee's VM function index loaded as
+    // a size_t into an 8-byte slot. Registering the function makes its body
+    // reachable for lazy compilation on the indirect call. The operand is a
+    // pointer so a `int function()` local's `compilePointerDeclaration` accepts
+    // it; `pointerElement` is irrelevant (the value is never dereferenced).
+    private Operand functionPointer(FuncDeclaration function_) {
+        const index = registerFunction(function_);
+        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.loadConstant,
+            offset,
+            constantIndex(index),
+            cast(ushort) size_t.sizeof,
+        );
+        return Operand(
+            offset, ScalarType.ulong_, false, true, ScalarType.void_,
+        );
     }
 
     private Operand* tryAddressOfLocal(AddrExp address) {
@@ -3810,6 +4384,19 @@ private struct Compiler {
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
 
+        // `d()` through a delegate local: the callee is a VarExp of a delegate
+        // local holding a `{functionIndex, context}` pair. Dispatch indirectly,
+        // passing the context as the lambda's hidden `this` block.
+        if (function_ is null)
+            if (auto delegateLocal = delegateLocalOf(call))
+                return compileDelegateCall(*delegateLocal, call);
+
+        // `fp()` through a function-pointer value: the callee is not a named
+        // `FuncDeclaration` but a function-pointer expression. Dispatch through
+        // the run-time index it holds.
+        if (function_ is null && isFunctionPointerCall(call))
+            return compileIndirectCall(call);
+
         if (function_ is null || function_.fbody is null)
             throw new Exception(text(
                 "Unsupported call in bytecode core: ",
@@ -3856,6 +4443,107 @@ private struct Compiler {
         return Operand(destination, returnType.scalar, returnType.isString);
     }
 
+    // The delegate local invoked by `d()`, or null if `call` is not a call
+    // through a delegate local. The callee is a `VarExp` of a `_delegateLocals`
+    // entry.
+    private DelegateLocal* delegateLocalOf(CallExp call) {
+        auto variable = call.e1 is null ? null : call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        return declaration in _delegateLocals;
+    }
+
+    // `d()` through a delegate local: the lambda's VM index lives in the first
+    // word of the delegate slot and its captured context (the enclosing `this`
+    // receiver offset) in the second. Pass the context as the lambda's hidden
+    // `this` block, then dispatch through `callIndirect` on the index word.
+    private Operand compileDelegateCall(
+        DelegateLocal delegateLocal,
+        CallExp call,
+    ) {
+        import std.conv: text;
+
+        // Delegate calls with explicit arguments are not exercised; the captured
+        // `this` is the only hidden argument these lambdas take.
+        if (call.arguments !is null && call.arguments.length > 0)
+            throw new Exception(text(
+                "Unsupported delegate call with arguments in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const layout = parameterLayout(delegateLocal.function_);
+        const argumentArea = allocateBytes(layout.blockSize, 8);
+
+        // The captured context word (second pair slot) is the receiver offset
+        // the machine dereferences into the lambda's hidden `this` block.
+        if (layout.hasThis)
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (argumentArea + layout.thisOffset),
+                cast(ushort) (delegateLocal.offset + size_t.sizeof),
+                cast(ushort) size(ScalarType.uint_),
+            );
+
+        const index = registerFunction(delegateLocal.function_);
+        const returnType = _program.functions[index].returnType;
+        const destination =
+            (!returnType.isString && !returnType.isArray &&
+                !returnType.isStruct &&
+                returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
+        _code ~= Instruction(
+            Op.callIndirect, delegateLocal.offset, argumentArea, destination,
+        );
+        return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
+    // `fp()` through a function-pointer value: load the callee's run-time
+    // function index from the pointer slot and dispatch through `callIndirect`.
+    // The pointer carries the index (set by `&f`); the machine reads the
+    // callee's parameter and result layout from that index, so the call site
+    // need only place the arguments and a result slot.
+    private Operand compileIndirectCall(CallExp call) {
+        import std.conv: text;
+
+        // DMD lowers `fp()` as `(*fp)()`: the callee operand is a `PtrExp` whose
+        // dereferenced type is the function type `R function(Args...)`. The
+        // callee's result type is that function type's `nextOf`; the pointer
+        // slot holding the run-time index is the `PtrExp`'s sub-expression.
+        auto deref = call.e1.isPtrExp;
+        const returnType = resultType(deref.type.toBasetype.nextOf);
+
+        const pointer = compileExpression(deref.e1);
+
+        // No test exercises arguments through a function pointer; the callee's
+        // argument layout is only known at run time, so supporting them safely
+        // needs the layout derived from the function-pointer type, not yet done.
+        if (call.arguments !is null && call.arguments.length > 0)
+            throw new Exception(text(
+                "Unsupported function-pointer call with arguments in bytecode "
+                ~ "core: ",
+                expressionChars(call),
+            ));
+
+        // An empty argument area: the callee has no parameters (the only form
+        // supported here), so the machine copies zero parameter bytes from it.
+        const argumentArea = allocateBytes(0, 8);
+
+        const destination =
+            (!returnType.isString && !returnType.isArray &&
+                !returnType.isStruct &&
+                returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
+        _code ~= Instruction(
+            Op.callIndirect, pointer.offset, argumentArea, destination,
+        );
+        return Operand(destination, returnType.scalar, returnType.isString);
+    }
+
     // Emit a single call argument into `slot` of the argument area: a `ref`
     // argument passes the caller-frame offset (dereferenced on entry, written
     // back on return); a by-value struct block-copies the whole struct; a
@@ -3899,6 +4587,16 @@ private struct Compiler {
                 slot,
                 descriptor,
                 cast(ushort) sliceDescriptorSize,
+            );
+            return;
+        }
+
+        // A `string` argument is an 8-byte slice descriptor; copy the whole
+        // descriptor, not a single scalar byte.
+        if (argument.type !is null && isStringType(argument.type)) {
+            const operand = compileExpression(argument);
+            _code ~= Instruction(
+                Op.copy, slot, operand.offset, stringSliceSize,
             );
             return;
         }
@@ -4948,6 +5646,17 @@ private struct Compiler {
                 continue;
             }
 
+            // A `string` parameter holds an 8-byte slice descriptor in the
+            // callee frame; the caller copies the descriptor in by value.
+            if (isStringType(parameter.type)) {
+                layout.blockSize =
+                    (layout.blockSize + 3) & ~3u;
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= false;
+                layout.blockSize += stringSliceSize;
+                continue;
+            }
+
             // A by-value struct `S` parameter is a block of `Type.size()` bytes
             // at its DMD alignment in the argument area; the caller block-copies
             // its struct in, so the callee mutates only its private copy.
@@ -5133,6 +5842,35 @@ private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
+// `{functionIndex, context}` pair. `offset` is that slot; `function_` is the
+// captured lambda, giving the callee's layout and result type when `d()` is
+// compiled. The context word is the enclosing method's `this` receiver offset.
+private struct DelegateLocal {
+    ushort offset;
+    imported!"dmd.func".FuncDeclaration function_;
+}
+
+// A loop currently being compiled: the `jump` indices awaiting the loop's exit
+// (`break`) and continue point (`continue`), plus the ident of an enclosing
+// `label:` for labeled `break`/`continue` (null when unlabeled).
+private struct LoopContext {
+    size_t[] breakPatches;
+    size_t[] continuePatches;
+    const(void)* label;
+    bool isSwitch; // a switch is a break target but not a continue target
+}
+
+// The switch currently being compiled, innermost last. Maps each case (and the
+// default) to its body's instruction index for the dispatch chain, and holds
+// the `jump` indices of `goto case`/`goto default` awaiting those indices.
+private struct SwitchContext {
+    size_t[const(void)*] caseIndices; // CaseStatement* -> body index
+    size_t defaultIndex = size_t.max;
+    size_t[][const(void)*] gotoCasePatches; // target CaseStatement* -> jumps
+    size_t[] gotoDefaultPatches;
 }
 
 // A struct local (or by-value struct parameter): the base offset of its inline
@@ -5764,6 +6502,18 @@ private imported!"dmd.func".FuncDeclaration callFunction(
             return function_;
 
     return null;
+}
+
+// `fp()`: the callee is a function-pointer value, not a named function. DMD
+// lowers the call through the pointer as `(*fp)()`, so the callee operand is a
+// `PtrExp` whose dereferenced type is a function type (`int function()`).
+private bool isFunctionPointerCall(imported!"dmd.expression".CallExp call) {
+    import dmd.astenums: TY;
+
+    auto deref = call.e1 is null ? null : call.e1.isPtrExp;
+    if (deref is null || deref.type is null)
+        return false;
+    return deref.type.toBasetype.ty == TY.Tfunction;
 }
 
 private imported!"dmd.mtype".Type callType(

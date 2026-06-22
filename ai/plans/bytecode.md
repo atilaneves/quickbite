@@ -2749,3 +2749,575 @@ the VM now reserves a fixed stack capacity up front; deep recursion beyond
 that reserve could reallocate and invalidate live `&local` pointers, a
 case no current test exercises and a future bench/feature checkpoint
 should revisit.
+
+## control_flow.d Promotion Analysis (BytecodeNewCore)
+
+All SystemLinker-backed tests from
+`tests/ut/backends/runner/ct/control_flow.d` have been promoted to include
+`BytecodeNewCore` in their `AliasSeq` blocks and were run in isolation with
+the full unit-threaded names matching
+`ut.backends.runner.ct.control_flow.*.BytecodeNewCore`. 67 tests were
+promoted. 31 pass unchanged: all `while.*`, `if.*`,
+`function.*` (except `nestedLambda*` and `overloadResolutionBySignature`),
+`goto.directLabel`, `goto.restartsCompoundStatement`,
+`goto.restartsExpressionStatement`, `foreach.array`,
+`foreach.arrayWithIndex`, `foreach.emptyArray`, and `foreach.range`. The
+remaining 36 failures group into 9 root-cause failure modes.
+
+All failure modes touch the shared core files
+(`source/quickbite/backends/bytecode/core/{compiler,machine,program,reify}.d`).
+Subagents must run sequentially; parallelism is not possible.
+
+### Failure mode 1: `break` and `continue` statements not lowered (7 tests)
+
+**Root cause:** `compileStatement` in `compiler.d` has no branch for
+`BreakStatement` or `ContinueStatement`. Any loop body (or label target)
+containing a `break` or `continue` falls through to the generic unsupported
+throw: `Unsupported statement in bytecode core: Break` /
+`Unsupported statement in bytecode core: Continue`.
+
+**Failing tests (7):**
+- `goto.restartsBreakStatement` — `for` body: `goto stop; ... stop: break;`
+- `goto.restartsContinueStatement` — `for` body:
+  `goto skip; ... skip: continue;`
+- `for.continue` — `for (int i = 0; i < 4; ++i) { if (i == 2) continue; }`
+- `doWhile.breakAndContinue` — `do { ++i; if (i==2) continue;
+  if (i==5) break; sum += i; } while (i < 6);`
+- `labeledBreak.exitsOuterForLoop` — `break outer;` inside nested loops
+- `labeledContinue.skipsToOuterForIncrement` — `continue outer;` inside
+  nested loops
+- `foreach.expressionTupleBreakAndContinue` — `UnrolledLoop` with `break`
+  and `continue` inside each iteration (see also mode 2)
+
+**Oracle behavior:** `break` exits the nearest enclosing breakable statement
+(loop or switch); `continue` jumps to the loop's increment/condition;
+labeled `break label` / `continue label` target the named outer loop.
+
+**Required implementation (small — two new jump-target opcodes):** Add a
+`BreakStatement` branch and a `ContinueStatement` branch in
+`compileStatement`. The compiler must maintain a per-loop break-target and
+continue-target (two stacks of patch lists, one entry per nested loop). For
+`break`, emit `Op.jump` and push the index into the break-target patch list;
+for `continue`, emit `Op.jump` and push into the continue-target patch list.
+Patch both lists when the loop exits: break-targets patch to the instruction
+after the loop, continue-targets patch to the increment (for `for` and
+`while`) or condition (for `do/while`). Labeled `break`/`continue` require
+associating each labeled loop with its patch lists by `Identifier*`. The
+existing `Op.jump` instruction is sufficient; no new VM opcode is needed.
+`BreakStatement` inside a `SwitchStatement` body uses the same mechanism but
+targets the end of the switch (mode 3).
+
+**Dependency:** None — this is the prerequisite for modes 3 and 4.
+
+**DONE (5/7):** Added `BreakStatement`/`ContinueStatement` branches to
+`compileStatement` plus a `LoopContext[] _loopStack` (per-loop break/continue
+`jump`-index patch lists and the enclosing `label:` ident). `compileForStatement`
+pushes a context, patches continue-jumps to the increment point and break-jumps
+to past the loop, then pops. `compileLabelStatement` hands a wrapping label's
+ident to the loop it governs (via `_pendingLoopLabel`, detected with a recursive
+`containsLoop` through `Scope`/`Compound`, since DMD wraps a labeled `for` as
+`label: { init; for }`); `break`/`continue` resolve their target loop by
+innermost (unlabeled) or matching `Identifier*` (labeled). No new VM opcode —
+reuses `Op.jump`. Greened `for.continue`, `labeledBreak.exitsOuterForLoop`,
+`labeledContinue.skipsToOuterForIncrement`, `goto.restartsBreakStatement`,
+`goto.restartsContinueStatement`. The other 2 mode-1 tests
+(`doWhile.breakAndContinue`, `foreach.expressionTupleBreakAndContinue`) still
+fail on mode 2's `Do`/`UnrolledLoop` gate before reaching break/continue; their
+loop-back/unrolled break/continue lowering is left for mode 2.
+
+### Failure mode 2: `Do` and `UnrolledLoop` statements not lowered (2 tests)
+
+**Root cause:** `compileStatement` has no branch for `DoStatement` (the AST
+node for `do { body } while (cond);`) or for `UnrolledLoopStatement` (the AST
+node DMD emits for `foreach` over a compile-time expression tuple).
+
+**Failing tests (2):**
+- `doWhile.breakAndContinue` — errors with `Unsupported statement: Do`
+- `foreach.expressionTupleBreakAndContinue` — errors with
+  `Unsupported statement: UnrolledLoop`
+
+Note: `doWhile.breakAndContinue` is already counted in mode 1 (the error it
+hits first is `Do`); `foreach.expressionTupleBreakAndContinue` hits
+`UnrolledLoop` before reaching any `break`/`continue`.
+
+**Required implementation:**
+
+- `DoStatement`: emit the body first, then the condition test. The pattern is
+  `[body][conditionTest → exit jump back to body start]`. Break/continue use
+  the same patch-list mechanism as mode 1.
+- `UnrolledLoopStatement`: each unrolled iteration is a statement in the
+  `statements` array; `foreach` over a tuple is fully unrolled at compile
+  time. Compile each statement in order. `break` inside an unrolled loop body
+  must jump past all remaining iterations; `continue` must jump to the next
+  iteration's start — the compiler must handle these as special cases of the
+  break/continue target stacks, since an `UnrolledLoopStatement` does not
+  have a runtime loop-back target.
+
+**Dependency:** Mode 1 (break/continue patch lists) must land first.
+
+**DONE (2/2):** Added `DoStatement`/`UnrolledLoopStatement` branches to
+`compileStatement` with `compileDoStatement`/`compileUnrolledLoopStatement`.
+`DoStatement` records the body start, pushes a `LoopContext`, compiles the body,
+patches continue-jumps to the condition test (`Op.jumpIfTrue` back to body
+start), patches break-jumps past the loop, then pops. `UnrolledLoopStatement`
+pushes a context and compiles each `statements` element in order; before each
+iteration it patches the prior iteration's continue-jumps to that iteration's
+start (then clears them), and at the end patches the final iteration's
+continue-jumps and all break-jumps past the whole block. No new VM opcode —
+reuses `Op.jump`/`Op.jumpIfTrue`. Greened `doWhile.breakAndContinue` and
+`foreach.expressionTupleBreakAndContinue`, the 2 tests mode 1 deferred on the
+`Do`/`UnrolledLoop` gate. control_flow failures: 30 → 28.
+
+### Failure mode 3: `Switch` statement not lowered (11 tests)
+
+**Root cause:** `compileStatement` has no branch for `SwitchStatement`. All
+`switch(...)` statements — including `final switch` on enums, `goto case`,
+`goto default`, and `break` inside a case — fall through to the generic
+throw: `Unsupported statement in bytecode core: Switch`.
+
+**Failing tests (11):** `switch.caseMatch`, `switch.defaultCase`,
+`switch.gotoCase`, `switch.gotoDefault`, `switch.gotoCaseUsesRuntimeSelector`,
+`switch.gotoDefaultUsesRuntimeSelector`,
+`switch.finalSwitchOnEnumCoversAllMembers`,
+`switch.caseRangesAndMultiValueCases`, `switch.breaksOuterLoop`,
+`goto.restartsGotoCaseStatementInTryFinally`,
+`goto.restartsGotoDefaultStatementInTryFinally`.
+
+Note: `switch.stringCases` fails with a string-type error (mode 5) before
+the switch body is even compiled; it is counted in mode 5, not here.
+
+**Oracle behavior:** Integer/enum switch with case match, default,
+multi-value cases (`case 5, 7:`), case ranges (`case 0: .. case 3:`),
+`goto case N`, `goto default`, `break` inside a case body. The `finalSwitch`
+variant omits the default handler.
+
+**Required implementation (large — new statement family):** Add a
+`SwitchStatement` branch in `compileStatement`. The minimal approach for
+integer/enum selectors is an if-chain of equality or range comparisons
+(linear scan) — correct, simple, and sufficient for the test surface. Each
+`CaseStatement` is one or more values (multi-value case) or a range; emit a
+jump-chain testing the selector against each case value or range, falling
+through to `default`. `GotoCaseStatement` and `GotoDefaultStatement` are
+label-like jumps emitted as `Op.jump` with the target case's instruction
+index. `BreakStatement` inside a switch body uses the break-target patch
+list from mode 1, with the switch as the enclosing breakable statement.
+`final switch` on an enum needs no default handler in the emitted code (all
+values are covered). The switch body (`switch_.cases`) is a `Statements*`
+of `CaseStatement`/`CaseRangeStatement`/`DefaultStatement` nodes, each
+wrapping its statement subtree. All sub-statements are compiled with
+`compileStatement` after the case dispatch is emitted.
+
+**Dependency:** Mode 1 (break inside case bodies). Mode 2 is independent.
+
+**DONE (9/9 integer/enum):** Added `SwitchStatement` plus `CaseStatement`/
+`DefaultStatement`/`GotoCaseStatement`/`GotoDefaultStatement` branches to
+`compileStatement` (`SwitchErrorStatement` emits nothing — a `final switch` is
+exhaustive so its appended runtime guard is unreachable). `compileSwitchStatement`
+compiles the selector, emits `Op.jump` over the body to a trailing linear
+dispatch chain, pushes a `LoopContext{isSwitch:true}` (break target, not a
+continue target) and a `SwitchContext`, compiles the body (each case/default
+records its body's instruction index), then emits the dispatch: per case an
+`equalOp(selectorSize)` compare + `Op.jumpIfTrue` to the body, falling through
+to a `goto` to the default (omitted for `final switch`); the body's tail
+`Op.jump` skips the dispatch to the exit. `goto case`/`goto default` emit
+`Op.jump`s recorded against the resolved target (`GotoCaseStatement.cs` /
+default) and patched once body/default indices are known — runtime selectors
+need no re-match since DMD pre-resolves `.cs`. `CaseRangeStatement` and
+multi-value `case a, b:` are already expanded into `CaseStatement` chains by
+semantic, so only `CaseStatement` is seen. `targetLoopIndex` now takes a
+`forContinue` flag so unlabeled `continue` skips switch contexts (targets the
+enclosing loop) while unlabeled `break` stops at the innermost switch. No new VM
+opcode — reuses `Op.jump`/`Op.jumpIfTrue`/`Op.equal{1,2,4,8}`. Greened all 9:
+`switch.caseMatch`, `switch.defaultCase`, `switch.gotoCase`, `switch.gotoDefault`,
+`switch.gotoCaseUsesRuntimeSelector`, `switch.gotoDefaultUsesRuntimeSelector`,
+`switch.finalSwitchOnEnumCoversAllMembers`,
+`switch.caseRangesAndMultiValueCases`, `switch.breaksOuterLoop` (plus the two
+`goto.restartsGotoCase/DefaultStatementInTryFinally` tests, which only needed
+switch lowering). control_flow failures: 28 → 17. `switch.stringCases` (mode 5)
+still gated on string selectors.
+
+### Failure mode 4: `TryCatch` statement not lowered (3 tests) and
+`TryFinally` finally-on-goto not enforced (1 test)
+
+**Root cause — TryCatch (3 tests):** `compileStatement` has no branch for
+`TryCatchStatement`. The three `catch.*` tests use `try { } catch (Exception)
+{ goto label; ... label: break/continue/goto; }` — they reach the
+"Unsupported statement: TryCatch" throw before executing any catch body.
+
+**Root cause — TryFinally finally-on-goto (1 test):**
+`goto.restartsGotoStatementInTryFinally` does NOT throw the unsupported
+diagnostic (it has a `TryFinallyStatement`, not a `TryCatchStatement`, which
+the new core handles naively). It compiles and executes, but the goto that
+exits the try block (`resumed: goto outside;`) bypasses the finally block,
+yielding `total = 2` instead of `total = 1 + 2 = 3`. The current naive
+implementation just sequences body then finally; it does not insert finally
+code on goto-exit paths.
+
+**Failing tests (4 primary; 2 secondary after mode 1):**
+- `catch.gotoRestartsBreakStatement` — TryCatch unsupported
+- `catch.gotoRestartsContinueStatement` — TryCatch unsupported
+- `catch.gotoRestartsGotoStatement` — TryCatch unsupported
+- `goto.restartsGotoStatementInTryFinally` — finally not run on goto-exit
+  (reports `2 != 3`)
+
+Secondary: `goto.restartsBreakStatementInTryFinally` and
+`goto.restartsContinueStatementInTryFinally` currently fail on
+`Unsupported statement: Break/Continue` (mode 1), but once break/continue
+land, these tests will also require the finally block to fire when
+`break`/`continue` exits the try body. They will be unmasked by mode 1 and
+will need the finally-on-jump fix from this mode.
+
+**Assessment of the exception-machinery question:** The three `catch.*` tests
+genuinely require `throw new Exception("expected")` inside the try block to be
+caught. This is not a finally-only concern; it needs catch clause dispatch.
+However, the test fixtures use `throw new Exception(string)` which the new
+core already lowers via `Op.throwString`. The machinery needed is:
+
+1. A compile-time try/catch handler record in the compiled function's handler
+   table (just a `(start_pc, end_pc, handler_pc)` triple per catch clause).
+2. On `Op.throwString` (or any future throw-like opcode), the VM searches the
+   handler table and jumps to the catch body's first instruction, binding the
+   exception message to the catch variable if named (these tests use unnamed
+   `catch (Exception)`).
+3. For the finally-on-goto fix: the compiler must detect when a `goto`
+   crosses a `TryFinally` boundary and emit the finally block inline on that
+   path before the jump.
+
+This is a narrower surface than full exception-handler tables: only
+`Op.throwString` is thrown, only `Exception` is caught (no class hierarchy
+dispatch), and the catch variable is unnamed. Full exception machinery (slice
+6) is not required; a narrow handler table with a single try-region type is
+sufficient.
+
+**Dependency:** Mode 1 (break/continue inside catch bodies). Mode 3 is
+independent. The `goto`-crosses-`TryFinally` fix touches the existing
+`compileGotoStatement` and requires the compiler to know which try-finally
+region the goto originates in.
+
+### Failure mode 5: `string` switch selector not supported (1 test)
+
+**Root cause:** `switch.stringCases` uses `switch (s)` where `s` has type
+`string`. The `Switch` statement lowering (mode 3) will need to evaluate the
+selector expression; `string` as a local type is not yet a tracked local
+kind in the new core (`Unsupported type in bytecode core: string`). The
+selector reaches the type check before the `SwitchStatement` branch is even
+reached.
+
+**Failing test (1):** `switch.stringCases` — uses `string pick(int n)`
+returning a string literal, passed as the switch selector.
+
+**Oracle behavior:** D string switch compiles to a hash-based dispatch;
+the VM must implement string equality matching across the case literals.
+
+**Required implementation:** After mode 3 lands for integer/enum selectors,
+add a string selector path: the selector is a `string` local (a slice
+descriptor with string metadata), and each case is a string literal. The
+dispatch emits a linear string-equality chain (`Op.stringEqual` or equivalent)
+checking the selector against each case literal. The `string` local type is
+already present in the arrays machinery (slice descriptors for string literals
+passed to functions); tracking a `string` function parameter as a
+dynamic-array-descriptor local in the `string` case is the minimal extension.
+
+**Dependency:** Mode 3 (SwitchStatement framework). The string-local
+infrastructure already exists for array slices.
+
+**DONE (1/1):** DMD's lowering differed from the analysis's guess. With
+codegen on, DMD rewrites a string `switch (s)` into
+`object.__switch!(char, "s0", "s1", ...)(s)` — a call returning the matched
+case's index in the (sorted, source-order-as-passed) string table or -1 — and
+overwrites each `CaseStatement.exp` with the corresponding `IntegerExp` index.
+So `switch_.condition` is a `CallExp`, the cases are integers, and there are no
+`StringExp` cases left to compare. `compileSwitchStatement` now detects this
+via `stringSwitchSelector` (condition is a `CallExp` whose `e1` resolves to a
+`FuncDeclaration` whose parent `TemplateInstance.name is Id.__switch`) and
+lowers the selector itself with `compileStringSwitchSelector`: load -1 into an
+`int` slot, compile the runtime selector string, then for each `StringExp`
+template arg (skipping the leading element-type arg) emit
+`Op.stringSliceEqual` against that case literal and, on a match, store the
+arg's index and jump to the chain end. The existing integer dispatch then
+matches that `int` against the cases' integer indices unchanged. Two
+supporting gaps were filled so a `string` parameter is tracked at all: a
+`string` parameter now gets an 8-byte slice-descriptor slot in
+`parameterLayout` and a `_stringLocals` entry in the frame-binding loop
+(previously it fell through to the scalar path and threw "Unsupported type ...:
+string"); and `emitCallArgument` now copies the full 8-byte string descriptor
+for a `string` argument instead of a single scalar byte. New VM opcode
+`Op.stringSliceEqual` (justified): the existing `Op.sliceEqual{1,4}` compares
+the 16-byte native-pointer descriptor used by dynamic arrays and dereferences
+the first word as a host address, but a string descriptor is the 8-byte
+`{uint dataOffset, uint length}` form into the read-only data segment, so the
+two layouts are incompatible; `stringSliceEqual` compares two such descriptors
+against `program.data`. Greened `switch.stringCases`. control_flow failures:
+17 → 16. No regressions across the full `bin/ut --random` suite.
+
+### Failure mode 6: function-pointer `&f` address expression and
+static-local declaration not lowered (3 tests)
+
+**Root cause — `& first` / `& bAB` (2 tests):** `callCanEnterFunctionWithCallee`
+and `dispatchesToDistinctCallees` use `int function() fp = &first;` where
+`first` is a free function. `compileExpression` has no branch for `AddrExp`
+whose operand is a free function (only `tryAddressOfElement` and
+`tryAddressOfLocal` are attempted, both returning `null` for a function
+reference, and `tryAddressOfSymbol` handles `SymOffExp` but not a plain
+function variable). The error is `Unsupported expression in bytecode core:
+& first`.
+
+**Root cause — static nested function (`hashCollisionUsesCorrectCallee`):**
+The fixture declares `static int bAB() { ... }` and `static int a_a() { ...
+}` inside the unittest body. DMD lowers these as nested functions with
+`isStatic` set. The compiler encounters the `FuncDeclaration` as a
+declaration statement in the function body and throws
+`Unsupported declaration in bytecode core: static pure nothrow @nogc @safe
+int bAB() { ... }`.
+
+**Failing tests (3):**
+- `functionPointer.callCanEnterFunctionWithCallee` — `& first`
+- `functionPointer.dispatchesToDistinctCallees` — `& bAB`
+- `functionPointer.hashCollisionUsesCorrectCallee` — static nested function
+  declaration
+
+**Oracle behavior:** `int function() fp = &f;` stores a callable function
+pointer; `fp()` dispatches through it. The VM dispatches correctly when two
+function pointers hash to the same slot.
+
+**Required implementation (medium — new local kind):** Three sub-items:
+
+1. **Static nested function declarations:** Add a
+   `DeclarationStatement` branch (or extend the existing one) to handle nested
+   `FuncDeclaration` nodes with `isStatic`. Register the function in the
+   compiler's function table (as `registerFunction` does for callees) so
+   subsequent `&f` and `f()` calls can resolve it. No closure environment
+   needed (static nested functions don't capture).
+2. **`&f` function address expression:** Extend `compileExpression` to
+   handle `AddrExp` of a `FuncDeclaration` operand (or a `VarExp` holding a
+   function symbol). Emit a new frame slot holding a function-pointer value: a
+   `size_t`-wide slot storing the VM function index (or a sentinel for the
+   dispatch table). Add `ScalarType.funcPtr_` or reuse `ulong_` with a
+   function-pointer local registry, whichever is simpler.
+3. **Indirect call dispatch:** Extend `compileCall` to handle a `CallExp`
+   whose target is a function-pointer local (or variable) rather than a named
+   `FuncDeclaration`. The VM opcode for indirect call must look up the callee
+   by the stored function index; the hash-collision test verifies that two
+   distinct function pointers with the same Bernstein hash dispatch to different
+   callees.
+
+**Dependency:** None (independent of modes 1–5).
+
+**DONE:** `&f` (`AddrExp`/`SymOffExp` over a `FuncDeclaration`) compiles to a
+size_t slot holding the callee's VM function index (`functionPointer` registers
+the function for lazy compilation). A `int function()` local takes the existing
+pointer-declaration path. Static nested `FuncDeclaration`s in a `DeclarationExp`
+are a codegen no-op (body compiled lazily on first `&f`/call). DMD lowers `fp()`
+as `(*fp)()`; `compileIndirectCall` reads the index from the pointer slot and
+emits the new `callIndirect` opcode (justified: `call` hard-codes the callee
+index in the operand, so run-time dispatch needs a variant that reads it from a
+frame slot; the machine shares the `call` body via the resolved index).
+Function-pointer calls with arguments are rejected (no test; layout is only
+known at run time). All 3 tests pass; control_flow BytecodeNewCore failures
+13→ remaining belong to other modes (try-catch/finally goto, utf string
+decode, mode-7 lambdas/cast). No regressions under `bin/ut --random`.
+
+### Failure mode 7: delegate/closure and `this.field` capture not supported
+(2 tests) and int-to-float cast from call result missing (1 test)
+
+**Root cause — `nestedLambdaReadsEnclosingThisField` (1 test):** The struct
+method `readThroughNestedLambda` declares `auto nested = () => value;` where
+`value` is `this.value`. The lambda captures `this` by reference (DMD lowers
+it as a delegate with an environment pointer). The compiler hits
+`Unsupported type in bytecode core: int delegate() pure nothrow @nogc @safe`
+when trying to declare the `nested` local.
+
+**Root cause — `nestedLambdaIifeReadsEnclosingThisField` (1 test):** The
+IIFE form `(() => value)()` is called immediately. The compiler does not
+encounter the delegate local but compiles the nested lambda body, which
+accesses `this.value` via a `DotVarExp` on an implicit `ThisExp`. It throws
+`Unsupported expression in bytecode core: this.value`.
+
+**Root cause — `overloadResolutionBySignature` (1 test):** The fixture calls
+`double d = seed;` where `seed()` returns `int`. DMD inserts
+`cast(double)seed()`. The new core's numeric cast handler only handles
+scalar-to-scalar integer widening/truncation and int/float literal paths; a
+`CastExp` whose sub-expression is a `CallExp` returning `int` is rejected as
+`Unsupported numeric cast in bytecode core: cast(double)seed()`. This is a
+narrow missing case in the existing cast lowering, not a new feature area.
+
+**Failing tests (3):**
+- `function.nestedLambdaReadsEnclosingThisField` — delegate type unsupported
+- `function.nestedLambdaIifeReadsEnclosingThisField` — `this.value` in
+  nested lambda body
+- `function.overloadResolutionBySignature` — `cast(double)callResult()`
+
+**Required implementation:**
+
+- **`cast(double)intExpr` where `intExpr` is a call result (small):** Extend
+  the numeric cast path to allow any int-typed expression as the source, not
+  just scalar locals. The operand from `compileExpression(cast_.e1)` already
+  carries its `ScalarType`; the cast dispatch just needs to accept non-local
+  operands (call result temporaries) as the source.
+- **Nested lambda / delegate and `this.value` access (large):** Full closure
+  support requires: (a) the delegate local type (`ScalarType.delegate_` or a
+  new tracked local kind holding a `{funcPtr, envPtr}` pair); (b) emitting the
+  lambda body as a compiled function capturing `this` via the environment
+  pointer; (c) lowering `this.field` inside the nested lambda body through the
+  captured `this` pointer. This is the leading edge of the Closures section in
+  the plan (see "## Closures"). The IIFE form additionally needs the compiler
+  to recognize and immediately call an inline delegate literal, which exercises
+  the same machinery.
+
+**Dependency:** The `cast(double)callResult()` fix is independent and small
+(sub-item of the cast path). The delegate/closure items depend on
+the struct field-through-pointer machinery already present for `new Struct`
+heap pointers.
+
+**DONE (mode 7).** All 3 green; control_flow failures 13 → 10 (remaining are
+mode 4 catch/try-finally and mode 9 utf foreach only).
+
+- `cast(double)intExpr` (`overloadResolutionBySignature`): the cast path already
+  materialised any rvalue (call result) into a temp via `compileExpression`; the
+  real gap was no int→double conversion opcode (the task's "scalar-local-only"
+  framing was inaccurate — only `double→int` existed). Added `convertIntToDouble`
+  (a: dest double, b: source int, c: source byte width OR'd with
+  `unsignedConvertFlag` for unsigned sources) and an `integerToDouble` machine
+  helper dispatching on width and signedness, so e.g. a `uint` with the high bit
+  set converts to a positive double. New cast branch fires on
+  `!isFloating(source) && target==double_`.
+- Delegate/closure (`nestedLambda*`). DMD lowering, verified live: the lambda is
+  a `FuncLiteralDeclaration` (tok `delegate_`, isNested), `vthis=__capture` typed
+  `void*`, no explicit parameters. Inside the body `this.value` is a `DotVarExp`
+  over a bare `ThisExp` whose `.var` is identity-equal to the ENCLOSING method's
+  `vthis` (DMD resolves the captured field to the enclosing `this`, not to
+  `__capture`). The only captured entity is the enclosing `this`, so the
+  delegate context pointer is simply the enclosing `Holder` address — there is no
+  intermediate closure/frame struct, despite `__capture` being typed `void*`.
+  The named init is a `FuncExp` (op `function_`), NOT a `DelegateExp`.
+- Implementation: model the capturing lambda as if it were a method of the
+  enclosing struct. `thisStructDeclaration` now returns the enclosing struct for
+  such a lambda (`capturedThisStructDeclaration` via `toParent2().isThis()`), so
+  `parameterLayout`/`compileFunctionBody` give it the ordinary hidden `this`-block
+  ref-parameter and `this.field` resolves through the existing `_thisLocal`
+  receiver path — no new ThisExp handling needed. The delegate value is a 16-byte
+  `{functionIndex, context}` pair (`DelegateLocal`); context is the enclosing
+  method's `this` receiver frame offset. `nested()` dispatches via the existing
+  `callIndirect` (index word) after copying the context word into the lambda's
+  `this`-block slot, so the machine's ref-parameter loop carries `this` in/out
+  unchanged. The IIFE `(() => this.f)()` needs no delegate value: `call.f` is the
+  lambda, so it flows through the normal direct-call path; only
+  `methodReceiverOffset` gained a FuncExp branch yielding the enclosing
+  `_thisLocal.offset`. No new opcode for the delegate path (reuses `callIndirect`
+  and the receiver/ref ABI); Mode 9's inline-delegate call can reuse
+  `compileDelegateCall`.
+
+### Failure mode 8: `foreach_reverse` over a dynamic array has an
+off-by-one in the loop counter (1 test)
+
+**Root cause:** `foreach.reverseIntArrayVisitsBackToFront` iterates
+`foreach_reverse (x; arr)` where `arr = [1,2,3]`. DMD lowers this to a
+`ForStatement` whose condition uses the post-decrement `arr.length--`-style
+pattern (the loop variable is initialized to `arr.length` and the condition
+checks `i-- > 0` with the post-decrement as a `PostExp` whose `e2` is `-1`).
+The `compilePostIncrement` handler in `compiler.d` always uses `Op.addInt4`
+(or `addInt8`) applied with the `post.e2` operand. For `i--`, `post.e2` is
+`-1` as a signed literal. The add with `-1` is correct for signed types but
+the loop counter is `size_t` (ulong). The emitted comparison
+(`i-- > 0` on a `ulong_` slot) has an off-by-one: on the iteration where
+the post-decrement returns `0` before decrementing to `ulong.max`, the loop
+exits correctly; but the array index used *inside* the body is the
+*post-decremented* counter value (the pre-decrement value was 0, so the
+decremented slot is now `ulong.max`, which wraps to a huge index). The
+runtime reports `index [4] is out of bounds for array of length 3` because
+the wrapped counter reads an out-of-range slot in the visited array during
+`visited ~= x`.
+
+The fix is narrow: the post-decrement path in `compilePostIncrement` should
+use `Op.subInt8` (not `Op.addInt8`) when `post.e2` is the literal `-1`
+(or equivalently, detect `TOK.minusMinus` and emit subtract-1). Alternatively,
+confirm the exact DMD lowering and fix the comparison/index pair. This is a
+single-opcode selection fix with no new VM opcode needed.
+
+**Failing test (1):** `foreach.reverseIntArrayVisitsBackToFront`
+
+**Required implementation (small — opcode selection fix):** In
+`compilePostIncrement`, detect when `post.op == TOK.minusMinus` (or when
+`post.e2` is a negative constant) and emit `Op.subInt8`/`Op.subInt4` instead
+of `addInt8`/`addInt4`. Alternatively, separate `compilePostDecrement` as a
+mirror of `compilePostIncrement` with the subtract opcodes.
+
+**Dependency:** None (independent, self-contained fix).
+
+- DONE: `PostExp.e2` is always literal `1` (not `-1` as analysis guessed);
+  `post.op` is what distinguishes `++`/`--`. Fixed `compilePostIncrement` to
+  emit `subInt8`/`subInt4` when `post.op == EXP.minusMinus`, else
+  `addInt8`/`addInt4`. `reverseIntArrayVisitsBackToFront` green; control_flow
+  31→30 failures, no regressions across full suite.
+
+### Failure mode 9: `_aApply*` druntime UTF-string iteration lowering not
+supported (4 tests)
+
+**Root cause:** `foreach` over a UTF string (`string`, `wstring`, or
+`dstring`) where the loop variable has a different code-unit width is lowered
+by DMD to a `_aApplycd1`/`_aApplydc1`/`_aApplywd1`/`_aApplyRwd1` druntime
+call (the `foreach`/`foreach_reverse` aggregate-apply family). These are
+external native functions (no available source body), so `compileCall`
+reports `Unsupported call in bytecode core: _aApplywd1(...)`.
+
+**Failing tests (4):**
+- `foreach.utf8StringDecodesDchars` — `_aApplycd1` (char→dchar)
+- `foreach.utf32StringEncodesAsUtf8WhenIteratingChar` — `_aApplydc1`
+  (dchar→char)
+- `foreach.reverseUtf16String` — `_aApplyRwd1` (wchar→dchar, reverse)
+- `foreach.utf16StringDecodesDchars` — `_aApplywd1` (wchar→dchar)
+
+**Oracle behavior:** Iterating a UTF string with mismatched element/variable
+widths decodes code points via druntime's `_aApply*` family, passing a
+delegate for each decoded character. The VM must execute the loop body via
+the delegate on each call.
+
+**Required implementation (medium — druntime hook interception):** Intercept
+the `_aApply*` call family at the `compileCall` level (matching by mangled
+prefix or by `FuncDeclaration.ident.toString`). Implement each variant as a
+VM-native loop: iterate the source string's code units, decode to the target
+width (UTF-8/16/32 decode), call the delegate (the `CallExp`'s last argument)
+with the decoded value, and stop if the delegate returns non-zero. The
+delegate argument is a literal inline closure whose body is the `foreach`
+loop body; the compiler must already be able to emit and call a simple
+no-capture delegate body (this is adjacent to mode 7 but requires only a
+one-shot call, not a stored delegate local).
+
+**Dependency:** Partial dependency on mode 7 (delegate call mechanism). The
+`_aApply*` delegate is always an inline literal, not a stored variable, so
+a simplified inline-delegate-call path may be sufficient without full closure
+support.
+
+### Summary and dependency order
+
+The 36 failures map to 9 failure modes (one mode per concern). Implementation
+order respects dependencies:
+
+1. **Break/Continue lowering** (mode 1) — 7 tests, small. Prerequisite for
+   modes 2 and 3.
+2. **Do/UnrolledLoop lowering** (mode 2) — 2 tests (overlap with mode 1),
+   small. After mode 1.
+3. **SwitchStatement lowering** (mode 3) — 11 tests, large. After mode 1.
+4. **TryCatch + finally-on-goto** (mode 4) — 4 tests, medium. After modes 1
+   and 3.
+5. **String switch selector** (mode 5) — 1 test, small. After mode 3.
+6. **Function-pointer `&f` and static nested functions** (mode 6) — 3 tests,
+   medium. Independent (no prior-mode dependency).
+7. **Delegate/closure + `this.field` capture; int-to-float call-result cast**
+   (mode 7) — 3 tests (2 large/closure, 1 small/cast). The cast fix is
+   independent; the closure items depend on the struct heap-pointer machinery
+   already present.
+8. **`foreach_reverse` post-decrement off-by-one** (mode 8) — 1 test, small.
+   Independent.
+9. **`_aApply*` UTF string iteration** (mode 9) — 4 tests, medium. Partial
+   dependency on mode 7 (delegate call mechanism).
+
+**Size classification:**
+- Small (single opcode / narrow compiler fix): modes 1, 2, 5, 8; cast
+  sub-item of mode 7.
+- Medium (new call-site interception or pointer machinery): modes 4, 6, 9.
+- Large (new statement family): mode 3; closure sub-items of mode 7.
+
+After all 9 modes are implemented,
+`ut.backends.runner.ct.control_flow.*.BytecodeNewCore` should be complete
+(67/67).

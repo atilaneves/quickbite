@@ -251,6 +251,16 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ++ip;
                 break;
 
+            case stringSliceEqual:
+                stack[base + instruction.a] = stringSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    program.data,
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
             case appendElement1, appendElement4:
                 heap ~= appendElement(
                     stack,
@@ -410,6 +420,15 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = converted;
+                ++ip;
+                break;
+
+            case convertIntToDouble:
+                stack[
+                    base + instruction.a .. base + instruction.a + double.sizeof
+                ] = floatBytes(integerToDouble(
+                    stack, base + instruction.b, instruction.c,
+                ));
                 ++ip;
                 break;
 
@@ -995,13 +1014,22 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 ip = stack[base + instruction.a] != 0 ? instruction.b : ip + 1;
                 break;
 
-            case call:
-                if (program.functions[instruction.a].code.length == 0)
-                    compileFunction(instruction.a);
+            case call, callIndirect:
+                // A direct `call` carries the callee's function index in
+                // `instruction.a`; an indirect `callIndirect` reads it from the
+                // size_t slot at that frame offset (the function-pointer value).
+                const calleeIndex = instruction.op == call
+                    ? instruction.a
+                    : cast(ushort) scalarValue!size_t(
+                        stack, base + instruction.a,
+                    );
+
+                if (program.functions[calleeIndex].code.length == 0)
+                    compileFunction(calleeIndex);
 
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;
-                const callee = program.functions[instruction.a];
+                const callee = program.functions[calleeIndex];
                 if (stack.length < calleeBase + callee.frameSize)
                     stack.length = calleeBase + callee.frameSize;
 
@@ -1033,7 +1061,7 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 frames ~= Frame(
                     functionIndex, ip + 1, base, instruction.c, refWritebacks,
                 );
-                functionIndex = instruction.a;
+                functionIndex = calleeIndex;
                 base = calleeBase;
                 ip = 0;
                 break;
@@ -1462,6 +1490,22 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
+// True iff the two string-slice descriptors {dataOffset, length} hold the same
+// length and identical bytes within the read-only data segment.
+private bool stringSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in ubyte[] data,
+) @safe pure {
+    const leftDataOffset = scalarValue!uint(stack, leftOffset);
+    const leftLength = scalarValue!uint(stack, leftOffset + uint.sizeof);
+    const rightDataOffset = scalarValue!uint(stack, rightOffset);
+    const rightLength = scalarValue!uint(stack, rightOffset + uint.sizeof);
+    return data[leftDataOffset .. leftDataOffset + leftLength] ==
+        data[rightDataOffset .. rightDataOffset + rightLength];
+}
+
 // Copy the source slice's elements into the destination slice's backing
 // memory, write-through. The lengths must match; overlapping ranges abort with
 // druntime's plain "Range violation" message.
@@ -1737,6 +1781,32 @@ private T scalarValue(T)(
         raw |= cast(ulong) stack[offset + i] << (8 * i);
 
     return cast(T) raw;
+}
+
+// Read an integer source at `offset` and convert it to `double`, honouring its
+// byte width (1/2/4/8) and signedness (the `unsignedConvertFlag` bit in
+// `widthAndFlag`). Backs `convertIntToDouble`.
+private double integerToDouble(
+    in ubyte[] stack,
+    in size_t offset,
+    in size_t widthAndFlag,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: unsignedConvertFlag;
+
+    const width = widthAndFlag & (unsignedConvertFlag - 1);
+    if (widthAndFlag & unsignedConvertFlag)
+        switch (width) {
+            case 1: return scalarValue!ubyte(stack, offset);
+            case 2: return scalarValue!ushort(stack, offset);
+            case 4: return scalarValue!uint(stack, offset);
+            default: return scalarValue!ulong(stack, offset);
+        }
+    switch (width) {
+        case 1: return scalarValue!byte(stack, offset);
+        case 2: return scalarValue!short(stack, offset);
+        case 4: return scalarValue!int(stack, offset);
+        default: return scalarValue!long(stack, offset);
+    }
 }
 
 // Write the low `T.sizeof` bytes of `value` little-endian into `stack` at
