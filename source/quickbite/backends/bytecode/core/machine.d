@@ -35,6 +35,11 @@ package(quickbite.backends.bytecode) ubyte[] run(
     // created empty map); the table roots every map's keys and values.
     AssocArray[] maps;
     Frame[] frames;
+    // Active catch handlers, innermost last. A `pushHandler` records the catch
+    // body's location (instruction index plus the frame it runs in); a
+    // `throwString` with any handler active redirects to the innermost one
+    // (popping it) instead of propagating as a host exception.
+    Handler[] handlers;
     size_t functionIndex = 0;
     size_t base = 0;
     size_t ip;
@@ -1208,12 +1213,37 @@ package(quickbite.backends.bytecode) ubyte[] run(
                 break;
             }
 
+            case pushHandler:
+                handlers ~= Handler(
+                    functionIndex, base, frames.length, instruction.a,
+                );
+                ++ip;
+                break;
+
+            case popHandler:
+                handlers.length -= 1;
+                ++ip;
+                break;
+
             case throwString:
-                throw new Exception(stringFromSlice(
-                    stack,
-                    base + instruction.a,
-                    program.data,
-                ));
+                // With a catch handler active, redirect to it (popping it):
+                // restore the handler's frame and jump to the catch body. With
+                // none, the throw escapes as a host exception (an uncaught
+                // throw or a synthesised diagnostic).
+                if (handlers.length == 0)
+                    throw new Exception(stringFromSlice(
+                        stack,
+                        base + instruction.a,
+                        program.data,
+                    ));
+
+                const handler = handlers[$ - 1];
+                handlers.length -= 1;
+                frames.length = handler.frameDepth;
+                functionIndex = handler.functionIndex;
+                base = handler.base;
+                ip = handler.handlerIp;
+                break;
 
             case transcodeUtf: {
                 auto block = transcodeUtfString(
@@ -1699,6 +1729,16 @@ private struct Frame {
     size_t base;
     ushort destination;
     RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
+}
+
+// An active catch handler: where to resume (the catch body's instruction index
+// and the function it lives in) and the call-stack depth its frame sits at, so
+// a throw can restore the frame state before jumping to the catch body.
+private struct Handler {
+    size_t functionIndex;
+    size_t base;
+    size_t frameDepth;
+    size_t handlerIp;
 }
 
 // A pending scalar `ref` writeback: copy `size` bytes from the callee

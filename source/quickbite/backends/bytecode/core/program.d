@@ -384,6 +384,13 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // c: 16-byte source slice descriptor of the string's code units. Mirrors the
     // interpreter's decode/encode helpers byte-for-byte.
     transcodeUtf,
+    // Push a catch-handler record onto the machine's handler stack: a: the
+    // instruction index of the catch body. A later `throwString` redirects to
+    // the innermost handler (popping it) instead of propagating as a host
+    // exception. Backs `try { } catch (Exception) { }`.
+    pushHandler,
+    // Pop the innermost catch handler on normal completion of a try body.
+    popHandler,
     ret, // a: frame offset of the return value
 }
 

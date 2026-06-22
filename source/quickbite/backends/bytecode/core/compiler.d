@@ -115,6 +115,11 @@ private struct Compiler {
     // The switches currently being compiled, innermost last; each maps its cases
     // and default to body indices for the dispatch chain (see SwitchContext).
     private SwitchContext[] _switchStack;
+    // The `try`/`finally` scopes whose try body is currently being compiled,
+    // innermost last. A `goto`/`break`/`continue`/fall-through leaving a try body
+    // must run that scope's `finally` block first; the exited scopes' finally
+    // blocks are re-emitted inline on the exit edge (see `runExitedFinally`).
+    private TryFinallyContext[] _tryFinallyStack;
     // The label ident of a `label:` that immediately wraps the next loop, so the
     // loop records it for labeled `break`/`continue`; null otherwise.
     private const(void)* _pendingLoopLabel;
@@ -159,6 +164,7 @@ private struct Compiler {
         _pendingGotos = null;
         _loopStack = null;
         _switchStack = null;
+        _tryFinallyStack = null;
         _pendingLoopLabel = null;
         _applyBodyExits = null;
 
@@ -342,15 +348,13 @@ private struct Compiler {
             return;
         }
 
-        // DMD wraps a scope holding structs with elaborate destructors in a
-        // `try { body } finally { dtors }` so the dtors run on every exit. No
-        // exception is thrown across these scopes in the core's tests, so the
-        // ordinary path -- body then finally -- replicates the runtime effect.
         if (auto tryFinally = statement.isTryFinallyStatement) {
-            if (tryFinally._body !is null)
-                compileStatement(tryFinally._body);
-            if (tryFinally.finalbody !is null)
-                compileStatement(tryFinally.finalbody);
+            compileTryFinallyStatement(tryFinally);
+            return;
+        }
+
+        if (auto tryCatch = statement.isTryCatchStatement) {
+            compileTryCatchStatement(tryCatch);
             return;
         }
 
@@ -500,16 +504,164 @@ private struct Compiler {
     private void compileGotoStatement(
         imported!"dmd.statement".GotoStatement goto_,
     ) {
+        // A goto leaving one or more enclosing `try` bodies must run their
+        // `finally` blocks first. Innermost-first, run each scope whose try body
+        // does not define the target label (the goto stays within the first
+        // scope that does, and within every scope outside it).
+        const target = cast(const(void)*) goto_.ident;
+        size_t exited;
+        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
+            if (target in _tryFinallyStack[index].labels)
+                break;
+            ++exited;
+        }
+        runExitedFinally(exited);
+
         const index = emitJump;
         const key = cast(const(void)*) goto_.ident;
 
-        if (auto target = key in _labelTargets) {
-            _code[index].a = cast(ushort) *target;
-            _code[index].b = cast(ushort) *target;
+        if (auto known = key in _labelTargets) {
+            _code[index].a = cast(ushort) *known;
+            _code[index].b = cast(ushort) *known;
             return;
         }
 
         _pendingGotos[key] ~= index;
+    }
+
+    // `try { body } finally { final }`: compile the body, then the finally on the
+    // fall-through edge. A `goto`/`break`/`continue` that leaves the body runs
+    // the finally inline first (see `runExitedFinally`); since no test throws
+    // across a `try`/`finally`, no runtime handler is needed for the throw edge.
+    private void compileTryFinallyStatement(
+        imported!"dmd.statement".TryFinallyStatement tryFinally,
+    ) {
+        TryFinallyContext context;
+        context.finalbody = tryFinally.finalbody;
+        context.loopDepth = _loopStack.length;
+        if (tryFinally._body !is null)
+            collectLabels(tryFinally._body, context.labels);
+        _tryFinallyStack ~= context;
+
+        if (tryFinally._body !is null)
+            compileStatement(tryFinally._body);
+
+        _tryFinallyStack.length -= 1;
+
+        // The normal fall-through exit also runs the finally.
+        if (tryFinally.finalbody !is null)
+            compileStatement(tryFinally.finalbody);
+    }
+
+    // Re-emit the `finally` blocks of the innermost `count` `try`/`finally`
+    // scopes, innermost-first, on an exit edge (a `goto`/`break`/`continue`
+    // leaving those scopes). Each finally is compiled with the exited scopes
+    // removed from the stack so a transfer inside a finally targets only the
+    // surviving outer scopes.
+    private void runExitedFinally(in size_t count) {
+        foreach (step; 0 .. count) {
+            const index = _tryFinallyStack.length - 1 - step;
+            auto finalbody = _tryFinallyStack[index].finalbody;
+            if (finalbody is null)
+                continue;
+            auto saved = _tryFinallyStack;
+            _tryFinallyStack = _tryFinallyStack[0 .. index];
+            compileStatement(finalbody);
+            _tryFinallyStack = saved;
+        }
+    }
+
+    // The labels defined lexically within a statement subtree, used to decide
+    // whether a `goto` stays inside an enclosing `try` body. Recurses through
+    // every nested statement container so a label inside a switch/loop/if within
+    // the try body is found (a `goto` to it does not exit the try).
+    private static void collectLabels(
+        imported!"dmd.statement".Statement statement,
+        ref bool[const(void)*] labels,
+    ) {
+        if (statement is null)
+            return;
+        if (auto label = statement.isLabelStatement) {
+            labels[cast(const(void)*) label.ident] = true;
+            collectLabels(label.statement, labels);
+        } else if (auto scope_ = statement.isScopeStatement)
+            collectLabels(scope_.statement, labels);
+        else if (auto compound = statement.isCompoundStatement) {
+            foreach (childIndex; 0 .. compound.statements.length)
+                collectLabels((*compound.statements)[childIndex], labels);
+        } else if (auto unrolled = statement.isUnrolledLoopStatement) {
+            if (unrolled.statements !is null)
+                foreach (childIndex; 0 .. unrolled.statements.length)
+                    collectLabels((*unrolled.statements)[childIndex], labels);
+        } else if (auto if_ = statement.isIfStatement) {
+            collectLabels(if_.ifbody, labels);
+            collectLabels(if_.elsebody, labels);
+        } else if (auto for_ = statement.isForStatement) {
+            collectLabels(for_._init, labels);
+            collectLabels(for_._body, labels);
+        } else if (auto while_ = statement.isWhileStatement)
+            collectLabels(while_._body, labels);
+        else if (auto do_ = statement.isDoStatement)
+            collectLabels(do_._body, labels);
+        else if (auto switch_ = statement.isSwitchStatement)
+            collectLabels(switch_._body, labels);
+        else if (auto case_ = statement.isCaseStatement)
+            collectLabels(case_.statement, labels);
+        else if (auto default_ = statement.isDefaultStatement)
+            collectLabels(default_.statement, labels);
+        else if (auto with_ = statement.isWithStatement)
+            collectLabels(with_._body, labels);
+        else if (auto tryFinally = statement.isTryFinallyStatement) {
+            collectLabels(tryFinally._body, labels);
+            collectLabels(tryFinally.finalbody, labels);
+        } else if (auto tryCatch = statement.isTryCatchStatement) {
+            collectLabels(tryCatch._body, labels);
+            if (tryCatch.catches !is null)
+                foreach (catchIndex; 0 .. tryCatch.catches.length)
+                    collectLabels(
+                        (*tryCatch.catches)[catchIndex].handler, labels,
+                    );
+        }
+    }
+
+    // `try { body } catch (Exception) { handler }`: register a runtime handler
+    // at the catch body, compile the try body, then on normal completion pop the
+    // handler and skip the catch. A `throwString` inside the body redirects to
+    // the handler (popping it). Scoped to the test surface: a single catch whose
+    // type is `Exception` (or a base of it) and whose variable is unnamed.
+    private void compileTryCatchStatement(
+        imported!"dmd.statement".TryCatchStatement tryCatch,
+    ) {
+        import std.conv: text;
+
+        if (tryCatch.catches is null || tryCatch.catches.length != 1)
+            throw new Exception(text(
+                "Unsupported try/catch in bytecode core: ",
+                tryCatch.catches is null ? 0 : tryCatch.catches.length,
+                " catch clauses",
+            ));
+
+        auto catch_ = (*tryCatch.catches)[0];
+
+        // Reserve the handler-registration instruction; its operand (the catch
+        // body's instruction index) is patched once the body is emitted.
+        const pushIndex = _code.length;
+        _code ~= Instruction(Op.pushHandler);
+
+        if (tryCatch._body !is null)
+            compileStatement(tryCatch._body);
+
+        // Normal completion of the try body: drop the handler and skip the catch.
+        _code ~= Instruction(Op.popHandler);
+        const skipCatch = emitJump;
+
+        // The handler entry: a throw inside the body lands here with the handler
+        // already popped.
+        _code[pushIndex].a = cast(ushort) _code.length;
+        if (catch_.handler !is null)
+            compileStatement(catch_.handler);
+
+        patchJump(skipCatch);
     }
 
     // A `for (init; condition; increment) body` loop, the lowering of `foreach`
@@ -627,6 +779,7 @@ private struct Compiler {
         // Unlabeled `break` exits the innermost breakable statement, which
         // includes a switch; a switch's context is a break target like a loop.
         const loop = targetLoopIndex(break_.ident, false);
+        runExitedFinally(finallyScopesInsideLoop(loop));
         _loopStack[loop].breakPatches ~= emitJump;
     }
 
@@ -637,7 +790,23 @@ private struct Compiler {
     ) {
         // Unlabeled `continue` skips a switch and targets the enclosing loop.
         const loop = targetLoopIndex(continue_.ident, true);
+        runExitedFinally(finallyScopesInsideLoop(loop));
         _loopStack[loop].continuePatches ~= emitJump;
+    }
+
+    // The count of innermost `try`/`finally` scopes a `break`/`continue` to the
+    // loop at `loopIndex` exits: those pushed while inside that loop (their
+    // recorded loop depth exceeds the target loop's index).
+    private size_t finallyScopesInsideLoop(in size_t loopIndex)
+        @safe @nogc nothrow pure
+    {
+        size_t count;
+        foreach_reverse (index; 0 .. _tryFinallyStack.length) {
+            if (_tryFinallyStack[index].loopDepth <= loopIndex)
+                break;
+            ++count;
+        }
+        return count;
     }
 
     // The loop a `break`/`continue` targets: for an unlabeled transfer the
@@ -6023,6 +6192,18 @@ private struct SwitchContext {
     size_t defaultIndex = size_t.max;
     size_t[][const(void)*] gotoCasePatches; // target CaseStatement* -> jumps
     size_t[] gotoDefaultPatches;
+}
+
+// A `try`/`finally` scope active while its try body is compiled. `finalbody` is
+// the DMD `finally` statement, re-emitted inline on each exit edge that leaves
+// the body. `labels` is the set of label idents defined inside the try body: a
+// `goto` to a label in this set stays inside the scope (no finally), one to a
+// label outside it exits the scope. `loopDepth` is `_loopStack.length` at push
+// time, so a `break`/`continue` to an enclosing loop knows it exits this scope.
+private struct TryFinallyContext {
+    imported!"dmd.statement".Statement finalbody;
+    bool[const(void)*] labels;
+    size_t loopDepth;
 }
 
 // A struct local (or by-value struct parameter): the base offset of its inline

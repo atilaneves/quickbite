@@ -2994,6 +2994,42 @@ independent. The `goto`-crosses-`TryFinally` fix touches the existing
 `compileGotoStatement` and requires the compiler to know which try-finally
 region the goto originates in.
 
+**DONE (6/6):** Implemented the narrow try/catch/finally control-flow surface
+these tests need; deliberately did NOT build general exception unwinding
+(module 11). A compile-time `_tryFinallyStack` records each `try`/`finally`
+scope active while its try body compiles, holding the `finally` AST, the set of
+label idents defined in the try body, and the `_loopStack` depth at push. On
+each exit edge that leaves a try body the finally is re-emitted inline
+(`runExitedFinally`), innermost-first, with the exited scopes temporarily
+removed from the stack: the fall-through edge (in `compileTryFinallyStatement`),
+a `goto` whose target label is outside the scope (`compileGotoStatement`
+counts scopes whose try-body label set lacks the target — `goto_.tf`/`tryBody`
+were observed null here, so the label set is the reliable signal), and a
+`break`/`continue` to a loop enclosing the try (`finallyScopesInsideLoop`
+counts scopes pushed inside the target loop). `collectLabels` recurses through
+every nested statement container (compound/scope/if/for/while/do/switch/case/
+default/with/unrolled/try) so a label inside a switch within the try is found
+(fixed a regression where `goto resumed` inside a `switch` inside a
+`try`/`finally` wrongly ran the finally). `TryCatchStatement`
+(`compileTryCatchStatement`, scoped to a single `catch (Exception)` with an
+unnamed variable) emits a runtime handler table: `Op.pushHandler` at try entry
+records the catch body's instruction index and frame, the try body compiles,
+then `Op.popHandler` + a jump-over-catch on normal completion, then the catch
+handler body. The machine keeps a `Handler[]` stack; `throwString` with a
+handler active pops it, restores the recorded frame (`functionIndex`/`base`/
+frame depth), and jumps to the catch body, else throws the host exception as
+before (uncaught throws and synthesised assert diagnostics unchanged). New
+opcodes `pushHandler`/`popHandler` (justified: the existing throw machinery had
+no in-VM catch redirect — `throwString` always escaped as a host exception;
+these are the minimal pair to register/retire a catch region and are reused by
+nothing else). Deliberately scoped out: cross-frame unwinding beyond restoring
+the recorded handler frame, class-hierarchy catch matching, named catch
+variables, multiple catch clauses, and `finally` execution on the throw edge
+(no test throws across a `try`/`finally`). All six tests
+(`catch.gotoRestarts{Break,Continue,Goto}Statement`,
+`goto.restarts{Break,Continue,Goto}StatementInTryFinally`) pass; control_flow
+BytecodeNewCore is 0 failed; full `bin/ut --random` shows no regressions.
+
 ### Failure mode 5: `string` switch selector not supported (1 test)
 
 **Root cause:** `switch.stringCases` uses `switch (s)` where `s` has type
