@@ -42,6 +42,67 @@ it was abandoned once the GC finding below made it moot. **Do not productise
 PGO for the frontend number — it optimises the ~10% that is actually frontend
 code.**
 
+## Dead end 2 — a newer/better GC is the wrong axis (and symgc crashes)
+
+Before pinning the cause, the obvious question: would a *better collector*
+close the gap? Tested every GC selectable here, interleaved against a
+conservative baseline in the same thermal state (`--DRT-gcopt=gc:NAME`):
+
+| cerealed frontend          | min     | vs conservative          |
+| -------------------------- | ------- | ------------------------ |
+| conservative (default)     | 1072 ms | —                        |
+| `gc:precise`               | 1126 ms | **+5% (slower)**         |
+| `fork:1` (concurrent mark) | —       | **SIGSEGV (exit 139)**   |
+| symgc `gc:sdc` (see below) | —       | **SIGSEGV (exit 139)**   |
+| arena / no collections     | 761 ms  | −28% (the actual lever)  |
+
+`gc:precise` is *slower*, not faster: `rmem.d` allocates the AST with raw,
+untyped `GC.malloc` (no `TypeInfo`), so precise scanning gets zero precision
+benefit — the blocks are scanned conservatively anyway — while you still pay
+its per-pool bookkeeping. The `fork:1` concurrent collector segfaults outright.
+
+### symgc (the Symmetry Investments GC) cannot run the frontend
+
+The GC work by Amaury Séchet and Steven Schveighoffer —
+`github.com/symmetryinvestments/symgc` (DConf 2024, "We Need a New GC"), a
+**conservative, non-moving, thread-cached** collector with jemalloc-style
+size-class slabs, ported from Séchet's SDC compiler — was linked in directly
+and measured (v0.0.8, `dub fetch symgc`, registered as `sdc`/`sdcq`, built into
+`benchmark-ldc` with `ldc2`). It **segfaults during its first collection on the
+cerealed parse**, reproducibly, across `sdc`, quiet `sdcq`, large `initReserve`,
+*and* both packaging subconfigs (so it is symgc itself, not the integration
+glue):
+
+- **pthread-hook build** dies *inside symgc's own collector*:
+  `ThreadCache.alloc → Collector.runGCCycle → PageFiller.collectDenseAllocations`,
+  faulting on `initializer for TypeInfo_S…Array!RootObject`.
+- **druntime-hook build** dies in *dmd code*:
+  `TemplateInstance.arraySyntaxCopy` jumping through a garbage pointer — a
+  still-live AST block freed under it.
+
+symgc is conservative and non-moving, so unlike `gc:precise` it *should* in
+principle tolerate `rmem`'s untyped blocks the way the stock conservative GC
+does — the crash is therefore **not** a precise-scanning mismatch. The most
+likely culprit is its per-object `containsPointers`/`NO_SCAN` optimization or
+dense-slab finalizer metadata being defeated by dmd's raw `GC.malloc`
+attributes, compounded by v0.0.8 integration immaturity (its dub support is
+explicitly WIP). It was not root-caused further: debugging someone else's
+pre-1.0 GC is out of scope for a question the arena already answers, and symgc
+targets a **different axis** anyway — its published wins are RAM footprint
+(>50%, e.g. 2952 → 907 MB on one service) and lock-free multithreaded
+allocation throughput, not the cost of collecting a live heap.
+
+**Why no collector can help here:** the parse builds a heap that is ~100% live
+(the AST under construction; nothing is garbage until process exit) and
+collects it 8 times — 255 ms of marking that frees nothing. A better
+*collector* reclaims garbage faster or more cheaply; there is no garbage to
+reclaim. symgc would, if anything, collect this heap *more* often, not less:
+its target heap size is clamped toward `1.625×` the live peak when reclaim is
+poor, and here reclaim is ~zero, so it re-collects the growing live AST
+aggressively. The only lever is *not collecting* — an allocation-strategy
+change (the arena), not a collector swap. That is what the rest of this
+document measures.
+
 ## The real cause — the AST is GC-allocated
 
 Profiling the parse (`perf record -F 1999 -g`) shows where the time goes:

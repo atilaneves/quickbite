@@ -404,7 +404,13 @@ distro **`dmd` binary** calls `mem.disableGC()` to use a malloc bump arena;
 quickbite never disables it. Switching the AST to the arena (with collections
 suppressed) drops the cerealed frontend **1055 → 761 ms (−27.8%), interleaved**,
 essentially closing the gap to distro `dmd`'s ~650 ms; PGO (−5%) and ThinLTO
-(~0%) only ever touched the ~10% that is real frontend code. The fix is **not**
+(~0%) only ever touched the ~10% that is real frontend code. Swapping the
+*collector* does not help either: `gc:precise` is ~5% *slower* (dmd's `rmem`
+allocates untyped, so precision buys nothing), while the concurrent `fork:1` GC
+and the Symmetry Investments **symgc** (`gc:sdc`, Séchet & Schveighoffer) both
+segfault on the parse — and no collector can win on a heap that is ~100% live,
+where collection frees nothing. The lever is *not collecting*, not a better GC.
+The fix is **not**
 in this (Markdown-only) PR: a naive global `disableGC` aborts (module-ctor
 ordering — needs a `crt_constructor`), segfaults without `--DRT-gcopt=disable:1`
 (GC frees `idup`'d strings the arena holds), and segfaults the native codegen

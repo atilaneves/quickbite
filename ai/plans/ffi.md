@@ -1511,6 +1511,13 @@ the first implementation. Until that exists, keep Bytecode and IR out of the FFI
 work from this plan; their native-layout bridge remains governed by §23 and
 `ai/plans/bytecode.md`.
 
+**Superseded by §34.** The remaining Interpreter ladder is now enumerated in
+full, in dependency order, in §34. Do **not** open a new per-increment planning
+PR to choose and spec the next rung — that spec already exists there. Implement
+the next unimplemented rung from §34 directly (it still needs its approved
+oracle fixture per `AGENTS.md`, but no new plan). This contract list stays as
+the index of the semantic gaps §34 closes.
+
 ## 27. Increment 4: correct the extern(D) calling convention (Interpreter)
 
 **Status: implemented.** This slice is Interpreter-only. Bytecode and IR stay
