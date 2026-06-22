@@ -2797,7 +2797,7 @@ rank above rare type surface (extern(C++)).
 Increment  Contract                                            Status   Ref
 10  D string slice RETURN value                                done     §33
 11  typed (non-char) immutable slice args and returns          done     §34.4
-12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        todo     §34.5
+12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        done     §34.5
 13  large struct returns via hidden sret + extern(D) ordering  todo     §34.6
 14  scalar out-parameters (int*) with writeback                todo     §34.7
 15  mutating struct member methods + receiver writeback        todo     §34.8
@@ -2821,8 +2821,7 @@ marshalling          source/quickbite/backends/ffi.d
                        marshalArgument, marshalSliceArgument,
                        unmarshalValue, unmarshalStruct
 call + ABI order     source/quickbite/backends/ffi.d
-                       callViaLibffi, abiSourceIndex,
-                       externDArgumentsFitRegisterScope, isOutPointer
+                       callViaLibffi, abiSourceIndex, isOutPointer
 entry points         source/quickbite/backends/ffi.d
                        tryCallNative, tryCallNativeMember, tryCallNativeImpl,
                        NativeThis, NativeCallException
@@ -2884,6 +2883,8 @@ discipline so native code may not retain the pointer past the call.
 fixtures and `rt/cstdlib.d` still green.
 
 ### 34.6 Increment 12 — stack-spilled extern(D) arguments
+
+**Status: implemented.**
 
 **Contract.** Allow `extern(D)` calls whose explicit arguments do not all fit
 in registers (>6 integer/pointer or >8 SSE), and prove that D's "reverse the

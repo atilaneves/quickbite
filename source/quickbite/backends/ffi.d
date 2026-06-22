@@ -170,12 +170,6 @@ private bool callViaLibffi(
     }
     if (receiver.enabled && ffiTypeFor(receiver.type) is null)
         return false;
-    if (
-        linkage == LINK.d &&
-        !externDArgumentsFitRegisterScope(parameterTypes, receiver.enabled)
-    )
-        return false;
-
     const hiddenNargs = receiver.enabled ? 1 : 0;
     const totalNargs = hiddenNargs + nargs;
     auto abiArgumentFfiTypes = new ffi_type*[](totalNargs);
@@ -313,39 +307,6 @@ private size_t abiSourceIndex(
     import dmd.astenums: LINK;
 
     return linkage == LINK.d ? argumentCount - abiIndex - 1 : abiIndex;
-}
-
-private bool externDArgumentsFitRegisterScope(
-    in imported!"dmd.mtype".Type[] parameterTypes,
-    in bool hasHiddenThis,
-) @safe @nogc nothrow pure {
-    import dmd.astenums: TY;
-
-    size_t integerRegisters = hasHiddenThis ? 1 : 0;
-    size_t sseRegisters;
-    foreach (parameterType; parameterTypes) {
-        switch (parameterType.ty) {
-            case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
-                 TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
-                 TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64,
-                 TY.Tpointer:
-                ++integerRegisters;
-                break;
-
-            case TY.Tarray:
-                integerRegisters += 2;
-                break;
-
-            case TY.Tfloat32, TY.Tfloat64:
-                ++sseRegisters;
-                break;
-
-            default:
-                return false;
-        }
-    }
-
-    return integerRegisters <= 6 && sseRegisters <= 8;
 }
 
 private imported!"quickbite.backends.libffi".ffi_type* ffiArgumentTypeFor(
