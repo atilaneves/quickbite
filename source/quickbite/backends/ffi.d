@@ -354,7 +354,7 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiArgumentTypeFor(
     import dmd.astenums: TY;
 
     if (type.ty == TY.Tarray)
-        return isSupportedStringSlice(type) ? ffiStringSliceType : null;
+        return isSupportedScalarSlice(type) ? ffiSliceType : null;
 
     return ffiTypeFor(type);
 }
@@ -383,7 +383,7 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiTypeFor(
         case TY.Tfloat80:              return &ffi_type_longdouble;
         case TY.Tpointer:              return &ffi_type_pointer;
         case TY.Tarray:
-            return isSupportedStringSlice(type) ? ffiStringSliceType : null;
+            return isSupportedScalarSlice(type) ? ffiSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
         default:                       return null;
     }
@@ -411,7 +411,7 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiStructType(
     return result;
 }
 
-private imported!"quickbite.backends.libffi".ffi_type* ffiStringSliceType() {
+private imported!"quickbite.backends.libffi".ffi_type* ffiSliceType() {
     import quickbite.backends.libffi:
         ffi_type, ffi_type_pointer, ffi_type_uint32, ffi_type_uint64,
         FFI_TYPE_STRUCT;
@@ -429,10 +429,22 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiStringSliceType() {
     return result;
 }
 
-private bool isSupportedStringSlice(imported!"dmd.mtype".Type type) {
+private bool isSupportedScalarSlice(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
-    return type.ty == TY.Tarray && type.nextOf.toBasetype.ty == TY.Tchar;
+    if (type.ty != TY.Tarray)
+        return false;
+
+    switch (type.nextOf.toBasetype.ty) with (TY) {
+        case Tbool, Tchar, Twchar, Tdchar,
+             Tint8, Tuns8, Tint16, Tuns16,
+             Tint32, Tuns32, Tint64, Tuns64,
+             Tfloat32, Tfloat64, Tfloat80:
+            return true;
+
+        default:
+            return false;
+    }
 }
 
 // A pointer-to-pointer parameter (e.g. strtol's `char** endptr`) is an out
@@ -460,7 +472,7 @@ private void marshalArgument(
         case TY.Tbool, TY.Tchar, TY.Twchar, TY.Tdchar,
              TY.Tint8, TY.Tuns8, TY.Tint16, TY.Tuns16,
              TY.Tint32, TY.Tuns32, TY.Tint64, TY.Tuns64:
-            const scalar = value.asLong;
+            const scalar = scalarBits(type, value);
             foreach (index; 0 .. buffer.length)
                 buffer[index] = cast(ubyte) (scalar >> (8 * index));
             return;
@@ -483,7 +495,7 @@ private void marshalArgument(
             return;
 
         case TY.Tarray:
-            marshalStringSliceArgument(buffer, value, keepAliveBuffers);
+            marshalSliceArgument(buffer, type, value, keepAliveBuffers);
             return;
 
         case TY.Tstruct:
@@ -508,6 +520,21 @@ private void marshalArgument(
     }
 }
 
+private long scalarBits(
+    imported!"dmd.mtype".Type type,
+    in imported!"quickbite.lang".Value value,
+) @safe pure {
+    import dmd.astenums: TY;
+
+    switch (type.ty) with (TY) {
+        case Tchar, Twchar, Tdchar:
+            return value.castTo!long.asLong;
+
+        default:
+            return value.asLong;
+    }
+}
+
 private void* marshalPointerArgument(
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.lang".Value value,
@@ -529,18 +556,31 @@ private void* marshalPointerArgument(
     return value.asNativePointer;
 }
 
-private void marshalStringSliceArgument(
+private void marshalSliceArgument(
     ubyte[] buffer,
+    imported!"dmd.mtype".Type type,
     in imported!"quickbite.lang".Value value,
     ref ubyte[][] keepAliveBuffers,
 ) {
-    const text = value.asCharArrayString;
-    auto bytes = new ubyte[](text.length);
-    foreach (index, codeUnit; text)
-        bytes[index] = cast(ubyte) codeUnit;
+    import dmd.typesem: size;
+
+    auto elementType = type.nextOf.toBasetype;  // mutable for size()
+    const elementSize = cast(size_t) size(elementType);
+    auto bytes = new ubyte[](value.length * elementSize);
+    const(char)*[] keepAlive;
+    foreach (index; 0 .. value.length) {
+        marshalArgument(
+            bytes[index * elementSize .. (index + 1) * elementSize],
+            elementType,
+            value[index],
+            false,
+            keepAlive,
+            keepAliveBuffers,
+        );
+    }
 
     keepAliveBuffers ~= bytes;
-    *cast(size_t*) buffer.ptr = bytes.length;
+    *cast(size_t*) buffer.ptr = value.length;
     *cast(void**) (buffer.ptr + size_t.sizeof) = bytes.ptr;
 }
 
@@ -573,7 +613,7 @@ private imported!"quickbite.lang".Value unmarshalValue(
         case TY.Tpointer:
             return Value.nativePointerValue(*cast(void**) buffer.ptr);
         case TY.Tarray:
-            return unmarshalStringSlice(type, buffer);
+            return unmarshalSlice(type, buffer);
         case TY.Tstruct:
             return unmarshalStruct(cast(TypeStruct) type, buffer);
         default:
@@ -581,23 +621,69 @@ private imported!"quickbite.lang".Value unmarshalValue(
     }
 }
 
-private imported!"quickbite.lang".Value unmarshalStringSlice(
+private imported!"quickbite.lang".Value unmarshalSlice(
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
     import quickbite.lang: Value;
+    import dmd.astenums: TY;
+    import dmd.typesem: size;
 
-    assert(isSupportedStringSlice(type));
+    assert(isSupportedScalarSlice(type));
 
     const length = *cast(const size_t*) buffer.ptr;
     const data = *cast(const void**) (buffer.ptr + size_t.sizeof);
     if (length == 0)
-        return Value("");
+        return emptySliceValue(type);
     if (data is null)
-        throw new Exception("Native string slice return has null data.");
+        throw new Exception("Native slice return has null data.");
 
-    const chars = cast(const(char)*) data;
-    return Value(chars[0 .. length].idup);
+    auto elementType = type.nextOf.toBasetype;  // mutable for size()
+    const elementSize = cast(size_t) size(elementType);
+    const bytes = (cast(const(ubyte)*) data)[0 .. length * elementSize];
+    switch (elementType.ty) with (TY) {
+        case Tchar:
+            const chars = cast(const(char)*) data;
+            return Value(chars[0 .. length].idup);
+
+        case Twchar:
+            const chars = cast(const(wchar)*) data;
+            return Value.stringValue(chars[0 .. length].dup);
+
+        case Tdchar:
+            const chars = cast(const(dchar)*) data;
+            return Value.stringValue(chars[0 .. length].dup);
+
+        default:
+            Value[] elements;
+            foreach (index; 0 .. length) {
+                elements ~= unmarshalValue(
+                    elementType,
+                    bytes[index * elementSize .. (index + 1) * elementSize],
+                );
+            }
+            return Value.arrayValue(elements);
+    }
+}
+
+private imported!"quickbite.lang".Value emptySliceValue(
+    imported!"dmd.mtype".Type type,
+) {
+    import quickbite.lang: Value;
+    import dmd.astenums: TY;
+
+    switch (type.nextOf.toBasetype.ty) with (TY) {
+        case Tchar:
+            return Value("");
+        case Twchar:
+            wchar[] empty;
+            return Value.stringValue(empty);
+        case Tdchar:
+            dchar[] empty;
+            return Value.stringValue(empty);
+        default:
+            return Value.arrayValue([]);
+    }
 }
 
 private imported!"quickbite.lang".Value unmarshalStruct(
