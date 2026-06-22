@@ -382,6 +382,8 @@ private imported!"quickbite.backends.libffi".ffi_type* ffiTypeFor(
         case TY.Tfloat64:              return &ffi_type_double;
         case TY.Tfloat80:              return &ffi_type_longdouble;
         case TY.Tpointer:              return &ffi_type_pointer;
+        case TY.Tarray:
+            return isSupportedStringSlice(type) ? ffiStringSliceType : null;
         case TY.Tstruct:               return ffiStructType(cast(TypeStruct) type);
         default:                       return null;
     }
@@ -570,11 +572,32 @@ private imported!"quickbite.lang".Value unmarshalValue(
         case TY.Tfloat80:  return Value(*cast(const real*) buffer.ptr);
         case TY.Tpointer:
             return Value.nativePointerValue(*cast(void**) buffer.ptr);
+        case TY.Tarray:
+            return unmarshalStringSlice(type, buffer);
         case TY.Tstruct:
             return unmarshalStruct(cast(TypeStruct) type, buffer);
         default:
             assert(false, "unmarshalled libffi return type");
     }
+}
+
+private imported!"quickbite.lang".Value unmarshalStringSlice(
+    imported!"dmd.mtype".Type type,
+    in ubyte[] buffer,
+) {
+    import quickbite.lang: Value;
+
+    assert(isSupportedStringSlice(type));
+
+    const length = *cast(const size_t*) buffer.ptr;
+    const data = *cast(const void**) (buffer.ptr + size_t.sizeof);
+    if (length == 0)
+        return Value("");
+    if (data is null)
+        throw new Exception("Native string slice return has null data.");
+
+    const chars = cast(const(char)*) data;
+    return Value(chars[0 .. length].idup);
 }
 
 private imported!"quickbite.lang".Value unmarshalStruct(
