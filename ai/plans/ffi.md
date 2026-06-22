@@ -2796,7 +2796,7 @@ rank above rare type surface (extern(C++)).
 ```text
 Increment  Contract                                            Status   Ref
 10  D string slice RETURN value                                done     §33
-11  typed (non-char) immutable slice args and returns          todo     §34.4
+11  typed (non-char) immutable slice args and returns          done     §34.4
 12  stack-spilled extern(D) arguments (>6 int / >8 SSE)        todo     §34.5
 13  large struct returns via hidden sret + extern(D) ordering  todo     §34.6
 14  scalar out-parameters (int*) with writeback                todo     §34.7
@@ -2816,9 +2816,9 @@ Anchors shared by most rungs (re-grep; line numbers drift):
 ```text
 descriptor mappers   source/quickbite/backends/ffi.d
                        ffiTypeFor (return), ffiArgumentTypeFor (arg),
-                       ffiStructType, ffiStringSliceType, isSupportedStringSlice
+                       ffiStructType, ffiSliceType, isSupportedScalarSlice
 marshalling          source/quickbite/backends/ffi.d
-                       marshalArgument, marshalStringSliceArgument,
+                       marshalArgument, marshalSliceArgument,
                        unmarshalValue, unmarshalStruct
 call + ABI order     source/quickbite/backends/ffi.d
                        callViaLibffi, abiSourceIndex,
@@ -2852,10 +2852,10 @@ descriptor plumbing.
 
 ### 34.5 Increment 11 — typed (non-char) slice args and returns
 
-**Contract.** Generalize the slice ABI bridge from `char` elements to any
-scalar element type, in both directions: `int[]`, `double[]`, `wstring`,
-`dstring`. The descriptor is unchanged (`{size_t length, void* ptr}`); only
-element marshalling widens.
+**Status: implemented.** Generalize the slice ABI bridge from `char` elements
+to any scalar element type, in both directions: `int[]`, `double[]`,
+`wstring`, `dstring`. The descriptor is unchanged
+(`{size_t length, void* ptr}`); only element marshalling widens.
 
 **Oracle fixture.** Dependency image (body, then declaration-only):
 

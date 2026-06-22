@@ -232,6 +232,76 @@ unittest {
     }
 }
 
+@("dependencyImage.externDTypedSliceFunction.Interpreter")
+@Tags("Interpreter")
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_typed_slice_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_typed_slice_fixture;
+
+            long dependencySum(const(long)[] values) {
+                long result;
+                foreach (value; values)
+                    result += value;
+                return result;
+            }
+
+            const(int)[] dependencyTriple(int value) {
+                return [value, value * 2, value * 3];
+            }
+        });
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_typed_slice_fixture",
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_typed_slice_fixture;
+
+            long dependencySum(const(long)[] values);
+            const(int)[] dependencyTriple(int value);
+        });
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_typed_slice_fixture;
+
+                unittest {
+                    long[] values = [5, 7, 11];
+                    assert(dependencySum(values) == 23);
+
+                    const(int)[] result = dependencyTriple(4);
+                    assert(result.length == 3);
+                    assert(result[0] == 4);
+                    assert(result[1] == 8);
+                    assert(result[2] == 12);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const interpreted = (new Interpreter([imagePath]))
+            .runTests(moduleResult.module_);
+        interpreted.length.should == 1;
+        interpreted[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDMemberFunction.Interpreter")
 @Tags("Interpreter")
 unittest {
